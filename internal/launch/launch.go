@@ -56,6 +56,16 @@ type options struct {
 	// fleetClient replaces the client the fleet screen builds for the socket;
 	// tests inject it.
 	fleetClient acpclient.Fleet
+	// notifyOff turns the fleet's notifications off. The zero value keeps them
+	// on, which is WithNotify's default, so no constructor literal sets it.
+	notifyOff bool
+	// notifyRun runs a desktop notification's command. The default runs it;
+	// tests replace it so no test spawns a real osascript or notify-send.
+	notifyRun func(ctx context.Context, name string, args ...string) error
+	// onFleetWiring sees the fleet client and the watch each program the
+	// daemon loop runs is given; tests read what the loop wired without
+	// driving a real program.
+	onFleetWiring func(client acpclient.Fleet, watch *fleet.Watch)
 }
 
 type Option func(*options)
@@ -67,6 +77,14 @@ func WithProgramRunner(runner ProgramRunner) Option {
 			return
 		}
 		opts.programRunner = runner
+	}
+}
+
+// WithNotify turns the fleet's notifications on or off. On by default;
+// plan 7 sets it from fleet.toml.
+func WithNotify(on bool) Option {
+	return func(o *options) {
+		o.notifyOff = !on
 	}
 }
 

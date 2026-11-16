@@ -16,10 +16,11 @@ const (
 
 // transition is one change between two states of the same epoch.
 type transition struct {
-	Kind    transitionKind
-	AgentID string               // "" for a submission
-	Name    string               // the agent's name, or the submission's title
-	Pending contract.PendingKind // for transitionNeedsYou on an agent
+	Kind         transitionKind
+	AgentID      string               // "" for a submission
+	SubmissionID string               // the submission's ID; "" for an agent
+	Name         string               // the agent's name, or the submission's title
+	Pending      contract.PendingKind // for transitionNeedsYou on an agent
 }
 
 // transitions compares two states of one epoch. A state from another epoch,
@@ -54,8 +55,9 @@ func transitions(prev, next acpclient.FleetState) []transition {
 			continue
 		}
 		out = append(out, transition{
-			Kind: transitionNeedsYou,
-			Name: item.Submission.Title,
+			Kind:         transitionNeedsYou,
+			SubmissionID: item.Submission.ID,
+			Name:         item.Submission.Title,
 		})
 	}
 

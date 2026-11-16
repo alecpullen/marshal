@@ -74,7 +74,13 @@ session, with its index watched, until `marshal daemon unpin`. A fleet agent
 the local daemon starts on a local project runs on that project's child,
 beside the TUI's sessions. The bridge follows each fleet agent's session, so a
 turn started from its session screen shows in the fleet and its requests reach
-the bridge.
+the bridge. An agent with a child of its own — a git agent, a workspace agent,
+or any agent while the egress proxy is on — starts that child with a viewer
+socket of its own (`<state>/v/a-<hash>.sock`) and opens with `⏎` too; only a
+container's agent is still refused. A daemon session screen shows `needs you N`
+in its status line — the fleet queue's items apart from the shown agent's own —
+and opening the fleet turns on the bell and the desktop notification
+(`internal/app/notify`, never imported by the TUI).
 
 ### End-to-end and usability suites
 
@@ -114,6 +120,7 @@ App shell & config
   internal/daemon/         the local daemon's paths, service units and commands, and its socket's client, attach handshake included
   internal/fleetclient/    the fleet client over the daemon's socket: the fleet screen's read of a bridge
   internal/app/            Embedded() and ServiceDeps(): runtimes, dependency wiring, repo instructions
+  internal/app/notify/     the desktop notifier launch gives the fleet's watch (osascript / notify-send)
   internal/app/config/     TOML loading, defaults, merge rules
   internal/app/session/    shared mutable state between TUI and agent
   internal/trust/          folder-trust store, resolver, project-config hashing

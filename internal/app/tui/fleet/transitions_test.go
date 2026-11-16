@@ -128,7 +128,7 @@ func TestTransitions(t *testing.T) {
 				return s
 			}(),
 			want: []transition{
-				{Kind: transitionNeedsYou, Name: "Ship the release"},
+				{Kind: transitionNeedsYou, SubmissionID: "s2", Name: "Ship the release"},
 			},
 		},
 		{

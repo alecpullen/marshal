@@ -733,6 +733,55 @@ func (h *attachHarness) fleetAgent(t *testing.T, root, id, name string) *project
 	return pc
 }
 
+// ownChildAgent gives the harness the state Spawn leaves an agent that runs on
+// a child of its own in: a record, a live runtime whose registry is that
+// child's, a session tracked as the fleet's, and the viewer socket the child
+// serves (decision 1). The child is the same fake a project child uses, bound
+// to the agent's own socket path.
+func (h *attachHarness) ownChildAgent(t *testing.T, root, id, name string) (*fakeProjectChild, *Registry, string) {
+	t.Helper()
+	socket := agentViewerSocketPath(h.fleet.stateDir, id)
+	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+		t.Fatalf("make the agent's socket directory: %v", err)
+	}
+	fake := newFakeProjectChild(socket)
+	child := &Child{Transport: fake}
+	if err := child.Start(); err != nil {
+		t.Fatalf("start the agent's own child: %v", err)
+	}
+	t.Cleanup(child.Stop)
+	reg := NewRegistry(child)
+	reg.RootCwd = root
+
+	sessionID := id + "-session"
+	if err := h.fleet.ws.PutAgent(Agent{
+		ID: id, Project: root, Name: name, SessionID: sessionID,
+		OwnerID: "owner-1", Origin: OriginUI,
+	}); err != nil {
+		t.Fatalf("record agent %s: %v", id, err)
+	}
+	reg.TrackFleet(sessionID, AgentPath(root))
+	h.fleet.mu.Lock()
+	h.fleet.runtimes[id] = &agentRuntime{
+		id: id, root: root, child: child, reg: reg, sessionID: sessionID,
+		viewerSocket: socket,
+	}
+	h.fleet.sessionAgent[sessionID] = id
+	h.fleet.mu.Unlock()
+	return fake, reg, sessionID
+}
+
+// viewerCount is the viewers a registry counts on one session.
+func viewerCount(reg *Registry, sessionID string) int {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	info, ok := reg.sessions[sessionID]
+	if !ok {
+		return 0
+	}
+	return info.viewers
+}
+
 // TestTheAgentAttachUpgrades: POST /api/agents/{id}/attach on the socket hands
 // the client the agent's own session, named in both headers, and counts it as
 // a viewer of that session (P5 F5).
@@ -771,6 +820,93 @@ func TestTheAgentAttachUpgrades(t *testing.T) {
 	})
 }
 
+// TestTheAgentAttachReachesAnOwnChild: an agent whose runtime records a viewer
+// socket of its own is dialled there, and the attach names its session and the
+// agent in the 101 and counts the viewer on the agent's own registry
+// (decision 2).
+func TestTheAgentAttachReachesAnOwnChild(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+	fake, reg, sessionID := h.ownChildAgent(t, root, "agent-own", "reviewer")
+
+	res := h.attachAgent(http.MethodPost, "agent-own", true)
+	if res.status != http.StatusSwitchingProtocols {
+		t.Fatalf("agent attach = %d, want 101: %s", res.status, res.refusal(t))
+	}
+	if got := res.header.Get("Upgrade"); got != attachProtocol {
+		t.Errorf("Upgrade = %q, want %q", got, attachProtocol)
+	}
+	if got := res.header.Get(sessionHeader); got != sessionID {
+		t.Errorf("%s = %q, want %q", sessionHeader, got, sessionID)
+	}
+	if got := res.header.Get(agentHeader); got != "agent-own" {
+		t.Errorf("%s = %q, want agent-own", agentHeader, got)
+	}
+
+	eventually(t, "the agent's own child to serve the viewer", func() bool {
+		return fake.viewers() == 1
+	})
+	eventually(t, "the viewer to be counted on the agent's own registry", func() bool {
+		return viewerCount(reg, sessionID) == 1
+	})
+}
+
+// TestDetachingFromAnOwnChildLeavesItRunning: a viewer that goes leaves the
+// agent's own child and its session alone and arms no linger. An own child is
+// no project child, so there is nothing of the bridge's to reap (decision 2).
+func TestDetachingFromAnOwnChildLeavesItRunning(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+
+	var mu sync.Mutex
+	lingers := 0
+	h.fleet.afterFunc = func(time.Duration, func()) func() {
+		mu.Lock()
+		lingers++
+		mu.Unlock()
+		return func() {}
+	}
+	armed := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return lingers
+	}
+
+	fake, reg, sessionID := h.ownChildAgent(t, root, "agent-own", "reviewer")
+	res := h.attachAgent(http.MethodPost, "agent-own", true)
+	if res.status != http.StatusSwitchingProtocols {
+		t.Fatalf("agent attach = %d, want 101: %s", res.status, res.refusal(t))
+	}
+	eventually(t, "the viewer to be counted", func() bool { return viewerCount(reg, sessionID) == 1 })
+
+	_ = res.conn.Close()
+
+	eventually(t, "the viewer to be uncounted", func() bool { return viewerCount(reg, sessionID) == 0 })
+	if fake.wasStopped() {
+		t.Error("the detach stopped the agent's own child")
+	}
+	if !reg.sessionTracked(sessionID) {
+		t.Error("the detach dropped the agent's session")
+	}
+	h.fleet.mu.Lock()
+	rt := h.fleet.runtimes["agent-own"]
+	h.fleet.mu.Unlock()
+	if rt == nil {
+		t.Fatal("the detach dropped the agent's runtime")
+	}
+	if got := armed(); got != 0 {
+		t.Errorf("the detach armed %d lingers, want none for an agent's own child", got)
+	}
+	// A detach resolves no project child: the agent's root has none of its
+	// own.
+	if got := h.fake(root); got != nil {
+		t.Error("the detach built a project child for an agent that has its own")
+	}
+	if a, ok := h.fleet.ws.Agent("agent-own"); !ok || a.SessionID != sessionID {
+		t.Errorf("agent after the detach = %+v (found %v), want session %s", a, ok, sessionID)
+	}
+}
+
 // TestTheAgentAttachRefusals: every way the agent attach refuses, with its
 // status and its sentence, and no viewer connection opened by any of them
 // (P5 F5 decision 5).
@@ -794,10 +930,22 @@ func TestTheAgentAttachRefusals(t *testing.T) {
 		h.fleet.mu.Unlock()
 		return id
 	}
-	ownChild := func(t *testing.T, h *attachHarness, root string) string {
+	container := func(t *testing.T, h *attachHarness, root string) string {
 		id := live(t, h, root)
 		h.fleet.mu.Lock()
 		h.fleet.runtimes[id].project = nil
+		h.fleet.runtimes[id].containerized = true
+		h.fleet.mu.Unlock()
+		return id
+	}
+	// A host agent whose runtime went away between the record lookup and the
+	// target lookup has no viewer socket either, and is not a container.
+	noViewer := func(t *testing.T, h *attachHarness, root string) string {
+		id := live(t, h, root)
+		h.fleet.mu.Lock()
+		h.fleet.runtimes[id].project = nil
+		h.fleet.runtimes[id].containerized = false
+		h.fleet.runtimes[id].viewerSocket = ""
 		h.fleet.mu.Unlock()
 		return id
 	}
@@ -844,9 +992,14 @@ func TestTheAgentAttachRefusals(t *testing.T) {
 			want: http.StatusBadGateway, sentence: "no such binary",
 		},
 		{
-			name: "an agent on a child of its own", method: http.MethodPost, upgrade: true, setup: ownChild,
+			name: "an agent in a container", method: http.MethodPost, upgrade: true, setup: container,
 			want:     http.StatusConflict,
-			sentence: "agent reviewer runs on a child of its own, which has no viewer socket yet",
+			sentence: "agent reviewer runs in a container, which has no viewer socket yet",
+		},
+		{
+			name: "an agent with no viewer socket", method: http.MethodPost, upgrade: true, setup: noViewer,
+			want:     http.StatusConflict,
+			sentence: "agent reviewer has no viewer socket yet",
 		},
 		{
 			name: "an agent with no session yet", method: http.MethodPost, upgrade: true, setup: noSession,

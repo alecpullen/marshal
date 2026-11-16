@@ -2400,7 +2400,170 @@ unreachable.
 
 ### Plan 6 — viewers everywhere, needs you and notifications
 
-Not yet run. Plan 6's last task fills this in.
+**What was built.** Every host-process agent's child now serves viewers, so
+the agent attach reaches it. `agentRuntime` records the child's
+`viewerSocket`, named `<state>/v/a-<16 hex of sha256(agent ID)>.sock` — the
+`a-` keeps it apart from the project children's digests — with its directory
+made `0700` before the child starts, as the project child's is. The arguments
+are added where `newRuntime`'s host-process fallback builds the child, so a
+test that replaces `newRuntime` keeps its own child as it was; a containerized
+child is unchanged and records no socket. `startRuntime` clears a stale file at
+the path, and `releaseAgent` removes the socket with the child it served: a
+detached child keeps its own, and only a destroyed one loses it.
+
+`relay` takes a `relayEnd` — the registry that counts the viewer, a hook that
+rearms a project child's linger, and the root the logs name — in place of the
+project child. The project attach passes its child's three; the agent attach
+passes the project child's when the agent is on one, and the agent's own
+registry with no linger when it is not. So an agent on a child of its own opens
+with `⏎`, and a container's agent is the one refusal left: 409, "agent <name>
+runs in a container, which has no viewer socket yet".
+
+`internal/app/tui/fleet/watch.go` is the watch: `Watch`, `NewWatch`,
+`Observe` and `WithWatch`. `Observe` compares a state with the last one it saw,
+keeps needs-you and ready, words them — "<agent> needs you: approval",
+"…: question", "<title> needs you: intake", "<agent> is ready" — applies a 2s
+per-key burst, calls the notifier for each survivor and returns them. The
+first state it sees, and the first of each epoch, notifies nothing. The fleet
+model observes each state it reads and returns one `tea.Raw` bell for a
+non-empty result, batched with its other commands; its Events lines are
+unchanged. A failed agent stays an Events line.
+
+`internal/app/notify` is the other half: `Desktop` over an injected command
+runner, `osascript -e 'display notification "…" with title "Marshal"'` on
+macOS, `notify-send Marshal <text>` on Linux, nothing elsewhere. `Notify`
+returns at once and runs the command on its own goroutine under a 5s bound,
+logging one warning per failure. The TUI never imports it.
+
+The session screen counts. `tui.WithFleet(fleet, watch)` stores the daemon's
+fleet and the loop's watch; the model waits on the fleet's change signal with
+its own `fleetChangedMsg`, released by a quit gate, repaints on each change and
+rings the watch's bell. The status line's right cluster carries `needs you N`
+in the warning colour, before the session's own segment, and the number is the
+queue's items minus the shown agent's own (`AgentSession`); nothing shows at
+zero, and nothing without a fleet.
+
+`internal/launch` gives the lifetimes decision 8 asks for: the daemon loop
+creates its fleet client when the loop starts and closes the one it built when
+the loop ends, so a plain `marshal` counts from its first frame; the watch is
+created with the first fleet program — `notify.New(runtime.GOOS, …)` unless
+`WithNotify(false)` — and handed to that program and to every session screen
+after it. Embedded mode gets neither.
+
+**Where the plan was short, and how that was filled.**
+
+- **`relayEnd` carries a third field.** The plan's declaration has the
+  registry and the linger hook, but the relay also names the root in its
+  `logAttach` lines and in `closeRelayedSession`'s warning. `relayEnd.root`
+  carries what remained of the project child, and `closeRelayedSession` takes
+  the registry and the root rather than a `*projectChild`.
+- **The signature change reached one file outside the list.** `relay_test.go`'s
+  `relayPair.start` had to pass the new `relayEnd`; one line, no behaviour
+  change.
+- **`WithNotify` has no tri-state.** "On by default" is `options.notifyOff`,
+  whose zero value keeps notifications on, so `WithNotify(on)` sets the
+  inverse and no constructor literal has to remember to enable it.
+- **Launch has to see what it handed each program**, and the TUI's and the
+  fleet model's fields are unexported: an unexported `onFleetWiring` seam,
+  beside the existing `onServed` and `fleetClient` ones, and `withNotifyRun` so
+  no test spawns a real `osascript` or `notify-send`. The wiring is also proven
+  by behaviour — a session screen rendered after the wiring shows `needs you
+  1`, the embedded one shows no count.
+- **The session screen had no quit gate to reuse.** Its own pumps end when the
+  session's change channel closes, so `pump.go` gained `fleetQuitGate`,
+  released by both `finishQuit` and `detach`, and `pumpFleetChanged` takes the
+  gate's channel beside the fleet's.
+- **The count would have vanished at 100 columns.** `statusClusters` rebuilds
+  the right cluster while it sheds hints, so the count is composed outside that
+  shedding (`joinRight`) and survives it; the golden at 100 columns pins the
+  row with both the count and the hints.
+- **A submission's burst key.** Plan 3's transitions name a submission by its
+  title, so the watch maps a title to the queued submission's ID and falls back
+  to the title for an item the state no longer lists. The review showed that
+  map collapses two submissions that share a title: `transition` now carries
+  the submission's ID beside its title, so the key is the ID and
+  `submissionKeyIn` is gone.
+- **One mutation check does not bite, as written.** Dropping `Observe`'s epoch
+  guard leaves `TestANewEpochNotifiesNothing` passing, because `transitions`
+  already returns nothing for a foreign or unloaded epoch (`transitions.go`),
+  which this task must reuse and may not modify. The guard stays as the watch's
+  own statement of F8's baseline; removing the *behaviour* would mean changing
+  `transitions`. The other two checks failed as the plan says: task 2's
+  project-child registry for an own child failed the viewer-count assertion,
+  and task 6's counted the shown agent's own items.
+- **`TMPDIR`.** `/private/tmp` is macOS's; this Linux host ran every Verify with
+  `TMPDIR=/tmp/p5-6-suite`. No test depends on the path.
+
+**Tests.** W10 and W11 pass, with each task's named cases: the watch's first
+state and new epoch notifying nothing, approval, question, submission and ready
+each notifying with decision 4's text, a failure not notifying, the burst
+collapsing per key, the watch spanning programs, the fleet model's bell; the
+count changing as another agent parks, leaving out the shown agent, absent at
+zero and without a fleet, the screen's bell with a watch and not without one,
+the fleet's wait released at quit, and the 100-column golden. Beside the unit
+tests, `test/daemon/own_child_test.go` opens a git agent spawned from a local
+bare repository as a viewer against a real bridge, reads its transcript and
+finds it still open after the viewer leaves, and `test/daemon/needs_you_test.go`
+parks a second agent on an approval, answers it through the bridge, and watches
+a real session screen's status line go `needs you 1` and back.
+
+**The manual run.** Attempted, against a real local daemon and the configured
+provider (`ollama-cloud`), on a scratch 0700 socket directory under `/tmp`, a
+scratch state and data directory, a scratch git project and the user's own
+config: `webbridge --profile local` started and answered `GET /api/daemon`
+(`profile local`, the one project, no children). Two limits ended it there.
+
+- **A git agent is not spawnable over the local profile's HTTP surface.** The
+  client cannot choose a repository: `contract.SpawnRequest` has no such field,
+  and `POST /api/runs` spawns without one too, so the only own-child agents the
+  daemon starts are a workspace agent or one behind the egress proxy, which the
+  local profile refuses (`--egress on: the local profile runs no egress
+  proxy`). The own-child path is therefore driven by the task 3 harness test
+  against a real bridge rather than by hand.
+- **The count, the bell and the desktop notification are the TUI's.** Seeing
+  them needs a terminal and a person in front of it, and this run had neither.
+  The count is covered end to end by task 8 over a real fleet client, and the
+  rendered screen by task 7's `needs you 1`; the bell and the desktop
+  notification have not been observed on a live terminal and are left for the
+  user to confirm.
+
+**Verification.** `gofmt -l internal cmd test web` prints nothing; `go vet
+./...` is clean; CI's suite command (`scripts/test.sh full`) passes at
+`TMPDIR=/tmp/p5-6-suite`, as it did at this batch's baseline; `CGO_ENABLED=1 go
+build ./cmd/marshal` succeeds; the scripted usability suite passes.
+
+**Branch review.** Three independent `glm-5.3-flash` reviewers through
+`ollama-cloud` read the branch against `c37c3585`, split by file set: the
+bridge and its real-bridge test, the screen with the fleet model and the
+notifier, and the launch wiring with the second real-bridge test and the
+docs. No blocker and no major finding was raised. Three findings were acted on
+and three recorded:
+
+| Severity | Finding | Resolution |
+|---|---|---|
+| Minor | Two queued submissions that share a title got one burst key, because the watch mapped a title back to the first matching queue item, so the second submission's notification was dropped as the first's burst | `transition` carries the submission's ID (`transitions.go`), the notification's key is that ID, and `submissionKeyIn` is gone; `TestTwoSubmissionsSharingATitleBothNotify` fails if the title is used again |
+| Minor | The own-child refusal told an agent whose runtime had gone away — and any agent in a fleet with no state root — that it "runs in a container" | The refusal branches on the runtime's `containerized`, so the container sentence stays exact and anything else reads "agent <name> has no viewer socket yet"; the refusals table has a row for each |
+| Nit | `statusRightSegment` lost its production caller when the count moved into `statusClusters`, leaving a test-only method beside the real cluster | Deleted; the four tests that used it call `sessionRightSegment`, which is the same string for their fleet-less models |
+| Nit | `relayEnd.root` held a project child's root directory for one attach kind and an agent's display name for the other | Recorded as intended: the field names the child on the attach's log lines, and its comment now says which value each kind passes |
+| Nit | After a crash, a `v/a-<hash>.sock` whose agent is never resumed or destroyed stays in `v/`; project children self-heal because their names are per root | Left as it is: bounded by the agents alive at the crash, and removed when that agent next starts. A sweep at `NewFleet` could delete a live child's socket when two bridges share a state root, which is the worse failure |
+| Nit | Nothing asserts that the loop does not close an injected fleet client | Not assertable: `acpclient.Fleet` has no `Close`, so the invariant holds by construction — the deferred close only ever sees the concrete `*fleetclient.Client` the loop built |
+
+The reviewers also confirmed the clean areas explicitly: no path counts a
+viewer on the wrong registry and no error path leaves one counted or a linger
+armed; the stale socket is removed before the child starts and the child's
+socket after it stops, with the detach path keeping it; agent IDs are hashed
+into a `0700` directory, so no traversal or length overflow; the own-child
+branch mirrors the project branch and the container refusal keeps its slot in
+decision 5's order; the notifications cannot break out of the AppleScript
+string or `notify-send` argv and never block the update loop; the pump and the
+quit gate cannot read a closed channel or outlive the program, and no
+transition is dropped between programs; the count matches the fleet screen's
+Needs-you rows, excludes only the shown agent's own, and survives hint
+shedding; the TUI still imports nothing of the notifier and stays on the client
+seam; `internal/app/notify` and `internal/launch` mutate no package global; no
+test spawns a real notifier or reads the developer's config; and every claim in
+this record — including the blocked manual run, and the epoch mutation check
+that does not bite — is true of the code as committed.
 
 ## Branch review record
 

@@ -8,12 +8,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/acp"
 	"marshal/internal/acp/service"
@@ -24,6 +26,7 @@ import (
 	"marshal/internal/app/tui"
 	"marshal/internal/app/tui/fleet"
 	"marshal/internal/daemon"
+	"marshal/internal/fleetclient"
 	"marshal/web/bridge/contract"
 )
 
@@ -842,25 +845,29 @@ func loopFleet(root, sessionID string) *fakeFleet {
 }
 
 // runOnTheDaemon runs Run in daemon mode with the scripted programs.
-func runOnTheDaemon(t *testing.T, fake *fakeDaemon, dir string, stdout io.Writer, script *loopScript, client *fakeFleet) error {
+func runOnTheDaemon(t *testing.T, fake *fakeDaemon, dir string, stdout io.Writer, script *loopScript, client *fakeFleet, opts ...Option) error {
 	t.Helper()
 	return Run(context.Background(), stdout,
-		WithDaemon(loopSocket),
-		withDaemonClient(fake),
-		withWorkingDir(dir),
-		withFleetClient(client),
-		WithProgramRunner(script.run),
+		append([]Option{
+			WithDaemon(loopSocket),
+			withDaemonClient(fake),
+			withWorkingDir(dir),
+			withFleetClient(client),
+			WithProgramRunner(script.run),
+		}, opts...)...,
 	)
 }
 
 // runTheFleet runs Fleet with the scripted programs, as `marshal fleet` does.
-func runTheFleet(t *testing.T, fake *fakeDaemon, dir string, stdout io.Writer, script *loopScript, client *fakeFleet) error {
+func runTheFleet(t *testing.T, fake *fakeDaemon, dir string, stdout io.Writer, script *loopScript, client *fakeFleet, opts ...Option) error {
 	t.Helper()
 	return Fleet(context.Background(), stdout, loopSocket,
-		withDaemonClient(fake),
-		withWorkingDir(dir),
-		withFleetClient(client),
-		WithProgramRunner(script.run),
+		append([]Option{
+			withDaemonClient(fake),
+			withWorkingDir(dir),
+			withFleetClient(client),
+			WithProgramRunner(script.run),
+		}, opts...)...,
 	)
 }
 
@@ -1215,6 +1222,306 @@ func TestBeforeTheFleetEndingsAreUnchanged(t *testing.T) {
 		}
 		if len(script.fleetPasses) != 0 {
 			t.Errorf("fleet screens = %d, want none before the fleet has run", len(script.fleetPasses))
+		}
+	})
+}
+
+// fleetWiring is one program's wiring: the fleet client and the watch the loop
+// handed it (decision 8).
+type fleetWiring struct {
+	client acpclient.Fleet
+	watch  *fleet.Watch
+}
+
+// recordFleetWiring is the option that records what each program was given, in
+// the order the loop ran them.
+func recordFleetWiring(into *[]fleetWiring) Option {
+	return withFleetWiring(func(c acpclient.Fleet, w *fleet.Watch) {
+		*into = append(*into, fleetWiring{client: c, watch: w})
+	})
+}
+
+// waitingFleet is loopFleet's state with one agent queued: what a session
+// screen counts.
+func waitingFleet(root, sessionID string) *fakeFleet {
+	f := loopFleet(root, sessionID)
+	f.state.Inbox.Queue = []contract.InboxItem{{Kind: contract.InboxItemAgent, AgentID: "a2"}}
+	return f
+}
+
+// sessionView is the model's screen at a usual terminal size, stripped of its
+// styling, so a test reads what the user would.
+func sessionView(t *testing.T, m tui.Model) string {
+	t.Helper()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	return ansi.Strip(updated.View().Content)
+}
+
+// TestADaemonSessionGetsTheFleet: the loop's fleet client starts with the loop,
+// so a plain `marshal`'s session screen counts from its first frame, and it has
+// no watch, because the fleet has not run: notifications run wherever the fleet
+// is open (decision 8).
+func TestADaemonSessionGetsTheFleet(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	client := waitingFleet(filepath.Clean(dir), "sess-row")
+
+	var (
+		wiring []fleetWiring
+		view   string
+	)
+	script := &loopScript{t: t, sessionEnds: []ProgramResult{{}}}
+	script.onSession = func(_ context.Context, m tui.Model) { view = sessionView(t, m) }
+
+	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, client, recordFleetWiring(&wiring)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(script.sessions) != 1 {
+		t.Fatalf("session screens = %d, want 1", len(script.sessions))
+	}
+	if len(wiring) != 1 {
+		t.Fatalf("programs given a fleet = %d, want the one session screen", len(wiring))
+	}
+	if wiring[0].client != acpclient.Fleet(client) {
+		t.Errorf("the session screen's fleet client is %T, want the loop's %T", wiring[0].client, client)
+	}
+	if wiring[0].watch != nil {
+		t.Error("a plain marshal's session screen was given a watch: notifications run wherever the fleet is open")
+	}
+	if !strings.Contains(view, "needs you 1") {
+		t.Errorf("the session screen shows no count of the queued agent:\n%s", view)
+	}
+	if len(script.fleetPasses) != 0 {
+		t.Errorf("fleet screens = %d, want none: the loop never opened the fleet", len(script.fleetPasses))
+	}
+}
+
+// TestTheWatchStartsWithTheFleet: the watch is created with the first fleet
+// program and handed to every program after it, so the session screen the fleet
+// opens rings the bell through the same watch (decision 8).
+func TestTheWatchStartsWithTheFleet(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	root := filepath.Clean(dir)
+	client := loopFleet(root, "sess-row")
+
+	var wiring []fleetWiring
+	script := &loopScript{
+		t: t,
+		fleetEnds: []ProgramResult{
+			{Open: fleet.Target{AgentID: loopAgentID, AgentName: loopAgentName, Root: root}},
+			{}, // the zero target ends the loop
+		},
+		sessionEnds: []ProgramResult{{}},
+	}
+	if err := runTheFleet(t, fake, dir, io.Discard, script, client, recordFleetWiring(&wiring)); err != nil {
+		t.Fatalf("Fleet: %v", err)
+	}
+
+	// The fleet, the session it opened, then the fleet again.
+	if len(wiring) != 3 {
+		t.Fatalf("programs given a fleet = %d, want 3", len(wiring))
+	}
+	if wiring[0].watch == nil {
+		t.Fatal("the first fleet program ran with no watch")
+	}
+	if wiring[2].watch != wiring[0].watch {
+		t.Error("the fleet came back with another watch, want the loop's")
+	}
+	if wiring[1].watch != wiring[0].watch {
+		t.Error("the session screen after the fleet has another watch, want the loop's")
+	}
+	for i, w := range wiring {
+		if w.client != acpclient.Fleet(client) {
+			t.Errorf("program %d's fleet client is %T, want the loop's %T", i, w.client, client)
+		}
+	}
+}
+
+// TestEmbeddedModeHasNoFleet: embedded mode gets neither the client nor the
+// watch (decision 8), so its screen counts nothing even though a fleet would.
+func TestEmbeddedModeHasNoFleet(t *testing.T) {
+	dir := t.TempDir()
+	client := waitingFleet(filepath.Clean(dir), "sess-row")
+
+	var (
+		wiring []fleetWiring
+		view   string
+	)
+	err := Run(context.Background(), io.Discard,
+		WithApp(pipeAppOptions(dir, t.TempDir())...),
+		withFleetClient(client),
+		recordFleetWiring(&wiring),
+		WithProgramRunner(func(_ context.Context, m tea.Model, _ io.Writer) ProgramResult {
+			view = sessionView(t, m.(tui.Model))
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(wiring) != 0 {
+		t.Errorf("programs given a fleet = %d, want none in embedded mode", len(wiring))
+	}
+	if strings.Contains(view, "needs you") {
+		t.Errorf("embedded mode's screen counted a fleet:\n%s", view)
+	}
+}
+
+// TestTheLoopsFleetClientClosesWithIt: the client starts with the loop, not
+// with the fleet program, so a loop that only ever shows a session still builds
+// one — and closes it when it returns. An injected client is the test's, and is
+// not closed.
+func TestTheLoopsFleetClientClosesWithIt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, home)
+
+	socket := filepath.Join(t.TempDir(), "fleet.sock")
+	stream := serveFleetStream(t, socket)
+
+	var wiring []fleetWiring
+	script := &loopScript{t: t}
+	script.onSession = func(context.Context, tui.Model) {
+		select {
+		case <-stream.opened:
+		case <-time.After(10 * time.Second):
+			t.Error("the loop's fleet client never reached the bridge")
+		}
+	}
+
+	// No client is injected, so the loop builds and owns one.
+	if err := Run(context.Background(), io.Discard,
+		WithDaemon(socket),
+		withDaemonClient(fake),
+		withWorkingDir(dir),
+		WithProgramRunner(script.run),
+		recordFleetWiring(&wiring),
+	); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(wiring) != 1 {
+		t.Fatalf("programs given a fleet = %d, want the one session screen", len(wiring))
+	}
+	if _, ok := wiring[0].client.(*fleetclient.Client); !ok {
+		t.Errorf("the session screen's fleet client is %T, want the one the loop built", wiring[0].client)
+	}
+	select {
+	case <-stream.closed:
+	case <-time.After(10 * time.Second):
+		t.Error("the loop did not close the fleet client it built")
+	}
+}
+
+// notificationRecorder stands in for the system's notifier command: it records
+// what would have run and signals the first, so no test spawns osascript or
+// notify-send.
+type notificationRecorder struct {
+	mu     sync.Mutex
+	names  []string
+	called chan struct{}
+	once   sync.Once
+}
+
+func newNotificationRecorder() *notificationRecorder {
+	return &notificationRecorder{called: make(chan struct{})}
+}
+
+func (r *notificationRecorder) run(_ context.Context, name string, _ ...string) error {
+	r.mu.Lock()
+	r.names = append(r.names, name)
+	r.mu.Unlock()
+	r.once.Do(func() { close(r.called) })
+	return nil
+}
+
+func (r *notificationRecorder) commands() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.names...)
+}
+
+// parkedNotifications drives watch through the one transition notificationOf
+// reports — an agent parking on an approval — and returns what it passed.
+func parkedNotifications(t *testing.T, w *fleet.Watch) []fleet.Notification {
+	t.Helper()
+	base := acpclient.FleetState{Server: "local", Conn: acpclient.FleetConnected, Loaded: true, Epoch: 1}
+	if got := w.Observe(base); len(got) != 0 {
+		t.Fatalf("the first state passed %v, want a baseline", got)
+	}
+	parked := base
+	parked.Agents = []contract.AgentStatus{{
+		ID:      "a2",
+		Name:    "Alpha",
+		Status:  contract.AgentAwaitingApproval,
+		Pending: &contract.PendingRequest{Kind: contract.PendingApproval},
+	}}
+	parked.Inbox.Groups.NeedsYou = []string{"a2"}
+	return w.Observe(parked)
+}
+
+// TestNotifyOffKeepsTheBell: WithNotify(false) builds the watch with a nil
+// notifier, so the bell still rings for a transition and nothing else happens;
+// on is the default, and runs the system's notifier where there is one.
+func TestNotifyOffKeepsTheBell(t *testing.T) {
+	systemHasNotifier := runtime.GOOS == "darwin" || runtime.GOOS == "linux"
+
+	// runFleet runs the fleet program and answers its watch and the notifier
+	// command runner it was built with.
+	runFleet := func(t *testing.T, on bool) (*fleet.Watch, *notificationRecorder) {
+		t.Helper()
+		dir := t.TempDir()
+		fake := newFakeDaemon(t, dir, t.TempDir())
+		recorder := newNotificationRecorder()
+		var wiring []fleetWiring
+		script := &loopScript{t: t}
+		opts := []Option{
+			recordFleetWiring(&wiring),
+			withNotifyRun(recorder.run),
+			WithNotify(on),
+		}
+		if err := runTheFleet(t, fake, dir, io.Discard, script, loopFleet(filepath.Clean(dir), "sess-row"), opts...); err != nil {
+			t.Fatalf("Fleet: %v", err)
+		}
+		if len(wiring) != 1 || wiring[0].watch == nil {
+			t.Fatalf("the fleet program's wiring is %+v, want the loop's watch", wiring)
+		}
+		return wiring[0].watch, recorder
+	}
+
+	t.Run("off, the bell still rings", func(t *testing.T) {
+		watch, recorder := runFleet(t, false)
+
+		if got := parkedNotifications(t, watch); len(got) == 0 {
+			t.Fatal("the watch passed nothing for a parked agent: the bell would not ring")
+		}
+		if names := recorder.commands(); len(names) != 0 {
+			t.Errorf("notifications off ran %v, want nothing but the bell", names)
+		}
+	})
+
+	t.Run("on by default", func(t *testing.T) {
+		watch, recorder := runFleet(t, true)
+
+		if got := parkedNotifications(t, watch); len(got) == 0 {
+			t.Fatal("the watch passed nothing for a parked agent: the bell would not ring")
+		}
+		if !systemHasNotifier {
+			// A system without a desktop notifier does nothing at all
+			// (internal/app/notify's decision 7), so there is no command to
+			// expect.
+			return
+		}
+		select {
+		case <-recorder.called:
+		case <-time.After(10 * time.Second):
+			t.Error("notifications on ran no desktop notification")
 		}
 	})
 }

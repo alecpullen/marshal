@@ -91,6 +91,11 @@ type Model struct {
 	// cannot block a program that has stopped reading its messages. It is
 	// held by pointer: Model is a value, and every copy shares one release.
 	done *quitGate
+
+	// watch is the loop's watch, which every program on the loop observes
+	// through. It is nil when the model was built without one: the Events
+	// lines are the model's own, and no notification is sent.
+	watch *Watch
 }
 
 // modal is one open modal: the question, the spawn form or the intake
@@ -197,6 +202,11 @@ func WithNotice(line string) Option {
 	return func(m *Model) { m.notice = line }
 }
 
+// WithWatch gives the fleet model the loop's watch.
+func WithWatch(w *Watch) Option {
+	return func(m *Model) { m.watch = w }
+}
+
 // New builds the fleet screen over f. It resolves the theme from the TUI config
 // (decision 13) and publishes it, so the shared chrome helpers paint with it,
 // exactly as the session screen's loadTheme does.
@@ -293,11 +303,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 	case changedMsg:
-		m.applyState()
+		bell := m.applyState()
 		// The wait is armed beside the Diff tab's reads: a state can change
 		// the agent the tab shows, or its changed-files count.
 		read := m.syncDiff()
-		return m, tea.Batch(m.waitForChange(), read)
+		return m, tea.Batch(m.waitForChange(), bell, read)
 	case tickMsg:
 		return m, tickCmd()
 	case diffReadMsg:
@@ -316,8 +326,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // applyState reads the client's state, reports what changed since the last
-// read, and re-arms the selection over the new rows.
-func (m *Model) applyState() {
+// read, and re-arms the selection over the new rows. It returns the bell
+// command when the loop's watch passed a notification: the Events lines are
+// the model's own, the notification is the watch's (decisions 4–6).
+func (m *Model) applyState() tea.Cmd {
 	prev, next := m.state, m.fleet.State()
 	m.addConnectionEvents(prev, next)
 	for _, t := range transitions(prev, next) {
@@ -326,6 +338,21 @@ func (m *Model) applyState() {
 	m.state = next
 	m.dimmed = next.Conn != acpclient.FleetConnected
 	m.reconcile()
+	return m.ring(next)
+}
+
+// ring hands the state just read to the loop's watch and rings the bell once
+// for what it passed. The state the model is seeded with is not observed: the
+// watch outlives a program, and a program that has just started must compare
+// against what the program before it read (decision 3).
+func (m Model) ring(state acpclient.FleetState) tea.Cmd {
+	if m.watch == nil {
+		return nil
+	}
+	if len(m.watch.Observe(state)) == 0 {
+		return nil
+	}
+	return tea.Raw(bell)
 }
 
 // reconcile holds the selection by ID across a rebuilt row list. A selection

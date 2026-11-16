@@ -380,7 +380,7 @@ func TestAccessPanelQueuesBehindOtherDockAndPreservesDraft(t *testing.T) {
 	if got := f.m.modeSegment(); got != "Act" {
 		t.Fatalf("mode label while the dock is owned = %q, want Act", got)
 	}
-	if got := stripANSI(f.m.statusRightSegment()); !strings.Contains(got, "Access waiting") {
+	if got := stripANSI(f.m.sessionRightSegment()); !strings.Contains(got, "Access waiting") {
 		t.Fatalf("status right segment = %q, want the queued-access disclosure", got)
 	}
 	if got := stripANSI(f.m.renderInputArea()); !strings.Contains(got, "Access request waiting") {

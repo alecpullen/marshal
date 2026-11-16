@@ -1188,8 +1188,8 @@ func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
 		if got := m.modeSegment(); got != want {
 			t.Fatalf("modeSegment = %q, want %q during approval", got, want)
 		}
-		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "approval") {
-			t.Fatalf("statusRightSegment = %q, want the approval indicator", got)
+		if got := stripANSI(m.sessionRightSegment()); !strings.Contains(got, "approval") {
+			t.Fatalf("sessionRightSegment = %q, want the approval indicator", got)
 		}
 	})
 
@@ -1199,8 +1199,8 @@ func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
 		if got := m.modeSegment(); got != want {
 			t.Fatalf("modeSegment = %q, want %q while browsing", got, want)
 		}
-		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "browse") {
-			t.Fatalf("statusRightSegment = %q, want the browse indicator", got)
+		if got := stripANSI(m.sessionRightSegment()); !strings.Contains(got, "browse") {
+			t.Fatalf("sessionRightSegment = %q, want the browse indicator", got)
 		}
 	})
 
@@ -1213,8 +1213,8 @@ func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
 		if got := m.modeSegment(); got != want {
 			t.Fatalf("modeSegment = %q, want %q while answering", got, want)
 		}
-		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "answering") {
-			t.Fatalf("statusRightSegment = %q, want the answering indicator", got)
+		if got := stripANSI(m.sessionRightSegment()); !strings.Contains(got, "answering") {
+			t.Fatalf("sessionRightSegment = %q, want the answering indicator", got)
 		}
 	})
 
@@ -1225,8 +1225,8 @@ func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
 			t.Fatalf("modeSegment = %q, want %q while editing a command", got, want)
 		}
 		// The pending decision stays visible while its command is edited.
-		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "approval") {
-			t.Fatalf("statusRightSegment = %q, want the pending-approval indicator", got)
+		if got := stripANSI(m.sessionRightSegment()); !strings.Contains(got, "approval") {
+			t.Fatalf("sessionRightSegment = %q, want the pending-approval indicator", got)
 		}
 	})
 

@@ -7,12 +7,13 @@ import (
 )
 
 // Prompt runs one turn with params.Text as the user's message. The text
-// travels as one text block, with queued and watch resume alongside it.
+// travels as one text block, with queued, images and watch resume alongside it.
 func (s *Session) Prompt(ctx context.Context, params acpwire.PromptParams) (acpwire.PromptResult, error) {
 	call := acpwire.PromptCallParams{
 		SessionID:   s.id,
 		Prompt:      []acpwire.TextBlock{{Type: "text", Text: params.Text}},
 		Queued:      params.Queued,
+		Images:      params.Images,
 		WatchResume: params.WatchResume,
 	}
 	var result acpwire.PromptResult

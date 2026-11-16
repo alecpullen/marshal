@@ -69,6 +69,7 @@ func newSession(d Deps) *Session {
 		modelCacheDir:  d.ModelCacheDir,
 		fileIndex:      d.FileIndex,
 		git:            git,
+		images:         d.Images,
 		ctx:            ctx,
 		cancel:         cancel,
 		changed:        make(chan struct{}, 1),

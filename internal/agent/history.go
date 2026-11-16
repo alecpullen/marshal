@@ -59,7 +59,7 @@ func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo sessio
 		}
 		switch m.Role {
 		case session.RoleUser:
-			cands = append(cands, candEntry{role: schema.RoleUser, content: m.Content, kind: "user"})
+			cands = append(cands, candEntry{role: schema.RoleUser, content: m.Content, kind: "user", images: m.Images})
 		case session.RoleAssistant:
 			if m.Final && !m.Salvaged {
 				if m.ToolCallCount > 0 {
@@ -132,6 +132,7 @@ func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo sessio
 				continue
 			}
 			msg := schema.ChatMessage{Role: ce.role, Content: ce.content}
+			msg.Images = ce.images
 			if ce.kind == "assistant-full" &&
 				reasoningHistory == routing.ReasoningHistoryFinalAnswers &&
 				ce.reasoning != "" {
@@ -150,6 +151,9 @@ type candEntry struct {
 	content   string
 	kind      string // "user" | "assistant-full" | "ledger" | "seed"
 	reasoning string // stored reasoning text for a full final answer
+	// images are the user message's images, replayed with it. Nil for every
+	// candidate but a user turn.
+	images []schema.ImageRef
 }
 
 // exchange is one continuous group of candEntries — from the start

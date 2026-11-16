@@ -1047,6 +1047,20 @@ func (r *Runner) commitSteeringFinal(publish func()) bool {
 // swarm) can read a role's final summary and status without re-parsing
 // the session transcript.
 func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
+	return r.RunTaskWithImages(ctx, goal, nil)
+}
+
+// RunWithImages is Run for a goal that carries images. They ride the goal
+// message, so the turn that sends them and the turn that replays them read
+// the same way.
+func (r *Runner) RunWithImages(ctx context.Context, goal string, images []schema.ImageRef) error {
+	_, err := r.RunTaskWithImages(ctx, goal, images)
+	return err
+}
+
+// RunTaskWithImages is RunTask for a goal that carries images. A route that
+// may not take them is refused before the first model call.
+func (r *Runner) RunTaskWithImages(ctx context.Context, goal string, images []schema.ImageRef) (*Task, error) {
 	// Early return for test injection: when RunTaskFunc is set, bypass the
 	// full provider loop and return the canned result directly. Must be
 	// before the defer so a nil State on the test runner does not panic.
@@ -1140,7 +1154,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// Publish the prompt before any model-backed startup work so the TUI
 	// can show it while title generation is still running. Keep the history
 	// snapshot above this insertion to avoid replaying the goal twice.
-	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
+	r.State.AddMessageWithImages(session.RoleUser, goal, session.ContentTypePlain, images)
 	// Register this turn's stop group before ANY work that can block. Title
 	// generation, provider resolution and the classify call can each sit for a
 	// long time, and a user who stops the turn during any of them must have a
@@ -1244,6 +1258,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	phases.begin("route")
 	turnProvider, turnModel, route := r.resolveRoute(ctx, task)
 	phases.end()
+	// Images are refused here, where the route is known, not in the client:
+	// the client has no router, and the refusal must name the model. An
+	// explicit vision = "on" is exempt — the user's word is final.
+	if len(images) > 0 && !route.Vision && !route.VisionForced {
+		return nil, &schema.VisionError{
+			Model:  route.Preset.Model,
+			Reason: schema.VisionReasonPresetOff,
+			Detail: fmt.Sprintf("model %s has vision off; set [models.presets.%s] vision = \"on\" or switch model", route.Preset.Model, route.Preset.Model),
+		}
+	}
 	if route.MaxOutput > 0 {
 		r.turnRequestOptions.maxTokens = intPtr(route.MaxOutput)
 	} else {

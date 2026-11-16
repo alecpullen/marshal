@@ -86,8 +86,24 @@ func (m *ControlManager) Prompt(ctx context.Context, params json.RawMessage) (an
 	return sess.Prompt(runCtx, acpwire.PromptParams{
 		Text:        strings.Join(texts, "\n\n"),
 		Queued:      p.Queued,
+		Images:      p.Images,
 		WatchResume: p.WatchResume,
 	})
+}
+
+// ImagesPut handles session/images_put: the client's image goes into the
+// session's payload store once, and the ref it returns is what a later prompt
+// attaches.
+func (m *ControlManager) ImagesPut(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.ImagesPutParams
+	if err := decodeParams(params, &p, acpwire.MethodImagesPut); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	return sess.PutImage(ctx, p)
 }
 
 // Stop handles session/stop: it stops the run in flight with the caller's
@@ -573,7 +589,7 @@ func (m *ControlManager) lookupService(sessionID string) (*service.Session, bool
 // others[method], unchanged. A method missing from others refuses such a client
 // as method-not-found.
 //
-// The fourteen methods registered unconditionally are new surface: no client had
+// The fifteen methods registered unconditionally are new surface: no client had
 // them at the plan's base, so there is no earlier behaviour to preserve and no
 // reason to gate them. Only a method that already had a handler for another
 // client goes through marshalOr: the ten below, ACP's turn, work and pipeline
@@ -593,6 +609,7 @@ func registerControls(srv *Server, controls *ControlManager, others map[string]H
 	srv.Handle(acpwire.MethodSDDPreflight, controls.SDDPreflight)
 	srv.Handle(acpwire.MethodSDDStop, controls.SDDStop)
 	srv.Handle(acpwire.MethodSDDAuthor, controls.SDDAuthor)
+	srv.Handle(acpwire.MethodImagesPut, controls.ImagesPut)
 	srv.Handle(acpwire.MethodPrompt, marshalOr(srv.marshalClient, controls.Prompt, others[acpwire.MethodPrompt]))
 	srv.Handle(acpwire.MethodSteer, marshalOr(srv.marshalClient, controls.Steer, others[acpwire.MethodSteer]))
 	srv.Handle(acpwire.MethodSetMode, marshalOr(srv.marshalClient, controls.SetMode, others[acpwire.MethodSetMode]))

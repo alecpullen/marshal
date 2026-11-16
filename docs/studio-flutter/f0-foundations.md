@@ -158,3 +158,95 @@ violation, watch the test fail, remove it.
   not, pin them to the Linux runner CI uses and say so in the test.
 - Whether Geist's glyph coverage needs a bundled fallback for symbols used
   in transcripts.
+
+## Implementation record
+
+Items 1–7 were implemented on 2026-11-17 on branch `f0-foundations`, one
+commit each. Item 8 (the spikes) is handled separately.
+
+### What was built, and how it differs from the plan
+
+- **Toolkit (1).** Flutter 3.50.0 (Dart 3.14.0) in `pubspec.yaml` and in all
+  three CI pins (`go-checks.yml`'s `app` job and both `release.yaml` app
+  jobs). `material_ui` 1.11.0 and `cupertino_ui` 1.1.6 added; the tray never
+  imported Material, so nothing in it switched. The 3.50 tool migrated the
+  macOS runner on first build (SwiftPM plugin integration, deployment target
+  10.15 → 12.0). `flutter build macos --debug` builds `Marshal.app` with
+  `LSUIElement` set; it was not launched, and the Linux runner was not
+  built (no Linux host).
+- **Boundary (2).** `test/boundary_test.dart` replaced `no_io_test.dart`.
+  It reads import and export directives, comments stripped, every branch
+  of a configurable import, with relative and `package:` URIs resolved.
+- **Tokens and fonts (3).** Geist 400/500/600 and Geist Mono 400 come from
+  the official release v1.9.2 of `vercel/geist-font`, with `OFL.txt` beside
+  them in `app/assets/fonts/`. That OFL also ships as an asset. One token
+  beyond §2 of the design system: `none`, which is transparent. It is now
+  in that table.
+- **Kit (4).** All 21 components of design-system.md §5, plus the supporting
+  pieces that §5 now lists: `EmberApp`, `Tip`, the §6 vocabulary, `Glyphs`
+  and the internal `Press`. Material is used in two places only. `EmberApp`
+  is a `MaterialApp` underneath, and `Field` is a Material `TextField`.
+  `Menu` is `RawMenuAnchor`, `Sheet` is `showGeneralDialog`, and tooltips
+  are `RawTooltip`. A sheet's barrier does not dim: §2 has no scrim token.
+- **Gallery and enforcement (5).** The gallery is `lib/src/ui/gallery/` and
+  its debug entry is `lib/gallery_main.dart`. The registry of screens is
+  `test/support/screens.dart`. **The goldens are pinned to macOS**, which
+  answers the first open question with the closest thing this host could
+  check. Drawn with Geist, they rasterize through CoreText on macOS and
+  FreeType on Linux, and no Linux host was available to generate or compare
+  them. On any other OS they are skipped with the reason, so CI's Linux job
+  does not check pixels until they are regenerated on Linux and the pin is
+  flipped. The rest of the gallery test, and the four other enforcement
+  tests, run everywhere.
+- **Agent guidance (6).** `AGENTS.md` gains "The Studio's UI".
+
+### Web build proof (7)
+
+`app/web/` was created with `flutter create --platforms=web`. It has one
+change of substance: `web/flutter_bootstrap.js` sets the engine's
+`fontFallbackBaseUrl` to the app's own `assets/fonts/fallback/`. The
+default is `https://fonts.gstatic.com/s/`.
+
+Built with:
+
+```sh
+flutter build web -t lib/gallery_main.dart --release --no-web-resources-cdn
+```
+
+`--no-web-resources-cdn` puts CanvasKit in the build (the default fetches it
+from `www.gstatic.com`) and ships the engine's Roboto fallback in
+`assets/fonts/fallback/`. The build is 41 MB on disk, of which 36 MB is the
+`canvaskit/` variants; a browser loads one of them.
+
+It was served from `build/web` by a local static server that gzips
+(level 9) and logs every request. It was loaded in headless Chrome with a
+fresh profile and `--log-net-log`.
+
+- **Hosts the page requested: only the serving host** (`127.0.0.1:8765`).
+  The net log also shows Chrome's own traffic: `clients2.google.com`
+  (clock), `accounts.google.com`, `www.google.com` and `www.gstatic.com`
+  (Safe Browsing keys). Every one of those has the initiator "not an
+  origin", meaning the browser and not the page. Every request the page
+  made carries the initiator `http://127.0.0.1:8765`.
+- **First load: 16 requests, all 200. 8,740,045 bytes uncompressed and
+  3,214,314 bytes gzip on the wire (3.07 MiB).** The two largest are
+  `canvaskit/chromium/canvaskit.wasm` (5,463,539 → 2,101,176) and
+  `main.dart.js` (2,458,171 → 726,686). The fonts are Roboto (fallback)
+  91,520 and Geist 400/500/600 with Geist Mono 400 at 249,883 together.
+  Icons are tree-shaken to 3,449 (Cupertino) and 649 (Material). Brotli
+  was not measured.
+- **The fallback base was proved.** A build with `⌘ ✓ ▸` in the gallery
+  (glyphs Geist 1.9.2 lacks) made the engine request Noto Sans Symbols 2,
+  Math, KR, SC, TC and HK. Every request went to the serving host and got
+  a 404. None went to another host, and those glyphs drew as missing.
+
+### The second open question: glyph coverage
+
+Geist 1.9.2 has `· › → − … – — ‘ ’ “ ”`. It lacks `⌘` (U+2318), `⌥`
+(U+2325), `⏎` (U+23CE), `✓` (U+2713), `✗` (U+2717), `▸` (U+25B8), `▾`
+(U+25BE) and `⋯` (U+22EF); Geist Mono has `⏎` and lacks the rest. On macOS
+and Linux the system draws those from its own fonts. On the web they now
+draw as missing rather than fetch from another host. A transcript that
+needs them (shortcut keys in tooltips, tool output) needs a bundled
+symbol fallback, chosen and licensed in the phase that first shows one
+(F3).

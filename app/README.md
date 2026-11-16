@@ -41,7 +41,17 @@ lib/src/ui/            widgets: tokens.dart, the kit in kit/, the gallery in gal
   choice.
 
 Anything under `lib/src/ui/` also follows
-[the design system](../docs/studio-flutter/design-system.md).
+[the design system](../docs/studio-flutter/design-system.md). The kit's
+gallery runs from its own entry, never from the shipped app:
+
+```sh
+flutter run -t lib/gallery_main.dart -d chrome     # or -d macos
+flutter build web -t lib/gallery_main.dart --release --no-web-resources-cdn
+```
+
+`--no-web-resources-cdn` keeps the engine in the build, and
+`web/flutter_bootstrap.js` points the engine's font fallback at the app's
+own assets, so a web build requests nothing from any other host.
 
 Two commands run it from a checkout (`flutter` must be on `PATH`):
 

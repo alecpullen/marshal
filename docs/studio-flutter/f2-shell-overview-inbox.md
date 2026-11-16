@@ -233,6 +233,11 @@ test (no CMake/GTK3 development headers, no display).
   `deduplicatesAllPages` (F2's model has no all-pages list), the sub-route and
   query matching (a place is an exact path, and `parsePlace` ignores a query),
   and the roadmap destinations themselves (not F2's sidebar).
+- **Why that list is here and not in the commit.** Plan task 1.4 asked for it
+  in the pull request's commit message. The list lives in this record instead:
+  task 1's commit has landed and its message is history, and rewriting a
+  landed commit only to move a note into it would cost more than it explains.
+  The record is where the list is kept current.
 
 ### Blocked on the wire, not on time
 

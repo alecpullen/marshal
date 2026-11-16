@@ -7,7 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
+	"marshal/internal/app/notify"
 	"marshal/internal/app/tui"
 	"marshal/internal/app/tui/fleet"
 	"marshal/internal/daemon"
@@ -242,11 +245,17 @@ type daemonLoop struct {
 	home   string
 	logger *slog.Logger
 
-	// fleetClient is the loop's fleet client, built on the first fleet step
-	// and kept for the rest of the loop (decision 7). built is the one the
-	// loop made, which it alone closes; an injected client is the test's.
+	// fleetClient is the loop's fleet client, created when the loop starts and
+	// kept for its whole life (decision 8): every session screen counts with
+	// it, so a plain `marshal` shows the count from its first frame. built is
+	// the one the loop made, which it alone closes; an injected client is the
+	// test's.
 	fleetClient acpclient.Fleet
 	built       *fleetclient.Client
+	// watch is the loop's notification watch, created when the first fleet
+	// program runs and handed to every program after it (decision 8). It is
+	// nil until then, so a loop that never opens the fleet never notifies.
+	watch *fleet.Watch
 	// fleetRan reports whether the fleet program has run in this loop.
 	fleetRan bool
 
@@ -256,6 +265,10 @@ type daemonLoop struct {
 
 // run runs the steps until one ends the loop, and returns why it did.
 func (l *daemonLoop) run(ctx context.Context, first daemonStep) error {
+	// Decision 8: the fleet client starts with the loop, not with the fleet
+	// program, so a plain `marshal`'s session screen has the count from the
+	// start. The loop closes the client it made, and only that one.
+	l.fleetClientFor(ctx)
 	defer func() {
 		if l.built != nil {
 			_ = l.built.Close()
@@ -280,15 +293,19 @@ func (l *daemonLoop) run(ctx context.Context, first daemonStep) error {
 // fleetStep runs the fleet screen and reports the session it opened. The zero
 // target ends the loop with the program's error.
 func (l *daemonLoop) fleetStep(ctx context.Context, step daemonStep) (*daemonStep, error) {
+	watch := l.watchFor()
 	opts := []fleet.Option{
 		fleet.WithTUIConfig(l.tuiConfig()),
 		fleet.WithSelected(step.selected),
+		fleet.WithWatch(watch),
 	}
 	if step.notice != "" {
 		opts = append(opts, fleet.WithNotice(step.notice))
 	}
 
-	result := l.opts.programRunner(ctx, fleet.New(l.fleetClientFor(ctx), opts...), l.stdout)
+	client := l.fleetClientFor(ctx)
+	l.sawFleetWiring(client, watch)
+	result := l.opts.programRunner(ctx, fleet.New(client, opts...), l.stdout)
 	l.fleetRan = true
 
 	switch target := result.Open; {
@@ -348,6 +365,11 @@ func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonS
 	}()
 
 	tuiOpts := daemonTUIOptions(ctx, conn, step.root, l.home, l.logger)
+	// Decision 8: every daemon session screen counts with the loop's fleet
+	// client, and gets the watch once the fleet has run. The watch is nil
+	// before that, so a plain `marshal` counts without notifying.
+	tuiOpts = append(tuiOpts, tui.WithFleet(l.fleetClient, l.watch))
+	l.sawFleetWiring(l.fleetClient, l.watch)
 	if step.agentID != "" {
 		tuiOpts = append(tuiOpts, tui.WithAgentSession(step.agentID, step.agentName))
 	}
@@ -402,7 +424,8 @@ func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonS
 }
 
 // fleetClientFor is the loop's fleet client: the injected one as it is, else
-// one built for the socket the first time the loop needs it (decision 7).
+// one built for the socket the first time the loop needs it (decision 7). The
+// loop asks on its first step, so its client outlives every screen it shows.
 func (l *daemonLoop) fleetClientFor(ctx context.Context) acpclient.Fleet {
 	if l.fleetClient != nil {
 		return l.fleetClient
@@ -412,6 +435,45 @@ func (l *daemonLoop) fleetClientFor(ctx context.Context) acpclient.Fleet {
 	l.built = built
 	l.fleetClient = built
 	return built
+}
+
+// watchFor is the loop's watch, created with the first fleet program and kept
+// for the rest of the loop (decision 8): notifications run wherever the fleet
+// is open, and every program after it rings the bell through the same watch.
+func (l *daemonLoop) watchFor() *fleet.Watch {
+	if l.watch == nil {
+		l.watch = fleet.NewWatch(l.opts.notifier(l.logger), time.Now)
+	}
+	return l.watch
+}
+
+// sawFleetWiring hands the test what a program was given. Production has no
+// hook, and the call is a no-op.
+func (l *daemonLoop) sawFleetWiring(client acpclient.Fleet, watch *fleet.Watch) {
+	if l.opts.onFleetWiring != nil {
+		l.opts.onFleetWiring(client, watch)
+	}
+}
+
+// notifier is the watch's notifier: the system's when notifications are on,
+// and nil when they are off, so the bell still rings and nothing else happens
+// (decision 8).
+func (o *options) notifier(log *slog.Logger) fleet.Notifier {
+	if o.notifyOff {
+		return nil
+	}
+	run := o.notifyRun
+	if run == nil {
+		run = runNotificationCommand
+	}
+	return notify.New(runtime.GOOS, run, log)
+}
+
+// runNotificationCommand runs a desktop notification's program. The side
+// effect is launch's, not the TUI's (decision 6); internal/app/notify bounds it
+// and runs it off the watch's path.
+func runNotificationCommand(ctx context.Context, name string, args ...string) error {
+	return exec.CommandContext(ctx, name, args...).Run()
 }
 
 // tuiConfig is the user's [tui] config, read once for the loop: decision 13's

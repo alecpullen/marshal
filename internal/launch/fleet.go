@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"marshal/internal/acpclient"
+	"marshal/internal/app/tui/fleet"
 )
 
 // withFleetClient replaces the client built for the socket; tests inject it.
@@ -19,6 +20,18 @@ func withFleetClient(f acpclient.Fleet) Option {
 		}
 		o.fleetClient = f
 	}
+}
+
+// withFleetWiring sees the fleet client and watch each program is given; tests
+// read what the loop wired without driving a real program.
+func withFleetWiring(fn func(client acpclient.Fleet, watch *fleet.Watch)) Option {
+	return func(o *options) { o.onFleetWiring = fn }
+}
+
+// withNotifyRun replaces the command runner the desktop notifier uses, so no
+// test spawns a real osascript or notify-send.
+func withNotifyRun(run func(ctx context.Context, name string, args ...string) error) Option {
+	return func(o *options) { o.notifyRun = run }
 }
 
 // Fleet runs the fleet screen on the local daemon at socket (P5 F4). It fails,

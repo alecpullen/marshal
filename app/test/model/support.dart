@@ -73,6 +73,7 @@ class ModelFixture {
     required this.registry,
     required this.store,
     required this.clock,
+    required this.clients,
   });
 
   /// One fake bridge per host, by host name.
@@ -84,6 +85,13 @@ class ModelFixture {
   final HostRegistry registry;
   final FleetStore store;
   final FixtureClock clock;
+
+  /// The client that reaches each host, by host name: what a model that
+  /// writes (an answer, a spawn) posts through.
+  final Map<String, BridgeClient> clients;
+
+  /// The client for [host].
+  BridgeClient clientFor(String host) => clients[host]!;
 
   /// Starts the fixture: one bridge per host, the snapshot routes they
   /// answer with, and a store over the hosts discovery finds.
@@ -176,6 +184,7 @@ class ModelFixture {
       registry: registry,
       store: store,
       clock: clock,
+      clients: clients,
     );
     addTearDown(() async {
       store.dispose();

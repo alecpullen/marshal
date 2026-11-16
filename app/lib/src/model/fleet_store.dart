@@ -110,7 +110,7 @@ class FleetStore extends ChangeNotifier {
       notifyListeners();
     } catch (error) {
       if (_disposed || generation != state.generation) return;
-      state.failure = _describe(error);
+      state.failure = describeFailure(error);
       notifyListeners();
     }
   }
@@ -160,24 +160,6 @@ class FleetStore extends ChangeNotifier {
     } catch (_) {
       return state.budgets;
     }
-  }
-
-  /// The failure in words: the bridge's own when it sent some.
-  static String _describe(Object error) {
-    if (error is! BridgeFailure) return error.toString();
-    // The bridge answers `{"error": "…"}`; a screen says the words, not the
-    // JSON they are wrapped in (design-system.md §7: in plain words).
-    final message = error.message;
-    try {
-      final decoded = jsonDecode(message);
-      if (decoded is Map<String, dynamic>) {
-        final detail = decoded['error'];
-        if (detail is String && detail.trim().isNotEmpty) return detail.trim();
-      }
-    } catch (_) {
-      // Not JSON: the body is the message.
-    }
-    return message;
   }
 
   /// The host's state, created empty on first use.
@@ -497,6 +479,26 @@ class _HostWiring {
     final listen = this.listen;
     if (listen != null) state.removeListener(listen);
   }
+}
+
+/// What went wrong, in the bridge's own words.
+///
+/// The bridge answers `{"error": "…"}`; a screen says the words, not the JSON
+/// they are wrapped in (design-system.md §7: in plain words). Anything else is
+/// its own message.
+String describeFailure(Object error) {
+  if (error is! BridgeFailure) return error.toString();
+  final message = error.message;
+  try {
+    final decoded = jsonDecode(message);
+    if (decoded is Map<String, dynamic>) {
+      final detail = decoded['error'];
+      if (detail is String && detail.trim().isNotEmpty) return detail.trim();
+    }
+  } catch (_) {
+    // Not JSON: the body is the message.
+  }
+  return message;
 }
 
 /// One host as a view lists it: its name, which kind of bridge it is, and

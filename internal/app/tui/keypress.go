@@ -293,6 +293,27 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	case "alt+e":
 		m.cycleEffort()
 		return *m, nil, true
+	case "alt+r":
+		// Send anyway: a prompt refused because the route cannot see images
+		// goes out once more, with the override recorded, carrying the same
+		// text and the same refs. The key is armed for one prompt only, and
+		// an edited composer is a different draft.
+		d := m.visionDraft
+		if d == nil || !d.armed || !m.visionDraftIntact(d) {
+			m.visionDraft = nil
+			return *m, nil, true
+		}
+		if err := m.sess.ForceVision(m.ctx, d.provider, d.model); err != nil {
+			m.note("Could not record the vision override: " + err.Error())
+			m.refreshViewport()
+			return *m, nil, true
+		}
+		m.visionDraft = nil
+		m.resetInput()
+		m.images = nil
+		m.updateViewportHeight()
+		m.viewportFollow = true
+		return *m, m.submitLine(d.text, d.images), true
 	case "alt+shift+m":
 		m.cycleModel(false)
 		return *m, nil, true
@@ -350,6 +371,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// The image chips describe the draft, not the message: their refs are
 		// carried beside the text, so the chip text comes out of the line.
 		images := append([]acpwire.PromptImage(nil), m.images...)
+		line := value
 		if len(images) > 0 {
 			value = stripImageChips(value)
 		}
@@ -366,6 +388,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if value == "" && len(images) == 0 && !m.busy {
 			if followUp, ok := m.popOldestSteering(); ok {
 				value = followUp
+				line = followUp
 			} else {
 				return *m, nil, true
 			}
@@ -373,6 +396,10 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if value == "" && len(images) == 0 {
 			return *m, nil, true
 		}
+		// The draft is what a vision refusal gives back and what send-anyway
+		// resends. A new prompt replaces it, so an armed override never
+		// carries another prompt's text.
+		m.visionDraft = &visionDraft{line: line, text: value, images: images}
 		m.resetInput()
 		m.images = nil
 		m.completionSuppressed = false

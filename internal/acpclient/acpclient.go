@@ -470,6 +470,13 @@ type Session interface {
 	// ACP: session/images_put (exists).
 	ImagesPut(ctx context.Context, sessionID string, data []byte, label string) (acpwire.PromptImage, error)
 
+	// ForceVision records the user's send-anyway answer after a prompt was
+	// refused with CodeVisionUnsupported: images go to provider/model for the
+	// rest of the session, without a config change.
+	//
+	// ACP: session/vision_force (exists).
+	ForceVision(ctx context.Context, provider, model string) error
+
 	// Stop stops the session's run: the commands attached to it first, then
 	// the run itself. With nothing running it does nothing.
 	//

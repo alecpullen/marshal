@@ -106,6 +106,23 @@ func (m *ControlManager) ImagesPut(ctx context.Context, params json.RawMessage) 
 	return sess.PutImage(ctx, p)
 }
 
+// ForceVision handles session/vision_force: the user's send-anyway answer after
+// a vision refusal covers this provider and model for the session.
+func (m *ControlManager) ForceVision(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.VisionForceParams
+	if err := decodeParams(params, &p, acpwire.MethodVisionForce); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := sess.ForceVision(ctx, p.Provider, p.Model); err != nil {
+		return nil, err
+	}
+	return struct{}{}, nil
+}
+
 // Stop handles session/stop: it stops the run in flight with the caller's
 // cause. session/cancel stays a notification for other clients.
 func (m *ControlManager) Stop(ctx context.Context, params json.RawMessage) (any, error) {
@@ -610,6 +627,7 @@ func registerControls(srv *Server, controls *ControlManager, others map[string]H
 	srv.Handle(acpwire.MethodSDDStop, controls.SDDStop)
 	srv.Handle(acpwire.MethodSDDAuthor, controls.SDDAuthor)
 	srv.Handle(acpwire.MethodImagesPut, controls.ImagesPut)
+	srv.Handle(acpwire.MethodVisionForce, controls.ForceVision)
 	srv.Handle(acpwire.MethodPrompt, marshalOr(srv.marshalClient, controls.Prompt, others[acpwire.MethodPrompt]))
 	srv.Handle(acpwire.MethodSteer, marshalOr(srv.marshalClient, controls.Steer, others[acpwire.MethodSteer]))
 	srv.Handle(acpwire.MethodSetMode, marshalOr(srv.marshalClient, controls.SetMode, others[acpwire.MethodSetMode]))

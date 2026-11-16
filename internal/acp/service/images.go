@@ -16,11 +16,13 @@ import (
 var errNoImages = &acpwire.Error{Code: acpwire.CodeNoRunner, Message: "inproc: no image store"}
 
 // errImageRunner is the refusal of a prompt carrying images on a runner that
-// has no image-carrying run. It is worded like the route's own refusal, so the
-// fix the user is offered is the same one.
+// has no image-carrying run. It deliberately does not offer the vision
+// setting as the fix: a runner that cannot carry images is not made able by
+// turning vision on, and naming that setting would send the user to a change
+// that does nothing.
 var errImageRunner = &acpwire.Error{
 	Code:    acpwire.CodeVisionUnsupported,
-	Message: "this session's runner cannot carry images: model has vision off; set vision = \"on\" or switch model",
+	Message: "this session's runner cannot carry images",
 }
 
 // PutImage stores the image a client uploaded and returns its ref, which the
@@ -70,12 +72,21 @@ func (s *Session) promptImages(ctx context.Context, in []acpwire.PromptImage) ([
 	}
 	out := make([]schema.ImageRef, 0, len(in))
 	for _, p := range in {
-		if _, ok, err := s.images.Stat(ctx, p.Hash); err != nil {
+		stored, ok, err := s.images.Stat(ctx, p.Hash)
+		if err != nil {
 			return nil, err
-		} else if !ok {
+		}
+		if !ok {
 			return nil, fmt.Errorf("image %s is not in the store", p.Hash)
 		}
-		out = append(out, imageRefOf(p))
+		// The store is the truth about the bytes. A client ref can name a
+		// hash while understating its dimensions, and the token estimator
+		// reads them; the client's label is the one thing worth keeping,
+		// because that is the user's own name for the picture.
+		if p.Label != "" {
+			stored.Label = p.Label
+		}
+		out = append(out, stored)
 	}
 	return out, nil
 }

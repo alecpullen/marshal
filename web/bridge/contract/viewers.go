@@ -34,9 +34,11 @@ package contract
 //   - notes (session/note, session/notice_set, session/notice_clear,
 //     session/notice_dismiss): a session's transcript keeps what the screen
 //     writes into it;
-//   - images (session/images_put): the screen pastes or uploads a picture into
-//     the session it is watching. The bytes land in the agent's own store,
-//     which the container holds; nothing about the write reaches the host.
+//   - images (session/images_put, session/vision_force): the screen pastes or
+//     uploads a picture into the session it is watching, and answers a refusal
+//     with "send anyway". The bytes land in the agent's own store, which the
+//     container holds, and the override is the session's own memory; nothing
+//     about either reaches the host.
 //
 // A method that is not here is refused: every Host method and with it every
 // config/ and trust/ method, the lifecycle and the ending, credentials and
@@ -106,6 +108,7 @@ var ContainerViewerMethods = []string{
 	"session/swarm_start",
 	"session/sync",
 	"session/verify_proposal",
+	"session/vision_force",
 	"session/watch_resume_take",
 	"session/work_inspect",
 	"session/work_list",

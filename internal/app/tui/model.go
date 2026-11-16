@@ -591,6 +591,11 @@ type Model struct {
 	// the refs are what a prompt sends. They are cleared with the input.
 	images []acpwire.PromptImage
 
+	// visionDraft is the prompt the last submit sent. A vision refusal puts it
+	// back in the composer and, when the session has an active route, arms the
+	// send-anyway key for it. A new prompt replaces it.
+	visionDraft *visionDraft
+
 	// imageReader reads the local clipboard for Ctrl+V. Nil means the local
 	// clipboard executable (clipboard.LocalImageReader).
 	imageReader clipboard.Reader
@@ -5375,6 +5380,19 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// suggestionCmd is the Phase 2 LLM fallback returned by computeSuggestion
 	// on the success path; nil otherwise.
 	var suggestionCmd tea.Cmd
+	// A prompt refused because the route cannot see images is the user's draft,
+	// not a failed run: the composer gets its text and chips back and the
+	// notice names the cause and the fix. The active route arms send-anyway.
+	if acpclient.IsCode(msg.err, acpwire.CodeVisionUnsupported) {
+		m.busy = false
+		m.turnStartedAt = time.Time{}
+		m.agentCancel = nil
+		m.cancelling = false
+		m.restoreVisionDraft(msg.err)
+		m.updateViewportHeight()
+		m.refreshViewport()
+		return m.afterRun(msg.err, msg.followed, nil)
+	}
 	// A run the session refused never started: no work is registered, no turn
 	// ran, and the model goes idle exactly as a finished turn does. The note
 	// names what refused it.

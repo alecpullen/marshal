@@ -1163,9 +1163,9 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// router reads them to take images off a route, the runner writes them
 	// when a provider rejects image input. One copy, so a rejection learned
 	// this turn is the same fact the next turn's route resolves against.
-	visionOverrides := modelcache.CapabilityOverrides{Rejections: map[string]modelcache.Rejection{}}
+	visionOverrides := modelcache.NewRegistry(modelcache.CapabilityOverrides{Rejections: map[string]modelcache.Rejection{}})
 	if dataDir != "" {
-		visionOverrides = modelcache.LoadOverrides(dataDir)
+		visionOverrides = modelcache.NewRegistry(modelcache.LoadOverrides(dataDir))
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
 	// No probe: no model-list vision signal exists yet, so the ladder falls
@@ -1257,9 +1257,15 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	runner.MetricsObserver = recorder
 	runner.Pricing = parentPricing
 
-	// The same override copy the router above reads: a learned rejection
-	// recorded here is what the next turn's route resolution sees.
-	runner.VisionOverrides = &visionOverrides
+	// The same override registry the router above reads: a learned rejection
+	// recorded here is what the next turn's route resolution sees, and its
+	// lock is what keeps a background child's route read from racing this
+	// runner's write.
+	runner.VisionOverrides = visionOverrides
+	// The request gate drops a ref whose bytes the store no longer holds, so
+	// a transcript replayed after a sweep degrades to text instead of failing
+	// every turn at encode time.
+	runner.ImageSource = images
 	if dataDir != "" {
 		runner.SaveVisionOverrides = func(o modelcache.CapabilityOverrides) error {
 			return modelcache.SaveOverrides(dataDir, o)

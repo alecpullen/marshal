@@ -340,8 +340,10 @@ type Runner struct {
 	// VisionOverrides is the shared record of which provider/model pairs
 	// refused image input. The router reads it to take images off a route;
 	// this runner writes it when a rejection is observed. Both sides hold
-	// the same copy, loaded once where the runtime is built.
-	VisionOverrides *modelcache.CapabilityOverrides
+	// the same registry, loaded once where the runtime is built, and its
+	// lock is what lets a background child resolve a route while this
+	// runner learns a rejection.
+	VisionOverrides *modelcache.Registry
 	// SaveVisionOverrides persists VisionOverrides after a learned
 	// rejection. Nil (tests, headless paths) means "learn without saving".
 	SaveVisionOverrides func(modelcache.CapabilityOverrides) error
@@ -349,6 +351,11 @@ type Runner struct {
 	// rejection record. Nil records "": a repointed endpoint then keeps
 	// the learned rejection, which is the harmless direction.
 	ProviderConfigHash func(providerName string) string
+	// ImageSource resolves the refs this runner puts on the wire. Nil means
+	// this runner cannot carry images: encoders fail loudly on a ref rather
+	// than silently sending text only. The runtime's payload store satisfies
+	// it, and the request gate also asks it which refs still exist.
+	ImageSource schema.ImageSource
 
 	// clampNoticeKey identifies the clamp currently bannered, so a changed
 	// route or a different clamp re-notices while an unchanged clamp does not
@@ -1306,16 +1313,10 @@ func (r *Runner) RunTaskWithImages(ctx context.Context, goal string, images []sc
 	turnProvider, turnModel, route := r.resolveRoute(ctx, task)
 	phases.end()
 	// Images are refused here, where the route is known, not in the client:
-	// the client has no router, and the refusal must name the model. An
-	// explicit vision = "on" is exempt — the user's word is final — and so
-	// is this session's send-anyway answer for the same model: the user has
-	// already been told the model looks blind and chose to try anyway.
-	if len(images) > 0 && !route.Vision && !route.VisionForced &&
-		!r.State.VisionForced(route.Preset.Provider, route.Preset.Model) {
-		return nil, &schema.VisionError{
-			Model:  route.Preset.Model,
-			Reason: schema.VisionReasonPresetOff,
-			Detail: fmt.Sprintf("model %s has vision off; set [models.presets.%s] vision = \"on\" or switch model", route.Preset.Model, route.Preset.Model),
+	// the client has no router, and the refusal must name the model.
+	if len(images) > 0 {
+		if refusal := r.visionRefusal(route); refusal != nil {
+			return nil, refusal
 		}
 	}
 	if route.MaxOutput > 0 {
@@ -1348,9 +1349,11 @@ func (r *Runner) RunTaskWithImages(ctx context.Context, goal string, images []sc
 	if r.TemperatureOverride != nil {
 		r.turnRequestOptions.temperature = r.TemperatureOverride
 	}
-	// An explicit vision = "on" makes the provider's own refusal the answer:
-	// the retry-without-images path is what would hide it.
-	r.turnRequestOptions.visionForced = route.VisionForced
+	// An explicit vision = "on" (or this session's send-anyway answer for the
+	// same model) makes the provider's own refusal the answer: the
+	// retry-without-images path is what would hide the override. The pre-turn
+	// refusal above honours both, so the retry must too.
+	r.beginTurnVision(route)
 	defer func() {
 		r.turnRequestOptions = turnRequestOptions{}
 		r.semTracker = nil
@@ -1683,25 +1686,25 @@ func (r *Runner) RunTaskWithImages(ctx context.Context, goal string, images []sc
 				// file. Pruning before summarizing is cheaper, preserves the
 				// most recent copy, and often drops us back below the
 				// threshold without needing the LLM at all.
-				if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 {
-					// Images cost far more than the summary line that
-					// stands in for them, so shed them here too — only ever
-					// on this side of the overflow gate.
-					shedMsgs, shed := shedImages(prunedMsgs, turnThreshold)
-					if r.calibratedEstimate(r.withWorkingState(shedMsgs)) <= turnThreshold {
-						messages = shedMsgs
-						r.State.Logger().Info("context pruning recovered window", "pruned_outputs", n, "shed_images", shed)
-						// Pruning drops stale tool output to stay under the
-						// budget. Say so: dropped context that leaves no trace
-						// reads to the user as the model losing track.
-						r.State.AddMessage(session.RoleSystem,
-							fmt.Sprintf("Pruned %d stale tool result(s) to stay within the context budget.", n),
-							session.ContentTypeCompaction)
-						continue
+				//
+				// Images are shed in the same step and on the same terms.
+				// shedImages is a no-op under budget, so gating the pair on
+				// the prune count would skip the one overflow it is the only
+				// remedy for: an images-only wire has no stale output to
+				// prune.
+				shrunkMsgs, pruned, shed := shrinkOverflowWire(messages, turnThreshold)
+				if pruned > 0 || shed > 0 {
+					messages = shrunkMsgs
+				}
+				if r.calibratedEstimate(r.withWorkingState(messages)) <= turnThreshold {
+					r.State.Logger().Info("context pruning recovered window", "pruned_outputs", pruned, "shed_images", shed)
+					// Pruning drops context to stay under the budget. Say so:
+					// dropped context that leaves no trace reads to the user
+					// as the model losing track.
+					if notice := overflowDropNotice(pruned, shed, "to stay within the context budget"); notice != "" {
+						r.State.AddMessage(session.RoleSystem, notice, session.ContentTypeCompaction)
 					}
-					// Pruning helped but not enough — keep the pruned wire
-					// and proceed to compaction. The freshest reads survive.
-					messages = shedMsgs
+					continue
 				}
 
 				// T13: unified intra-turn compaction — rollover when enabled,

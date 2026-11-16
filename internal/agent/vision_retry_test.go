@@ -75,11 +75,11 @@ func joinContents(msgs []schema.ChatMessage) string {
 }
 
 // visionRunner builds a runner with the override wiring a real runtime has.
-func visionRunner(t *testing.T, p provider.Provider) (*Runner, *modelcache.CapabilityOverrides, *modelcache.CapabilityOverrides) {
+func visionRunner(t *testing.T, p provider.Provider) (*Runner, *modelcache.Registry, *modelcache.CapabilityOverrides) {
 	t.Helper()
 	state := newTestState(t)
 	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	live := &modelcache.CapabilityOverrides{Rejections: map[string]modelcache.Rejection{}}
+	live := modelcache.NewRegistry(modelcache.CapabilityOverrides{Rejections: map[string]modelcache.Rejection{}})
 	saved := &modelcache.CapabilityOverrides{Rejections: map[string]modelcache.Rejection{}}
 	r.VisionOverrides = live
 	r.SaveVisionOverrides = func(o modelcache.CapabilityOverrides) error {
@@ -181,7 +181,7 @@ func TestRetryOnceOnVisionRejection(t *testing.T) {
 	}
 
 	key := "vision-fake/test-model"
-	rec, ok := live.Rejections[key]
+	rec, ok := live.Snapshot().Rejections[key]
 	if !ok {
 		t.Fatalf("rejection for %q not recorded", key)
 	}
@@ -206,8 +206,8 @@ func TestNoRetryForSizeRejection(t *testing.T) {
 	if p.calls != 1 {
 		t.Fatalf("a size rejection must not retry, got %d calls", p.calls)
 	}
-	if len(live.Rejections) != 0 || len(saved.Rejections) != 0 {
-		t.Fatalf("a size rejection must not be learned: live=%v saved=%v", live.Rejections, saved.Rejections)
+	if len(live.Snapshot().Rejections) != 0 || len(saved.Rejections) != 0 {
+		t.Fatalf("a size rejection must not be learned: live=%v saved=%v", live.Snapshot().Rejections, saved.Rejections)
 	}
 }
 
@@ -226,8 +226,8 @@ func TestNoRetryWhenForced(t *testing.T) {
 	if p.calls != 1 {
 		t.Fatalf("a forced route must not retry, got %d calls", p.calls)
 	}
-	if len(live.Rejections) != 0 || len(saved.Rejections) != 0 {
-		t.Fatalf("a forced route must not learn: live=%v saved=%v", live.Rejections, saved.Rejections)
+	if len(live.Snapshot().Rejections) != 0 || len(saved.Rejections) != 0 {
+		t.Fatalf("a forced route must not learn: live=%v saved=%v", live.Snapshot().Rejections, saved.Rejections)
 	}
 }
 
@@ -243,8 +243,8 @@ func TestNoPersistWhenRetryAlsoFails(t *testing.T) {
 	if p.calls != 2 {
 		t.Fatalf("expected one retry attempt (2 calls), got %d", p.calls)
 	}
-	if len(live.Rejections) != 0 || len(saved.Rejections) != 0 {
-		t.Fatalf("a failed retry must not persist: live=%v saved=%v", live.Rejections, saved.Rejections)
+	if len(live.Snapshot().Rejections) != 0 || len(saved.Rejections) != 0 {
+		t.Fatalf("a failed retry must not persist: live=%v saved=%v", live.Snapshot().Rejections, saved.Rejections)
 	}
 	for _, m := range r.State.Messages() {
 		if m.Content == "the model rejected image input; resent without images" {

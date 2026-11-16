@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -46,6 +47,76 @@ func (o CapabilityOverrides) VisionRejected(provider, model, configHash string, 
 		return false
 	}
 	return true
+}
+
+// Registry is the concurrency-safe holder of CapabilityOverrides. The runtime
+// shares one value between the router, which reads it while resolving a
+// route, and the runners, which write it when a provider rejects an image.
+// Those happen on different goroutines — a background subagent resolves its
+// route while the parent records a rejection — and an unguarded map write
+// there is a fatal "concurrent map read and map write", not a race the
+// detector gets to report.
+//
+// The lock lives here rather than inside CapabilityOverrides because that
+// type is copied by value: the router's read and SaveOverrides both want a
+// plain snapshot.
+type Registry struct {
+	mu sync.RWMutex
+	o  CapabilityOverrides
+}
+
+// NewRegistry wraps loaded overrides for sharing.
+func NewRegistry(o CapabilityOverrides) *Registry {
+	if o.Rejections == nil {
+		o.Rejections = map[string]Rejection{}
+	}
+	return &Registry{o: o}
+}
+
+// VisionRejected reports whether provider/model is recorded as refusing
+// image input, under the same ttl and config-hash rules as the value type.
+func (r *Registry) VisionRejected(providerName, model, configHash string, ttl time.Duration, now time.Time) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.o.VisionRejected(providerName, model, configHash, ttl, now)
+}
+
+// Rejection returns the raw record for provider/model, if one exists. It
+// ignores the ttl: callers that need a live fact ask VisionRejected first and
+// use this only to name the observation behind it.
+func (r *Registry) Rejection(providerName, model string) (Rejection, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	rec, ok := r.o.Rejections[providerName+"/"+model]
+	return rec, ok
+}
+
+// Record notes one observed refusal and returns a snapshot to persist. The
+// snapshot is taken under the same lock as the write, so a concurrent
+// SaveOverrides can never marshal a half-applied map.
+func (r *Registry) Record(providerName, model, configHash string, now time.Time) CapabilityOverrides {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.o.Rejections == nil {
+		r.o.Rejections = map[string]Rejection{}
+	}
+	r.o.Rejections[providerName+"/"+model] = Rejection{ObservedAt: now.UTC(), ConfigHash: configHash}
+	return r.SnapshotLocked()
+}
+
+// Snapshot returns a copy of the recorded overrides.
+func (r *Registry) Snapshot() CapabilityOverrides {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.SnapshotLocked()
+}
+
+func (r *Registry) SnapshotLocked() CapabilityOverrides {
+	out := CapabilityOverrides{Rejections: make(map[string]Rejection, len(r.o.Rejections))}
+	for k, v := range r.o.Rejections {
+		out.Rejections[k] = v
+	}
+	return out
 }
 
 // LoadOverrides reads the overrides file. Every failure mode yields empty

@@ -16,7 +16,7 @@ const _enoent = 2;
 /// other file is pure Dart, so the menu and the models are tested without a
 /// process, a socket or a display.
 class DaemonCli {
-  DaemonCli({String? binary}) : _binary = binary;
+  DaemonCli({this._binary});
 
   final String? _binary;
 
@@ -43,11 +43,7 @@ class DaemonCli {
   /// binary said nothing or when its output is not a document this app
   /// speaks.
   Future<DaemonStatus> status() async {
-    final result = await _spawn(const [
-      'daemon',
-      'status',
-      '--json',
-    ]);
+    final result = await _spawn(const ['daemon', 'status', '--json']);
     final out = (result.stdout as String).trim();
     if (out.isEmpty) {
       final err = (result.stderr as String).trim();
@@ -103,7 +99,8 @@ class DaemonCli {
   /// `~/.local/share/marshal`, in the same order the daemon resolves it.
   String get logPath {
     final env = Platform.environment;
-    final data = env['MARSHAL_DATA_DIR'] ??
+    final data =
+        env['MARSHAL_DATA_DIR'] ??
         (env['XDG_DATA_HOME'] != null
             ? '${env['XDG_DATA_HOME']}/marshal'
             : '${env['HOME'] ?? ''}/.local/share/marshal');

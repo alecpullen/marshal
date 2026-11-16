@@ -15,8 +15,11 @@ void main() {
 
   test('only cli.dart imports dart:io', () {
     final lib = Directory('lib');
-    expect(lib.existsSync(), isTrue,
-        reason: 'run this from the app directory: lib/ was not found');
+    expect(
+      lib.existsSync(),
+      isTrue,
+      reason: 'run this from the app directory: lib/ was not found',
+    );
 
     final offenders = <String>[];
     for (final entity in lib.listSync(recursive: true)) {
@@ -31,7 +34,8 @@ void main() {
     expect(
       offenders,
       isEmpty,
-      reason: 'dart:io belongs only in $allowed; these files import it: '
+      reason:
+          'dart:io belongs only in $allowed; these files import it: '
           '${offenders.join(', ')}',
     );
   });
@@ -39,7 +43,10 @@ void main() {
   test('cli.dart is where the exemption points', () {
     // Without this, renaming or deleting the one file the rule exempts would
     // turn the test above into a no-op that still passes.
-    expect(File(allowed).existsSync(), isTrue,
-        reason: '$allowed is the one file allowed dart:io; it has moved');
+    expect(
+      File(allowed).existsSync(),
+      isTrue,
+      reason: '$allowed is the one file allowed dart:io; it has moved',
+    );
   });
 }

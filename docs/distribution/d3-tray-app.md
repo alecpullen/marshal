@@ -269,6 +269,10 @@ compiled on this machine.
   release jobs pin it rather than a floating channel, because a Flutter
   upgrade changes both the analyzer's rules and `dart format`'s output and
   neither should arrive on a branch that did not touch the app.
+  **Superseded by F0 of the Studio programme**
+  ([`f0-foundations.md`](../studio-flutter/f0-foundations.md)): the app and
+  all three pins moved to Flutter **3.50.0** (Dart 3.14.0), with Material and
+  Cupertino from the `material_ui` and `cupertino_ui` packages.
 - `tray_manager` **0.5.3**, `launch_at_startup` **0.5.1**,
   `flutter_lints` **4.0.0**, all locked in `app/pubspec.lock`. The plan's
   floors (0.2.4 / 0.3.3 / 4.0.0) were superseded by what `flutter pub add`

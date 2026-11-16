@@ -123,6 +123,44 @@ func runSubagentChild(ctx context.Context, child *Runner, prompt string) (summar
 	return task.Summary, task.SalvagedReason, err
 }
 
+// subagentReportImages takes the child's most recent image-bearing tool
+// result and labels every ref with the child that produced it, so the parent
+// reads "snapshotter: screenshot of /tmp/ui.png" rather than an unattributed
+// picture in the middle of its own conversation.
+//
+// The name is the one the parent's transcript already uses for this child —
+// its description — falling back to the named custom agent when no
+// description was given. A ref that carries no label of its own is labelled
+// with the name alone.
+func subagentReportImages(args agentRunArgs, child *Runner) []schema.ImageRef {
+	if child == nil {
+		return nil
+	}
+	refs := child.TakeToolImages()
+	if len(refs) == 0 {
+		return nil
+	}
+	name := args.Description
+	if name == "" {
+		name = args.Agent
+	}
+	// Copy before relabelling: the refs are the child's, and the report must
+	// not rewrite what the child's own transcript recorded.
+	out := make([]schema.ImageRef, len(refs))
+	copy(out, refs)
+	if name == "" {
+		return out
+	}
+	for i := range out {
+		if out[i].Label == "" {
+			out[i].Label = name
+			continue
+		}
+		out[i].Label = name + ": " + out[i].Label
+	}
+	return out
+}
+
 // SubtaskScopeView returns a registry view for a subtask child. It excludes
 // the background-work family (agent.run, agent.await, agent.kill, agent.steer
 // — a subtask's own session has no subagents to wait on, peek at, cancel, or
@@ -438,6 +476,10 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 				}
 			}()
 			summary, salvagedReason, runErr := cfg.exec(childCtx, child, args.Prompt)
+			// The child's images ride its report, the same way its text does:
+			// taken here, once, so nothing between the child settling and the
+			// report being persisted can consume or lose them.
+			reportImages := subagentReportImages(args, child)
 			if salvagedReason != "" {
 				state.SetSubagentSalvaged(view.ID, salvagedReason)
 			}
@@ -479,7 +521,10 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			// drained. The queue drain and the persisted message do not
 			// double-deliver: the queue is cleared on drain, and
 			// buildHistoryMessages only replays prior-turn messages.
-			state.AddMessage(session.RoleUser, report, session.ContentTypeSubagentReport)
+			// Any image the child surfaced rides this message, so the parent
+			// sees the picture without the child's whole transcript being
+			// replayed.
+			state.AddMessageWithImages(session.RoleUser, report, session.ContentTypeSubagentReport, reportImages)
 			// Task 8: point the retained work-index entry at the durable
 			// report message just appended, before anything announces the
 			// child complete. A bind failure is logged as evidence, never

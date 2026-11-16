@@ -1,12 +1,16 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
 	"marshal/internal/app/config"
 	"marshal/internal/credentials"
+	"marshal/internal/imagepayload"
+	"marshal/internal/llm/schema"
 	"marshal/internal/oauth"
 	"marshal/internal/redact"
 	"marshal/internal/sandbox/envutil"
@@ -100,11 +104,23 @@ func WithCredentialFactory(open func(string) (credentials.Store, error)) Manager
 	}
 }
 
+// WithImageStore sets the store the manager normalizes an MCP result's image
+// blocks into. Nil (or unset) keeps today's text-only behaviour: image content
+// is skipped entirely rather than failing the call.
+func WithImageStore(store *imagepayload.Store) ManagerOption {
+	return func(m *Manager) { m.Images = store }
+}
+
 type Manager struct {
 	Logger *slog.Logger // nil → slog.Default()
 
 	config  *config.Config
 	clients []caller
+
+	// Images stores the image blocks an MCP result carries. Nil means
+	// "skip image content" — the manager keeps returning text-only results,
+	// exactly as it did before image support existed.
+	Images *imagepayload.Store
 
 	// credFactory opens the credential store used for OAuth tokens of
 	// remote servers. Nil means credentials.New, unless credFactorySet is
@@ -395,6 +411,11 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 	return nil
 }
 
+// maxResultImages bounds how many image blocks one MCP result contributes.
+// An MCP server is third-party code: a result that returns a hundred
+// screenshots must not put a hundred images in one tool result.
+const maxResultImages = 4
+
 func (m *Manager) makeHandler(c caller, serverName, mcpToolName string) registry.ToolHandler {
 	return func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		start := time.Now()
@@ -415,12 +436,41 @@ func (m *Manager) makeHandler(c caller, serverName, mcpToolName string) registry
 		}
 		var summary string
 		var fullContent string
+		var images []schema.ImageRef
 		for _, content := range res.Content {
-			if content.Type == "text" {
+			switch content.Type {
+			case "text":
 				if summary == "" {
 					summary = content.Text
 				}
 				fullContent += content.Text + "\n"
+			case "image":
+				// A nil store keeps today's text-only behaviour: image
+				// content is skipped, with no notice, exactly as it was
+				// before the manager could store images.
+				if m.Images == nil {
+					continue
+				}
+				// Bounded per result: an image-heavy server cannot flood one
+				// tool result with more than four refs.
+				if len(images) >= maxResultImages {
+					continue
+				}
+				raw, decodeErr := base64.StdEncoding.DecodeString(content.Data)
+				if decodeErr != nil {
+					fullContent += "[image omitted: the block's data was not valid base64]\n"
+					continue
+				}
+				ref, putErr := m.Images.Put(ctx, bytes.NewReader(raw), imagepayload.Options{
+					Label: serverName + ": image",
+				})
+				if putErr != nil {
+					// The rest of the result survives: one unusable image
+					// must not cost the text the server did produce.
+					fullContent += "[image omitted: it could not be stored]\n"
+					continue
+				}
+				images = append(images, ref)
 			}
 		}
 		if res.IsError {
@@ -433,6 +483,7 @@ func (m *Manager) makeHandler(c caller, serverName, mcpToolName string) registry
 		return registry.ToolResult{
 			Summary: summary,
 			Content: fullContent,
+			Images:  images,
 		}, nil
 	}
 }

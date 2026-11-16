@@ -283,6 +283,16 @@ type Runner struct {
 	// persisted, so a fresh session starts counting from zero.
 	thinkingLoopCounts map[string]int
 	thinkingLoopMu     sync.Mutex
+	// lastToolImages is the image list of the most recent tool result this
+	// run produced. A parent hoists them onto the child's report, so a
+	// subagent that took a screenshot shows it to the parent without
+	// replaying the child's whole transcript.
+	lastToolImages []schema.ImageRef
+	// toolImagesMu guards lastToolImages. A run handles one turn at a time,
+	// but a single step's read-only tools execute concurrently
+	// (executeActions phase 2), so two image-bearing results can be recorded
+	// at once. The parent takes them only after the child's turn settled.
+	toolImagesMu sync.Mutex
 	// IdleTimeout bounds how long a request may go without any streamed
 	// bytes before it is treated as a stalled connection. Any delta —
 	// content, reasoning, or tool-call — resets it. Zero uses
@@ -826,6 +836,29 @@ func (r *Runner) role() AgentRole {
 		return RoleGeneral
 	}
 	return r.Role
+}
+
+// noteToolImages keeps the images of the most recent image-bearing tool
+// result. It is called from the one place a registry.ToolResult becomes wire
+// messages, so the retained set is exactly what this run surfaced.
+func (r *Runner) noteToolImages(refs []schema.ImageRef) {
+	if len(refs) == 0 {
+		return
+	}
+	r.toolImagesMu.Lock()
+	r.lastToolImages = refs
+	r.toolImagesMu.Unlock()
+}
+
+// TakeToolImages returns and clears the images of the most recent
+// image-bearing tool result. The parent takes them once, when it turns the
+// child's completion into a report.
+func (r *Runner) TakeToolImages() []schema.ImageRef {
+	r.toolImagesMu.Lock()
+	defer r.toolImagesMu.Unlock()
+	imgs := r.lastToolImages
+	r.lastToolImages = nil
+	return imgs
 }
 
 // Run executes one full agent turn for goal. It records the user's message,

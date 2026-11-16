@@ -1139,7 +1139,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		// developer's keychain. authResolver.OpenStore never falls back to
 		// credentials.New, so an injected resolver's error stays local and a
 		// manager built without one refuses rather than swapping stores.
-		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()), mcp.WithCredentialFactory(authResolver.OpenStore))
+		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()), mcp.WithCredentialFactory(authResolver.OpenStore), mcp.WithImageStore(images))
 		// A server that will not start is a per-server failure, not a fatal
 		// one: the agent must still run, with the healthy servers' tools and
 		// a notice naming what was skipped. Aborting here used to leave the

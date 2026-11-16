@@ -2653,7 +2653,140 @@ _To be filled by the executor of plan 7._
 
 ### Plan 8 — containers' viewers and their allowlist
 
-_To be filled by the executor of plan 8._
+**What was built.** A containerized agent's session now opens from the fleet
+screen. `web/bridge/contract/viewers.go` holds `ContainerViewerMethods`, the 63
+methods a container's viewer may call (decision 1): the connection's own five,
+the turns and the plan runs, the two controls, the five answers, the reads and
+browse calls, and the notes. Everything off it is refused — every `Host`
+method, and with them every `config/` and `trust/` call, the lifecycle and the
+ending, credentials and sign-ins, and the settings' writes. The list is a
+variable rather than a type, so `contract.ts` and the TypeScript generator are
+untouched by it.
+
+The container learns where to serve viewers from
+`MARSHAL_ACP_VIEWERS=unix:///run/marshal/viewers.sock`, set on the agent's run
+vector by `buildRunArgs` and on the setup container's vector not at all
+(decision 3). The variable exists rather than a `--viewers` flag because a flag
+would be refused by an image whose marshal predates this plan, so every spawn
+on a custom or derived image older than the bridge would fail: the outage
+`checkAgentVersion` and its warning were written to avoid. An older marshal
+ignores the variable and starts as before, serving no viewer socket.
+`cmd/marshal`'s `acp` branch reads the variable once, removes it from the
+process's environment so nothing the agent spawns inherits it, and lets an
+explicit `--viewers` win over it.
+
+One agent host serves both listeners. `ListenAndServeWithViewers` binds the
+viewer socket first with `listenUnix`, so a viewer cannot arrive before the
+host can serve it, then the control socket, and runs them over
+`listenAndServeWithConfig` with `restrictViewers` on. The control socket keeps
+its one-connection-at-a-time accept loop and its idle deadline; the viewer
+socket gets `RunWithViewers`' accept loop, moved out into
+`agentHost.acceptViewers` and called by both rather than copied. The shutdown
+order stays the one `runWithViewersConfig` already had: the viewer socket
+closes first, then the viewers are waited for within the host's shutdown time,
+then the host closes. There is no unrestricted pairing, and no flag that would
+turn one on — only a container runs `--listen`, so `--viewers` beside it always
+gets the allowlist, and `RunWithViewers`, the project children's mode, is
+unchanged.
+
+The refusal holds at both ends, with decision 2's sentence, `<method> is not
+available for a containerized agent`. On the agent side `acp.Server.Allow` is
+checked in `dispatch` right after the `MarshalOnly` gate, so a refused method's
+handler is never looked up, and `serveViewer` sets it from the list when the
+host's viewers are restricted; `containerViewerRefusal` is an uncoded
+`*acpwire.Error`, so a marshal client shows the sentence as its own error text.
+On the bridge side `relayEnd.allow` carries `containerViewerSet()`, and
+`pumpClient` asks `relay.restricted` before the close rule: a listed request
+still meets `refusal`, so a container's viewer can no more close the agent's
+session than any other viewer, while an unlisted request is answered under its
+own id with the sentence and the agent reads nothing. A restricted relay fails
+closed (decision 7): a frame that is not one JSON-RPC message — a batch, or
+malformed JSON — is dropped and logged rather than forwarded, and an answer to
+one of the agent's own requests carries no method, so approvals and questions
+still reach the viewer and its answers still reach the agent. A refused
+notification has no answer; its drop is logged once per method per attach.
+
+The attach reaches a container through the host side of its socket.
+`newRuntime`'s container branch sets `Child.ViewerSocket` to `viewers.sock` in
+the agent's socket directory, beside `agent.sock`, where it already sets
+`Containerized`, and `startRuntime` records it on the runtime. The 409 for a
+container's agent is gone: the agent attach dials that path with a `relayEnd`
+carrying the list, and a failed dial is 502, "dial the agent's container:
+<error>", with "; its image runs another marshal version, which may serve no
+viewer socket: rebuild it" appended when the runtime's `versionWarning` is set —
+a warning, never a refusal, as `checkAgentVersion` has it. Nothing clears the
+host-side path before the dial: `start` removes both sockets before the
+container runs, and the agent removes its own again when it binds.
+
+**Where the plan was short, and how that was filled.**
+
+- **The handler-table helper moved.** Task 1's tests and
+  `TestACPClientMethodTableMatchesTheServer` read a connection's registered
+  handlers the same way, and the plan named only the new test file.
+  `registeredHandlers(t, viewer)` moved into
+  `internal/acp/container_viewers_test.go`, and `acpclient_methods_test.go`
+  keeps its own test over the shared helper: one file outside the plan's list,
+  no behaviour change.
+- **The host carries the restriction too.** The contracts named the field on
+  `runConfig`; `serveViewer` reads it off the host, so `agentHost` takes its
+  own copy in `newAgentHost`, beside the other run-config fields.
+
+**The tests.** Task 1's list is pinned against the session screen in
+`internal/acp/container_viewers_test.go`: every entry is a `Session` row's
+method or one of the four the client sends outside the table, no entry is a
+`Host` row or a `config/`/`trust/` call, every `Session` row is classified as on
+the list or among the named refusals, every entry is registered on a viewer
+connection, and the list is sorted. Task 2's end is covered over real sockets
+in `internal/acp/listen_test.go`: a restricted viewer's `config/set_value` gets
+the sentence while the control connection's does not, a session the control
+connection opens is served to the viewer, the control connection is still cut
+idle beside a viewer that is kept, and cancelling the context ends the viewers
+and closes the host. Task 3's flag and variable are covered in
+`cmd/marshal/main_test.go`, including that the variable is gone from the
+environment afterwards and that `--viewers` alone ignores it. Task 4's socket is
+covered in `web/bridge/container_test.go` and `ownviewers_test.go`: the run
+vector names it, the setup vector does not, `start` clears a stale one, and a
+container's child names it while a host process's runtime does not make one
+under `v/`. Task 5's relay is covered in `web/bridge/relay_test.go` against a
+fake agent socket that records every frame it reads: an unlisted request is
+answered with the sentence under its id and the agent reads nothing, an
+unlisted notification is dropped, a listed request and its answer pass, an
+answer to the agent's own `session/request_permission` reaches it, a batch and
+malformed JSON are dropped, a `session/close` still gets plan 4b's sentence, and
+an unrestricted relay forwards everything. `attach_test.go` adds a container's
+attach reaching a staged viewer socket with the relay restricted, its failed
+dial saying to rebuild the image, and the refusals table without the container's
+409. W9 is `test/daemon/container_viewers_test.go`: `acp.ListenAndServeWithViewers`
+in the test process over a control socket and a viewer socket, a control client
+opening a session in a project as the bridge's connection would, a marshal
+client on the viewer socket attaching to it, a session screen built with
+`tui.WithAgentSession` whose first frame carries no refusal, a prompt through
+the viewer running a real turn whose reply is in the transcript, and
+`SaveUserValue` refused with decision 2's sentence while the user config file
+keeps its bytes.
+
+### The manual run
+
+The plan's manual run — the fleet screen's spawn, open, prompt, approval,
+`/settings`, diff and finish against a server-profile bridge — waits for plan
+7's `--server`, which is not on `main` yet, so it was not run and no claim is
+made about it. The container boundary it would have exercised was run by hand
+instead: `build/Dockerfile` built with rootless podman on this branch, the
+agent started as the bridge starts one — the socket directory mounted, the
+control socket on `agent.sock`, and `MARSHAL_ACP_VIEWERS=unix:///run/marshal/viewers.sock`
+in the environment — and both sockets appeared in the mounted directory on the
+host, `viewers.sock` beside `agent.sock`. A viewer dialled `viewers.sock` and
+`initialize` answered with the branch's own version; its `session/note`,
+`session/sheet`, `session/pending` and `session/stack_busy` reached their
+handlers (they named no session, so each answered `invalid params`) rather than
+the refusal, and its `config/set_value` and `session/apply_config` answered
+`config/set_value is not available for a containerized agent` and
+`session/apply_config is not available for a containerized agent` with the
+uncoded `data` the relay's `refusal` writes. On the control connection the same
+`config/set_value` reached its handler, so the allowlist is the viewer socket's
+and not the process's, and the agent's log carried the two refusals at `WARN`.
+The relabelled mount (`:z`) is this machine's SELinux requirement, not the
+bridge's: the bridge mounts its own socket directory.
 
 ## Branch review record
 

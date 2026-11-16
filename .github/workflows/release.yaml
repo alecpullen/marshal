@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - 'v*'
+  # A published release is a draft a human has just made public: the only
+  # moment the installer smoke test can reach its assets, because a draft's
+  # assets are not publicly downloadable. See install-smoke below.
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'published tag to install (for example v0.9.1)'
+        required: true
 
 permissions:
   contents: read
@@ -14,6 +24,9 @@ jobs:
 
   release:
     needs: checks
+    # Only a tag push cuts a release. The published and manual runs exist for
+    # install-smoke and must not try to cut an existing tag again.
+    if: github.event_name == 'push'
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -44,7 +57,19 @@ jobs:
 
   install-smoke:
     name: Installer smoke (${{ matrix.os }})
-    needs: release
+    # Releases are cut as drafts (.goreleaser.yaml `release.draft`) and a
+    # draft's assets are not publicly downloadable, while install.sh fetches
+    # them with a plain unauthenticated curl. So this job cannot belong to the
+    # tag run — it could never pass. It runs when a human publishes the draft,
+    # at which point the assets are genuinely public, and by hand with
+    # workflow_dispatch.
+    #
+    # The tradeoff is recorded in docs/distribution/d2-packaging.md: a broken
+    # installer is caught immediately *after* publishing rather than before,
+    # which is the only honest option while releases are drafts. The other
+    # option — teaching install.sh to authenticate — is refused on purpose: a
+    # `curl | sh` installer that accepts a token is a foot-gun.
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
     strategy:
@@ -55,9 +80,23 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Install the release this workflow just cut
+      - name: Decide which tag to install
+        id: tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${RELEASE_TAG:-${INPUT_TAG:-}}"
+          if [ -z "$tag" ]; then
+            echo "no tag to install: dispatch this workflow with a published tag" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+      # --version is pinned so this exercises the same download, checksum and
+      # extract path a user gets, not the /releases/latest redirect.
+      - name: Install the published release
         run: |
           prefix="$RUNNER_TEMP/marshal-bin"
-          ./scripts/install.sh --no-daemon --version "$GITHUB_REF_NAME" --prefix "$prefix"
+          ./scripts/install.sh --no-daemon --version "${{ steps.tag.outputs.tag }}" --prefix "$prefix"
           "$prefix/marshal" --version
           "$prefix/webbridge" --version

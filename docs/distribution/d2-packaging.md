@@ -262,3 +262,50 @@ step 2 are two separate additions to the same region of the file.
    uninstall` leaving the daemon running, and a browser download on macOS
    running without `xattr` all wait for the first tagged release from this
    branch.
+
+### Review fixups: the installer
+
+Review found `--uninstall` gated on `service: loaded` alone, so
+`daemon install`, then `daemon stop`, then `install.sh --uninstall` removed
+both binaries and left the launchd/systemd unit behind, pointing at files
+that no longer existed. `service: stopped` is one of the four states
+`daemon status` prints (`cmd/marshal/daemon.go`, `daemonServiceLine`) and it
+is exactly the installed-but-not-running case the gate existed for. The gate
+now matches `loaded` or `stopped`, and an unreadable service state is a
+refusal rather than a silent skip: with no `service:` line there is no way to
+tell "nothing installed" from "could not read the state", and a unit pointing
+at deleted binaries is worse than an uninstall that asks for help.
+
+Reading caught that bug, so the fix came with a test that could have. There
+is no release to test against, so `scripts/install_test.sh` drives
+`--uninstall` against a stub `marshal` that prints canned `daemon status`
+output and records its calls: stopped, loaded-and-running (with and without a
+pid), not-installed, and unreadable are all asserted offline, and
+`.github/workflows/go-checks.yml` runs it beside `shellcheck`.
+
+Three smaller corrections came with it. An unsupported platform exits 2, as
+the Platform section says, instead of 1. A machine with neither `sha256sum`
+nor `shasum` is told it has no hash tool rather than that a checksum
+mismatched. `--uninstall` prints the `rm -rf` for the data it keeps, and a
+404 from `/releases/latest` is reported as "no published release yet" — the
+shape of a repository whose tags are all drafts — instead of as a network
+failure.
+
+### The smoke job runs after the release is published
+
+`release.draft: true` (`.goreleaser.yaml`) is policy, not an oversight, and a
+draft's assets are not publicly downloadable: `install.sh` fetches them with
+a plain unauthenticated `curl`, so the `install-smoke` job could never pass
+while it ran inside the tag workflow. It now triggers on
+`release: [published]` — the moment a human makes the draft public — and on
+`workflow_dispatch` with a tag, and the `release` job is gated to a tag push
+so neither of those runs tries to cut the tag again. The job still pins
+`--version "$TAG"` and then runs `--version` on **both** binaries, so it
+keeps exercising the same download, checksum and extract path a user gets
+rather than the `/releases/latest` redirect.
+
+The tradeoff is real and is stated here rather than papered over: a broken
+installer is now caught immediately **after** a human publishes, not before.
+That is the only honest option while releases are drafts, and the alternative
+— letting `install.sh` carry a token to reach draft assets — is refused,
+because a `curl | sh` installer that accepts a token is a foot-gun.

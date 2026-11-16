@@ -7,7 +7,9 @@
 /// first entry in the registry of screens the enforcement tests pump.
 library;
 
+import '../../model/section_model.dart';
 import '../kit/kit.dart';
+import '../sections/section_page.dart';
 
 /// The gallery. With [state] it draws that §7 state instead of its content,
 /// as every screen that shows data must be able to.
@@ -88,6 +90,7 @@ class _GalleryState extends State<Gallery> {
         ..._section('Menu', _menus()),
         ..._section('Sheet', [Box(child: _sheet(context))]),
         ..._section('Tip', [_tip(e)]),
+        ..._section('SectionPage', [_sectionPage()]),
       ],
     );
   }
@@ -740,6 +743,23 @@ class _GalleryState extends State<Gallery> {
     ],
   );
 
+  /// The one list-and-detail pattern of F7 (decision 2), drawn from a
+  /// fixture section: every section of Automations, Library and Settings is
+  /// this page.
+  Widget _sectionPage() => SectionPage<String>(
+    title: 'Schedules',
+    subtitle: 'What starts work without you',
+    model: _GallerySection(),
+    emptyMessage: 'A schedule you add appears here.',
+    row: (name, onTap) => RowItem(
+      name: name,
+      description: 'The nightly gate, on a cron',
+      value: 'Daily · 03:00',
+      onTap: onTap,
+    ),
+    detail: (context, name) => Field(label: 'Recipe', hint: name),
+  );
+
   Sheet _sheet(BuildContext context) => Sheet(
     title: 'Discard this work?',
     actions: [
@@ -754,4 +774,26 @@ class _GalleryState extends State<Gallery> {
       'the forge is kept.',
     ),
   );
+}
+
+/// A section with fixture rows, so the gallery draws `SectionPage` without
+/// reaching a bridge. Its rows are there from the first frame, so the
+/// specimen is the same pixels every time.
+class _GallerySection extends SectionModel<String> {
+  static const _rows = ['nightly gate', 'weekly review'];
+
+  @override
+  List<String> get items => _rows;
+
+  @override
+  Future<List<String>> fetch() async => _rows;
+
+  @override
+  Object keyOf(String item) => item;
+
+  @override
+  bool isNew(String item) => !_rows.contains(item);
+
+  @override
+  Future<String> persist(String item) async => item;
 }

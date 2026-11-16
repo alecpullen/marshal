@@ -2,11 +2,12 @@ import '../../model/age.dart';
 import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
 import '../../model/nav_model.dart';
+import '../../model/overview_model.dart' show buildOverview;
 import '../../model/place.dart';
 import '../inbox/inbox.dart' show Inbox;
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
-import '../../model/overview_model.dart' show buildOverview;
+import '../sections/unsaved_guard.dart';
 import 'placeholder.dart';
 import 'sidebar.dart';
 
@@ -27,6 +28,7 @@ class Shell extends StatefulWidget {
     this.state,
     this.now,
     this.onRetry,
+    this.unsaved,
   });
 
   final NavModel nav;
@@ -48,6 +50,10 @@ class Shell extends StatefulWidget {
 
   /// Reads the fleet again, for the one action a state offers.
   final VoidCallback? onRetry;
+
+  /// The guard that asks before the shell leaves a place holding unsaved
+  /// edits (design-system.md §9, F7 decision 3).
+  final UnsavedGuard? unsaved;
 
   @override
   State<Shell> createState() => _ShellState();
@@ -93,13 +99,24 @@ class _ShellState extends State<Shell> {
       _host = host;
       _panel = false;
     }),
-    onSelect: (place) {
-      widget.onSelect(place);
-      setState(() => _panel = false);
-    },
+    onSelect: (place) => _leave(() => widget.onSelect(place)),
     now: widget.now,
     inPanel: inPanel,
   );
+
+  /// Opens [place], after asking about an unsaved edit when there is one:
+  /// the shell is where "leaving" happens, so it is where the one guard is
+  /// consulted (design-system.md §9).
+  Future<void> _leave(VoidCallback go) async {
+    final guard = widget.unsaved;
+    if (guard != null && guard.hasUnsavedEdits) {
+      final leave = await guard.confirm(context);
+      if (!leave || !mounted) return;
+    }
+    if (!mounted) return;
+    setState(() => _panel = false);
+    go();
+  }
 
   /// The bar the narrow layout needs: the way into the navigation, the place
   /// it is showing, and the Inbox one tap away.
@@ -132,7 +149,9 @@ class _ShellState extends State<Shell> {
                 IconBtn(
                   Glyphs.tray,
                   tooltip: 'Inbox',
-                  onTap: () => widget.onSelect(const Place(PlaceKind.inbox)),
+                  onTap: () => _leave(
+                    () => widget.onSelect(const Place(PlaceKind.inbox)),
+                  ),
                 ),
               ],
             ),

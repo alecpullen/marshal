@@ -305,6 +305,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case actionDoneMsg:
 		m.actionDone(msg)
 		return m, nil
+	case finishDraftMsg:
+		return m.handleFinishDraft(msg)
+	case finishDoneMsg:
+		return m.handleFinishDone(msg)
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}

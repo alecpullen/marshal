@@ -840,6 +840,14 @@ func (m Model) footer(rows []agentRow) string {
 			keys = "j/k file J/K scroll 1/3 tab n spawn"
 		}
 	}
+	// f and v are the finish flow's keys (decisions 2 and 3), named only where
+	// they apply: f needs an idle agent, and v the Info tab of the right panel.
+	if m.canFinish() {
+		keys = addHint(keys, "f finish")
+	}
+	if m.focus == focusRight && m.tab == infoTab {
+		keys = addHint(keys, "v gate")
+	}
 	// ⏎ is only worth naming while it would do something.
 	if m.openTarget(rows) != (Target{}) {
 		if keys == "" {
@@ -882,7 +890,9 @@ func (m Model) helpScreen() string {
 		"a                answer the selected agent's request",
 		"n                spawn an agent",
 		"x                cancel the selected agent's turn",
+		"f                finish the selected agent",
 		"1 / 3            Activity or Info tab",
+		"v                run the gate (Info tab)",
 		"z                zoom the focused panel",
 		"esc              unzoom, or clear the filter while it is open",
 		"/                filter agents by name or project",

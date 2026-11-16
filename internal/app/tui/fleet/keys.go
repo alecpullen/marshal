@@ -79,6 +79,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.openSpawn()
 	case "x":
 		return m.cancelSelected()
+	case "f":
+		return m.openFinish()
+	case "v":
+		return m.verifySelected()
 	case "j":
 		m.moveCursor(1)
 	case "k":

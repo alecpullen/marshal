@@ -598,8 +598,9 @@ func statusMirrorsTheState(t *testing.T, open func(t *testing.T, d service.Deps)
 		Trusted:    true,
 		HasBackup:  true,
 
-		// The session advertises the child controls it registers (task 2 of the
-		// studio worker plan); settings arrive once enforcement exists.
+		// The session advertises every child control it registers (task 2 of
+		// the studio worker plan); settings are enforced since task 3, so the
+		// bit is set too.
 		SubagentControls: acpwire.MarshalSubagentCapabilities(),
 
 		SubagentRunning: true,

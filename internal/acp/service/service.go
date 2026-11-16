@@ -488,9 +488,14 @@ func (s *Session) Status() acpwire.SessionStatus {
 		RunningJobs: st.RunningJobsCount(),
 		Subagents:   subagentsOf(st.Subagents()),
 		// Which child controls this session registers: steering and stopping
-		// a live child, and observing it. Absent means unsupported, so this
-		// one field is what a Studio client reads instead of guessing.
+		// a live child, observing it, and binding per-session child settings
+		// at creation. Absent means unsupported, so this one field is what a
+		// Studio client reads instead of guessing.
 		SubagentControls: acpwire.MarshalSubagentCapabilities(),
+		// The ordinary child settings and the digest of the config and route
+		// inputs they were derived from, for a client that bound its own
+		// snapshot at creation. Nil until the runtime has derived them.
+		SubagentDefaults: subagentDefaultsOf(st),
 		Swarm:            swarmOf(st.SwarmProgress()),
 		SDD:              sddOf(st.SDDProgress()),
 		SDDGate: acpwire.SDDGate{
@@ -577,6 +582,25 @@ func interactionOf(s interaction.State) acpwire.Interaction {
 		Auto:     s.Auto,
 		System:   s.System,
 		Revision: s.Revision,
+	}
+}
+
+// subagentDefaultsOf maps the session's ordinary child settings onto the wire,
+// with the digest of the config and route inputs they came from. Nil until the
+// runtime has derived them, so a client never reads a zero default as a real
+// one.
+func subagentDefaultsOf(st *session.State) *acpwire.SubagentDefaults {
+	defaults, ok := st.SubagentDefaults()
+	if !ok {
+		return nil
+	}
+	return &acpwire.SubagentDefaults{
+		Settings: acpwire.SubagentSettings{
+			Enabled:     defaults.Settings.Enabled,
+			Model:       defaults.Settings.Model,
+			Concurrency: defaults.Settings.Concurrency,
+		},
+		Digest: defaults.Digest,
 	}
 }
 

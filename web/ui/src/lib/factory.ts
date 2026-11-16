@@ -62,7 +62,84 @@ export interface FactoryProvenance {
   authority?: string; decisionId?: string
 }
 export interface FactoryEvent { sequence: number; at: string; kind: string; message: string; effectId: string; provenance?: FactoryProvenance }
-export interface FactoryItem { id: string; title: string; state: string; stage: string; repoId: string; projectRoot: string; hostId: string; branch: string; baseSha: string; version: number; draft: Omit<FactoryCreate, 'config'> & { config: FactoryConfig }; approvals: FactoryApproval[] | null; grants: FactoryGrant[] | null; rounds: FactoryRound[] | null; workers: FactoryWorker[] | null; prs: FactoryPR[] | null; effects: FactoryEffect[] | null; decision: FactoryDecision | null; history: FactoryEvent[] | null; createdAt: string; approvedAt: string; updatedAt: string; /** Plan-change proposals; absent on a record written before revisions existed. */ proposals?: FactoryRevisionProposal[] | null }
+/**
+ * One pull request linked to a work item's completion, with the observation
+ * the bridge made of it. `fresh` is the server's own judgement of whether that
+ * observation still describes the linked pull request, so a surface states
+ * staleness rather than trusting a stale head.
+ */
+export interface FactoryPRLink { repoId: string; pr: FactoryPR; origin: 'factory' | 'user' | string; observedAt: string; fresh: boolean }
+/**
+ * One piece of completion evidence, assessed against exactly one set of
+ * inputs. `fresh` is derived on every read from `inputDigest` and is never
+ * stored: an assessment whose inputs have since moved keeps its summary and
+ * loses its freshness.
+ */
+export interface FactoryAssessment {
+  status: 'pending' | 'available' | 'failed' | 'unavailable' | string
+  summary?: string
+  source?: string
+  inputDigest: string
+  observedAt: string
+  fresh: boolean
+}
+/**
+ * What the user called done, snapshotted. The goal, the criteria and the links
+ * are copied when the decision is made, so a later approval or a pull request
+ * that moves cannot rewrite what this record says.
+ */
+export interface FactoryCompletionRecord {
+  id: string; at: string; actor: string; goal: string; criteria: string
+  assessment?: FactoryAssessment
+  links: FactoryPRLink[] | null
+  runChoice?: 'continue' | 'request_stop' | string
+}
+/** The merge strategies a reviewed batch may carry; the bridge refuses any other as input. */
+export type FactoryMergeStrategy = 'merge' | 'squash' | 'rebase'
+/**
+ * One reviewed merge in a batch. `state` is the batch's own receipt about it:
+ * only `confirmed` means the pull request merged at the reviewed identity, and
+ * `uncertain` is a merge whose outcome has to be read again, never sent again.
+ */
+export interface FactoryMergeStep {
+  repoId: string; number: number; nodeId: string; headSha: string; baseRef: string
+  strategy: FactoryMergeStrategy
+  state: 'unattempted' | 'prepared' | 'dispatched' | 'confirmed' | 'failed' | 'uncertain' | string
+  result?: string
+}
+/**
+ * The ordered merges a user authorised, driven one step per pass. Every entry
+ * after a stopped one stays unattempted: a stopped batch needs a new explicit
+ * decision, and nothing resumes it on its own.
+ */
+export interface FactoryMergeBatch {
+  id: string; requestId: string
+  state: 'active' | 'stopped' | 'complete' | string
+  completeAfter: boolean
+  runChoice?: 'continue' | 'request_stop' | string
+  steps: FactoryMergeStep[]
+}
+/**
+ * The item's business completion, which is independent of `state`: the work
+ * counts as done as far as the user is concerned, whatever the run is doing.
+ * An absent record and an empty status both mean open.
+ */
+export interface FactoryCompletion {
+  status: 'open' | 'complete' | string
+  links?: FactoryPRLink[] | null
+  assessment?: FactoryAssessment
+  records?: FactoryCompletionRecord[] | null
+  batch?: FactoryMergeBatch | null
+  stopState?: 'requested' | 'stopped' | 'failed' | 'unknown' | string
+}
+/**
+ * One pull request a user reviewed for a merge. It is the identity the batch
+ * pins, so a head or base that no longer matches the linked pull request is
+ * refused rather than adapted. `reviewedPR` is the only way to build one from
+ * a link, so a caller cannot send a head the user was never shown.
+ */
+export interface FactoryCompletionPR { repoId: string; number: number; nodeId: string; headSha: string; baseRef: string }
+export interface FactoryItem { id: string; title: string; state: string; stage: string; repoId: string; projectRoot: string; hostId: string; branch: string; baseSha: string; version: number; draft: Omit<FactoryCreate, 'config'> & { config: FactoryConfig }; approvals: FactoryApproval[] | null; grants: FactoryGrant[] | null; rounds: FactoryRound[] | null; workers: FactoryWorker[] | null; prs: FactoryPR[] | null; effects: FactoryEffect[] | null; decision: FactoryDecision | null; history: FactoryEvent[] | null; createdAt: string; approvedAt: string; updatedAt: string; /** Plan-change proposals; absent on a record written before revisions existed. */ proposals?: FactoryRevisionProposal[] | null; /** Business completion, independent of `state`; absent on a record written before completion existed, and an absent record or empty status means open. */ completion?: FactoryCompletion | null }
 
 /**
  * One proposal's assessment, as the assessor reported it. `recommendation` is
@@ -155,7 +232,32 @@ export type FactoryRevisionCommandKind =
   | 'revision_authorize'
   | 'revision_delivery_choice'
   | 'revision_follow_up_confirm'
-export interface FactoryCommand { requestId: string; kind: 'approve' | 'answer' | 'stop' | 'retry' | 'reconcile' | 'recover' | FactoryRevisionCommandKind; expectedVersion: number; decisionId?: string; answer?: string; reason?: string; additionalRounds?: number; replacement?: FactoryCreate; implementerRouting?: Record<string, unknown>; reviewerRouting?: Record<string, unknown>; confirmPreviousWorkerStopped?: boolean; revision?: FactoryRevisionCommand }
+/**
+ * The completion half of a command. Only the fields the command names are
+ * sent; the envelope (request id, expected version, decision) stays in
+ * `FactoryCommand`. `prs` is the reviewed set a merge command authorizes, and
+ * `completeAfter` must agree with the kind that carries it.
+ */
+export interface FactoryCompletionCommand {
+  link?: string
+  prs?: FactoryCompletionPR[]
+  strategy?: FactoryMergeStrategy
+  completeAfter?: boolean
+  runChoice?: 'continue' | 'request_stop'
+}
+/** The completion lifecycle commands the bridge accepts in `FactoryCommand.completion`. */
+export type FactoryCompletionCommandKind =
+  | 'complete'
+  | 'reopen'
+  /** Links a pull request by number or URL; the bridge observes its head itself. */
+  | 'link_pr'
+  | 'refresh_pr_evidence'
+  | 'assess_completion'
+  /** Merges the reviewed set without completing the item. */
+  | 'merge_pr'
+  /** Merges the reviewed set and completes the item once every merge confirms. */
+  | 'merge_and_complete'
+export interface FactoryCommand { requestId: string; kind: 'approve' | 'answer' | 'stop' | 'retry' | 'reconcile' | 'recover' | FactoryRevisionCommandKind | FactoryCompletionCommandKind; expectedVersion: number; decisionId?: string; answer?: string; reason?: string; additionalRounds?: number; replacement?: FactoryCreate; implementerRouting?: Record<string, unknown>; reviewerRouting?: Record<string, unknown>; confirmPreviousWorkerStopped?: boolean; revision?: FactoryRevisionCommand; completion?: FactoryCompletionCommand }
 export type FactoryFilter = 'current' | 'needs-you' | 'ready' | 'history'
 export type FactoryItemView = 'approval' | 'activity' | 'review' | 'prs' | 'documents'
 /**
@@ -174,6 +276,96 @@ export interface FactoryRoute {
   agent?: string
   drafts?: boolean
   draftId?: string
+}
+
+/**
+ * The completion requests below are pure: each takes the stable request id the
+ * caller generated and the item version the user was looking at, and the
+ * bridge refuses the request when that version is no longer current. None of
+ * them performs a call or decides anything.
+ */
+
+/**
+ * Complete the item: the user's own statement that the work counts as done.
+ * It neither stops the run nor withdraws a pull request, and the bridge refuses
+ * it for an item that is already complete.
+ */
+export function completeCommand(requestId: string, expectedVersion: number): FactoryCommand {
+  return { requestId, kind: 'complete', expectedVersion }
+}
+
+/** Reopen a completed item. The records that called it done stay, unrewritten. */
+export function reopenCommand(requestId: string, expectedVersion: number): FactoryCommand {
+  return { requestId, kind: 'reopen', expectedVersion }
+}
+
+/**
+ * Name one linked pull request by number or URL. Only the reference travels:
+ * the head, base and state the surface renders are the ones the bridge
+ * observes, so a link can never describe a pull request the user was not shown.
+ */
+export function linkPRCommand(requestId: string, expectedVersion: number, link: string): FactoryCommand {
+  return { requestId, kind: 'link_pr', expectedVersion, completion: { link } }
+}
+
+/**
+ * Ask the bridge to observe every linked pull request again. A link whose read
+ * fails keeps the snapshot it had and comes back stale, so this is a request
+ * for current evidence and never a claim that it is current.
+ */
+export function refreshEvidenceCommand(requestId: string, expectedVersion: number): FactoryCommand {
+  return { requestId, kind: 'refresh_pr_evidence', expectedVersion }
+}
+
+/**
+ * Ask for an assessment of the business outcome. It is evidence about the
+ * work, never a gate on it: nothing completes or reopens because of it, and an
+ * assessment that cannot run is recorded as unavailable rather than as an
+ * error.
+ */
+export function assessCompletionCommand(requestId: string, expectedVersion: number): FactoryCommand {
+  return { requestId, kind: 'assess_completion', expectedVersion }
+}
+
+/**
+ * Authorise the ordered merges the user reviewed. The kind is derived from the
+ * intent because the bridge refuses a merge command whose completion intent
+ * contradicts its kind, so `completeAfter` is never a separate claim: an item
+ * completes only when every reviewed merge confirmed.
+ *
+ * `runChoice` is required while the item's own run is active, so a batch can
+ * neither cancel nor race a turn it did not account for.
+ */
+export function mergePRsCommand(
+  requestId: string,
+  expectedVersion: number,
+  prs: FactoryCompletionPR[],
+  strategy: FactoryMergeStrategy,
+  completeAfter: boolean,
+  runChoice?: 'continue' | 'request_stop',
+): FactoryCommand {
+  return {
+    requestId,
+    kind: completeAfter ? 'merge_and_complete' : 'merge_pr',
+    expectedVersion,
+    completion: { prs, strategy, completeAfter, ...(runChoice ? { runChoice } : {}) },
+  }
+}
+
+/**
+ * The evidence a review covers: exactly the identity of the link the user was
+ * shown. Copying it out of the link is deliberate — a caller that assembled
+ * these fields itself could send a head or base the user never reviewed, and
+ * the bridge would then merge something they did not approve.
+ */
+export function reviewedPR(link: FactoryPRLink): FactoryCompletionPR {
+  return {
+    repoId: link.repoId,
+    number: link.pr.number,
+    nodeId: link.pr.nodeId,
+    headSha: link.pr.headSha,
+    baseRef: link.pr.baseRef,
+  }
 }
 
 /**

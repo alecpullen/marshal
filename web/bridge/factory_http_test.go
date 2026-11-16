@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1064,4 +1065,387 @@ func (f *dispatchBoundaryEffects) Observe(context.Context, FactoryItem) (Factory
 func (f *dispatchBoundaryEffects) Execute(context.Context, FactoryItem, FactoryEffect) (FactoryOutcome, error) {
 	f.executed <- struct{}{}
 	return FactoryOutcome{}, nil
+}
+
+// factoryCompletionHTTP is the harness the Studio completion tests share: a
+// server whose factory routes are installed over a temp-dir journal, a
+// controller whose forge is a double, and one registered project the work
+// items belong to. Nothing reaches the network — the forge double answers
+// every read and every merge — and the credential is a fake the journal never
+// carries, so a response that quotes one is a leak.
+type factoryCompletionHTTP struct {
+	fleet      *Fleet
+	store      *FactoryStore
+	controller *FactoryController
+	srv        *Server
+	root       string
+	projectID  string
+	// creates names each create's journal request identity, which is what
+	// keeps two work items in one journal two items.
+	creates int
+}
+
+// newFactoryCompletionHTTP builds the harness over a forge double. base is the
+// forge the merge capability is looked up on and factory is the read
+// capability, exactly as the controller's own opener consults them.
+func newFactoryCompletionHTTP(t *testing.T, base Forge, factory FactoryForge) *factoryCompletionHTTP {
+	t.Helper()
+	fleet := NewFleet(NewWorkspace(filepath.Join(t.TempDir(), "fleet.json")), "", nil, t.TempDir(), Limits{}, "", nil, "")
+	t.Cleanup(fleet.Close)
+	root := t.TempDir()
+	if err := fleet.ws.AddProject(root); err != nil {
+		t.Fatal(err)
+	}
+	projectID, ok := fleet.ws.ProjectID(root)
+	if !ok {
+		t.Fatal("a registered project has no factory id")
+	}
+	if err := fleet.ws.PutRepo(Repo{
+		ID: "repo", URL: "https://example.invalid/repo.git", Branch: "main",
+		OwnerID: DefaultOwnerID, Forge: "github", CredRef: "completion-pat",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FACTORY_COMPLETION_TEST_PAT", "fixture-only")
+	fleet.creds = NewCredentialStore([]Credential{{ID: "completion-pat", Kind: "pat", OwnerID: DefaultOwnerID, EnvVar: "FACTORY_COMPLETION_TEST_PAT"}})
+	store, err := OpenFactoryStore(filepath.Join(t.TempDir(), "factory"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	controller := batchController(store, base, factory, nil)
+	srv := NewServer(fleet, "secret")
+	srv.factoryRoutes(NewFactoryAPI(store, controller, fleet))
+	return &factoryCompletionHTTP{fleet: fleet, store: store, controller: controller, srv: srv, root: root, projectID: projectID}
+}
+
+// item is one approved work item in root whose completion links the pull
+// requests in the order given: the state a Studio surface reviews before it
+// acts on it.
+func (f *factoryCompletionHTTP) item(t *testing.T, root string, numbers ...int) FactoryItem {
+	t.Helper()
+	now := time.Now().UTC()
+	f.creates++
+	req := factoryReq()
+	req.RequestID = fmt.Sprintf("create-%d", f.creates)
+	req.Config.TargetBranch = "main"
+	req.Config.ProjectRoot = root
+	created, err := f.store.Create(req, now)
+	if err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+	saved, err := f.store.Update(created.ID, "approve-"+created.ID, created.Version, json.RawMessage(`{"kind":"approve"}`), func(dst *FactoryItem) error {
+		dst.Approvals = []FactoryApproval{{Revision: 1, Plan: req.Plan, Spec: req.Spec, PlanHash: FactoryPlanHash(req.Plan, req.Spec), Config: req.Config, ApprovedAt: now}}
+		dst.State = "checking"
+		dst.BaseSHA = "base"
+		completion := factoryCompletionOf(*dst)
+		for _, n := range numbers {
+			completion.Links = append(completion.Links, FactoryPRLink{RepoID: "repo", PR: reviewedPR(n), Origin: "user", ObservedAt: now, Fresh: true})
+		}
+		dst.Completion = &completion
+		return nil
+	}, now)
+	if err != nil {
+		t.Fatalf("approve item: %v", err)
+	}
+	return saved
+}
+
+// post sends one Studio command through the route a Studio surface uses.
+func (f *factoryCompletionHTTP) post(t *testing.T, id string, cmd FactoryCommand) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/factory/items/"+id+"/commands", bytes.NewReader(raw))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	f.srv.ServeHTTP(rec, req)
+	return rec
+}
+
+// command posts one Studio command, requires it to be accepted and returns the
+// item the bridge answered with. No accepted response may quote the
+// credential the fixture registered.
+func (f *factoryCompletionHTTP) command(t *testing.T, id string, cmd FactoryCommand) FactoryItem {
+	t.Helper()
+	rec := f.post(t, id, cmd)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s: status %d, body %s", cmd.Kind, rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "fixture-only") {
+		t.Fatalf("%s leaked the credential: %s", cmd.Kind, rec.Body.String())
+	}
+	var body struct {
+		Item FactoryItem `json:"item"`
+	}
+	decodeBody(t, rec, &body)
+	return body.Item
+}
+
+// journalLines is what the journal holds: one record per accepted mutation.
+func (f *factoryCompletionHTTP) journalLines(t *testing.T) int {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(f.store.file.Name()), "journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Count(string(raw), "\n")
+}
+
+// advanceBatches runs one pass of the batch driver the daemon ticks.
+func (f *factoryCompletionHTTP) advance(t *testing.T) {
+	t.Helper()
+	if err := f.controller.advanceCompletionBatches(context.Background()); err != nil {
+		t.Fatalf("advance merge batches: %v", err)
+	}
+}
+
+func TestFactoryHTTPCompletionStudioReviewsAndCompletes(t *testing.T) {
+	forge := &batchForge{prs: map[int]FactoryPR{12: reviewedPR(12), 13: reviewedPR(13)}}
+	f := newFactoryCompletionHTTP(t, forge, forge)
+	item := f.item(t, f.root)
+
+	// A link carries the observation the bridge just made. The body may say
+	// which pull request to link, never what its head is.
+	linked := f.command(t, item.ID, FactoryCommand{
+		RequestID: "link-12", Kind: "link_pr", ExpectedVersion: item.Version,
+		Completion: &FactoryCompletionCommand{Link: "12"},
+	})
+	if linked.Completion == nil || len(linked.Completion.Links) != 1 {
+		t.Fatalf("link_pr journalled %+v", linked.Completion)
+	}
+	if link := linked.Completion.Links[0]; !link.Fresh || link.PR.NodeID != "node-12" || link.Origin != "user" || link.RepoID != "repo" {
+		t.Fatalf("link_pr journalled %+v", link)
+	}
+	second := f.command(t, item.ID, FactoryCommand{
+		RequestID: "link-13", Kind: "link_pr", ExpectedVersion: linked.Version,
+		Completion: &FactoryCompletionCommand{Link: "13"},
+	})
+	if second.Completion == nil || len(second.Completion.Links) != 2 || second.Completion.Links[1].PR.Number != 13 {
+		t.Fatalf("second link %+v", second.Completion)
+	}
+
+	refreshed := f.command(t, item.ID, FactoryCommand{
+		RequestID: "refresh-1", Kind: "refresh_pr_evidence", ExpectedVersion: second.Version,
+	})
+	if refreshed.Completion == nil || len(refreshed.Completion.Links) != 2 {
+		t.Fatalf("refresh lost a link: %+v", refreshed.Completion)
+	}
+	for _, link := range refreshed.Completion.Links {
+		if !link.Fresh || link.PR.State != "open" {
+			t.Fatalf("a refreshed link is not the observed evidence: %+v", link)
+		}
+	}
+
+	// An assessment is evidence about the outcome, not a gate on it: with no
+	// adapter there is nothing to ask, and that state is recorded.
+	assessed := f.command(t, item.ID, FactoryCommand{
+		RequestID: "assess-1", Kind: "assess_completion", ExpectedVersion: refreshed.Version,
+	})
+	if assessed.Completion == nil || assessed.Completion.Assessment == nil || assessed.Completion.Assessment.Status != "unavailable" {
+		t.Fatalf("assessment %+v", assessed.Completion)
+	}
+
+	completed := f.command(t, item.ID, FactoryCommand{
+		RequestID: "complete-1", Kind: "complete", ExpectedVersion: assessed.Version,
+	})
+	if completed.Completion == nil || completed.Completion.Status != "complete" || len(completed.Completion.Records) != 1 {
+		t.Fatalf("complete journalled %+v", completed.Completion)
+	}
+	record := completed.Completion.Records[0]
+	if record.Goal != item.Title || record.Criteria != item.Draft.Spec || record.Actor != factoryStudioRevisionActor {
+		t.Fatalf("completion record %+v", record)
+	}
+	if len(record.Links) != 2 || record.Links[0].PR.NodeID != "node-12" || record.Links[1].PR.NodeID != "node-13" {
+		t.Fatalf("the record did not snapshot the reviewed links: %+v", record.Links)
+	}
+	if record.Assessment == nil || record.Assessment.Status != "unavailable" {
+		t.Fatalf("the record did not snapshot the assessment the user saw: %+v", record.Assessment)
+	}
+
+	// Reopening retires the decision without rewriting it, so the surface can
+	// still show what was called done.
+	reopened := f.command(t, item.ID, FactoryCommand{
+		RequestID: "reopen-1", Kind: "reopen", ExpectedVersion: completed.Version,
+	})
+	if reopened.Completion == nil || reopened.Completion.Status != "open" || len(reopened.Completion.Records) != 1 {
+		t.Fatalf("reopen rewrote the record: %+v", reopened.Completion)
+	}
+	again := f.command(t, item.ID, FactoryCommand{
+		RequestID: "complete-2", Kind: "complete", ExpectedVersion: reopened.Version,
+	})
+	if again.Completion == nil || again.Completion.Status != "complete" || len(again.Completion.Records) != 2 {
+		t.Fatalf("a second completion %+v", again.Completion)
+	}
+}
+
+func TestFactoryHTTPCompletionStaleVersion(t *testing.T) {
+	forge := &batchForge{prs: map[int]FactoryPR{12: reviewedPR(12)}}
+	f := newFactoryCompletionHTTP(t, forge, forge)
+	item := f.item(t, f.root, 12)
+	rec := f.post(t, item.ID, FactoryCommand{RequestID: "complete-stale", Kind: "complete", ExpectedVersion: item.Version + 1})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale version: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	var conflict struct {
+		Code           string `json:"code"`
+		CurrentVersion uint64 `json:"currentVersion"`
+	}
+	decodeBody(t, rec, &conflict)
+	if conflict.Code != "conflict" || conflict.CurrentVersion != item.Version {
+		t.Fatalf("conflict body %s", rec.Body.String())
+	}
+	if after := currentItem(t, f.store, item.ID); after.Version != item.Version {
+		t.Fatalf("a refused command moved the item to v%d", after.Version)
+	}
+}
+
+func TestFactoryHTTPCompletionReplay(t *testing.T) {
+	forge := &batchForge{prs: map[int]FactoryPR{12: reviewedPR(12)}}
+	f := newFactoryCompletionHTTP(t, forge, forge)
+	item := f.item(t, f.root, 12)
+	cmd := FactoryCommand{RequestID: "complete-replay", Kind: "complete", ExpectedVersion: item.Version}
+	first := f.command(t, item.ID, cmd)
+	lines := f.journalLines(t)
+	replay := f.command(t, item.ID, cmd)
+	if replay.Version != first.Version || replay.Completion == nil || len(replay.Completion.Records) != 1 {
+		t.Fatalf("replay returned v%d with %+v", replay.Version, replay.Completion)
+	}
+	if got := f.journalLines(t); got != lines {
+		t.Fatalf("the retry wrote %d journal records", got-lines)
+	}
+}
+
+func TestFactoryHTTPCompletionMCPGrantsCannotInvoke(t *testing.T) {
+	forge := &batchForge{prs: map[int]FactoryPR{12: reviewedPR(12)}}
+	f := newFactoryCompletionHTTP(t, forge, forge)
+	grant := fullGrant()
+	grant.ProjectID = f.projectID
+	if err := f.fleet.ws.PutClient(MCPClient{ID: "c1", OwnerID: DefaultOwnerID, FactoryGrants: []MCPFactoryProjectGrant{grant}}); err != nil {
+		t.Fatal(err)
+	}
+	other := t.TempDir()
+	if err := f.fleet.ws.AddProject(other); err != nil {
+		t.Fatal(err)
+	}
+	owned := f.item(t, f.root, 12)
+	foreign := f.item(t, other, 12)
+	kinds := []struct {
+		kind       string
+		completion *FactoryCompletionCommand
+	}{
+		{"complete", nil},
+		{"reopen", nil},
+		{"link_pr", &FactoryCompletionCommand{Link: "12"}},
+		{"refresh_pr_evidence", nil},
+		{"assess_completion", nil},
+		{"merge_pr", mergeCommand("merge_pr", "squash", "", 12)},
+		{"merge_and_complete", mergeCommand("merge_and_complete", "squash", "", 12)},
+	}
+	before := f.journalLines(t)
+	// The grant is real: the authorizer admits the callback, so every refusal
+	// below comes from the action itself and not from a missing capability.
+	// Neither this client's own project nor another project's work item
+	// accepts a completion action from it.
+	for _, target := range []FactoryItem{owned, foreign} {
+		for _, k := range kinds {
+			item, kind, completion := target, k.kind, k.completion
+			requestID := "mcp-" + kind + "-" + item.ID
+			_, err := f.srv.factoryAuth.WithAuthorizedMutation("c1", f.projectID, "repo", factoryCapabilityApproveAndQueue, func() (FactoryItem, error) {
+				return f.controller.CommandAuthorized(context.Background(), item.ID, FactoryCommand{
+					RequestID: requestID, Kind: kind, ExpectedVersion: item.Version, Completion: completion,
+				}, factoryPrincipal{ClientID: "c1", ProjectID: f.projectID, Action: factoryCapabilityApproveAndQueue})
+			})
+			if !errors.Is(err, ErrFactoryConflict) {
+				t.Fatalf("%s on %s: err = %v, want a conflict", kind, item.ID, err)
+			}
+			// An assessment has no MCP case at all, so it answers with the
+			// bare conflict; every other kind says why it refused.
+			if kind != "assess_completion" && !strings.Contains(err.Error(), "not an action an MCP client may take") {
+				t.Fatalf("%s was refused for the wrong reason: %v", kind, err)
+			}
+		}
+	}
+	if got := f.journalLines(t); got != before {
+		t.Fatalf("a refused MCP action wrote %d journal records", got-before)
+	}
+}
+
+func TestFactoryHTTPCompletionMergeWithoutMergeCapability(t *testing.T) {
+	inner := &batchForge{prs: map[int]FactoryPR{12: reviewedPR(12), 13: reviewedPR(13)}}
+	readOnly := &readOnlyBatchForge{inner: inner}
+	f := newFactoryCompletionHTTP(t, readOnly, readOnly)
+	item := f.item(t, f.root, 12, 13)
+	accepted := f.command(t, item.ID, FactoryCommand{
+		RequestID: "merge-unsupported", Kind: "merge_and_complete", ExpectedVersion: item.Version,
+		Completion: mergeCommand("merge_and_complete", "squash", "", 12, 13),
+	})
+	if accepted.Completion == nil || accepted.Completion.Batch == nil {
+		t.Fatalf("the reviewed batch was not journalled: %+v", accepted.Completion)
+	}
+	batch := accepted.Completion.Batch
+	if batch.State != "active" || !batch.CompleteAfter || len(batch.Steps) != 2 {
+		t.Fatalf("accepted batch %+v", batch)
+	}
+	if batch.Steps[0].State != "unattempted" || batch.Steps[0].Strategy != "squash" {
+		t.Fatalf("first step %+v", batch.Steps[0])
+	}
+
+	// One pass of the driver: the forge has no merge capability, so the first
+	// reviewed merge fails and every later entry stays where it was.
+	f.advance(t)
+	after := currentItem(t, f.store, item.ID)
+	batch = after.Completion.Batch
+	if batch == nil || batch.State != "stopped" {
+		t.Fatalf("batch after the unsupported merge %+v", batch)
+	}
+	if step := batch.Steps[0]; step.State != "failed" || !strings.Contains(step.Result, ErrFactoryMergeUnsupported.Error()) {
+		t.Fatalf("first step after the unsupported merge %+v", step)
+	}
+	if batch.Steps[1].State != "unattempted" {
+		t.Fatalf("a second merge followed a failed one: %+v", batch.Steps[1])
+	}
+	if len(inner.merges) != 0 {
+		t.Fatalf("a forge without the capability recorded %d merges", len(inner.merges))
+	}
+	if after.Completion.Status == "complete" || len(after.Completion.Records) != 0 {
+		t.Fatalf("an unmerged batch completed the item: %+v", after.Completion)
+	}
+}
+
+func TestFactoryHTTPCompletionMergeAmbiguousOutcome(t *testing.T) {
+	forge := &batchForge{
+		prs:      map[int]FactoryPR{12: reviewedPR(12), 13: reviewedPR(13)},
+		mergeErr: errors.New("502 Bad Gateway"),
+	}
+	f := newFactoryCompletionHTTP(t, forge, forge)
+	item := f.item(t, f.root, 12, 13)
+	f.command(t, item.ID, FactoryCommand{
+		RequestID: "merge-ambiguous", Kind: "merge_and_complete", ExpectedVersion: item.Version,
+		Completion: mergeCommand("merge_and_complete", "squash", "", 12, 13),
+	})
+
+	f.advance(t)
+	after := currentItem(t, f.store, item.ID)
+	batch := after.Completion.Batch
+	if batch == nil || batch.State != "stopped" {
+		t.Fatalf("batch after an ambiguous merge %+v", batch)
+	}
+	step := batch.Steps[0]
+	if step.State != "uncertain" || !strings.Contains(step.Result, "unproven") {
+		t.Fatalf("an ambiguous merge was settled as %+v", step)
+	}
+	if len(forge.merges) != 1 {
+		t.Fatalf("%d merges were sent for one reviewed step", len(forge.merges))
+	}
+	if batch.Steps[1].State != "unattempted" {
+		t.Fatalf("a second merge followed an unproven one: %+v", batch.Steps[1])
+	}
+	// The batch was authorized to complete the item, and it only lands when
+	// every reviewed merge confirmed.
+	if after.Completion.Status == "complete" || len(after.Completion.Records) != 0 {
+		t.Fatalf("an unproven merge completed the item: %+v", after.Completion)
+	}
 }

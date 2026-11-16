@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest'
 // @ts-expect-error -- vitest runs on node, and this project installs no node type package.
 import { webcrypto } from 'node:crypto'
-import { createFactoryPoller, factoryPlanHash } from './factory'
+import { createFactoryPoller, factoryPlanHash, completeCommand, reopenCommand, linkPRCommand, refreshEvidenceCommand, assessCompletionCommand, mergePRsCommand, reviewedPR } from './factory'
+import type { FactoryPRLink } from './factory'
 
 /*
   jsdom's crypto carries randomUUID but no SubtleCrypto, so the digest the
@@ -86,5 +87,67 @@ describe('poll visibility and failures', () => {
     await vi.advanceTimersByTimeAsync(2000); expect(load).toHaveBeenCalledTimes(2)
     await vi.advanceTimersByTimeAsync(10000); expect(load).toHaveBeenCalledTimes(2)
     finish(); await vi.advanceTimersByTimeAsync(0); p.stop(); vi.useRealTimers()
+  })
+})
+
+/** One linked pull request at the identity a user reviewed. */
+function link(n: number): FactoryPRLink {
+  return {
+    repoId: 'repo',
+    pr: {
+      number: n,
+      url: `https://github.com/owner/repo/pull/${n}`,
+      nodeId: `node-${n}`,
+      headRef: 'marshal/factory/item',
+      baseRef: 'main',
+      headSha: `head-${n}`,
+      baseSha: 'base',
+      state: 'open',
+      draft: false,
+    },
+    origin: 'user',
+    observedAt: '2026-05-10T12:00:00Z',
+    fresh: true,
+  }
+}
+
+/*
+  These helpers only shape a request: they carry the caller's own request id
+  and the version it displayed, because a helper that invented either would
+  turn a lost retry into a second decision.
+*/
+describe('completion requests', () => {
+  it('carry the request id and the displayed version unchanged', () => {
+    expect(completeCommand('r1', 4)).toEqual({ requestId: 'r1', kind: 'complete', expectedVersion: 4 })
+    expect(reopenCommand('r2', 5)).toEqual({ requestId: 'r2', kind: 'reopen', expectedVersion: 5 })
+    expect(refreshEvidenceCommand('r3', 6)).toEqual({ requestId: 'r3', kind: 'refresh_pr_evidence', expectedVersion: 6 })
+    expect(assessCompletionCommand('r4', 7)).toEqual({ requestId: 'r4', kind: 'assess_completion', expectedVersion: 7 })
+    expect(linkPRCommand('r5', 8, '12')).toEqual({ requestId: 'r5', kind: 'link_pr', expectedVersion: 8, completion: { link: '12' } })
+  })
+
+  it('derive the merge kind from the intent, which the bridge refuses to see contradicted', () => {
+    const prs = [reviewedPR(link(12))]
+    expect(mergePRsCommand('r6', 9, prs, 'squash', false)).toMatchObject({
+      requestId: 'r6', kind: 'merge_pr', expectedVersion: 9, completion: { strategy: 'squash', completeAfter: false },
+    })
+    expect(mergePRsCommand('r7', 9, prs, 'rebase', true)).toMatchObject({
+      requestId: 'r7', kind: 'merge_and_complete', expectedVersion: 9, completion: { strategy: 'rebase', completeAfter: true },
+    })
+  })
+
+  it('send a run choice only when the user made one', () => {
+    const prs = [reviewedPR(link(12))]
+    expect(mergePRsCommand('r8', 9, prs, 'merge', true).completion).not.toHaveProperty('runChoice')
+    expect(mergePRsCommand('r9', 9, prs, 'merge', true, 'request_stop').completion).toMatchObject({ runChoice: 'request_stop' })
+  })
+
+  it('review exactly the evidence the link showed', () => {
+    const shown = link(12)
+    const reviewed = reviewedPR(shown)
+    expect(reviewed).toEqual({ repoId: 'repo', number: 12, nodeId: 'node-12', headSha: 'head-12', baseRef: 'main' })
+    // The identity is copied, not referenced: a link that moves after the
+    // review cannot change what the caller authorized.
+    shown.pr.headSha = 'head-moved'
+    expect(reviewed.headSha).toBe('head-12')
   })
 })

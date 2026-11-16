@@ -2798,7 +2798,7 @@ The branch was reviewed against `14d6b2bc` by three independent
 and the tests and record (`test/daemon`, this section, `AGENTS.md`). No blocker
 was raised. Both ends' surfaces, the gate in `dispatch`, the relay's
 fail-closed paths and the W9 test were called sound; the isolation audit was
-clean and every claim in this record was checked against the code. Six findings
+clean and every claim in this record was checked against the code. Nine findings
 were acted on in a follow-up commit. `web/bridge/container.go`'s
 `MARSHAL_ACP_VIEWERS` literal is now pinned to `acp.ViewersEnv` by a test,
 because the boundary forbids the import and a rename would otherwise have
@@ -2807,8 +2807,11 @@ asserted rather than only commented. `restricted` returns the close rule's
 answer instead of asking the fleet twice, and reads a `null` id as no id, the
 way the file's other frames do. The once-per-method drop log is pinned, and
 `session/cancel` is named among the refusals a connection-level notification
-cannot appear in `acpclient.Methods`. Two sentences here were corrected: the
-fail-closed shapes, and the `v/` contrast, which was inverted. One finding was
+cannot appear in `acpclient.Methods`. The `AGENTS.md` sentence claiming every
+agent's session opens with `⏎` is qualified: opening a containerized agent's
+screen needs plan 7's fleet screen, which is not on `main`. Two sentences here
+were corrected: the fail-closed shapes, and the `v/` contrast, which was
+inverted. One finding was
 rejected: a reviewer read the manual run's "at `WARN`" as false because
 `dispatch` logs at Info, but `dispatchRequest` logs a refused request at Warn
 (`internal/acp/server.go:808`) as well, so the record stands.

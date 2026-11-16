@@ -138,6 +138,12 @@ class EnvironmentModel extends ChangeNotifier implements UnsavedEditsSource {
   EnvironmentBuilds? _builds;
   int? _buildVersion;
   String? _buildStatus;
+
+  /// The saved draft the newest build was made from, as far as this window
+  /// knows: a build reads the draft, so a draft written since has never been
+  /// built. Null until the builds have been read once.
+  String? _builtDraft;
+
   BuildLog? _log;
   var _building = false;
 
@@ -170,13 +176,18 @@ class EnvironmentModel extends ChangeNotifier implements UnsavedEditsSource {
   String? get buildStatus => _buildStatus;
   bool get building => _building;
 
-  /// A build may be published once the newest build passed: the gate runs
-  /// what a passing build made, so there is nothing to publish before one.
+  /// A build may be published once the newest build passed, and only while the
+  /// draft is still the one that build read: the gate runs what a passing
+  /// build made, so a draft edited or saved since has never been built, and
+  /// the bridge publishes it without looking.
   bool get canPublish {
     final builds = _builds;
     if (builds == null || builds.versions.isEmpty) return false;
     final latest = builds.versions.reduce((a, b) => a.n >= b.n ? a : b);
-    return latest.state == 'ok';
+    if (latest.state != 'ok') return false;
+    if (hasUnsavedEdits) return false;
+    final built = _builtDraft;
+    return built == null || built == _saved;
   }
 
   /// The line of the source [kind] starts on, and the one it ends on.
@@ -313,6 +324,8 @@ class EnvironmentModel extends ChangeNotifier implements UnsavedEditsSource {
     _building = true;
     notifyListeners();
     try {
+      // A build reads the saved draft, so that is what it may later publish.
+      _builtDraft = _saved;
       final started = await client.startEnvironmentBuild(name);
       _buildVersion = started.version;
       _buildStatus = 'building';
@@ -339,6 +352,9 @@ class EnvironmentModel extends ChangeNotifier implements UnsavedEditsSource {
     if (client == null) return;
     final builds = await _buildsOf(client);
     _builds = builds;
+    // The builds that are already there were made from the draft as it stands,
+    // unless a build this window started has already said which draft it read.
+    _builtDraft ??= _saved;
     notifyListeners();
   }
 

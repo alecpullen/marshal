@@ -84,6 +84,7 @@ class _EnvironmentDesignerState extends State<EnvironmentDesigner> {
   /// Opens one layer's own text in a sheet, and writes it back on Apply: the
   /// rest of the source keeps its bytes.
   Future<void> _editLayer(LayerKind kind) async {
+    final layer = widget.model.layerOf(kind);
     final text = TextEditingController(text: widget.model.textOf(kind));
     await Sheet.show<void>(
       context,
@@ -94,9 +95,7 @@ class _EnvironmentDesignerState extends State<EnvironmentDesigner> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Field.multiline(
-              label:
-                  'Lines ${widget.model.layerOf(kind)?.sourceStart ?? 0}'
-                  '–${widget.model.layerOf(kind)?.sourceEnd ?? 0}',
+              label: 'Lines ${layer?.rangeLabel ?? '—'}',
               controller: text,
               mono: true,
             ),

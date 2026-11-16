@@ -203,6 +203,24 @@ egress = ["proxy.golang.org"]
     );
   });
 
+  testWidgets('a table written twice says both of its line ranges', (
+    tester,
+  ) async {
+    final model = EnvironmentModel.fixture(
+      name: 'go-service',
+      source:
+          '[workspace]\nname = "x"\n\n[[mounts]]\npath = "/src"\n\n'
+          '[network]\nmode = "open"\n\n[[mounts]]\npath = "/cache"\n',
+    );
+    addTearDown(model.dispose);
+    await pump(tester, EnvironmentDesigner(model: model));
+
+    // The blocks are lines 4–5 and 10–11; the network table between them is
+    // nobody else's.
+    expect(find.text('lines 4–5, 10–11'), findsOneWidget);
+    expect(find.text('lines 7–8'), findsOneWidget);
+  });
+
   testWidgets('an edit past a passing build disables publish', (tester) async {
     final transport = _Scripted({
       'GET /api/workspaces/go-service/builds': Response(

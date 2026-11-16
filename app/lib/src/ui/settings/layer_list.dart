@@ -28,7 +28,7 @@ class LayerList extends StatelessWidget {
             RowItem(
               name: layer.kind.label,
               description: layer.summary,
-              value: 'lines ${layer.sourceStart}–${layer.sourceEnd}',
+              value: 'lines ${layer.rangeLabel}',
               selected: model.selected == layer.kind,
               onTap: () => model.select(layer.kind),
             ),

@@ -313,6 +313,12 @@ designer (decision 6) and the chart above Usage's rows (decision 8).
   every keystroke; a save hands the source to the bridge, whose diagnostics
   replace the scan's silence. The plan's decision that the source is a
   monospace `Field` needed one kit addition (`Field.mono`).
+- **A table written more than once is one layer, one range per block.** The
+  scan keeps every `[[mounts]]` header, not only the first: a layer owns each
+  block its table is written as, `textOf` reads them in the document's order,
+  and an edit is written back at the first block and takes the rest with it.
+  The source view can select only one span, so a table declared in several
+  places selects from its first line to its last.
 - **Access points at Library's MCP tab with a row, not a link that navigates.**
   Settings is not wired to the shell's `PlaceNavigation` yet (F7 plan 1 left
   Automations and Library in the same position), so the row names where the

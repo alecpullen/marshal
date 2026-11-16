@@ -50,15 +50,18 @@ extension LayerKindName on LayerKind {
   };
 }
 
-/// One layer: its kind, a one-line summary and the 1-based inclusive lines of
-/// the source it owns.
+/// One layer: its kind, a one-line summary and the ranges of source it owns.
+///
+/// A layer is a table, and TOML declares a table more than once — every
+/// `[[mounts]]` block is the same table — so a layer owns one range per block,
+/// in the document's order. A table declared once, which is most of them, is
+/// one range.
 @immutable
 class Layer {
   const Layer({
     required this.kind,
     required this.summary,
-    required this.sourceStart,
-    required this.sourceEnd,
+    required this.ranges,
   });
 
   final LayerKind kind;
@@ -66,8 +69,15 @@ class Layer {
   /// What is in it, in one line.
   final String summary;
 
-  final int sourceStart;
-  final int sourceEnd;
+  /// The 1-based inclusive lines of each of the table's blocks, in order.
+  final List<(int, int)> ranges;
+
+  /// The layer's first and last line, for a view that can name only one span.
+  int get sourceStart => ranges.first.$1;
+  int get sourceEnd => ranges.last.$2;
+
+  /// The lines the layer owns, as a row writes them: `5–6, 10–11`.
+  String get rangeLabel => ranges.map((r) => '${r.$1}–${r.$2}').join(', ');
 }
 
 /// One parse diagnostic the bridge reported after a save.
@@ -198,18 +208,25 @@ class EnvironmentModel extends ChangeNotifier implements UnsavedEditsSource {
     return null;
   }
 
-  /// The layer's own text: its lines, and no others.
+  /// The layer's own text: its lines, and no others. A table declared more
+  /// than once reads as its blocks in the document's order, which is the order
+  /// a person would write them back in.
   String textOf(LayerKind kind) {
     final layer = layerOf(kind);
     if (layer == null) return '';
     final lines = _source.split('\n');
-    final start = (layer.sourceStart - 1).clamp(0, lines.length);
-    final end = layer.sourceEnd.clamp(start, lines.length);
-    return lines.sublist(start, end).join('\n');
+    return [
+      for (final (start, end) in layer.ranges)
+        ...lines.sublist(
+          (start - 1).clamp(0, lines.length),
+          end.clamp(0, lines.length),
+        ),
+    ].join('\n');
   }
 
   /// The layer's range as character offsets, which is what the source view
-  /// selects when a layer is chosen.
+  /// selects when a layer is chosen: a selection cannot be disjoint, so a
+  /// table declared in several places selects from its first line to its last.
   (int, int) charRangeOf(LayerKind kind) {
     final layer = layerOf(kind);
     if (layer == null) return (0, 0);
@@ -244,24 +261,39 @@ class EnvironmentModel extends ChangeNotifier implements UnsavedEditsSource {
   }
 
   /// Replaces one layer's lines and nothing else: the layers before and after
-  /// it keep their text to the character.
+  /// it keep their text to the character. A table declared more than once is
+  /// written back at its first block — the text the person edited is the text
+  /// the document holds afterwards — and its other blocks go with it.
   void editLayer(LayerKind kind, String next) {
     final layer = layerOf(kind);
     if (layer == null) return;
     final lines = _source.split('\n');
-    final start = (layer.sourceStart - 1).clamp(0, lines.length);
-    final end = layer.sourceEnd.clamp(start, lines.length);
     final replacement = next.split('\n');
     // A trailing blank line would grow the document on every save; the layer
     // keeps the blank line that separated it from the next one.
     if (replacement.length > 1 && replacement.last.isEmpty) {
       replacement.removeLast();
     }
-    final nextLines = [
-      ...lines.sublist(0, start),
-      ...replacement,
-      ...lines.sublist(end),
-    ];
+    final nextLines = <String>[];
+    var cursor = 0;
+    for (var i = 0; i < layer.ranges.length; i++) {
+      final (start, end) = layer.ranges[i];
+      final from = (start - 1).clamp(0, lines.length);
+      final to = end.clamp(from, lines.length);
+      nextLines.addAll(lines.sublist(cursor, from));
+      cursor = to;
+      if (i == 0) {
+        nextLines.addAll(replacement);
+        continue;
+      }
+      // A block that went leaves one blank line where it stood, not two.
+      if (nextLines.isNotEmpty && nextLines.last.trim().isEmpty) {
+        while (cursor < lines.length && lines[cursor].trim().isEmpty) {
+          cursor++;
+        }
+      }
+    }
+    nextLines.addAll(lines.sublist(cursor));
     final joined = nextLines.join('\n');
     if (joined == _source) return;
     _source = joined;
@@ -463,28 +495,35 @@ class EnvironmentModel extends ChangeNotifier implements UnsavedEditsSource {
   /// Reads the layers out of the source: every table it declares, with the
   /// lines it owns. One scan, so a keystroke in either view cannot leave the
   /// two disagreeing.
+  ///
+  /// A table can be declared more than once — `[[mounts]]` twice is still one
+  /// table — so the scan keeps every block of a name, not just the first, and
+  /// a layer owns all of them.
   void _rescan() {
     final lines = _source.split('\n');
     final header = RegExp(r'^\s*\[\[?([A-Za-z0-9_.-]+)\]\]?\s*(#.*)?$');
-    final found = <String, int>{}; // table name to its 1-based start line
+    final starts = <int>[]; // every header's 1-based line, ascending
+    final blocks = <String, List<int>>{}; // table name to its starts
     for (var i = 0; i < lines.length; i++) {
       final match = header.firstMatch(lines[i]);
       if (match == null) continue;
-      found.putIfAbsent(match.group(1)!, () => i + 1);
+      starts.add(i + 1);
+      blocks.putIfAbsent(match.group(1)!, () => []).add(i + 1);
     }
     final layers = <Layer>[];
     for (final kind in LayerKind.values) {
       for (final key in kind.keys) {
-        final start = found[key];
-        if (start == null) continue;
+        final own = blocks[key];
+        if (own == null) continue;
         if (layers.any((layer) => layer.kind == kind)) continue;
-        final end = _endOf(key, found, start, lines.length);
+        final ranges = [
+          for (final start in own) (start, _endOf(start, starts, lines)),
+        ];
         layers.add(
           Layer(
             kind: kind,
-            summary: _summary(lines, start, end),
-            sourceStart: start,
-            sourceEnd: end,
+            summary: _summary(lines, ranges.first.$1, ranges.first.$2),
+            ranges: List.unmodifiable(ranges),
           ),
         );
       }
@@ -494,14 +533,15 @@ class EnvironmentModel extends ChangeNotifier implements UnsavedEditsSource {
     if (_selected != null && layerOf(_selected!) == null) _selected = null;
   }
 
-  /// The last line a table owns: the one before the next table, with the blank
-  /// lines before that one left out.
-  int _endOf(String key, Map<String, int> found, int start, int length) {
-    var end = length;
-    for (final other in found.values) {
-      if (other > start && other - 1 < end) end = other - 1;
+  /// The last line one block of a table owns: the one before the next table's
+  /// header, with the blank lines before that one left out.
+  int _endOf(int start, List<int> starts, List<String> lines) {
+    var end = lines.length;
+    for (final other in starts) {
+      if (other <= start) continue;
+      end = other - 1;
+      break;
     }
-    final lines = _source.split('\n');
     while (end > start && lines[end - 1].trim().isEmpty) {
       end--;
     }

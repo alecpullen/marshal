@@ -133,6 +133,10 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 		}
 		i.BaseSHA = observed.BaseSHA
 	}
+	// The delivery PR the factory owns is completion evidence of the factory's
+	// own making: recording it here keeps the link current with what the
+	// observation confirmed, and changes nothing about its ownership.
+	factoryAssociateDelivery(&i, observed, now)
 	if len(i.PRs) > 0 && observed.PR != nil && (observed.PR.State == "closed" || observed.PR.State == "merged") && i.State != "closed" && i.State != "stopping" {
 		factoryBeginClosure(&i, *observed.PR, now)
 		return i, nil, nil
@@ -764,7 +768,13 @@ func (c *FactoryController) tick(ctx context.Context) error {
 		if o.PR == nil || (o.PR.State != "closed" && o.PR.State != "merged") {
 			continue
 		}
-		saved, err := c.internalUpdate(item, "external_closure", func(dst *FactoryItem) error { factoryBeginClosure(dst, *o.PR, c.now()); return nil })
+		saved, err := c.internalUpdate(item, "external_closure", func(dst *FactoryItem) error {
+			// The closure observation is the last fresh look at the delivery
+			// PR, so the link it confirms is journaled in the same append.
+			factoryAssociateDelivery(dst, o, c.now())
+			factoryBeginClosure(dst, *o.PR, c.now())
+			return nil
+		})
 		if errors.Is(err, ErrFactoryConflict) {
 			return nil
 		} // A completion won; observe again next tick.
@@ -1080,6 +1090,21 @@ func (c *FactoryController) command(ctx context.Context, itemID string, cmd Fact
 		}
 	}
 	before, _ := c.store.Get(itemID)
+	// The evidence commands resolve their pull requests through the item's
+	// forge before the atomic update: the store stays the journal's boundary,
+	// and the observation is carried into the apply rather than into the bytes
+	// a replay hashes.
+	var evidence *factoryCompletionEvidence
+	switch cmd.Kind {
+	case "link_pr":
+		ev, resolveErr := c.completionLinkEvidence(ctx, before, cmd)
+		if resolveErr != nil {
+			return FactoryItem{}, resolveErr
+		}
+		evidence = ev
+	case "refresh_pr_evidence":
+		evidence = c.completionRefreshEvidence(ctx, before)
+	}
 	raw, err := factoryCommandJournal(cmd, p)
 	if err != nil {
 		return FactoryItem{}, err
@@ -1087,7 +1112,7 @@ func (c *FactoryController) command(ctx context.Context, itemID string, cmd Fact
 	// The effective automatic-assessment preference is read before the
 	// journal append and recorded on the proposal in that same mutation.
 	autoAssess := c.autoAssess(before.ProjectRoot)
-	i, err := c.store.Update(itemID, cmd.RequestID, cmd.ExpectedVersion, raw, func(i *FactoryItem) error { return factoryApplyCommandFrom(i, cmd, p, autoAssess, c.now()) }, c.now())
+	i, err := c.store.Update(itemID, cmd.RequestID, cmd.ExpectedVersion, raw, func(i *FactoryItem) error { return factoryApplyCommandFrom(i, cmd, p, autoAssess, evidence, c.now()) }, c.now())
 	if err == nil {
 		if cmd.Kind == "revision_follow_up_confirm" {
 			// The intent is durable before anything is created, and both the
@@ -1145,13 +1170,14 @@ func factoryCommandJournal(cmd FactoryCommand, p *factoryPrincipal) (json.RawMes
 // produced. It has no project to consult, so a proposal it saves records the
 // documented default for automatic assessment.
 func factoryApplyCommand(i *FactoryItem, c FactoryCommand, now time.Time) error {
-	return factoryApplyCommandFrom(i, c, nil, true, now)
+	return factoryApplyCommandFrom(i, c, nil, true, nil, now)
 }
 
 // factoryApplyCommandFrom applies one command, attributing the entries it
 // journals to p in the same mutation. autoAssess is the effective
-// automatic-assessment preference of the item's project.
-func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincipal, autoAssess bool, now time.Time) error {
+// automatic-assessment preference of the item's project, and evidence is the
+// forge observation a completion command resolved before this mutation.
+func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincipal, autoAssess bool, evidence *factoryCompletionEvidence, now time.Time) error {
 	switch c.Kind {
 	case "approve":
 		if i.State != "draft" {
@@ -1246,6 +1272,8 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 		}
 	case "complete", "reopen":
 		return factoryApplyCompletion(i, c, p, now)
+	case "link_pr", "refresh_pr_evidence":
+		return factoryApplyCompletionLinks(i, c, p, evidence, now)
 	case "reconcile", "recover":
 		return ErrFactoryConflict
 	case "revision_propose":

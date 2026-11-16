@@ -360,6 +360,13 @@ type FactoryCommand struct {
 	// revision_follow_up_confirm read it, and every other kind leaves it nil,
 	// so a command those kinds do not carry marshals as it always did.
 	Revision *FactoryRevisionCommand `json:"revision,omitempty"`
+	// Completion is the structured payload of the completion commands:
+	// link_pr reads the pull request it names, refresh_pr_evidence carries
+	// nothing of its own, and the merge kinds read the reviewed set, the
+	// strategy, the completion intent and the run choice. Every other kind
+	// leaves it nil, so a command those kinds do not carry marshals as it
+	// always did.
+	Completion *FactoryCompletionCommand `json:"completion,omitempty"`
 }
 
 // FactoryPlanHash binds exact plan and spec bytes, including whitespace.

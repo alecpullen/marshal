@@ -903,4 +903,109 @@ looks, because the exact-match `assertStale` pins that no reason appears.
 
 ### Plan 6 — a wake with no screen, and the two P4 warnings
 
-_To be filled by the executor._
+Executed on Linux at `5a7aa4ab` on branch `p6-6-wake-warnings`, one commit per
+task, each task in its own git worktree merged into that branch — the box had
+unrelated work in flight in other worktrees, so nothing was edited in the main
+checkout. The plan's base assumes P5 plan 8 already merged; it had not, so the
+line numbers the plan cites had moved, but every anchor it names existed. The
+`TMPDIR` the plan names is a macOS path; every run used
+`TMPDIR=/tmp/p6-6-suite`.
+
+- **The viewer count is the host's** (decision 1): `marshalViewers` on
+  `agentHost`, handed to each connection's `StatusManager`. `ensureForwarder`
+  adds one for a session the first time that connection subscribes to its
+  status; `StatusManager.Close` and the forwarder's own end both give it back,
+  and the release is idempotent so a forwarder that ends because its session
+  went does not leave a screen behind. The counter is built on every host;
+  only the binding is gated.
+- **The detached binding is made where the service is built** (decision 2):
+  `RunWithViewers` sets `resumeDetached` in the run config, `newAgentHost`
+  gives the session manager a binder, and `servicePair` calls it once per
+  session after `service.New`. `bindDetachedResume` returns unless the report
+  is resumable, the config gate is on, no SDD gate is pending, no run is in
+  flight, and the session has no marshal viewer; its resume is the screen's own
+  call — `svc.Prompt` with `WatchResume{Name, Repeat}` — on a goroutine, so the
+  watch's goroutine never waits for a turn. A non-marshal connection's later
+  `bindWatchResume` replaces it, as it did before.
+- **The agent's version is kept beside the warning** (decision 4):
+  `agentRuntime.agentVersion`, set from the same handshake that decides
+  `versionWarning`, at both of the sites that set it. `Snapshot` builds
+  decision 5's sentence from it and `f.buildVersion` — the version the existing
+  skew rule already compares against, so no second source of truth.
+- **The environment header is one line** (decision 6): `headerLine` takes the
+  warning's first line, deletes control characters, cuts at 300 bytes on a rune
+  boundary, and trims. Both `101` answers add `Marshal-Env-Warning` only when
+  what is left is non-empty. `envWarningOf` reads `pc.envWarning` under
+  `pc.mu`; an agent on a child of its own has no project child, and says
+  nothing.
+- **The screen's note reuses `addNoteOnce`,** immediately after the version
+  note, and carries the child's warning unchanged after
+  "This project's environment could not be resolved fully: ". The warning
+  travels on the dialled connection, so the reconnect path adds it at most
+  once.
+
+**The resume exemption — the one production change this plan did not list.**
+Task 6's test could not pass as written, and the reason was upstream of this
+plan: every watch is created over ACP (`session/watch_start`),
+`WatchManagerACP.Start` tags it `Owner: "studio"`, and `watch.Manager.Start`
+dropped `resume` for *any* owner ("subagent watches never resume"). So a
+`Report` never carried `Resume`, and neither the new detached hook nor the
+screen's own resume path could ever fire: no client could start a resuming
+watch at all. With the user's approval the drop is now keyed on ownership
+rather than on the field being set: `subagentOwned` accepts the
+`subagent-<id>` tag `internal/agent/subagent.go` writes, and the studio tag is
+documented as provenance. `TestStartStudioWatchKeepsResume` and
+`TestAClientStartedWatchKeepsResume` pin the exemption;
+`TestStartOwnedWatchDropsResume` moved from a made-up `sa-1` owner to the
+production tag format it is about.
+
+**Deviations and gaps filled.**
+
+- **Plan 8 was not on the base.** The plan's anchors were checked with it
+  merged; every one of them was still present, so each task re-checked its
+  anchors before editing rather than trusting the numbers.
+- **Task 5's "after plan 2" gate was already satisfied.** `addNoteOnce` was on
+  main at the base commit, so the task ran with Tasks 1 to 4 and no merge of
+  main was needed.
+- **Task 2's file list missed the recorded wire contract.**
+  `web/bridge/testdata/contract/AgentStatus.json`, which
+  `TestTheWireIsUnchanged` pins, was regenerated with `-update`; its diff is the
+  new field alone. The plan's verify regex does not select that test, so the
+  full suite is what caught it.
+- **Task 1's `TestAHostWithoutViewersBindsNothing` matches none of the plan's
+  `-run` alternatives** (`Wake|ViewerCount|Binding|BindsWatchResume`). It is
+  written as specified, and the same stdio-host assertion sits inside
+  `TestTheServiceBuilderMakesTheDetachedBinding`, which the filter does select.
+- **Task 6's test speaks ACP directly.** Watches in production are started by
+  the bridge, and the rpc client has no `session/watch_start` wrapper, so the
+  test builds the connection and sends the method itself — on a connection that
+  never subscribes to the session's status, which is exactly a session with no
+  viewer.
+
+**Mutation check.** Letting the hook resume even with a marshal viewer failed
+`TestAWakeWithAScreenIsTheScreens` ("a wake with a screen on the session
+started … want nothing"), as the plan requires. Restored.
+
+**No manual run, and why.** The plan's item 4 needs a person at a terminal, and
+the user directed that it be skipped and recorded as not performed. What it
+would have shown is covered by `TestADetachedSessionsWakeRuns`, which drives a
+real bridge, a real project child and a screen that detaches: the watch fires
+while no viewer is on the session, the session runs the wake's turn on the
+provider fixture, and an attach afterwards reads the reply in the transcript.
+The fleet's Info tab was not driven by hand either; `TestTheInfoTabShowsAVersionWarning`
+pins the line, its position and its colour.
+
+**Verification.** The baseline was clean under every task's verify command — no
+filtered test failed at the starting commit — so there was no failure this plan
+had to re-prove. `gofmt -l internal cmd test web` printed nothing and
+`CGO_ENABLED=1 go vet ./...` was clean. CI's suite command
+(`go test -p=1 ./... -count=1 -timeout 20m` with the twelve named latency
+budgets skipped) passed in full; its first run is what caught the missing wire
+recording above. A second run failed `internal/app`'s
+`TestWorkCoordinatorAllActiveAndBoundedTerminalDetails` on a loaded machine —
+that package passes alone on both this branch and the base commit, and the
+third full run was clean, so it is load flake rather than this change.
+`CGO_ENABLED=1 go build -o marshal ./cmd/marshal` succeeded, the scripted
+usability suite passed against that binary (44s), and `cd web/ui && npm install
+&& npm test` passed 1,299 tests in 119 files.
+

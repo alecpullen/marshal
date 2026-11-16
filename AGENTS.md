@@ -66,7 +66,9 @@ client onto that child's viewer socket, relaying its frames unchanged. Plain
 `marshal` starts its session on that daemon when one answers, the quit key and
 `/detach` leave it running, and `marshal attach [id]` comes back to it.
 A session screen whose connection closes reconnects to its session for up to a
-minute, keeping its draft. `marshal fleet` opens an agent's or a daemon
+minute, keeping its draft. A watch that fires while no screen is attached
+resumes its session itself, and the next screen to attach sees the run.
+`marshal fleet` opens an agent's or a daemon
 session's screen with `⏎`, and `/fleet` returns to the fleet from any daemon
 session. A
 daemon session on an untrusted project asks its TUI, as embedded mode does,

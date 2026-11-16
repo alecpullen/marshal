@@ -7,7 +7,7 @@ import * as api from '../lib/api'
 import { factoryPlanHash } from '../lib/factory'
 import { connectSSE } from '../lib/sse.js'
 import { parseChatRoute, parseFactoryRoute } from '../lib/routes'
-import type { FactoryApproval, FactoryItem as Item, FactoryRoute, FactoryWorker } from '../lib/factory'
+import type { FactoryApproval, FactoryItem as Item, FactoryPRLink, FactoryRoute, FactoryWorker } from '../lib/factory'
 import type { FactoryState } from '../lib/factoryStore'
 import type { PreviewDeployment, PreviewReport } from '../lib/preview'
 vi.mock('../lib/api', async (actual) => ({
@@ -694,4 +694,82 @@ it('legacyEventsRender', async () => {
   // line is invented for it, and nothing claims a client acted.
   expect(screen.queryAllByTestId('factory-provenance')).toHaveLength(0)
   expect(screen.queryByText(/Requested by/)).toBeNull()
+})
+
+/** One linked pull request at the identity a merge would review. */
+const linked = (n: number): FactoryPRLink => ({
+  repoId: 'repo',
+  pr: { number: n, url: `https://forge.example/pull/${n}`, nodeId: `node-${n}`, headRef: `feat/${n}`, baseRef: 'main',
+    headSha: `head-${n}0000000000`, baseSha: 'base', state: 'open', draft: false },
+  origin: 'user',
+  observedAt: '2026-05-10T12:00:00Z',
+  fresh: true,
+})
+
+it('completionPanelLivesWithThePullRequests', async () => {
+  const item = { ...base, state: 'ready', completion: { status: 'open', links: [linked(12)] } } as unknown as Item
+  getItem.mockResolvedValue(item)
+  renderItem(factoryState(), { view: 'prs' })
+  // Completion is a person's decision about this work, so it sits with the
+  // pull requests it is judged against; the delivery history keeps its place.
+  expect(await screen.findByTestId('completion-panel')).toBeTruthy()
+  expect(screen.getByTestId('pull-requests-view')).toBeTruthy()
+  expect(screen.getByTestId('completion-status').textContent).toContain('Open')
+  expect(screen.getByTestId('completion-execution').textContent).toBe('ready')
+  // No approval records criteria, so none are invented for it.
+  expect(screen.getByTestId('completion-criteria').textContent).toContain('Unknown')
+})
+
+it('completionCommandsCarryTheRequestEnvelope', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  const item = { ...base, state: 'ready', version: 7, completion: { status: 'open', links: [linked(12)] } } as unknown as Item
+  getItem.mockResolvedValue(item)
+  vi.mocked(api.commandFactoryItem).mockResolvedValue({ ...item, version: 8, completion: { status: 'complete', links: [linked(12)] } } as Item)
+  renderItem(factoryState(), { view: 'prs' })
+  await fireEvent.click(await screen.findByRole('button', { name: 'Complete work item' }))
+  await vi.waitFor(() => expect(vi.mocked(api.commandFactoryItem)).toHaveBeenCalledTimes(1))
+  // The panel supplies the command's own half only; the request id, the
+  // version it was reviewed against and the decision stay the item's own.
+  expect(vi.mocked(api.commandFactoryItem).mock.calls[0][1]).toEqual({
+    requestId: expect.any(String), kind: 'complete', expectedVersion: 7, decisionId: undefined,
+  })
+  expect(await screen.findByText(/Completion recorded/)).toBeTruthy()
+})
+
+it('staleCompletionKeepsTheLinkInput', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  const item = { ...base, state: 'ready', completion: { status: 'open', links: [] } } as unknown as Item
+  getItem.mockResolvedValue(item)
+  vi.mocked(api.commandFactoryItem).mockRejectedValueOnce(new api.APIError(409, { error: 'stale version', currentVersion: 9 }))
+  renderItem(factoryState(), { view: 'prs' })
+  const input = await screen.findByLabelText('Pull request number or URL')
+  await fireEvent.input(input, { target: { value: '12' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Link PR' }))
+  await screen.findByText(/Item changed. Review the refreshed version/)
+  expect(onRefresh).toHaveBeenCalledTimes(1)
+  // The refresh redraws the panel in place, so nobody retypes the reference.
+  expect((screen.getByLabelText('Pull request number or URL') as HTMLInputElement).value).toBe('12')
+  expect(upsert).not.toHaveBeenCalled()
+})
+
+it('historyNamesCompletionDecisionsApartFromPrEvents', async () => {
+  const item = {
+    ...base,
+    state: 'ready',
+    history: [
+      { sequence: 1, at: '2026-01-01T00:00:00Z', kind: 'completion_completed', message: 'Work item completed by user', effectId: '' },
+      { sequence: 2, at: '2026-01-02T00:00:00Z', kind: 'completion_merge_confirmed', message: 'pull request #12 merged', effectId: '' },
+      { sequence: 3, at: '2026-01-03T00:00:00Z', kind: 'state', message: 'Draft created', effectId: '' },
+    ],
+  } as unknown as Item
+  getItem.mockResolvedValue(item)
+  renderItem(factoryState(), { view: 'activity' })
+
+  await screen.findByText('Work item completed by user')
+  // The person's own decision is labelled as theirs, the merge as the forge's
+  // confirmation, so a later run event cannot read as a completion.
+  expect(screen.getByText('You completed this work item')).toBeTruthy()
+  expect(screen.getByText('Merge confirmed')).toBeTruthy()
+  // A legacy kind keeps the line it always had: no label is invented for it.
+  expect(screen.getAllByTestId('factory-event-kind')).toHaveLength(2)
 })

@@ -369,6 +369,94 @@ export function reviewedPR(link: FactoryPRLink): FactoryCompletionPR {
 }
 
 /**
+ * The item's business completion, read apart from its execution `state`: a
+ * work item can count as done while the run is still going, and can be open
+ * again after it stopped. An absent record and an empty status both mean open,
+ * which is what a record written before completion existed carries.
+ */
+export function completionStatus(item: Pick<FactoryItem, 'completion'>): 'open' | 'complete' {
+  return item.completion?.status === 'complete' ? 'complete' : 'open'
+}
+
+/** Every pull request linked to the item's completion, whichever origin linked it. */
+export function completionLinks(item: Pick<FactoryItem, 'completion'>): FactoryPRLink[] {
+  return item.completion?.links ?? []
+}
+
+/**
+ * The links a merge can select: the pull requests the forge still reports
+ * open. A closed or merged one is history, and reviewing it would promise a
+ * merge the bridge refuses.
+ */
+export function selectableLinks(item: Pick<FactoryItem, 'completion'>): FactoryPRLink[] {
+  return completionLinks(item).filter((link) => link.pr.state === 'open')
+}
+
+/** True when any of these observations no longer describes its pull request. */
+export function linksStale(links: FactoryPRLink[]): boolean {
+  return links.some((link) => link.fresh === false)
+}
+
+/**
+ * Whether the bridge requires a decision about the item's own run before it
+ * authorizes a merge batch (`factoryBatchRunChoice` → `factoryBatchRunActive`):
+ * a state the item owns, with a worker that is not parked or an effect in
+ * flight. An unknown state owns its run, so this asks rather than assumes.
+ */
+export function runNeedsChoice(item: Pick<FactoryItem, 'state' | 'workers' | 'effects'>): boolean {
+  if (item.state === 'draft' || item.state === 'closed' || item.state === 'stopped') return false
+  if ((item.workers ?? []).some((worker) => !worker.parked)) return true
+  return (item.effects ?? []).some((effect) => effect.status === 'prepared' || effect.status === 'dispatched')
+}
+
+/** The first entry of a batch the batch may act on: the first it has not confirmed. */
+export function nextBatchStep(batch: FactoryMergeBatch | null | undefined): FactoryMergeStep | null {
+  for (const step of batch?.steps ?? []) if (step.state !== 'confirmed') return step
+  return null
+}
+
+/**
+ * The links a stopped or partly failed batch could still merge: the entries it
+ * never confirmed whose pull request is still open, in the order it authorized.
+ * An `uncertain` entry is never one of them — the bridge says its outcome has
+ * to be read again, so sending it again could merge the same pull request
+ * twice — and a `confirmed` one has already merged.
+ */
+export function remainingMergeLinks(item: Pick<FactoryItem, 'completion'>): FactoryPRLink[] {
+  const batch = item.completion?.batch
+  const links = completionLinks(item)
+  if (!batch || !links.length) return []
+  const remaining: FactoryPRLink[] = []
+  for (const step of batch.steps) {
+    if (step.state === 'confirmed' || step.state === 'uncertain') continue
+    const link = links.find((candidate) => candidate.repoId === step.repoId && candidate.pr.nodeId === step.nodeId)
+    if (link && link.pr.state === 'open') remaining.push(link)
+  }
+  return remaining
+}
+
+/** How a reviewed revision reads: the short head SHA, or that there is none. */
+export function revisionLabel(sha: string | undefined): string {
+  return sha ? sha.slice(0, 7) : 'unknown'
+}
+
+/** The goal a completion decision names: the work item's title, as it was created. */
+export function completionGoal(item: Pick<FactoryItem, 'title'>): string {
+  return item.title && item.title.trim() ? item.title : 'Untitled work item'
+}
+
+/**
+ * The criteria a completion decision is judged against: the newest approved
+ * revision's specification. Null means the item carries no approval — or one
+ * with no specification — so the surface says the criteria are unknown instead
+ * of inventing them from the working draft.
+ */
+export function completionCriteria(item: Pick<FactoryItem, 'approvals'>): string | null {
+  const latest = item.approvals?.at(-1)
+  return latest && latest.spec.trim() ? latest.spec : null
+}
+
+/**
  * How an action's authority is described. `user_directed` is worded as the
  * client's own assertion because that is all it is: the bridge records the
  * claim, it does not verify that a human asked. An authority this build does

@@ -152,6 +152,61 @@ class BridgeClient {
     StepDiffs.fromJson,
   );
 
+  /// GET /api/agents/{id}/review/comments: the change set's comments, oldest
+  /// first.
+  Future<List<ReviewComment>> reviewComments(String agentId) async {
+    final response = await _send(
+      Request(
+        path: '/api/agents/${Uri.encodeComponent(agentId)}/review/comments',
+      ),
+    );
+    final values = (_decode(response) as Map<String, dynamic>)['comments'];
+    return [
+      for (final value in (values as List<dynamic>? ?? const []))
+        ReviewComment.fromJson(value as Map<String, dynamic>),
+    ];
+  }
+
+  /// POST /api/agents/{id}/review/comments: leaves a comment on a line. The
+  /// bridge delivers it to the agent as steering, and answers with the
+  /// comment it stored.
+  Future<ReviewComment> addReviewComment(
+    String agentId,
+    ReviewCommentRequest request,
+  ) => _objectOf(
+    '/api/agents/${Uri.encodeComponent(agentId)}/review/comments',
+    ReviewComment.fromJson,
+    method: 'POST',
+    body: request,
+  );
+
+  /// POST …/review/comments/{cid}/resolve: closes a comment's thread.
+  Future<void> resolveReviewComment(String agentId, String commentId) => _post(
+    '/api/agents/${Uri.encodeComponent(agentId)}/review/comments/'
+    '${Uri.encodeComponent(commentId)}/resolve',
+    null,
+  );
+
+  /// POST /api/agents/{id}/exit: commits, verifies and ships the work.
+  Future<ExitResult> exit(String agentId, ExitRequest request) => _objectOf(
+    '/api/agents/${Uri.encodeComponent(agentId)}/exit',
+    ExitResult.fromJson,
+    method: 'POST',
+    body: request,
+  );
+
+  /// POST /api/agents/{id}/discard: throws the agent's work away.
+  Future<void> discard(String agentId) =>
+      _post('/api/agents/${Uri.encodeComponent(agentId)}/discard', null);
+
+  /// GET /api/agents/{id}/patch: the change set as a patch file's text.
+  Future<String> patch(String agentId) async {
+    final response = await _send(
+      Request(path: '/api/agents/${Uri.encodeComponent(agentId)}/patch'),
+    );
+    return response.body;
+  }
+
   Future<Response> _send(Request request) async {
     final response = await _transport.send(request);
     if (!response.ok) {
@@ -171,8 +226,13 @@ class BridgeClient {
     T Function(Map<String, dynamic> json) fromJson, {
     Map<String, String> query = const {},
     String method = 'GET',
+    Object? body,
   }) async => fromJson(
-    _object(await _send(Request(method: method, path: path, query: query))),
+    _object(
+      await _send(
+        Request(method: method, path: path, query: query, body: body),
+      ),
+    ),
   );
 
   Future<List<T>> _listOf<T>(

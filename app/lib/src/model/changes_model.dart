@@ -65,6 +65,40 @@ class GateCheckView {
   final String detail;
 }
 
+/// One review comment as a tab draws it: its thread's identity, where it is
+/// anchored, what it says, and whether it is still open.
+@immutable
+class CommentView {
+  const CommentView({
+    required this.id,
+    required this.path,
+    required this.line,
+    required this.side,
+    required this.quote,
+    required this.body,
+    required this.sent,
+    required this.resolved,
+  });
+
+  final String id;
+  final String path;
+  final int line;
+
+  /// `old` or `new`: the side of the diff the comment is on.
+  final String side;
+
+  /// The diff lines the comment is anchored to.
+  final String quote;
+
+  final String body;
+
+  /// Whether the bridge has delivered it to the agent.
+  final bool sent;
+
+  /// Whether the thread is closed.
+  final bool resolved;
+}
+
 /// An agent's changes (f4-inspector.md decision 5): the gate, the files with
 /// their counts, the diff, the marks a person put on files they have read,
 /// the review comments, and the way to ship it all.
@@ -77,39 +111,33 @@ class ChangesModel extends ChangeNotifier {
     this._client, {
     required this.agentId,
     this.sessionId,
-    StackStore? live,
+    this.live,
     DateTime Function()? now,
-  }) : _live = live,
-       _now = now ?? DateTime.now;
+  }) : _now = now ?? DateTime.now;
 
   /// A model holding what a caller gives it, for a test or the gallery. It
   /// reads nothing and ships nothing.
   ChangesModel.seeded({
-    GateResult? gate,
-    DateTime? gateRanAt,
-    List<DiffFile> files = const [],
-    String diff = '',
-    List<StepDiff> steps = const [],
-    CommitDraft? draft,
-    List<ReviewComment> comments = const [],
-    StackStore? live,
+    this.gate,
+    this.gateRanAt,
+    this.files = const [],
+    this.diff = '',
+    this.steps = const [],
+    this.draft,
+    this.comments = const [],
+    this.live,
   }) : _client = null,
        agentId = '',
        sessionId = null,
-       _live = live,
        _now = DateTime.now,
-       _status = ChangesStatus.ready {
-    this.gate = gate;
-    this.gateRanAt = gateRanAt;
-    this.files = files;
-    this.diff = diff;
-    this.steps = steps;
-    this.draft = draft;
-    this.comments = comments;
-  }
+       _status = ChangesStatus.ready;
 
   final BridgeClient? _client;
-  final StackStore? _live;
+
+  /// The live transcript this change set follows, when the host gives one:
+  /// with nothing selected, the file the agent is editing is the one shown
+  /// (decision 4).
+  final StackStore? live;
 
   /// What "ran 2m ago" is measured against.
   final DateTime Function() _now;
@@ -156,6 +184,10 @@ class ChangesModel extends ChangeNotifier {
 
   final Set<String> _viewed = {};
 
+  /// The threads this session closed, for a comment the bridge has not yet
+  /// answered about.
+  final Set<String> _resolved = {};
+
   /// The paths a person has marked read. It is client state (decision 5),
   /// held here so switching tabs does not lose it.
   Set<String> get viewed => Set.unmodifiable(_viewed);
@@ -186,7 +218,7 @@ class ChangesModel extends ChangeNotifier {
   /// The file the agent is editing right now, from the live transcript: a
   /// running call's target, or the last target of the live step's call.
   String? get editedFile {
-    final live = _live;
+    final live = this.live;
     if (live == null) return null;
     // A call that has not finished is the file being edited right now.
     for (final node in live.nodes) {
@@ -288,6 +320,7 @@ class ChangesModel extends ChangeNotifier {
       gateRanAt = record == null ? null : DateTime.tryParse(record.at);
       draft = message;
       this.steps = steps.steps;
+      comments = await client.reviewComments(agentId);
       _status = ChangesStatus.ready;
     } catch (error) {
       _status = ChangesStatus.failed;
@@ -338,6 +371,157 @@ class ChangesModel extends ChangeNotifier {
 
   /// Whether [path] is marked read.
   bool isViewed(String path) => _viewed.contains(path);
+
+  /// The comments on [path], or on all of them when [line] is null.
+  List<CommentView> commentsAt(String path, [int? line]) => [
+    for (final comment in commentThreads)
+      if (comment.path == path && (line == null || comment.line == line))
+        comment,
+  ];
+
+  /// Every comment's thread, oldest first.
+  List<CommentView> get commentThreads => [
+    for (final comment in comments)
+      CommentView(
+        id: comment.id,
+        path: comment.path,
+        line: comment.line,
+        side: comment.side,
+        quote: comment.quote,
+        body: comment.body,
+        sent: comment.sentAt.isNotEmpty,
+        resolved: isResolved(comment),
+      ),
+  ];
+
+  /// Whether a comment's thread is closed: the bridge said so, or this
+  /// session resolved it.
+  bool isResolved(ReviewComment comment) =>
+      comment.resolvedAt != null || _resolved.contains(comment.id);
+
+  /// Leaves a comment on a line, which the bridge delivers to the agent as
+  /// steering (decision 5). The comment it stored joins the list.
+  Future<void> comment(
+    String path,
+    int line,
+    String body, {
+    String side = 'new',
+    String quote = '',
+  }) async {
+    final client = _client;
+    if (client == null) return;
+    final stored = await client.addReviewComment(
+      agentId,
+      ReviewCommentRequest(
+        path: path,
+        line: line,
+        side: side,
+        quote: quote,
+        body: body,
+      ),
+    );
+    comments = [...comments, stored];
+    notifyListeners();
+  }
+
+  /// Closes a comment's thread.
+  Future<void> resolve(String commentId) async {
+    final client = _client;
+    if (client == null) return;
+    await client.resolveReviewComment(agentId, commentId);
+    _resolved.add(commentId);
+    notifyListeners();
+  }
+
+  /// Ships the work (decision 6): the message, whether to open a pull
+  /// request, and — over a gate that failed — the reason for overriding it.
+  ///
+  /// Every outcome is returned as a result, never thrown: a gate or a forge
+  /// that refused pushed nothing, and the result says why (decision 7).
+  Future<ShipResult> ship({
+    required String message,
+    required bool openPr,
+    String? overrideReason,
+  }) async {
+    final client = _client;
+    if (client == null) {
+      return const ShipResult(
+        ShipOutcome.pushed,
+        message: 'Nothing was shipped: this is fixture data.',
+      );
+    }
+    final reason = overrideReason?.trim() ?? '';
+    try {
+      final result = await client.exit(
+        agentId,
+        ExitRequest(
+          commitMessage: message,
+          noPR: !openPr,
+          override: reason.isEmpty
+              ? null
+              : GateOverride(
+                  reason: reason,
+                  at: _now().toUtc().toIso8601String(),
+                  by: '',
+                ),
+        ),
+      );
+      if (result.blocked == true) {
+        final command = result.verify?.failedCommand ?? '';
+        return ShipResult(
+          ShipOutcome.gateRefused,
+          message: command.isEmpty
+              ? 'The gate refused to ship this work.'
+              : 'The gate refused: $command failed.',
+        );
+      }
+      if (result.destination == 'patch') {
+        return const ShipResult(
+          ShipOutcome.patch,
+          message: 'This source is read-only, so the work leaves as a patch.',
+        );
+      }
+      final url = result.prUrl ?? '';
+      if (url.isNotEmpty) {
+        return ShipResult(
+          ShipOutcome.pullRequest,
+          url: url,
+          message: result.branch ?? '',
+        );
+      }
+      return ShipResult(ShipOutcome.pushed, message: result.branch ?? '');
+    } catch (error) {
+      // The only refusal left is the forge's: the gate's is a blocked
+      // result, and a source that is read-only is a patch.
+      return ShipResult(ShipOutcome.forgeRefused, message: '$error');
+    }
+  }
+
+  /// Throws the agent's work away. Nothing about the change set survives it.
+  Future<void> discard() async {
+    // A bridge that refused leaves the answer as it was: the work is still
+    // there, and the tab still shows it.
+    final client = _client;
+    if (client != null) await client.discard(agentId);
+    files = const [];
+    diff = '';
+    _fileDiffs = null;
+    steps = const [];
+    comments = const [];
+    _viewed.clear();
+    _resolved.clear();
+    _selectedFile = null;
+    gate = null;
+    gateRanAt = null;
+    notifyListeners();
+  }
+
+  /// The change set as a patch file's text, for Export patch.
+  Future<String> exportPatch() async {
+    final client = _client;
+    if (client == null) return '';
+    return client.patch(agentId);
+  }
 
   /// The path a tool's target names: `file.go:12` is `file.go`.
   static final _targetPath = RegExp(r'^(.+?):\d+(?::\d+)?$');

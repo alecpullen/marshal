@@ -110,7 +110,12 @@ void main() {
         '/api/agents/a-1/commit-draft',
         _json(const CommitDraft(message: 'acp: split the stack').toJson()),
       )
-      ..reply('GET', '/api/sessions/s-1/step-diffs', _json(_steps().toJson()));
+      ..reply('GET', '/api/sessions/s-1/step-diffs', _json(_steps().toJson()))
+      ..reply(
+        'GET',
+        '/api/agents/a-1/review/comments',
+        _json({'comments': <Object>[]}),
+      );
   });
 
   tearDown(() => bridge.close());
@@ -218,12 +223,225 @@ void main() {
     expect(model.activeFile, 'internal/acp/new.go');
   });
 
+  test('comment posts as steering', () async {
+    bridge.reply(
+      'POST',
+      '/api/agents/a-1/review/comments',
+      _json(_comment().toJson()),
+    );
+    final model = ChangesModel(client, agentId: 'a-1');
+    await model.comment(
+      'internal/acp/stack.go',
+      7,
+      'Trim this list to what the tests load',
+      side: 'old',
+      quote: '-two',
+    );
+
+    final post = bridge.requests.singleWhere(
+      (r) => r.method == 'POST' && r.uri == '/api/agents/a-1/review/comments',
+    );
+    final body = jsonDecode(post.body) as Map<String, dynamic>;
+    expect(body['path'], 'internal/acp/stack.go');
+    expect(body['line'], 7);
+    expect(body['side'], 'old');
+    expect(body['quote'], '-two');
+    expect(body['body'], 'Trim this list to what the tests load');
+    // The bridge is what steers the agent with it; the model keeps the
+    // comment the bridge stored.
+    expect(model.comments.single.id, 'rc-1');
+  });
+
+  test('resolve resolves', () async {
+    bridge.reply(
+      'POST',
+      '/api/agents/a-1/review/comments/rc-1/resolve',
+      _json(const {'status': 'resolved'}),
+    );
+    final model = ChangesModel(client, agentId: 'a-1')..comments = [_comment()];
+    expect(model.commentThreads.single.resolved, isFalse);
+
+    await model.resolve('rc-1');
+
+    expect(
+      bridge.requests.where(
+        (r) =>
+            r.method == 'POST' &&
+            r.uri == '/api/agents/a-1/review/comments/rc-1/resolve',
+      ),
+      hasLength(1),
+    );
+    expect(model.commentThreads.single.resolved, isTrue);
+  });
+
+  test('ship posts the message and whether to open a pull request', () async {
+    bridge.reply(
+      'POST',
+      '/api/agents/a-1/exit',
+      _json(
+        const ExitResult(
+          destination: 'push',
+          branch: 'f4-inspector',
+          prUrl: 'https://example.com/marshal/pull/7',
+        ).toJson(),
+      ),
+    );
+    final model = ChangesModel(client, agentId: 'a-1');
+
+    final result = await model.ship(message: 'f4: the inspector', openPr: true);
+
+    final post = bridge.requests.singleWhere(
+      (r) => r.method == 'POST' && r.uri == '/api/agents/a-1/exit',
+    );
+    final body = jsonDecode(post.body) as Map<String, dynamic>;
+    expect(body['commitMessage'], 'f4: the inspector');
+    // A pull request is the default: the flag is false, which the bridge
+    // reads as "open one", and no override is sent.
+    expect(body['noPr'], isFalse);
+    expect(body.containsKey('override'), isFalse);
+    expect(result.outcome, ShipOutcome.pullRequest);
+    expect(result.url, 'https://example.com/marshal/pull/7');
+
+    await model.ship(message: 'f4: the inspector', openPr: false);
+    final second =
+        jsonDecode(bridge.requests.last.body) as Map<String, dynamic>;
+    expect(second['noPr'], isTrue);
+  });
+
+  test('an override sends the reason it was given', () async {
+    bridge.reply(
+      'POST',
+      '/api/agents/a-1/exit',
+      _json(const ExitResult(destination: 'push', branch: 'b').toJson()),
+    );
+    final model = ChangesModel(client, agentId: 'a-1');
+    await model.ship(
+      message: 'm',
+      openPr: true,
+      overrideReason: 'the flaky test is unrelated',
+    );
+    final body = jsonDecode(bridge.requests.last.body) as Map<String, dynamic>;
+    final override = body['override'] as Map<String, dynamic>;
+    expect(override['reason'], 'the flaky test is unrelated');
+  });
+
+  test('each ship outcome is read from what the bridge answers', () async {
+    Future<ShipResult> ship(ExitResult result) {
+      bridge.reply('POST', '/api/agents/a-1/exit', _json(result.toJson()));
+      return ChangesModel(
+        client,
+        agentId: 'a-1',
+      ).ship(message: 'm', openPr: true);
+    }
+
+    expect(
+      (await ship(
+        const ExitResult(
+          destination: 'push',
+          branch: 'b',
+          prUrl: 'https://x/pull/1',
+        ),
+      )).outcome,
+      ShipOutcome.pullRequest,
+    );
+    expect(
+      (await ship(const ExitResult(destination: 'push', branch: 'b'))).outcome,
+      ShipOutcome.pushed,
+    );
+    final refused = await ship(
+      const ExitResult(
+        destination: 'push',
+        blocked: true,
+        verify: GateResult(
+          ok: false,
+          skipped: false,
+          failedCommand: 'go test ./...',
+        ),
+      ),
+    );
+    expect(refused.outcome, ShipOutcome.gateRefused);
+    expect(refused.message, contains('go test ./...'));
+    expect(
+      (await ship(const ExitResult(destination: 'patch'))).outcome,
+      ShipOutcome.patch,
+    );
+
+    // A forge that refuses is an error from the bridge: nothing was pushed.
+    bridge.reply(
+      'POST',
+      '/api/agents/a-1/exit',
+      const FakeReply(502, body: '{"error":"forge: no credential"}'),
+    );
+    final forge = await ChangesModel(
+      client,
+      agentId: 'a-1',
+    ).ship(message: 'm', openPr: true);
+    expect(forge.outcome, ShipOutcome.forgeRefused);
+    expect(forge.message, contains('no credential'));
+  });
+
+  test('discard posts, then empties the change set', () async {
+    bridge.reply(
+      'POST',
+      '/api/agents/a-1/discard',
+      _json(const ActionStatus(status: 'discarded').toJson()),
+    );
+    final model = ChangesModel(client, agentId: 'a-1')
+      ..files = _diff().files
+      ..diff = _diff().diff ?? ''
+      ..comments = [_comment()];
+    model.toggleViewed('internal/acp/stack.go');
+
+    await model.discard();
+
+    expect(
+      bridge.requests.where(
+        (r) => r.method == 'POST' && r.uri == '/api/agents/a-1/discard',
+      ),
+      hasLength(1),
+    );
+    expect(model.files, isEmpty);
+    expect(model.diff, isEmpty);
+    expect(model.comments, isEmpty);
+    expect(model.viewed, isEmpty);
+  });
+
+  test('refresh loads the comments on the change set', () async {
+    bridge.reply(
+      'GET',
+      '/api/agents/a-1/review/comments',
+      _json({
+        'comments': [_comment().toJson()],
+      }),
+    );
+    final model = ChangesModel(client, agentId: 'a-1');
+    await model.refresh();
+    expect(model.commentThreads.single.id, 'rc-1');
+    expect(model.commentThreads.single.sent, isTrue);
+  });
+
   test('with nothing to follow the first changed file is shown', () {
     final model = ChangesModel.seeded(files: _diff().files);
     expect(model.editedFile, isNull);
     expect(model.activeFile, 'internal/acp/stack.go');
   });
 }
+
+/// One review comment as the bridge stores it.
+ReviewComment _comment({String id = 'rc-1', String? resolvedAt}) =>
+    ReviewComment(
+      id: id,
+      agentID: 'a-1',
+      path: 'internal/acp/stack.go',
+      line: 7,
+      side: 'old',
+      quote: '-two',
+      body: 'Trim this list',
+      createdAt: '2026-11-17T04:10:00Z',
+      sentAt: '2026-11-17T04:10:01Z',
+      resolvedAt: resolvedAt,
+      ownerID: 'u-1',
+    );
 
 FakeReply _json(Object body) => FakeReply(
   200,

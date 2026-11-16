@@ -1337,11 +1337,16 @@ class ExitRequest {
   const ExitRequest({
     required this.commitMessage,
     this.override,
+    this.noPR,
   });
 
   final String commitMessage;
   /// Override, when non-nil, pushes despite a failed or skipped gate.
   final GateOverride? override;
+  /// NoPR pushes the branch without opening a pull request. It is the
+  /// app's "open a pull request" choice, off; absent means open one, so a
+  /// client that predates the field keeps today's behaviour.
+  final bool? noPR;
 
   factory ExitRequest.fromJson(Map<String, dynamic> json) {
     return ExitRequest(
@@ -1350,6 +1355,7 @@ class ExitRequest {
         json['override'],
         GateOverride.fromJson,
       ),
+      noPR: json['noPr'] as bool?,
     );
   }
 
@@ -1358,6 +1364,9 @@ class ExitRequest {
     json['commitMessage'] = commitMessage;
     if (override != null) {
       json['override'] = override!.toJson();
+    }
+    if (noPR != null) {
+      json['noPr'] = noPR;
     }
     return json;
   }

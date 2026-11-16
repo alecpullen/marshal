@@ -419,6 +419,12 @@ export interface ExitRequest {
    * Override, when non-nil, pushes despite a failed or skipped gate.
    */
   override?: GateOverride;
+  /**
+   * NoPR pushes the branch without opening a pull request. It is the
+   * app's "open a pull request" choice, off; absent means open one, so a
+   * client that predates the field keeps today's behaviour.
+   */
+  noPr?: boolean;
 }
 
 /**

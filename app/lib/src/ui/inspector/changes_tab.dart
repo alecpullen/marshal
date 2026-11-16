@@ -1,28 +1,25 @@
+import 'dart:async';
+
+import 'package:flutter/services.dart';
+
 import '../../model/changes_model.dart';
 import '../kit/kit.dart';
+import 'ship_sheet.dart';
 
 /// The Changes tab (f4-inspector.md decision 5): the gate, the files with
-/// their counts, and the selected file's diff.
+/// their counts, the selected file's diff with its comment threads, and the
+/// footer that ships the work.
 ///
-/// It reads its model and draws it; it never fetches. The footer that ships
-/// the work arrives with Task 5.
+/// It reads its model and draws it; it never fetches. A comment is posted
+/// through the model, which is the one thing here the agent hears.
 class ChangesTab extends StatelessWidget {
-  const ChangesTab({
-    super.key,
-    required this.model,
-    this.state,
-    this.onComment,
-  });
+  const ChangesTab({super.key, required this.model, this.state});
 
   final ChangesModel model;
 
   /// The data state to draw instead of the change set (§7). Null is the
   /// ready state, from the model.
   final StateKind? state;
-
-  /// Leaves a comment on a line, when the tab can. Null draws the diff
-  /// without a comment control.
-  final void Function(String path, int line, String side)? onComment;
 
   @override
   Widget build(BuildContext context) {
@@ -56,8 +53,8 @@ class ChangesTab extends StatelessWidget {
       action: StateAction('Try again', onTap: model.refresh),
     ),
     StateKind.planned => const StateMessage.planned(
-      name: 'Comments on a line',
-      note: 'Steering the agent from a diff arrives in a later task',
+      name: 'A side-by-side diff',
+      note: 'This phase reads a unified diff only',
     ),
   };
 
@@ -71,21 +68,30 @@ class ChangesTab extends StatelessWidget {
           retry: StateAction('Try again', onTap: model.refresh),
         );
       case ChangesStatus.ready:
-        return ListView(
-          padding: const EdgeInsets.all(Space.s16),
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _gate(context),
-            const SizedBox(height: Space.s16),
-            if (model.files.isEmpty)
-              StateMessage.empty(
-                message: 'The agent has not changed a file yet.',
-                action: StateAction('Run the gate', onTap: model.runGate),
-              )
-            else ...[
-              _files(context),
-              const SizedBox(height: Space.s12),
-              _diff(context),
-            ],
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.all(Space.s16),
+                children: [
+                  _gate(context),
+                  const SizedBox(height: Space.s16),
+                  if (model.files.isEmpty)
+                    StateMessage.empty(
+                      message: 'The agent has not changed a file yet.',
+                      action: StateAction('Run the gate', onTap: model.runGate),
+                    )
+                  else ...[
+                    _files(context),
+                    const SizedBox(height: Space.s12),
+                    _diff(context),
+                  ],
+                ],
+              ),
+            ),
+            const Hairline(),
+            _footer(context),
           ],
         );
     }
@@ -193,13 +199,13 @@ class ChangesTab extends StatelessWidget {
     return mark;
   }
 
-  /// The selected file's diff, and the mark that says it has been read.
+  /// The selected file's diff, its comment threads, and the mark that says it
+  /// has been read.
   Widget _diff(BuildContext context) {
     final e = Ember.of(context);
     final path = model.activeFile;
     if (path == null) return const SizedBox.shrink();
     final viewed = model.isViewed(path);
-    final comment = onComment;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -224,9 +230,7 @@ class ChangesTab extends StatelessWidget {
         const SizedBox(height: Space.s8),
         DiffView(
           diff: model.diffOf(path),
-          onComment: comment == null
-              ? null
-              : (line) => comment(path, line.number ?? 0, line.side!.wire),
+          onComment: (line) => unawaited(_commentOn(context, path, line)),
         ),
         const SizedBox(height: Space.s8),
         Text(
@@ -234,8 +238,236 @@ class ChangesTab extends StatelessWidget {
           'appear in the thread.',
           style: e.small.tint(e.muted),
         ),
+        _threads(context, path),
       ],
     );
+  }
+
+  /// The threads left on [path], each with its way to close.
+  Widget _threads(BuildContext context, String path) {
+    final e = Ember.of(context);
+    final comments = model.commentsAt(path);
+    if (comments.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: Space.s16),
+        Label('Comments', count: comments.length),
+        const SizedBox(height: Space.s6),
+        for (final comment in comments) ...[
+          Box(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'line ${comment.line} · ${comment.side}',
+                        style: e.monoSmall.tint(e.muted),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (comment.resolved)
+                      Text('Resolved', style: e.small.tint(e.ok))
+                    else
+                      Btn(
+                        'Resolve',
+                        onTap: () => unawaited(model.resolve(comment.id)),
+                      ),
+                  ],
+                ),
+                if (comment.quote.isNotEmpty) ...[
+                  const SizedBox(height: Space.s6),
+                  Text(
+                    comment.quote,
+                    style: e.mono.tint(e.muted),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+                const SizedBox(height: Space.s6),
+                Text(comment.body, style: e.body),
+                const SizedBox(height: Space.s6),
+                Text(
+                  comment.sent
+                      ? 'Sent to the agent as steering'
+                      : 'Not sent to the agent yet',
+                  style: e.caption.tint(e.muted),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: Space.s8),
+        ],
+      ],
+    );
+  }
+
+  /// What the gate said, in one line, then the actions that end the work.
+  Widget _footer(BuildContext context) {
+    final e = Ember.of(context);
+    return Padding(
+      padding: const EdgeInsets.all(Space.s12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(_gateLine, style: e.small.tint(e.muted), maxLines: 2),
+          const SizedBox(height: Space.s8),
+          Wrap(
+            spacing: Space.s8,
+            runSpacing: Space.s8,
+            children: [
+              Btn.primary(
+                'Review & ship',
+                onTap: () => unawaited(_ship(context)),
+              ),
+              Btn(
+                'Export patch',
+                onTap: () => unawaited(_exportPatch(context)),
+              ),
+              Btn('Discard', onTap: () => unawaited(_discard(context))),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  String get _gateLine {
+    final gate = model.gate;
+    if (gate == null) return 'The gate has not run';
+    if (gate.skipped) return 'Gate skipped: no verify command';
+    if (gate.ok) return 'Gate passed';
+    final command = gate.failedCommand ?? '';
+    return command.isEmpty ? 'Gate failed' : 'Gate failed: $command';
+  }
+
+  /// Leaves a comment on [line]: a sheet for the words, then the model, which
+  /// posts it as steering.
+  Future<void> _commentOn(
+    BuildContext context,
+    String path,
+    DiffLine line,
+  ) async {
+    final e = Ember.of(context);
+    final controller = TextEditingController();
+    final quote = '${line.marker}${line.text}';
+    final body = await Sheet.show<String>(
+      context,
+      Sheet(
+        title: 'Comment on line ${line.number ?? 0}',
+        actions: [
+          Btn.primary(
+            'Comment',
+            onTap: () => Navigator.maybePop(context, controller.text.trim()),
+          ),
+        ],
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            OutputBlock(text: quote),
+            const SizedBox(height: Space.s12),
+            Field(
+              label: 'What should the agent change?',
+              controller: controller,
+              hint: 'Trim this list to what the tests load',
+            ),
+            const SizedBox(height: Space.s8),
+            Text(
+              'The agent reads it as steering in this turn.',
+              style: e.small.tint(e.muted),
+            ),
+          ],
+        ),
+      ),
+    );
+    final text = body?.trim() ?? '';
+    controller.dispose();
+    if (text.isEmpty) return;
+    await model.comment(
+      path,
+      line.number ?? 0,
+      text,
+      side: (line.side ?? DiffSide.after).wire,
+      quote: quote,
+    );
+  }
+
+  /// The ship flow, in one sheet (decision 6).
+  Future<void> _ship(BuildContext context) async {
+    await showShipSheet(context, model);
+    await model.refresh();
+  }
+
+  /// The change set as a patch: shown, and copied, because the app's lanes
+  /// have no file to write it to.
+  Future<void> _exportPatch(BuildContext context) async {
+    final patch = await model.exportPatch();
+    if (!context.mounted) return;
+    await Sheet.show<void>(
+      context,
+      Sheet(
+        title: 'The patch',
+        child: patch.isEmpty
+            ? StateMessage.empty(
+                message: 'The agent has not changed a file to export.',
+                action: StateAction(
+                  'Close',
+                  onTap: () => Navigator.maybePop(context),
+                ),
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  OutputBlock(text: patch),
+                  const SizedBox(height: Space.s12),
+                  Row(
+                    children: [
+                      Btn(
+                        'Copy patch',
+                        icon: Glyphs.doc_on_doc,
+                        onTap: () => unawaited(
+                          Clipboard.setData(ClipboardData(text: patch)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+
+  /// Discard, which confirms and names what is lost before it acts.
+  Future<void> _discard(BuildContext context) async {
+    final e = Ember.of(context);
+    final count = model.files.length;
+    final files = count == 1 ? '1 changed file' : '$count changed files';
+    final confirmed = await Sheet.show<bool>(
+      context,
+      Sheet(
+        title: 'Discard this work?',
+        actions: [
+          Btn.primary(
+            'Keep the work',
+            onTap: () => Navigator.maybePop(context, false),
+          ),
+          Btn(
+            'Discard the work',
+            onTap: () => Navigator.maybePop(context, true),
+          ),
+        ],
+        child: Text(
+          'This throws away the agent’s $files and every change it has made '
+          'to them. It cannot be undone.',
+          style: e.body,
+        ),
+      ),
+    );
+    if (confirmed != true) return;
+    await model.discard();
   }
 }
 

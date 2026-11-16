@@ -761,6 +761,7 @@ func (s *Server) agentExit(w http.ResponseWriter, r *http.Request) {
 	res, err := s.fleet.Exit(r.Context(), r.PathValue("id"), ExitOptions{
 		CommitMessage: body.CommitMessage,
 		Override:      body.Override,
+		NoPR:          body.NoPR,
 	})
 	if err != nil {
 		writeErr(w, err)

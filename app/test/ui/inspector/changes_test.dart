@@ -89,7 +89,8 @@ void main() {
 
     // And one that has not run says so, rather than showing nothing.
     await pumpChanges(tester, ChangesModel.seeded());
-    expect(find.text('The gate has not run'), findsOneWidget);
+    // The gate section and the footer's one-line summary both say it.
+    expect(find.text('The gate has not run'), findsWidgets);
   });
 
   testWidgets('by step groups hunks by the step that changed them', (

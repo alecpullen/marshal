@@ -4,6 +4,17 @@ import ServiceManagement
 
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
+    // This app is a menu-bar item and has no window (LSUIElement in
+    // Info.plist): the xib's window is the Flutter template's, marked
+    // visible at launch, and would otherwise open as a blank 800x600
+    // window on every launch. It is ordered out on the main thread —
+    // which every window change must run on — once here, and once on the
+    // next main-loop turn, in case AppKit honours the xib's
+    // visible-at-launch flag only after the nib's awakeFromNib calls;
+    // nothing else in the app ever orders a window in.
+    self.orderOut(nil)
+    DispatchQueue.main.async { [weak self] in self?.orderOut(nil) }
+
     let flutterViewController = FlutterViewController()
     let windowFrame = self.frame
     self.contentViewController = flutterViewController

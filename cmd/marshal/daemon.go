@@ -141,11 +141,12 @@ func runDaemonRefresh(ctx context.Context, args []string, stderr io.Writer) erro
 
 // runDaemonInstall renders and loads the unit.
 //
-// Usage: marshal daemon install [--webbridge PATH]
+// Usage: marshal daemon install [--webbridge PATH] [--no-linger]
 func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("daemon install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	webbridge := fs.String("webbridge", "", "the webbridge binary to run (default: beside marshal, else on PATH)")
+	noLinger := fs.Bool("no-linger", false, "do not enable systemd's linger for this user (Linux)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -170,8 +171,40 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	fmt.Fprintf(stdout, "unit: %s\n", m.UnitPath())
 	fmt.Fprintf(stdout, "socket: %s\n", spec.Paths.Socket)
+	daemonEnsureLinger(ctx, m, *noLinger, stdout)
 	daemonReadyNote(ctx, spec.Paths, stdout)
 	return nil
+}
+
+// daemonEnsureLinger enables the user's linger bit on Linux and says what it
+// found. It never fails the install: the unit is written and loaded by the
+// time it runs, so linger decides only whether the daemon survives logout.
+func daemonEnsureLinger(ctx context.Context, m *daemon.Manager, skip bool, stdout io.Writer) {
+	if m.GOOS != "linux" {
+		return
+	}
+	if skip {
+		fmt.Fprintln(stdout, "linger: left off (--no-linger)")
+		return
+	}
+	state, err := m.Linger(ctx)
+	if err != nil {
+		fmt.Fprintf(stdout, "linger: not enabled (read Linger: %v)\n", err)
+		return
+	}
+	if !state.Supported {
+		fmt.Fprintln(stdout, "linger: not supported (loginctl not found)")
+		return
+	}
+	if state.Enabled {
+		fmt.Fprintln(stdout, "linger: already enabled")
+		return
+	}
+	if err := m.EnableLinger(ctx); err != nil {
+		fmt.Fprintf(stdout, "linger: not enabled (%v)\n", err)
+		return
+	}
+	fmt.Fprintln(stdout, "linger: enabled")
 }
 
 // daemonUnitSpec is decision 10's unit: the webbridge, the resolved marshal,

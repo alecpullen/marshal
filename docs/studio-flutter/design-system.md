@@ -183,7 +183,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `PrCard` | A pull request with its CI | The only way a pull request is shown in a list |
 | `ThreadRow` | A thread in a list | Dot, title, kind icon |
 | `StateMessage` | Empty, loading, stale, error, planned | The only way these states are shown (§7) |
-| `Field` | A text input | Border only; the label is above it |
+| `Field` | A text input | Border only; the label is above it. `Field.multiline` is the same input for prose, taller and growing with what it holds |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
 | `Sheet` | A dialog or bottom sheet; it dims what is behind it with `scrim` | One per screen at most |
 

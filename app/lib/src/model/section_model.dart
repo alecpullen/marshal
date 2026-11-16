@@ -135,7 +135,7 @@ abstract class SectionModel<T> extends ChangeNotifier
       _refuse(null, describeFailure(error));
       return;
     }
-    _store(stored);
+    store(stored);
     _editing = null;
     _saveState = SaveState.clean;
     _saveError = null;
@@ -193,9 +193,10 @@ abstract class SectionModel<T> extends ChangeNotifier
     notifyListeners();
   }
 
-  /// Puts what the bridge stored in the list: over the item it replaces, or
-  /// before the first row it sorts ahead of when it is new.
-  void _store(T stored) {
+  /// Puts [stored] in the list: over the item it replaces, or at the end when
+  /// it is new. A save does this with what the bridge answered; a section
+  /// action that creates an item — copying a recipe — does it with the copy.
+  void store(T stored) {
     final key = keyOf(stored);
     var replaced = false;
     final next = <T>[];
@@ -209,5 +210,6 @@ abstract class SectionModel<T> extends ChangeNotifier
     }
     if (!replaced) next.add(stored);
     _items = List.unmodifiable(next);
+    notifyListeners();
   }
 }

@@ -29,6 +29,8 @@ class SectionPage<T> extends StatelessWidget {
     this.unavailableHost = 'The daemon',
     this.unavailableSeen = 'a minute',
     this.detailTitle,
+    this.createLabel,
+    this.blank,
   });
 
   /// The page's title.
@@ -70,16 +72,27 @@ class SectionPage<T> extends StatelessWidget {
   /// none yet.
   final String Function(T item)? detailTitle;
 
+  /// The section's one primary action in its page header: a "New …" button
+  /// that opens [blank]'s detail, where a save creates it. Both or neither.
+  final String? createLabel;
+  final T Function()? blank;
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: model,
       builder: (context, _) {
         final tabs = this.tabs;
+        final create = createLabel;
+        final blank = this.blank;
         return PageBody(
           title: title,
           subtitle: subtitle,
-          actions: actions,
+          actions: [
+            if (create != null && blank != null)
+              Btn.primary(create, onTap: () => _open(context, blank())),
+            ...actions,
+          ],
           width: PageWidth.list,
           children: [
             if (tabs != null) ...[

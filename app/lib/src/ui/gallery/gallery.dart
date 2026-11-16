@@ -698,6 +698,11 @@ class _GalleryState extends State<Gallery> {
           ),
           SizedBox(height: Space.s16),
           Field(label: 'Workspace', hint: 'new workspace', enabled: false),
+          SizedBox(height: Space.s16),
+          Field.multiline(
+            label: 'Prompt',
+            hint: 'Run the gate on {{ branch }}',
+          ),
         ],
       ),
     ),

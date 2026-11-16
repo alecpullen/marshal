@@ -544,6 +544,106 @@ export interface ProjectStatus {
 }
 
 /**
+ * RecipeInput declares one placeholder a recipe's prompt may use.
+ */
+export interface RecipeInput {
+  name: string;
+  label?: string;
+  required?: boolean;
+}
+
+/**
+ * RecipeLimits bound one run. Zero means unlimited.
+ */
+export interface RecipeLimits {
+  maxMinutes?: number;
+  maxUsd?: number;
+}
+
+/**
+ * Recipe is a stored, parameterised prompt (or run) with limits:
+ * GET /api/recipes' answer and the body PUT /api/recipes/{name} takes
+ * (web/bridge/recipes.go).
+ *
+ * A built-in recipe cannot be changed or deleted; the bridge refuses both, and
+ * copying it under a new name is the way to edit one.
+ */
+export interface Recipe {
+  name: string;
+  title?: string;
+  description?: string;
+  kind: string;
+  mode?: string;
+  /**
+   * Auto is the starting Auto choice; absent means the recipe sets none.
+   */
+  auto?: boolean;
+  workspace?: string;
+  routing?: unknown;
+  inputs?: RecipeInput[];
+  prompt: string;
+  limits?: RecipeLimits;
+  output?: string;
+  /**
+   * Builtin marks a recipe the bridge ships, which is copy only.
+   */
+  builtin?: boolean;
+  /**
+   * Diagnostic reports why a stored recipe could not be read or validated.
+   * It never appears on a built-in or a successfully saved recipe.
+   */
+  diagnostic?: string;
+}
+
+/**
+ * RecipeRun is the body POST /api/recipes/{name}/run takes: where the run
+ * starts, and the value of each of the recipe's inputs.
+ */
+export interface RecipeRun {
+  project: string;
+  repoId: string;
+  ref: string;
+  inputs: Record<string, string>;
+}
+
+/**
+ * RecipeCopy is the body POST /api/recipes/{name}/copy takes: the name the
+ * copy is stored under.
+ */
+export interface RecipeCopy {
+  name: string;
+}
+
+/**
+ * Schedule is one cron entry that runs a recipe: GET /api/schedules' answer,
+ * and the body POST /api/schedules and PUT /api/schedules/{id} take
+ * (web/bridge/schedules.go). `lastRun` is omitted until the schedule has
+ * run, so a client reading it must allow for its absence.
+ */
+export interface Schedule {
+  id: string;
+  name: string;
+  recipe: string;
+  project?: string;
+  /**
+   * RepoID and Ref run the recipe on a fresh checkout of a registered repo
+   * instead of a local project.
+   */
+  repoId?: string;
+  ref?: string;
+  inputs?: Record<string, string>;
+  cron: string;
+  enabled: boolean;
+  lastRun?: string;
+  lastRunAgent?: string;
+  lastResult?: string;
+  /**
+   * OwnerID is the owner the bridge stored the schedule under.
+   */
+  ownerId: string;
+}
+
+/**
  * SpawnRequest is a POST /api/agents body.
  */
 export interface SpawnRequest {

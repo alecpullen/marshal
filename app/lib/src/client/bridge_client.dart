@@ -71,6 +71,81 @@ class BridgeClient {
   /// GET /api/events: the fleet stream, which the caller starts.
   EventStream fleetEvents() => EventStream(_transport, '/api/events');
 
+  // Automations: schedules and recipes (F7).
+
+  /// GET /api/schedules: every cron entry the bridge holds.
+  Future<List<Schedule>> schedules() =>
+      _listOf('/api/schedules', Schedule.fromJson);
+
+  /// POST /api/schedules without an id, PUT /api/schedules/{id} with one:
+  /// without an id it creates, with one it replaces.
+  Future<Schedule> saveSchedule(Schedule schedule) async {
+    final id = schedule.id;
+    final response = await _send(
+      Request(
+        method: id.isEmpty ? 'POST' : 'PUT',
+        path: id.isEmpty
+            ? '/api/schedules'
+            : '/api/schedules/${Uri.encodeComponent(id)}',
+        body: schedule,
+      ),
+    );
+    return Schedule.fromJson(_object(response));
+  }
+
+  /// DELETE /api/schedules/{id}.
+  Future<void> deleteSchedule(String id) => _send(
+    Request(
+      method: 'DELETE',
+      path: '/api/schedules/${Uri.encodeComponent(id)}',
+    ),
+  );
+
+  /// POST /api/schedules/{id}/run: starts the schedule now.
+  Future<void> runSchedule(String id) => _post(
+    '/api/schedules/${Uri.encodeComponent(id)}/run',
+    null,
+  );
+
+  /// GET /api/recipes: every recipe, built-in and the user's.
+  Future<List<Recipe>> recipes() => _listOf('/api/recipes', Recipe.fromJson);
+
+  /// PUT /api/recipes/{name}: stores the recipe under its own name. The
+  /// bridge refuses a built-in.
+  Future<Recipe> saveRecipe(Recipe recipe) async {
+    final response = await _send(
+      Request(
+        method: 'PUT',
+        path: '/api/recipes/${Uri.encodeComponent(recipe.name)}',
+        body: recipe,
+      ),
+    );
+    return Recipe.fromJson(_object(response));
+  }
+
+  /// DELETE /api/recipes/{name}. The bridge refuses a built-in.
+  Future<void> deleteRecipe(String name) => _send(
+    Request(method: 'DELETE', path: '/api/recipes/${Uri.encodeComponent(name)}'),
+  );
+
+  /// POST /api/recipes/{name}/copy: stores a copy under [as] and answers it.
+  Future<Recipe> copyRecipe(String name, String as) async {
+    final response = await _send(
+      Request(
+        method: 'POST',
+        path: '/api/recipes/${Uri.encodeComponent(name)}/copy',
+        body: RecipeCopy(name: as),
+      ),
+    );
+    return Recipe.fromJson(_object(response));
+  }
+
+  /// POST /api/recipes/{name}/run: starts the recipe where [run] says.
+  Future<void> runRecipe(String name, RecipeRun run) => _post(
+    '/api/recipes/${Uri.encodeComponent(name)}/run',
+    run,
+  );
+
   Future<Response> _send(Request request) async {
     final response = await _transport.send(request);
     if (!response.ok) {

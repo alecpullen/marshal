@@ -27,6 +27,22 @@ List<T>? _listOrNull<T>(Object? json, T Function(Object? value) convert) =>
     ? null
     : [for (final value in json as List<dynamic>) convert(value)];
 
+/// The object [json] names, each value decoded by [convert].
+Map<String, T> _map<T>(Object? json, T Function(Object? value) convert) => {
+  for (final entry in (json as Map<String, dynamic>).entries)
+    entry.key: convert(entry.value),
+};
+
+/// The object [json] names, or null when it is absent, each value
+/// decoded by [convert].
+Map<String, T>? _mapOrNull<T>(Object? json, T Function(Object? value) convert) =>
+    json == null
+    ? null
+    : {
+        for (final entry in (json as Map<String, dynamic>).entries)
+          entry.key: convert(entry.value),
+      };
+
 /// The enum value [json] names, or null when it is absent.
 T? _enumOrNull<T>(Object? json, T Function(String wire) fromWire) =>
     json == null ? null : fromWire(json as String);
@@ -1788,6 +1804,331 @@ class ProjectStatus {
     if (orphanWorktrees != null) {
       json['orphanWorktrees'] = orphanWorktrees!;
     }
+    return json;
+  }
+}
+
+/// RecipeInput declares one placeholder a recipe's prompt may use.
+class RecipeInput {
+  const RecipeInput({
+    required this.name,
+    this.label,
+    this.required,
+  });
+
+  final String name;
+  final String? label;
+  final bool? required;
+
+  factory RecipeInput.fromJson(Map<String, dynamic> json) {
+    return RecipeInput(
+      name: json['name'] as String,
+      label: json['label'] as String?,
+      required: json['required'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    if (label != null) {
+      json['label'] = label;
+    }
+    if (required != null) {
+      json['required'] = required;
+    }
+    return json;
+  }
+}
+
+/// RecipeLimits bound one run. Zero means unlimited.
+class RecipeLimits {
+  const RecipeLimits({
+    this.maxMinutes,
+    this.maxUSD,
+  });
+
+  final int? maxMinutes;
+  final double? maxUSD;
+
+  factory RecipeLimits.fromJson(Map<String, dynamic> json) {
+    return RecipeLimits(
+      maxMinutes: (json['maxMinutes'] as num?)?.toInt(),
+      maxUSD: (json['maxUsd'] as num?)?.toDouble(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (maxMinutes != null) {
+      json['maxMinutes'] = maxMinutes;
+    }
+    if (maxUSD != null) {
+      json['maxUsd'] = maxUSD;
+    }
+    return json;
+  }
+}
+
+/// Recipe is a stored, parameterised prompt (or run) with limits:
+/// GET /api/recipes' answer and the body PUT /api/recipes/{name} takes
+/// (web/bridge/recipes.go).
+///
+/// A built-in recipe cannot be changed or deleted; the bridge refuses both, and
+/// copying it under a new name is the way to edit one.
+class Recipe {
+  const Recipe({
+    required this.name,
+    this.title,
+    this.description,
+    required this.kind,
+    this.mode,
+    this.auto,
+    this.workspace,
+    this.routing,
+    this.inputs,
+    required this.prompt,
+    this.limits,
+    this.output,
+    this.builtin,
+    this.diagnostic,
+  });
+
+  final String name;
+  final String? title;
+  final String? description;
+  final String kind;
+  final String? mode;
+  /// Auto is the starting Auto choice; absent means the recipe sets none.
+  final bool? auto;
+  final String? workspace;
+  final Object? routing;
+  final List<RecipeInput>? inputs;
+  final String prompt;
+  final RecipeLimits? limits;
+  final String? output;
+  /// Builtin marks a recipe the bridge ships, which is copy only.
+  final bool? builtin;
+  /// Diagnostic reports why a stored recipe could not be read or validated.
+  /// It never appears on a built-in or a successfully saved recipe.
+  final String? diagnostic;
+
+  factory Recipe.fromJson(Map<String, dynamic> json) {
+    return Recipe(
+      name: json['name'] as String,
+      title: json['title'] as String?,
+      description: json['description'] as String?,
+      kind: json['kind'] as String,
+      mode: json['mode'] as String?,
+      auto: json['auto'] as bool?,
+      workspace: json['workspace'] as String?,
+      routing: json['routing'],
+      inputs: _listOrNull(
+        json['inputs'],
+        (value) => _object(value, RecipeInput.fromJson),
+      ),
+      prompt: json['prompt'] as String,
+      limits: _objectOrNull(
+        json['limits'],
+        RecipeLimits.fromJson,
+      ),
+      output: json['output'] as String?,
+      builtin: json['builtin'] as bool?,
+      diagnostic: json['diagnostic'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    if (title != null) {
+      json['title'] = title;
+    }
+    if (description != null) {
+      json['description'] = description;
+    }
+    json['kind'] = kind;
+    if (mode != null) {
+      json['mode'] = mode;
+    }
+    if (auto != null) {
+      json['auto'] = auto;
+    }
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    if (routing != null) {
+      json['routing'] = routing;
+    }
+    if (inputs != null) {
+      json['inputs'] = [
+        for (final value in inputs!) value.toJson(),
+      ];
+    }
+    json['prompt'] = prompt;
+    if (limits != null) {
+      json['limits'] = limits!.toJson();
+    }
+    if (output != null) {
+      json['output'] = output;
+    }
+    if (builtin != null) {
+      json['builtin'] = builtin;
+    }
+    if (diagnostic != null) {
+      json['diagnostic'] = diagnostic;
+    }
+    return json;
+  }
+}
+
+/// RecipeRun is the body POST /api/recipes/{name}/run takes: where the run
+/// starts, and the value of each of the recipe's inputs.
+class RecipeRun {
+  const RecipeRun({
+    required this.project,
+    required this.repoID,
+    required this.ref,
+    required this.inputs,
+  });
+
+  final String project;
+  final String repoID;
+  final String ref;
+  final Map<String, String> inputs;
+
+  factory RecipeRun.fromJson(Map<String, dynamic> json) {
+    return RecipeRun(
+      project: json['project'] as String,
+      repoID: json['repoId'] as String,
+      ref: json['ref'] as String,
+      inputs: _map(
+        json['inputs'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['project'] = project;
+    json['repoId'] = repoID;
+    json['ref'] = ref;
+    json['inputs'] = inputs;
+    return json;
+  }
+}
+
+/// RecipeCopy is the body POST /api/recipes/{name}/copy takes: the name the
+/// copy is stored under.
+class RecipeCopy {
+  const RecipeCopy({
+    required this.name,
+  });
+
+  final String name;
+
+  factory RecipeCopy.fromJson(Map<String, dynamic> json) {
+    return RecipeCopy(
+      name: json['name'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    return json;
+  }
+}
+
+/// Schedule is one cron entry that runs a recipe: GET /api/schedules' answer,
+/// and the body POST /api/schedules and PUT /api/schedules/{id} take
+/// (web/bridge/schedules.go). `lastRun` is omitted until the schedule has
+/// run, so a client reading it must allow for its absence.
+class Schedule {
+  const Schedule({
+    required this.id,
+    required this.name,
+    required this.recipe,
+    this.project,
+    this.repoID,
+    this.ref,
+    this.inputs,
+    required this.cron,
+    required this.enabled,
+    this.lastRun,
+    this.lastRunAgent,
+    this.lastResult,
+    required this.ownerID,
+  });
+
+  final String id;
+  final String name;
+  final String recipe;
+  final String? project;
+  /// RepoID and Ref run the recipe on a fresh checkout of a registered repo
+  /// instead of a local project.
+  final String? repoID;
+  final String? ref;
+  final Map<String, String>? inputs;
+  final String cron;
+  final bool enabled;
+  final String? lastRun;
+  final String? lastRunAgent;
+  final String? lastResult;
+  /// OwnerID is the owner the bridge stored the schedule under.
+  final String ownerID;
+
+  factory Schedule.fromJson(Map<String, dynamic> json) {
+    return Schedule(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      recipe: json['recipe'] as String,
+      project: json['project'] as String?,
+      repoID: json['repoId'] as String?,
+      ref: json['ref'] as String?,
+      inputs: _mapOrNull(
+        json['inputs'],
+        (value) => value as String,
+      ),
+      cron: json['cron'] as String,
+      enabled: json['enabled'] as bool,
+      lastRun: json['lastRun'] as String?,
+      lastRunAgent: json['lastRunAgent'] as String?,
+      lastResult: json['lastResult'] as String?,
+      ownerID: json['ownerId'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['name'] = name;
+    json['recipe'] = recipe;
+    if (project != null) {
+      json['project'] = project;
+    }
+    if (repoID != null) {
+      json['repoId'] = repoID;
+    }
+    if (ref != null) {
+      json['ref'] = ref;
+    }
+    if (inputs != null) {
+      json['inputs'] = inputs!;
+    }
+    json['cron'] = cron;
+    json['enabled'] = enabled;
+    if (lastRun != null) {
+      json['lastRun'] = lastRun;
+    }
+    if (lastRunAgent != null) {
+      json['lastRunAgent'] = lastRunAgent;
+    }
+    if (lastResult != null) {
+      json['lastResult'] = lastResult;
+    }
+    json['ownerId'] = ownerID;
     return json;
   }
 }

@@ -18,6 +18,8 @@ const _fixtures = [
   'inbox',
   'intake',
   'projects',
+  'recipes',
+  'schedules',
   'spawn',
   'stream',
 ];
@@ -71,6 +73,14 @@ final _codecs = <String, _Codec>{
   // projects.json
   'ProjectStatus': (json) => ProjectStatus.fromJson(_object(json)).toJson(),
   'TrustState': (json) => TrustState.fromWire(json! as String).wire,
+  // recipes.json
+  'Recipe': (json) => Recipe.fromJson(_object(json)).toJson(),
+  'RecipeCopy': (json) => RecipeCopy.fromJson(_object(json)).toJson(),
+  'RecipeInput': (json) => RecipeInput.fromJson(_object(json)).toJson(),
+  'RecipeLimits': (json) => RecipeLimits.fromJson(_object(json)).toJson(),
+  'RecipeRun': (json) => RecipeRun.fromJson(_object(json)).toJson(),
+  // schedules.json
+  'Schedule': (json) => Schedule.fromJson(_object(json)).toJson(),
   // spawn.json
   'SpawnRequest': (json) => SpawnRequest.fromJson(_object(json)).toJson(),
   'SpawnResult': (json) => SpawnResult.fromJson(_object(json)).toJson(),

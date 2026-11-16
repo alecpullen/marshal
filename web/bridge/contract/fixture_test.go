@@ -20,6 +20,8 @@ var fixtureFiles = []string{
 	"inbox.json",
 	"intake.json",
 	"projects.json",
+	"recipes.json",
+	"schedules.json",
 	"spawn.json",
 	"stream.json",
 }
@@ -75,6 +77,12 @@ var fixtureTypes = map[string]reflect.Type{
 	"DeltaKind":           reflect.TypeOf(DeltaKind("")),
 	"FleetDelta":          reflect.TypeOf(FleetDelta{}),
 	"ProjectRemovedDelta": reflect.TypeOf(ProjectRemovedDelta{}),
+	"Schedule":            reflect.TypeOf(Schedule{}),
+	"Recipe":              reflect.TypeOf(Recipe{}),
+	"RecipeCopy":          reflect.TypeOf(RecipeCopy{}),
+	"RecipeInput":         reflect.TypeOf(RecipeInput{}),
+	"RecipeLimits":        reflect.TypeOf(RecipeLimits{}),
+	"RecipeRun":           reflect.TypeOf(RecipeRun{}),
 }
 
 // TestContractFixturesRoundTrip holds the contract types to the shared

@@ -1,10 +1,17 @@
+import 'package:marshal_app/src/client/contract.g.dart' show Recipe, Schedule;
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
-import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
+import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/place.dart';
+import 'package:marshal_app/src/model/recipes_model.dart';
+import 'package:marshal_app/src/model/schedules_model.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
+import 'package:marshal_app/src/ui/automations/automations_place.dart';
+import 'package:marshal_app/src/ui/automations/placeholder.dart';
+import 'package:marshal_app/src/ui/automations/recipes_tab.dart';
+import 'package:marshal_app/src/ui/automations/schedules_tab.dart';
 import 'package:marshal_app/src/ui/debug/connection_check.dart';
 import 'package:marshal_app/src/ui/gallery/gallery.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
@@ -274,6 +281,71 @@ Widget _overview({StateKind? state}) => Overview(
   onAnswer: (_, _) {},
 );
 
+/// The schedules the Automations fixture lists: one that ran, one paused.
+SchedulesModel _schedulesFixture() => SchedulesModel.fixture(const [
+  Schedule(
+    id: 's-1',
+    name: 'nightly gate',
+    recipe: 'gate',
+    project: '/home/u/marshal',
+    cron: '0 3 * * *',
+    enabled: true,
+    lastRun: '2026-11-17T03:00:00Z',
+    lastResult: 'passed',
+    ownerID: 'owner-1',
+  ),
+  Schedule(
+    id: 's-2',
+    name: 'weekly review',
+    recipe: 'review',
+    cron: '0 9 * * 1',
+    enabled: false,
+    ownerID: 'owner-1',
+  ),
+]);
+
+/// The recipes the Automations fixture lists: one of the bridge's, one of the
+/// user's.
+RecipesModel _recipesFixture() => RecipesModel.fixture(const [
+  Recipe(
+    name: 'gate',
+    title: 'The gate',
+    kind: 'prompt',
+    prompt: 'Run the gate on {{ branch }}',
+    builtin: true,
+  ),
+  Recipe(
+    name: 'nightly-gate',
+    title: 'Nightly gate',
+    kind: 'prompt',
+    prompt: 'Run the gate',
+    builtin: false,
+  ),
+]);
+
+/// The Automations place, on [tab] (1 is Schedules, 3 Recipes). Bots and
+/// Watches are planned until F7 plan 1's later steps land.
+Widget _automations({StateKind? state, int tab = 1}) {
+  final schedules = _schedulesFixture();
+  final recipes = _recipesFixture();
+  return AutomationsPlace(
+    bots: plannedAutomationsTab(
+      'Bots',
+      'The review bot and the CI fixer arrive with a later step of this phase.',
+    ),
+    schedules: (tabs, state) =>
+        SchedulesTab(model: schedules, tabs: tabs, state: state),
+    watches: plannedAutomationsTab(
+      'Watches',
+      'Watches arrive with a later step of this phase.',
+    ),
+    recipes: (tabs, state) =>
+        RecipesTab(model: recipes, tabs: tabs, state: state),
+    tab: tab,
+    state: state,
+  );
+}
+
 /// The registry of screens. F0 has one, the gallery; each later phase adds
 /// its screens here with fixture data, and `tooltips_test.dart`,
 /// `states_test.dart` and `overflow_test.dart` then hold them to the design
@@ -322,6 +394,21 @@ final screens = <ScreenCase>[
     ready: () => _shell(),
     states: {
       for (final kind in requiredStates) kind: () => _shell(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'automations · schedules',
+    ready: () => _automations(),
+    states: {
+      for (final kind in requiredStates) kind: () => _automations(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'automations · recipes',
+    ready: () => _automations(tab: 3),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _automations(tab: 3, state: kind),
     },
   ),
 ];

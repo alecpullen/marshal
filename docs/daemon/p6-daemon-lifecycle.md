@@ -568,7 +568,122 @@ plan of the batch.
 
 ### Plan 1 — versions for source builds
 
-_To be filled by the executor._
+**What was built.** One rule, in a new `internal/buildinfo`. `Version` returns
+the stamped release version when there is one; otherwise it reads Go's build
+info and answers `dev+` and the first 12 hex of `vcs.revision`, with `+dirty`
+appended when `vcs.modified` is `true`, and plain `dev` when the build carries
+no VCS information at all. A revision shorter than 12 characters is used whole.
+`IsSource` names a source build — `dev`, or `dev+` followed by anything — which
+is the question both binaries and the bridge ask before treating a version as
+something worth pinning an image to. The build info is read through the
+package-level `readBuildInfo`, which the tests replace: a test binary carries no
+VCS settings, so the rule is proven by feeding it settings, not by building.
+
+`marshal` computes `buildinfo.Version(version)` once, at the top of `run`
+before anything names the build (decision 2), and that one value serves all four
+places it names itself. The `--version` banner's version word is it, with the
+commit and date after it unchanged. The provider User-Agent is always
+`marshal/<version>`; before, an unstamped build kept the package's `marshal/dev`
+default. `acp.AgentVersion` is set in every mode, so a plain `marshal`'s TUI has
+a version and matches its `marshal acp` — the gap the spec's Findings named. The
+`acp` branch no longer stamps the agent version itself, and `daemonVersion` is
+the same value.
+
+`webbridge`'s `daemonVersion` is the same rule, so `GET /api/daemon`'s version
+and the fleet's build version are the source build's `dev+<commit>`. The
+`NewFleet` call passes `daemonVersion()` rather than the raw stamp, which was
+empty for a source build and would have left the fleet with no version at all.
+`web/bridge` repeats the rule as `bridge.SourceBuild`, because `web/` imports no
+`internal` package (decision 3), and `defaultAgentImageFor` gives `:latest` for
+any source build rather than for `dev` alone (decision 4) — a source build has
+no published tag, and a `+` could not be an image tag in any case. The skew
+check is untouched: plain `dev` on either side is still no version, so two
+different `dev+…` builds warn and a `dev` on one side never does. The derived
+image's tag still hashes the version (decision 5), and `web/bridge/derive.go`
+was not touched.
+
+**Where the plan was short, and how that was filled.**
+
+- **The Verify commands' `TMPDIR`.** The plan and the batch's baseline write
+  `TMPDIR=/private/tmp/p6-1-suite`, a macOS path; this machine is Linux and has
+  no `/private/tmp`, so every run used `/tmp/p6-1-suite`. Nothing in the tests
+  depends on the path.
+- **The anchors moved, the symbols did not.** The plan was written at
+  `87c41ad9` with plan 8's branch merged, and plan 8 (#100) reached `main`
+  before this plan ran — the one file both touch, `cmd/marshal/main.go`, is
+  exactly where the new `--viewers` code landed. Every symbol the plan names
+  still exists and its description still holds; only line numbers moved.
+  `daemonVersion` is at `cmd/marshal/daemon.go:561`, as the plan already said.
+- **`""` beside `SourceBuild`.** `defaultAgentImageFor` keeps returning
+  `:latest` for the empty version as well as for a source build: an unstamped
+  `webbridge` with no VCS information has no tag to pin to either, and
+  `TestDefaultImageFallsBackToLatestForADevBuild` requires it.
+  `SourceBuild("")` is `false`, as `buildinfo.IsSource("")` is.
+- **The short revision has no test name of its own.** "A revision shorter than
+  12 characters is used whole" is a second subtest inside
+  `TestASourceBuildNamesItsCommit` rather than an unlisted test function.
+
+**The tests.** Task 1's six tests replace `readBuildInfo` through one helper
+and cover a stamped version winning, a 40-character revision cut to 12, the
+short one used whole, `+dirty`, no VCS info, no build info, and the six-version
+`IsSource` table. Task 2's `TestEveryModeSetsTheAgentVersion` replaces the app,
+attach and fleet runners, clears `acp.AgentVersion` before each dispatch so no
+mode can pass by inheriting another's value, and restores the runners, `version`,
+`acp.AgentVersion` and `provider.UserAgent` in `t.Cleanup`;
+`TestTheUserAgentCarriesTheVersion` covers a stamped and an unstamped build;
+`TestVersionStringFallsBackToDev` keeps passing because a test binary has no VCS
+information. Task 3's `TestTheBridgesSourceRuleMatchesBuildinfo` holds the
+`web/bridge` copy to `buildinfo.IsSource` over eight versions and also asserts
+the expected answer for each, so a copy that drifts the same way on both sides
+cannot pass; `TestDefaultImageTracksTheBuildVersion` gains the
+`dev+abc123def456` and `dev+abc123def456+dirty` cases; and
+`TestTwoSourceBuildsWarnOfSkew`, beside
+`TestVersionMismatchWarnsButDoesNotRefuse`, covers different commits warning and
+a plain `dev` on either side staying quiet, each case on a fresh fleet.
+`TestWebbridgeReportsItsVersion` keeps passing.
+
+Both mutation checks failed as the plan said they must. Setting
+`acp.AgentVersion` in the `acp` branch only made all three
+`TestEveryModeSetsTheAgentVersion` subtests fail with an empty agent version;
+letting `defaultAgentImageFor` treat only plain `dev` as a source build made
+`TestDefaultImageTracksTheBuildVersion` fail on
+`defaultAgentImageFor("dev+abc123def456")`. Both were restored, and the
+restored tree is what was committed.
+
+**Verification.** `gofmt -l internal cmd test web` prints nothing; `go vet ./...`
+is clean; CI's suite command
+(`go test -p=1 ./... -skip` the twelve named latency budgets) passes every
+package; `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` and the same for
+`./cmd/webbridge` both succeed; and `go test ./test/usability/...` passes in
+46s. No failure was on the baseline list for this plan, and none appeared.
+
+**The manual run.** Both binaries were built from a standalone clone of the
+branch at `2f26dbe9`, so the stamped commit is the branch's own:
+`marshal dev+2f26dbe99560 (commit 2f26dbe995603aecc1a6e45f989afdadaf6e0129,
+built …)` and `webbridge dev+2f26dbe99560`. With one tracked file reverted in
+that clone both report `dev+2f26dbe99560+dirty`. A daemon started from that
+`webbridge` — `--profile local`, its socket, state dir and registry under an
+isolated `HOME`, `--addr off` — answers
+`marshal daemon status` with `socket: … (answering)` and
+`daemon: version dev+2f26dbe99560 (this marshal dev+2f26dbe99560), started …,
+projects: (none)`, so the two sides agree and L8's "two source builds of
+different commits report different versions" is what the `+<commit>` is for.
+The socket directory had to be `0700` first: the bridge refuses one that is
+open to other users, which is existing behaviour and not this plan's.
+
+**What the manual run turned up.** A build made inside a linked worktree does
+not name its own commit. Building in `.marshal/worktrees/p6-1-versions`, whose
+HEAD was `2f26dbe9`, stamped main's HEAD — `dev+4e748e6ce4df`, whose `vcs.time`
+also matched main's commit — because a linked worktree's `.git` is a file
+pointing into the main checkout's `.git` and Go's buildvcs resolves the
+repository there; dirtying the worktree produced no `+dirty` while main was
+clean, so its modified state comes from main too. That is why the evidence
+above comes from a standalone clone. It is Go's stamping rather than this
+plan's formatting, and it costs nothing the plan promised: a source build still
+names a revision, and the same build always names the same one. It does mean
+that agents building in `.marshal/worktrees/` under this repository report the
+main checkout's commit, which is worth knowing before a future plan decides a
+restart by version — decision 1 already decides by file identity instead.
 
 ### Plan 2 — the reconnect and the drafts
 

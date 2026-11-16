@@ -1792,6 +1792,264 @@ class ProjectStatus {
   }
 }
 
+/// SessionSummary is one session as GET /api/sessions lists it: the entry an
+/// agent's session/list returns for this project.
+class SessionSummary {
+  const SessionSummary({
+    required this.sessionID,
+    this.title,
+    this.updatedAt,
+    this.messageCount,
+  });
+
+  final String sessionID;
+  final String? title;
+  /// UpdatedAt is when the session last changed, Unix milliseconds.
+  final int? updatedAt;
+  final int? messageCount;
+
+  factory SessionSummary.fromJson(Map<String, dynamic> json) {
+    return SessionSummary(
+      sessionID: json['sessionId'] as String,
+      title: json['title'] as String?,
+      updatedAt: (json['updatedAt'] as num?)?.toInt(),
+      messageCount: (json['messageCount'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['sessionId'] = sessionID;
+    if (title != null) {
+      json['title'] = title;
+    }
+    if (updatedAt != null) {
+      json['updatedAt'] = updatedAt;
+    }
+    if (messageCount != null) {
+      json['messageCount'] = messageCount;
+    }
+    return json;
+  }
+}
+
+/// SessionList is GET /api/sessions' answer: the project's sessions.
+class SessionList {
+  const SessionList({
+    required this.sessions,
+  });
+
+  final List<SessionSummary> sessions;
+
+  factory SessionList.fromJson(Map<String, dynamic> json) {
+    return SessionList(
+      sessions: _list(
+        json['sessions'],
+        (value) => _object(value, SessionSummary.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['sessions'] = [
+      for (final value in sessions) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// PromptRequest is a POST /api/sessions/{id}/prompt body: the text that
+/// starts a turn.
+class PromptRequest {
+  const PromptRequest({
+    required this.text,
+  });
+
+  final String text;
+
+  factory PromptRequest.fromJson(Map<String, dynamic> json) {
+    return PromptRequest(
+      text: json['text'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['text'] = text;
+    return json;
+  }
+}
+
+/// SteerRequest is a POST /api/sessions/{id}/steer body: an instruction for
+/// the turn already running.
+class SteerRequest {
+  const SteerRequest({
+    required this.text,
+  });
+
+  final String text;
+
+  factory SteerRequest.fromJson(Map<String, dynamic> json) {
+    return SteerRequest(
+      text: json['text'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['text'] = text;
+    return json;
+  }
+}
+
+/// ModeRequest is a POST /api/sessions/{id}/mode body: the permission mode to
+/// switch to.
+class ModeRequest {
+  const ModeRequest({
+    required this.mode,
+  });
+
+  final String mode;
+
+  factory ModeRequest.fromJson(Map<String, dynamic> json) {
+    return ModeRequest(
+      mode: json['mode'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['mode'] = mode;
+    return json;
+  }
+}
+
+/// Roster is GET /api/sessions/{id}/roster's answer: every role's live model
+/// binding, plus the swarm and SDD budgets.
+class Roster {
+  const Roster({
+    required this.roles,
+    required this.swarmBudget,
+    required this.sddBudget,
+  });
+
+  final List<RosterRole> roles;
+  final RosterBudget swarmBudget;
+  final RosterBudget sddBudget;
+
+  factory Roster.fromJson(Map<String, dynamic> json) {
+    return Roster(
+      roles: _list(
+        json['roles'],
+        (value) => _object(value, RosterRole.fromJson),
+      ),
+      swarmBudget: _object(
+        json['swarmBudget'],
+        RosterBudget.fromJson,
+      ),
+      sddBudget: _object(
+        json['sddBudget'],
+        RosterBudget.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['roles'] = [
+      for (final value in roles) value.toJson(),
+    ];
+    json['swarmBudget'] = swarmBudget.toJson();
+    json['sddBudget'] = sddBudget.toJson();
+    return json;
+  }
+}
+
+/// RosterRole is one role's resolved binding.
+class RosterRole {
+  const RosterRole({
+    required this.role,
+    required this.profile,
+    this.provider,
+    this.model,
+    this.presetName,
+    this.customAgent,
+    required this.localOnly,
+    this.error,
+  });
+
+  final String role;
+  final String profile;
+  final String? provider;
+  final String? model;
+  final String? presetName;
+  final String? customAgent;
+  final bool localOnly;
+  final String? error;
+
+  factory RosterRole.fromJson(Map<String, dynamic> json) {
+    return RosterRole(
+      role: json['role'] as String,
+      profile: json['profile'] as String,
+      provider: json['provider'] as String?,
+      model: json['model'] as String?,
+      presetName: json['presetName'] as String?,
+      customAgent: json['customAgent'] as String?,
+      localOnly: json['localOnly'] as bool,
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['role'] = role;
+    json['profile'] = profile;
+    if (provider != null) {
+      json['provider'] = provider;
+    }
+    if (model != null) {
+      json['model'] = model;
+    }
+    if (presetName != null) {
+      json['presetName'] = presetName;
+    }
+    if (customAgent != null) {
+      json['customAgent'] = customAgent;
+    }
+    json['localOnly'] = localOnly;
+    if (error != null) {
+      json['error'] = error;
+    }
+    return json;
+  }
+}
+
+/// RosterBudget is one subsystem's token and round budget.
+class RosterBudget {
+  const RosterBudget({
+    required this.maxFixRounds,
+    required this.maxTotalTokens,
+  });
+
+  final int maxFixRounds;
+  final int maxTotalTokens;
+
+  factory RosterBudget.fromJson(Map<String, dynamic> json) {
+    return RosterBudget(
+      maxFixRounds: (json['maxFixRounds'] as num).toInt(),
+      maxTotalTokens: (json['maxTotalTokens'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['maxFixRounds'] = maxFixRounds;
+    json['maxTotalTokens'] = maxTotalTokens;
+    return json;
+  }
+}
+
 /// SpawnRequest is a POST /api/agents body.
 class SpawnRequest {
   const SpawnRequest({
@@ -1895,6 +2153,1362 @@ class SpawnResult {
     json['agentId'] = agentID;
     if (warning != null) {
       json['warning'] = warning;
+    }
+    return json;
+  }
+}
+
+/// WireNode is one node. Exactly one payload pointer is set, chosen by Kind;
+/// a turn node carries none.
+class WireNode {
+  const WireNode({
+    required this.id,
+    required this.kind,
+    this.parent,
+    this.children,
+    this.live,
+    this.version,
+    this.step,
+    this.tool,
+    this.message,
+    this.thinking,
+    this.runEvent,
+    this.completion,
+    this.plan,
+    this.receipt,
+    this.band,
+  });
+
+  final String id;
+  final String kind;
+  final String? parent;
+  final List<String>? children;
+  final bool? live;
+  /// Version is the hex of the node's payload hash: a client caches a
+  /// rendered row while it is unchanged.
+  final String? version;
+  final WireStep? step;
+  final WireTool? tool;
+  final WireMessage? message;
+  final WireThinking? thinking;
+  final WireRunEvent? runEvent;
+  final WireCompletion? completion;
+  final WirePlan? plan;
+  final WireReceipt? receipt;
+  final WireBand? band;
+
+  factory WireNode.fromJson(Map<String, dynamic> json) {
+    return WireNode(
+      id: json['id'] as String,
+      kind: json['kind'] as String,
+      parent: json['parent'] as String?,
+      children: _listOrNull(
+        json['children'],
+        (value) => value as String,
+      ),
+      live: json['live'] as bool?,
+      version: json['version'] as String?,
+      step: _objectOrNull(
+        json['step'],
+        WireStep.fromJson,
+      ),
+      tool: _objectOrNull(
+        json['tool'],
+        WireTool.fromJson,
+      ),
+      message: _objectOrNull(
+        json['message'],
+        WireMessage.fromJson,
+      ),
+      thinking: _objectOrNull(
+        json['thinking'],
+        WireThinking.fromJson,
+      ),
+      runEvent: _objectOrNull(
+        json['runEvent'],
+        WireRunEvent.fromJson,
+      ),
+      completion: _objectOrNull(
+        json['completion'],
+        WireCompletion.fromJson,
+      ),
+      plan: _objectOrNull(
+        json['plan'],
+        WirePlan.fromJson,
+      ),
+      receipt: _objectOrNull(
+        json['receipt'],
+        WireReceipt.fromJson,
+      ),
+      band: _objectOrNull(
+        json['band'],
+        WireBand.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['kind'] = kind;
+    if (parent != null) {
+      json['parent'] = parent;
+    }
+    if (children != null) {
+      json['children'] = children!;
+    }
+    if (live != null) {
+      json['live'] = live;
+    }
+    if (version != null) {
+      json['version'] = version;
+    }
+    if (step != null) {
+      json['step'] = step!.toJson();
+    }
+    if (tool != null) {
+      json['tool'] = tool!.toJson();
+    }
+    if (message != null) {
+      json['message'] = message!.toJson();
+    }
+    if (thinking != null) {
+      json['thinking'] = thinking!.toJson();
+    }
+    if (runEvent != null) {
+      json['runEvent'] = runEvent!.toJson();
+    }
+    if (completion != null) {
+      json['completion'] = completion!.toJson();
+    }
+    if (plan != null) {
+      json['plan'] = plan!.toJson();
+    }
+    if (receipt != null) {
+      json['receipt'] = receipt!.toJson();
+    }
+    if (band != null) {
+      json['band'] = band!.toJson();
+    }
+    return json;
+  }
+}
+
+/// WireStep is a step's header and reasoning.
+class WireStep {
+  const WireStep({
+    required this.headline,
+    this.rest,
+    this.stepIDs,
+    this.owner,
+    this.roleWord,
+    this.role,
+    this.model,
+    this.provider,
+    this.todoID,
+    this.todo,
+    this.startedAt,
+    this.endedAt,
+    this.thoughts,
+    this.narration,
+  });
+
+  final String headline;
+  final String? rest;
+  final List<int>? stepIDs;
+  final String? owner;
+  final String? roleWord;
+  final String? role;
+  final String? model;
+  final String? provider;
+  final String? todoID;
+  final WireTodoLabel? todo;
+  final int? startedAt;
+  final int? endedAt;
+  final List<WireThought>? thoughts;
+  /// Narration is the beat's narration texts in order, each trimmed and an
+  /// empty one kept, so the count is the beat's narration count.
+  final List<String>? narration;
+
+  factory WireStep.fromJson(Map<String, dynamic> json) {
+    return WireStep(
+      headline: json['headline'] as String,
+      rest: json['rest'] as String?,
+      stepIDs: _listOrNull(
+        json['stepIds'],
+        (value) => (value as num).toInt(),
+      ),
+      owner: json['owner'] as String?,
+      roleWord: json['roleWord'] as String?,
+      role: json['role'] as String?,
+      model: json['model'] as String?,
+      provider: json['provider'] as String?,
+      todoID: json['todoId'] as String?,
+      todo: _objectOrNull(
+        json['todo'],
+        WireTodoLabel.fromJson,
+      ),
+      startedAt: (json['startedAt'] as num?)?.toInt(),
+      endedAt: (json['endedAt'] as num?)?.toInt(),
+      thoughts: _listOrNull(
+        json['thoughts'],
+        (value) => _object(value, WireThought.fromJson),
+      ),
+      narration: _listOrNull(
+        json['narration'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['headline'] = headline;
+    if (rest != null) {
+      json['rest'] = rest;
+    }
+    if (stepIDs != null) {
+      json['stepIds'] = stepIDs!;
+    }
+    if (owner != null) {
+      json['owner'] = owner;
+    }
+    if (roleWord != null) {
+      json['roleWord'] = roleWord;
+    }
+    if (role != null) {
+      json['role'] = role;
+    }
+    if (model != null) {
+      json['model'] = model;
+    }
+    if (provider != null) {
+      json['provider'] = provider;
+    }
+    if (todoID != null) {
+      json['todoId'] = todoID;
+    }
+    if (todo != null) {
+      json['todo'] = todo!.toJson();
+    }
+    if (startedAt != null) {
+      json['startedAt'] = startedAt;
+    }
+    if (endedAt != null) {
+      json['endedAt'] = endedAt;
+    }
+    if (thoughts != null) {
+      json['thoughts'] = [
+        for (final value in thoughts!) value.toJson(),
+      ];
+    }
+    if (narration != null) {
+      json['narration'] = narration!;
+    }
+    return json;
+  }
+}
+
+/// WireTodoLabel marks the beat where work moves to a different todo.
+class WireTodoLabel {
+  const WireTodoLabel({
+    required this.id,
+    required this.index,
+    required this.total,
+    required this.content,
+  });
+
+  final String id;
+  final int index;
+  final int total;
+  final String content;
+
+  factory WireTodoLabel.fromJson(Map<String, dynamic> json) {
+    return WireTodoLabel(
+      id: json['id'] as String,
+      index: (json['index'] as num).toInt(),
+      total: (json['total'] as num).toInt(),
+      content: json['content'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['index'] = index;
+    json['total'] = total;
+    json['content'] = content;
+    return json;
+  }
+}
+
+/// WireThought is one finished reasoning block inside a step.
+class WireThought {
+  const WireThought({
+    required this.text,
+    this.durationMs,
+  });
+
+  final String text;
+  final int? durationMs;
+
+  factory WireThought.fromJson(Map<String, dynamic> json) {
+    return WireThought(
+      text: json['text'] as String,
+      durationMs: (json['durationMs'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['text'] = text;
+    if (durationMs != null) {
+      json['durationMs'] = durationMs;
+    }
+    return json;
+  }
+}
+
+/// WireTool is a tool row: one call, a merged run of same-tool calls, or a
+/// call still running.
+class WireTool {
+  const WireTool({
+    required this.name,
+    required this.display,
+    this.verb,
+    this.workKey,
+    this.calls,
+    this.running,
+    this.subagentID,
+    this.callers,
+  });
+
+  final String name;
+  final String display;
+  /// Verb is the word the row leads with.
+  final String? verb;
+  /// WorkKey is the stable conversation-work identity this row dispatched,
+  /// so a client can pair the retained dispatch row with the pinned live
+  /// card by identity rather than by display text.
+  final String? workKey;
+  final List<WireCall>? calls;
+  final WireRunning? running;
+  /// SubagentID names the subagent this row started, 0 when it started none.
+  final int? subagentID;
+  /// Callers says the row's call changed a resolved symbol whose callers the
+  /// agent can look up.
+  final bool? callers;
+
+  factory WireTool.fromJson(Map<String, dynamic> json) {
+    return WireTool(
+      name: json['name'] as String,
+      display: json['display'] as String,
+      verb: json['verb'] as String?,
+      workKey: json['workKey'] as String?,
+      calls: _listOrNull(
+        json['calls'],
+        (value) => _object(value, WireCall.fromJson),
+      ),
+      running: _objectOrNull(
+        json['running'],
+        WireRunning.fromJson,
+      ),
+      subagentID: (json['subagentId'] as num?)?.toInt(),
+      callers: json['callers'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['display'] = display;
+    if (verb != null) {
+      json['verb'] = verb;
+    }
+    if (workKey != null) {
+      json['workKey'] = workKey;
+    }
+    if (calls != null) {
+      json['calls'] = [
+        for (final value in calls!) value.toJson(),
+      ];
+    }
+    if (running != null) {
+      json['running'] = running!.toJson();
+    }
+    if (subagentID != null) {
+      json['subagentId'] = subagentID;
+    }
+    if (callers != null) {
+      json['callers'] = callers;
+    }
+    return json;
+  }
+}
+
+/// WireCall is one finished call.
+class WireCall {
+  const WireCall({
+    this.callID,
+    this.target,
+    this.args,
+    this.summary,
+    this.output,
+    this.error,
+    this.exitCode,
+    this.failed,
+    this.approval,
+    this.risk,
+    this.files,
+    this.role,
+    this.notice,
+    this.durationMs,
+    this.at,
+    this.truncated,
+    this.subject,
+    this.summaryLine,
+    this.diffStat,
+    this.hookHint,
+    this.killedReason,
+    this.jobID,
+    this.tail,
+  });
+
+  final String? callID;
+  final String? target;
+  final String? args;
+  final String? summary;
+  final String? output;
+  final String? error;
+  final int? exitCode;
+  final bool? failed;
+  final String? approval;
+  final String? risk;
+  final List<String>? files;
+  final String? role;
+  final String? notice;
+  final int? durationMs;
+  final int? at;
+  final bool? truncated;
+  /// Subject is what the call acted on, scrubbed, its first line.
+  final String? subject;
+  /// SummaryLine is the summary's first line, scrubbed.
+  final String? summaryLine;
+  /// DiffStat is "+N −M" over the whole diff of an edit or a whole-file
+  /// write.
+  final String? diffStat;
+  /// HookHint is the hook decision the row shows first.
+  final String? hookHint;
+  /// KilledReason is why the sandbox killed the command.
+  final String? killedReason;
+  /// JobID is the background job the call started.
+  final String? jobID;
+  /// Tail is a failed call's last output lines.
+  final List<String>? tail;
+
+  factory WireCall.fromJson(Map<String, dynamic> json) {
+    return WireCall(
+      callID: json['callId'] as String?,
+      target: json['target'] as String?,
+      args: json['args'] as String?,
+      summary: json['summary'] as String?,
+      output: json['output'] as String?,
+      error: json['error'] as String?,
+      exitCode: (json['exitCode'] as num?)?.toInt(),
+      failed: json['failed'] as bool?,
+      approval: json['approval'] as String?,
+      risk: json['risk'] as String?,
+      files: _listOrNull(
+        json['files'],
+        (value) => value as String,
+      ),
+      role: json['role'] as String?,
+      notice: json['notice'] as String?,
+      durationMs: (json['durationMs'] as num?)?.toInt(),
+      at: (json['at'] as num?)?.toInt(),
+      truncated: json['truncated'] as bool?,
+      subject: json['subject'] as String?,
+      summaryLine: json['summaryLine'] as String?,
+      diffStat: json['diffStat'] as String?,
+      hookHint: json['hookHint'] as String?,
+      killedReason: json['killedReason'] as String?,
+      jobID: json['jobId'] as String?,
+      tail: _listOrNull(
+        json['tail'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (callID != null) {
+      json['callId'] = callID;
+    }
+    if (target != null) {
+      json['target'] = target;
+    }
+    if (args != null) {
+      json['args'] = args;
+    }
+    if (summary != null) {
+      json['summary'] = summary;
+    }
+    if (output != null) {
+      json['output'] = output;
+    }
+    if (error != null) {
+      json['error'] = error;
+    }
+    if (exitCode != null) {
+      json['exitCode'] = exitCode;
+    }
+    if (failed != null) {
+      json['failed'] = failed;
+    }
+    if (approval != null) {
+      json['approval'] = approval;
+    }
+    if (risk != null) {
+      json['risk'] = risk;
+    }
+    if (files != null) {
+      json['files'] = files!;
+    }
+    if (role != null) {
+      json['role'] = role;
+    }
+    if (notice != null) {
+      json['notice'] = notice;
+    }
+    if (durationMs != null) {
+      json['durationMs'] = durationMs;
+    }
+    if (at != null) {
+      json['at'] = at;
+    }
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    if (subject != null) {
+      json['subject'] = subject;
+    }
+    if (summaryLine != null) {
+      json['summaryLine'] = summaryLine;
+    }
+    if (diffStat != null) {
+      json['diffStat'] = diffStat;
+    }
+    if (hookHint != null) {
+      json['hookHint'] = hookHint;
+    }
+    if (killedReason != null) {
+      json['killedReason'] = killedReason;
+    }
+    if (jobID != null) {
+      json['jobId'] = jobID;
+    }
+    if (tail != null) {
+      json['tail'] = tail!;
+    }
+    return json;
+  }
+}
+
+/// WireRunning is a call that has not finished.
+class WireRunning {
+  const WireRunning({
+    this.target,
+    this.output,
+    this.startedAt,
+    this.truncated,
+    this.subject,
+    this.callID,
+    this.args,
+  });
+
+  final String? target;
+  final String? output;
+  final int? startedAt;
+  final bool? truncated;
+  /// Subject is what the call acts on, scrubbed.
+  final String? subject;
+  final String? callID;
+  /// Args is the arguments as the tool shows them, capped.
+  final String? args;
+
+  factory WireRunning.fromJson(Map<String, dynamic> json) {
+    return WireRunning(
+      target: json['target'] as String?,
+      output: json['output'] as String?,
+      startedAt: (json['startedAt'] as num?)?.toInt(),
+      truncated: json['truncated'] as bool?,
+      subject: json['subject'] as String?,
+      callID: json['callId'] as String?,
+      args: json['args'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (target != null) {
+      json['target'] = target;
+    }
+    if (output != null) {
+      json['output'] = output;
+    }
+    if (startedAt != null) {
+      json['startedAt'] = startedAt;
+    }
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    if (subject != null) {
+      json['subject'] = subject;
+    }
+    if (callID != null) {
+      json['callId'] = callID;
+    }
+    if (args != null) {
+      json['args'] = args;
+    }
+    return json;
+  }
+}
+
+/// WireCompletion is one finished piece of background work at the moment it
+/// ended: a background job's exit or a subagent's end. Expanded, it is the
+/// issue report.
+class WireCompletion {
+  const WireCompletion({
+    required this.source,
+    required this.id,
+    this.subagentID,
+    required this.label,
+    required this.outcome,
+    this.failed,
+    this.exitCode,
+    this.stopCause,
+    this.startedAt,
+    this.endedAt,
+    this.durationMs,
+    this.measure,
+    this.summary,
+    this.command,
+    this.cwd,
+    this.output,
+    this.report,
+    this.error,
+    this.workKey,
+    this.executionID,
+    this.reportMessageID,
+    this.truncated,
+  });
+
+  final String source;
+  final String id;
+  final int? subagentID;
+  final String label;
+  final String outcome;
+  final bool? failed;
+  final int? exitCode;
+  final String? stopCause;
+  final int? startedAt;
+  final int? endedAt;
+  final int? durationMs;
+  final String? measure;
+  final String? summary;
+  final String? command;
+  final String? cwd;
+  final String? output;
+  final String? report;
+  final String? error;
+  final String? workKey;
+  final String? executionID;
+  final int? reportMessageID;
+  final bool? truncated;
+
+  factory WireCompletion.fromJson(Map<String, dynamic> json) {
+    return WireCompletion(
+      source: json['source'] as String,
+      id: json['id'] as String,
+      subagentID: (json['subagentId'] as num?)?.toInt(),
+      label: json['label'] as String,
+      outcome: json['outcome'] as String,
+      failed: json['failed'] as bool?,
+      exitCode: (json['exitCode'] as num?)?.toInt(),
+      stopCause: json['stopCause'] as String?,
+      startedAt: (json['startedAt'] as num?)?.toInt(),
+      endedAt: (json['endedAt'] as num?)?.toInt(),
+      durationMs: (json['durationMs'] as num?)?.toInt(),
+      measure: json['measure'] as String?,
+      summary: json['summary'] as String?,
+      command: json['command'] as String?,
+      cwd: json['cwd'] as String?,
+      output: json['output'] as String?,
+      report: json['report'] as String?,
+      error: json['error'] as String?,
+      workKey: json['workKey'] as String?,
+      executionID: json['executionId'] as String?,
+      reportMessageID: (json['reportMessageId'] as num?)?.toInt(),
+      truncated: json['truncated'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    json['id'] = id;
+    if (subagentID != null) {
+      json['subagentId'] = subagentID;
+    }
+    json['label'] = label;
+    json['outcome'] = outcome;
+    if (failed != null) {
+      json['failed'] = failed;
+    }
+    if (exitCode != null) {
+      json['exitCode'] = exitCode;
+    }
+    if (stopCause != null) {
+      json['stopCause'] = stopCause;
+    }
+    if (startedAt != null) {
+      json['startedAt'] = startedAt;
+    }
+    if (endedAt != null) {
+      json['endedAt'] = endedAt;
+    }
+    if (durationMs != null) {
+      json['durationMs'] = durationMs;
+    }
+    if (measure != null) {
+      json['measure'] = measure;
+    }
+    if (summary != null) {
+      json['summary'] = summary;
+    }
+    if (command != null) {
+      json['command'] = command;
+    }
+    if (cwd != null) {
+      json['cwd'] = cwd;
+    }
+    if (output != null) {
+      json['output'] = output;
+    }
+    if (report != null) {
+      json['report'] = report;
+    }
+    if (error != null) {
+      json['error'] = error;
+    }
+    if (workKey != null) {
+      json['workKey'] = workKey;
+    }
+    if (executionID != null) {
+      json['executionId'] = executionID;
+    }
+    if (reportMessageID != null) {
+      json['reportMessageId'] = reportMessageID;
+    }
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    return json;
+  }
+}
+
+/// WirePlan is a beat's plan line: the todo list as the beat's last
+/// todo.write left it.
+class WirePlan {
+  const WirePlan({
+    this.status,
+    required this.done,
+    required this.total,
+    this.active,
+    this.activeText,
+    this.cleared,
+  });
+
+  /// Status is each item's status in list order: "completed",
+  /// "in_progress" or "pending".
+  final List<String>? status;
+  final int done;
+  final int total;
+  final int? active;
+  final String? activeText;
+  final bool? cleared;
+
+  factory WirePlan.fromJson(Map<String, dynamic> json) {
+    return WirePlan(
+      status: _listOrNull(
+        json['status'],
+        (value) => value as String,
+      ),
+      done: (json['done'] as num).toInt(),
+      total: (json['total'] as num).toInt(),
+      active: (json['active'] as num?)?.toInt(),
+      activeText: json['activeText'] as String?,
+      cleared: json['cleared'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (status != null) {
+      json['status'] = status!;
+    }
+    json['done'] = done;
+    json['total'] = total;
+    if (active != null) {
+      json['active'] = active;
+    }
+    if (activeText != null) {
+      json['activeText'] = activeText;
+    }
+    if (cleared != null) {
+      json['cleared'] = cleared;
+    }
+    return json;
+  }
+}
+
+/// WireMessage is a user prompt, an assistant reply, or any other message the
+/// transcript shows on its own row.
+class WireMessage {
+  const WireMessage({
+    required this.role,
+    this.contentType,
+    required this.content,
+    this.isFinal,
+    this.usage,
+    this.salvaged,
+    this.salvageReason,
+    this.thinkMs,
+    this.at,
+    this.reasoning,
+    this.truncated,
+  });
+
+  final String role;
+  final String? contentType;
+  final String content;
+  /// IsFinal is the wire's "final": the field is spelled out here because
+  /// Dart reserves the bare word, and both generators name a Dart field (but
+  /// never a JSON key) after the Go field.
+  final bool? isFinal;
+  final String? usage;
+  final bool? salvaged;
+  final String? salvageReason;
+  final int? thinkMs;
+  final int? at;
+  /// Reasoning is the message's reasoning text, capped.
+  final String? reasoning;
+  /// Truncated says the reasoning was cut.
+  final bool? truncated;
+
+  factory WireMessage.fromJson(Map<String, dynamic> json) {
+    return WireMessage(
+      role: json['role'] as String,
+      contentType: json['contentType'] as String?,
+      content: json['content'] as String,
+      isFinal: json['final'] as bool?,
+      usage: json['usage'] as String?,
+      salvaged: json['salvaged'] as bool?,
+      salvageReason: json['salvageReason'] as String?,
+      thinkMs: (json['thinkMs'] as num?)?.toInt(),
+      at: (json['at'] as num?)?.toInt(),
+      reasoning: json['reasoning'] as String?,
+      truncated: json['truncated'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['role'] = role;
+    if (contentType != null) {
+      json['contentType'] = contentType;
+    }
+    json['content'] = content;
+    if (isFinal != null) {
+      json['final'] = isFinal;
+    }
+    if (usage != null) {
+      json['usage'] = usage;
+    }
+    if (salvaged != null) {
+      json['salvaged'] = salvaged;
+    }
+    if (salvageReason != null) {
+      json['salvageReason'] = salvageReason;
+    }
+    if (thinkMs != null) {
+      json['thinkMs'] = thinkMs;
+    }
+    if (at != null) {
+      json['at'] = at;
+    }
+    if (reasoning != null) {
+      json['reasoning'] = reasoning;
+    }
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    return json;
+  }
+}
+
+/// WireThinking is a reasoning row outside any step, finished or live.
+class WireThinking {
+  const WireThinking({
+    required this.text,
+    this.durationMs,
+    this.startedAt,
+  });
+
+  final String text;
+  final int? durationMs;
+  /// StartedAt is when the live reasoning began.
+  final int? startedAt;
+
+  factory WireThinking.fromJson(Map<String, dynamic> json) {
+    return WireThinking(
+      text: json['text'] as String,
+      durationMs: (json['durationMs'] as num?)?.toInt(),
+      startedAt: (json['startedAt'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['text'] = text;
+    if (durationMs != null) {
+      json['durationMs'] = durationMs;
+    }
+    if (startedAt != null) {
+      json['startedAt'] = startedAt;
+    }
+    return json;
+  }
+}
+
+/// WireRunEvent is one plan-run event (verify failure, review, commit, …).
+class WireRunEvent {
+  const WireRunEvent({
+    required this.kind,
+    this.taskN,
+    this.title,
+    this.detail,
+    this.body,
+    this.severity,
+    this.at,
+    this.truncated,
+    this.bodyLines,
+  });
+
+  final String kind;
+  final int? taskN;
+  final String? title;
+  final String? detail;
+  final String? body;
+  final String? severity;
+  final int? at;
+  final bool? truncated;
+  /// BodyLines is the whole body's line count.
+  final int? bodyLines;
+
+  factory WireRunEvent.fromJson(Map<String, dynamic> json) {
+    return WireRunEvent(
+      kind: json['kind'] as String,
+      taskN: (json['taskN'] as num?)?.toInt(),
+      title: json['title'] as String?,
+      detail: json['detail'] as String?,
+      body: json['body'] as String?,
+      severity: json['severity'] as String?,
+      at: (json['at'] as num?)?.toInt(),
+      truncated: json['truncated'] as bool?,
+      bodyLines: (json['bodyLines'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = kind;
+    if (taskN != null) {
+      json['taskN'] = taskN;
+    }
+    if (title != null) {
+      json['title'] = title;
+    }
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    if (body != null) {
+      json['body'] = body;
+    }
+    if (severity != null) {
+      json['severity'] = severity;
+    }
+    if (at != null) {
+      json['at'] = at;
+    }
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    if (bodyLines != null) {
+      json['bodyLines'] = bodyLines;
+    }
+    return json;
+  }
+}
+
+/// WireReceipt is the summary line closing a finished turn.
+class WireReceipt {
+  const WireReceipt({
+    required this.durationMs,
+    required this.tasks,
+    required this.steps,
+    required this.tools,
+    required this.files,
+    this.usage,
+    this.salvaged,
+  });
+
+  final int durationMs;
+  final int tasks;
+  final int steps;
+  final int tools;
+  final int files;
+  final String? usage;
+  final bool? salvaged;
+
+  factory WireReceipt.fromJson(Map<String, dynamic> json) {
+    return WireReceipt(
+      durationMs: (json['durationMs'] as num).toInt(),
+      tasks: (json['tasks'] as num).toInt(),
+      steps: (json['steps'] as num).toInt(),
+      tools: (json['tools'] as num).toInt(),
+      files: (json['files'] as num).toInt(),
+      usage: json['usage'] as String?,
+      salvaged: json['salvaged'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['durationMs'] = durationMs;
+    json['tasks'] = tasks;
+    json['steps'] = steps;
+    json['tools'] = tools;
+    json['files'] = files;
+    if (usage != null) {
+      json['usage'] = usage;
+    }
+    if (salvaged != null) {
+      json['salvaged'] = salvaged;
+    }
+    return json;
+  }
+}
+
+/// WireBand is the pinned band: todo progress with its stale signal, and the
+/// running cards. It travels as a node with ID "band" that is deliberately
+/// not in roots, so a transcript walk ignores it.
+class WireBand {
+  const WireBand({
+    this.todos,
+    required this.done,
+    required this.total,
+    this.active,
+    this.stale,
+    this.staleAgeMs,
+    this.staleSince,
+    this.next,
+    this.tasks,
+    this.entities,
+  });
+
+  final bool? todos;
+  final int done;
+  final int total;
+  final String? active;
+  final bool? stale;
+  final int? staleAgeMs;
+  /// StaleSince is when the stale clock started, so a client can keep the
+  /// age current between patches.
+  final int? staleSince;
+  final List<String>? next;
+  /// Tasks is the whole list for the Tasks tab, sent whenever the session
+  /// has a list, idle or not.
+  final List<WireTask>? tasks;
+  final List<WireBandEntity>? entities;
+
+  factory WireBand.fromJson(Map<String, dynamic> json) {
+    return WireBand(
+      todos: json['todos'] as bool?,
+      done: (json['done'] as num).toInt(),
+      total: (json['total'] as num).toInt(),
+      active: json['active'] as String?,
+      stale: json['stale'] as bool?,
+      staleAgeMs: (json['staleAgeMs'] as num?)?.toInt(),
+      staleSince: (json['staleSince'] as num?)?.toInt(),
+      next: _listOrNull(
+        json['next'],
+        (value) => value as String,
+      ),
+      tasks: _listOrNull(
+        json['tasks'],
+        (value) => _object(value, WireTask.fromJson),
+      ),
+      entities: _listOrNull(
+        json['entities'],
+        (value) => _object(value, WireBandEntity.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (todos != null) {
+      json['todos'] = todos;
+    }
+    json['done'] = done;
+    json['total'] = total;
+    if (active != null) {
+      json['active'] = active;
+    }
+    if (stale != null) {
+      json['stale'] = stale;
+    }
+    if (staleAgeMs != null) {
+      json['staleAgeMs'] = staleAgeMs;
+    }
+    if (staleSince != null) {
+      json['staleSince'] = staleSince;
+    }
+    if (next != null) {
+      json['next'] = next!;
+    }
+    if (tasks != null) {
+      json['tasks'] = [
+        for (final value in tasks!) value.toJson(),
+      ];
+    }
+    if (entities != null) {
+      json['entities'] = [
+        for (final value in entities!) value.toJson(),
+      ];
+    }
+    return json;
+  }
+}
+
+/// WireTask is one todo in the Tasks tab, with its share of the transcript.
+class WireTask {
+  const WireTask({
+    this.id,
+    required this.content,
+    required this.status,
+    this.startedAt,
+    this.completedAt,
+    this.steps,
+    this.workMs,
+    this.ref,
+  });
+
+  final String? id;
+  final String content;
+  final String status;
+  final int? startedAt;
+  final int? completedAt;
+  final int? steps;
+  final int? workMs;
+  /// Ref is the first beat bound to the todo, where a click jumps.
+  final String? ref;
+
+  factory WireTask.fromJson(Map<String, dynamic> json) {
+    return WireTask(
+      id: json['id'] as String?,
+      content: json['content'] as String,
+      status: json['status'] as String,
+      startedAt: (json['startedAt'] as num?)?.toInt(),
+      completedAt: (json['completedAt'] as num?)?.toInt(),
+      steps: (json['steps'] as num?)?.toInt(),
+      workMs: (json['workMs'] as num?)?.toInt(),
+      ref: json['ref'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (id != null) {
+      json['id'] = id;
+    }
+    json['content'] = content;
+    json['status'] = status;
+    if (startedAt != null) {
+      json['startedAt'] = startedAt;
+    }
+    if (completedAt != null) {
+      json['completedAt'] = completedAt;
+    }
+    if (steps != null) {
+      json['steps'] = steps;
+    }
+    if (workMs != null) {
+      json['workMs'] = workMs;
+    }
+    if (ref != null) {
+      json['ref'] = ref;
+    }
+    return json;
+  }
+}
+
+/// WireBandEntity is one running card the band lists.
+class WireBandEntity {
+  const WireBandEntity({
+    required this.ref,
+    required this.label,
+    this.detail,
+    this.startedAt,
+  });
+
+  final String ref;
+  final String label;
+  final String? detail;
+  final int? startedAt;
+
+  factory WireBandEntity.fromJson(Map<String, dynamic> json) {
+    return WireBandEntity(
+      ref: json['ref'] as String,
+      label: json['label'] as String,
+      detail: json['detail'] as String?,
+      startedAt: (json['startedAt'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['ref'] = ref;
+    json['label'] = label;
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    if (startedAt != null) {
+      json['startedAt'] = startedAt;
+    }
+    return json;
+  }
+}
+
+/// StackSnapshot is the whole stack at Rev, as session/stack answers.
+class StackSnapshot {
+  const StackSnapshot({
+    required this.sessionID,
+    this.subagentID,
+    required this.rev,
+    required this.roots,
+    required this.nodes,
+  });
+
+  final String sessionID;
+  final int? subagentID;
+  final int rev;
+  final List<String> roots;
+  final List<WireNode> nodes;
+
+  factory StackSnapshot.fromJson(Map<String, dynamic> json) {
+    return StackSnapshot(
+      sessionID: json['sessionId'] as String,
+      subagentID: (json['subagentId'] as num?)?.toInt(),
+      rev: (json['rev'] as num).toInt(),
+      roots: _list(
+        json['roots'],
+        (value) => value as String,
+      ),
+      nodes: _list(
+        json['nodes'],
+        (value) => _object(value, WireNode.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['sessionId'] = sessionID;
+    if (subagentID != null) {
+      json['subagentId'] = subagentID;
+    }
+    json['rev'] = rev;
+    json['roots'] = roots;
+    json['nodes'] = [
+      for (final value in nodes) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// StackPatch is one stack_patch update: what changed in one stack since
+/// BaseRev. A client whose revision is BaseRev applies it and moves to Rev; a
+/// client whose revision is anything else refetches the snapshot.
+class StackPatch {
+  const StackPatch({
+    required this.kind,
+    this.subagentID,
+    required this.rev,
+    required this.baseRev,
+    required this.roots,
+    this.upsert,
+    this.remove,
+  });
+
+  final String kind;
+  final int? subagentID;
+  final int rev;
+  final int baseRev;
+  final List<String> roots;
+  final List<WireNode>? upsert;
+  final List<String>? remove;
+
+  factory StackPatch.fromJson(Map<String, dynamic> json) {
+    return StackPatch(
+      kind: json['kind'] as String,
+      subagentID: (json['subagentId'] as num?)?.toInt(),
+      rev: (json['rev'] as num).toInt(),
+      baseRev: (json['baseRev'] as num).toInt(),
+      roots: _list(
+        json['roots'],
+        (value) => value as String,
+      ),
+      upsert: _listOrNull(
+        json['upsert'],
+        (value) => _object(value, WireNode.fromJson),
+      ),
+      remove: _listOrNull(
+        json['remove'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = kind;
+    if (subagentID != null) {
+      json['subagentId'] = subagentID;
+    }
+    json['rev'] = rev;
+    json['baseRev'] = baseRev;
+    json['roots'] = roots;
+    if (upsert != null) {
+      json['upsert'] = [
+        for (final value in upsert!) value.toJson(),
+      ];
+    }
+    if (remove != null) {
+      json['remove'] = remove!;
     }
     return json;
   }

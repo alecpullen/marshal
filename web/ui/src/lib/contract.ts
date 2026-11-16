@@ -544,6 +544,83 @@ export interface ProjectStatus {
 }
 
 /**
+ * SessionSummary is one session as GET /api/sessions lists it: the entry an
+ * agent's session/list returns for this project.
+ */
+export interface SessionSummary {
+  sessionId: string;
+  title?: string;
+  /**
+   * UpdatedAt is when the session last changed, Unix milliseconds.
+   */
+  updatedAt?: number;
+  messageCount?: number;
+}
+
+/**
+ * SessionList is GET /api/sessions' answer: the project's sessions.
+ */
+export interface SessionList {
+  sessions: SessionSummary[];
+}
+
+/**
+ * PromptRequest is a POST /api/sessions/{id}/prompt body: the text that
+ * starts a turn.
+ */
+export interface PromptRequest {
+  text: string;
+}
+
+/**
+ * SteerRequest is a POST /api/sessions/{id}/steer body: an instruction for
+ * the turn already running.
+ */
+export interface SteerRequest {
+  text: string;
+}
+
+/**
+ * ModeRequest is a POST /api/sessions/{id}/mode body: the permission mode to
+ * switch to.
+ */
+export interface ModeRequest {
+  mode: string;
+}
+
+/**
+ * Roster is GET /api/sessions/{id}/roster's answer: every role's live model
+ * binding, plus the swarm and SDD budgets.
+ */
+export interface Roster {
+  roles: RosterRole[];
+  swarmBudget: RosterBudget;
+  sddBudget: RosterBudget;
+}
+
+/**
+ * RosterRole is one role's resolved binding.
+ */
+export interface RosterRole {
+  role: string;
+  profile: string;
+  provider?: string;
+  model?: string;
+  presetName?: string;
+  customAgent?: string;
+  localOnly: boolean;
+  error?: string;
+}
+
+/**
+ * RosterBudget is one subsystem's token and round budget.
+ */
+export interface RosterBudget {
+  maxFixRounds: number;
+  maxTotalTokens: number;
+}
+
+/**
  * SpawnRequest is a POST /api/agents body.
  */
 export interface SpawnRequest {
@@ -579,6 +656,372 @@ export interface SpawnResult {
    * minted.
    */
   warning?: string;
+}
+
+/**
+ * WireNode is one node. Exactly one payload pointer is set, chosen by Kind;
+ * a turn node carries none.
+ */
+export interface WireNode {
+  id: string;
+  kind: string;
+  parent?: string;
+  children?: string[];
+  live?: boolean;
+  /**
+   * Version is the hex of the node's payload hash: a client caches a
+   * rendered row while it is unchanged.
+   */
+  version?: string;
+  step?: WireStep;
+  tool?: WireTool;
+  message?: WireMessage;
+  thinking?: WireThinking;
+  runEvent?: WireRunEvent;
+  completion?: WireCompletion;
+  plan?: WirePlan;
+  receipt?: WireReceipt;
+  band?: WireBand;
+}
+
+/**
+ * WireStep is a step's header and reasoning.
+ */
+export interface WireStep {
+  headline: string;
+  rest?: string;
+  stepIds?: number[];
+  owner?: string;
+  roleWord?: string;
+  role?: string;
+  model?: string;
+  provider?: string;
+  todoId?: string;
+  todo?: WireTodoLabel;
+  startedAt?: number;
+  endedAt?: number;
+  thoughts?: WireThought[];
+  /**
+   * Narration is the beat's narration texts in order, each trimmed and an
+   * empty one kept, so the count is the beat's narration count.
+   */
+  narration?: string[];
+}
+
+/**
+ * WireTodoLabel marks the beat where work moves to a different todo.
+ */
+export interface WireTodoLabel {
+  id: string;
+  index: number;
+  total: number;
+  content: string;
+}
+
+/**
+ * WireThought is one finished reasoning block inside a step.
+ */
+export interface WireThought {
+  text: string;
+  durationMs?: number;
+}
+
+/**
+ * WireTool is a tool row: one call, a merged run of same-tool calls, or a
+ * call still running.
+ */
+export interface WireTool {
+  name: string;
+  display: string;
+  /**
+   * Verb is the word the row leads with.
+   */
+  verb?: string;
+  /**
+   * WorkKey is the stable conversation-work identity this row dispatched,
+   * so a client can pair the retained dispatch row with the pinned live
+   * card by identity rather than by display text.
+   */
+  workKey?: string;
+  calls?: WireCall[];
+  running?: WireRunning;
+  /**
+   * SubagentID names the subagent this row started, 0 when it started none.
+   */
+  subagentId?: number;
+  /**
+   * Callers says the row's call changed a resolved symbol whose callers the
+   * agent can look up.
+   */
+  callers?: boolean;
+}
+
+/**
+ * WireCall is one finished call.
+ */
+export interface WireCall {
+  callId?: string;
+  target?: string;
+  args?: string;
+  summary?: string;
+  output?: string;
+  error?: string;
+  exitCode?: number;
+  failed?: boolean;
+  approval?: string;
+  risk?: string;
+  files?: string[];
+  role?: string;
+  notice?: string;
+  durationMs?: number;
+  at?: number;
+  truncated?: boolean;
+  /**
+   * Subject is what the call acted on, scrubbed, its first line.
+   */
+  subject?: string;
+  /**
+   * SummaryLine is the summary's first line, scrubbed.
+   */
+  summaryLine?: string;
+  /**
+   * DiffStat is "+N −M" over the whole diff of an edit or a whole-file
+   * write.
+   */
+  diffStat?: string;
+  /**
+   * HookHint is the hook decision the row shows first.
+   */
+  hookHint?: string;
+  /**
+   * KilledReason is why the sandbox killed the command.
+   */
+  killedReason?: string;
+  /**
+   * JobID is the background job the call started.
+   */
+  jobId?: string;
+  /**
+   * Tail is a failed call's last output lines.
+   */
+  tail?: string[];
+}
+
+/**
+ * WireRunning is a call that has not finished.
+ */
+export interface WireRunning {
+  target?: string;
+  output?: string;
+  startedAt?: number;
+  truncated?: boolean;
+  /**
+   * Subject is what the call acts on, scrubbed.
+   */
+  subject?: string;
+  callId?: string;
+  /**
+   * Args is the arguments as the tool shows them, capped.
+   */
+  args?: string;
+}
+
+/**
+ * WireCompletion is one finished piece of background work at the moment it
+ * ended: a background job's exit or a subagent's end. Expanded, it is the
+ * issue report.
+ */
+export interface WireCompletion {
+  source: string;
+  id: string;
+  subagentId?: number;
+  label: string;
+  outcome: string;
+  failed?: boolean;
+  exitCode?: number;
+  stopCause?: string;
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  measure?: string;
+  summary?: string;
+  command?: string;
+  cwd?: string;
+  output?: string;
+  report?: string;
+  error?: string;
+  workKey?: string;
+  executionId?: string;
+  reportMessageId?: number;
+  truncated?: boolean;
+}
+
+/**
+ * WirePlan is a beat's plan line: the todo list as the beat's last
+ * todo.write left it.
+ */
+export interface WirePlan {
+  /**
+   * Status is each item's status in list order: "completed",
+   * "in_progress" or "pending".
+   */
+  status?: string[];
+  done: number;
+  total: number;
+  active?: number;
+  activeText?: string;
+  cleared?: boolean;
+}
+
+/**
+ * WireMessage is a user prompt, an assistant reply, or any other message the
+ * transcript shows on its own row.
+ */
+export interface WireMessage {
+  role: string;
+  contentType?: string;
+  content: string;
+  /**
+   * IsFinal is the wire's "final": the field is spelled out here because
+   * Dart reserves the bare word, and both generators name a Dart field (but
+   * never a JSON key) after the Go field.
+   */
+  final?: boolean;
+  usage?: string;
+  salvaged?: boolean;
+  salvageReason?: string;
+  thinkMs?: number;
+  at?: number;
+  /**
+   * Reasoning is the message's reasoning text, capped.
+   */
+  reasoning?: string;
+  /**
+   * Truncated says the reasoning was cut.
+   */
+  truncated?: boolean;
+}
+
+/**
+ * WireThinking is a reasoning row outside any step, finished or live.
+ */
+export interface WireThinking {
+  text: string;
+  durationMs?: number;
+  /**
+   * StartedAt is when the live reasoning began.
+   */
+  startedAt?: number;
+}
+
+/**
+ * WireRunEvent is one plan-run event (verify failure, review, commit, …).
+ */
+export interface WireRunEvent {
+  kind: string;
+  taskN?: number;
+  title?: string;
+  detail?: string;
+  body?: string;
+  severity?: string;
+  at?: number;
+  truncated?: boolean;
+  /**
+   * BodyLines is the whole body's line count.
+   */
+  bodyLines?: number;
+}
+
+/**
+ * WireReceipt is the summary line closing a finished turn.
+ */
+export interface WireReceipt {
+  durationMs: number;
+  tasks: number;
+  steps: number;
+  tools: number;
+  files: number;
+  usage?: string;
+  salvaged?: boolean;
+}
+
+/**
+ * WireBand is the pinned band: todo progress with its stale signal, and the
+ * running cards. It travels as a node with ID "band" that is deliberately
+ * not in roots, so a transcript walk ignores it.
+ */
+export interface WireBand {
+  todos?: boolean;
+  done: number;
+  total: number;
+  active?: string;
+  stale?: boolean;
+  staleAgeMs?: number;
+  /**
+   * StaleSince is when the stale clock started, so a client can keep the
+   * age current between patches.
+   */
+  staleSince?: number;
+  next?: string[];
+  /**
+   * Tasks is the whole list for the Tasks tab, sent whenever the session
+   * has a list, idle or not.
+   */
+  tasks?: WireTask[];
+  entities?: WireBandEntity[];
+}
+
+/**
+ * WireTask is one todo in the Tasks tab, with its share of the transcript.
+ */
+export interface WireTask {
+  id?: string;
+  content: string;
+  status: string;
+  startedAt?: number;
+  completedAt?: number;
+  steps?: number;
+  workMs?: number;
+  /**
+   * Ref is the first beat bound to the todo, where a click jumps.
+   */
+  ref?: string;
+}
+
+/**
+ * WireBandEntity is one running card the band lists.
+ */
+export interface WireBandEntity {
+  ref: string;
+  label: string;
+  detail?: string;
+  startedAt?: number;
+}
+
+/**
+ * StackSnapshot is the whole stack at Rev, as session/stack answers.
+ */
+export interface StackSnapshot {
+  sessionId: string;
+  subagentId?: number;
+  rev: number;
+  roots: string[];
+  nodes: WireNode[];
+}
+
+/**
+ * StackPatch is one stack_patch update: what changed in one stack since
+ * BaseRev. A client whose revision is BaseRev applies it and moves to Rev; a
+ * client whose revision is anything else refetches the snapshot.
+ */
+export interface StackPatch {
+  kind: string;
+  subagentId?: number;
+  rev: number;
+  baseRev: number;
+  roots: string[];
+  upsert?: WireNode[];
+  remove?: string[];
 }
 
 /**

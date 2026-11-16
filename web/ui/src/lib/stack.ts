@@ -1,204 +1,55 @@
 import { writable, get, type Readable } from 'svelte/store'
 import { APIError, getStack, getToken } from './api'
+import type {
+  StackPatch,
+  StackSnapshot,
+  WireBand,
+  WireBandEntity,
+  WireCall,
+  WireCompletion,
+  WireMessage,
+  WireNode,
+  WirePlan,
+  WireReceipt,
+  WireRunEvent,
+  WireRunning,
+  WireStep,
+  WireTask,
+  WireThinking,
+  WireThought,
+  WireTodoLabel,
+  WireTool,
+} from './contract'
 
-// Wire shapes, mirroring internal/viewmodel/wire.go. Times are Unix
-// milliseconds; absent means unset.
+// The stack's wire shapes live in the generated contract module, one
+// declaration shared with the Dart client. This module re-exports them and
+// keeps the client-side store: the node map, the revision rule, and the
+// subagent controls. Times are Unix milliseconds; absent means unset.
+export type {
+  StackPatch,
+  StackSnapshot,
+  WireBand,
+  WireBandEntity,
+  WireCall,
+  WireCompletion,
+  WireMessage,
+  WireNode,
+  WirePlan,
+  WireReceipt,
+  WireRunEvent,
+  WireRunning,
+  WireStep,
+  WireTask,
+  WireThinking,
+  WireThought,
+  WireTodoLabel,
+  WireTool,
+}
 
 // How many rows a beat shows before older ones collapse into a count, a
 // mirror of viewmodel.BeatRowCap. Models that rarely narrate otherwise push
 // the live tail off the transcript.
 export const BEAT_ROW_CAP = 8
-
-export interface WireThought { text: string; durationMs?: number }
-export interface WireStep {
-  headline: string
-  rest?: string
-  owner?: string
-  roleWord?: string
-  role?: string
-  model?: string
-  provider?: string
-  todoId?: string
-  /** Set on the one beat where work moves to a different todo. */
-  todo?: WireTodoLabel
-  /** The `session.Step` IDs this beat merges, oldest first. */
-  stepIds?: number[]
-  startedAt?: number
-  endedAt?: number
-  thoughts?: WireThought[]
-}
-// A todo transition: the beat where work moves to a different todo.
-export interface WireTodoLabel {
-  id: string
-  index: number
-  total: number
-  content: string
-}
-export interface WireCall {
-  callId?: string
-  target?: string
-  args?: string
-  summary?: string
-  output?: string
-  error?: string
-  exitCode?: number
-  failed?: boolean
-  approval?: string
-  risk?: string
-  files?: string[]
-  role?: string
-  notice?: string
-  durationMs?: number
-  at?: number
-  truncated?: boolean
-}
-export interface WireRunning { target?: string; output?: string; startedAt?: number; truncated?: boolean }
-export interface WireTool {
-  name: string
-  display: string
-  workKey?: string
-  calls?: WireCall[]
-  running?: WireRunning
-  /** The subagent this row started, 0 when it started none. */
-  subagentId?: number
-}
-/** One finished piece of background work at the moment it ended: a job's exit or a subagent's end. */
-export interface WireCompletion {
-  source: string
-  id: string
-  subagentId?: number
-  label: string
-  outcome: string
-  failed?: boolean
-  exitCode?: number
-  stopCause?: string
-  startedAt?: number
-  endedAt?: number
-  durationMs?: number
-  measure?: string
-  summary?: string
-  command?: string
-  cwd?: string
-  output?: string
-  report?: string
-  error?: string
-  workKey?: string
-  executionId?: string
-  reportMessageId?: number
-  truncated?: boolean
-}
-/** A beat's plan line: the todo list as the beat's last todo.write left it. */
-export interface WirePlan {
-  /** Each item's status in list order: "completed", "in_progress" or "pending". */
-  status?: string[]
-  done: number
-  total: number
-  active?: number
-  activeText?: string
-  cleared?: boolean
-}
-export interface WireMessage {
-  role: string
-  contentType?: string
-  content: string
-  final?: boolean
-  usage?: string
-  salvaged?: boolean
-  salvageReason?: string
-  thinkMs?: number
-  at?: number
-}
-export interface WireThinking { text: string; durationMs?: number }
-export interface WireRunEvent {
-  kind: string
-  taskN?: number
-  title?: string
-  detail?: string
-  body?: string
-  severity?: string
-  at?: number
-  truncated?: boolean
-}
-
-/** The pinned band: todo progress with its stale signal, and running cards. */
-export interface WireBand {
-  todos?: boolean
-  done: number
-  total: number
-  active?: string
-  stale?: boolean
-  staleAgeMs?: number
-  /** When the stale clock started (unix ms); ticks the age between patches. */
-  staleSince?: number
-  next?: string[]
-  /** The whole list, for the Tasks tab: sent whenever there is one, idle or not. */
-  tasks?: WireTask[]
-  entities?: WireBandEntity[]
-}
-/** One todo in the Tasks tab, with its share of the transcript. Times are unix ms. */
-export interface WireTask {
-  id?: string
-  content: string
-  status: string
-  startedAt?: number
-  completedAt?: number
-  steps?: number
-  workMs?: number
-  /** The first beat worked under it, where a click jumps. */
-  ref?: string
-}
-/** One running card the band lists. */
-export interface WireBandEntity {
-  ref: string
-  label: string
-  detail?: string
-  startedAt?: number
-}
-
-export interface WireReceipt {
-  durationMs: number
-  tasks: number
-  steps: number
-  tools: number
-  files: number
-  usage?: string
-  salvaged?: boolean
-}
-
-export interface WireNode {
-  id: string
-  kind: string
-  parent?: string
-  children?: string[]
-  live?: boolean
-  step?: WireStep
-  tool?: WireTool
-  message?: WireMessage
-  thinking?: WireThinking
-  runEvent?: WireRunEvent
-  completion?: WireCompletion
-  plan?: WirePlan
-  receipt?: WireReceipt
-  band?: WireBand
-}
-
-export interface StackSnapshot {
-  sessionId?: string
-  rev: number
-  roots: string[]
-  nodes: WireNode[]
-}
-
-export interface StackPatch {
-  kind: 'stack_patch'
-  /** Which transcript this patch belongs to; absent for the parent. */
-  subagentId?: number
-  rev: number
-  baseRev: number
-  roots: string[]
-  upsert?: WireNode[]
-  remove?: string[]
-}
 
 export interface StackState {
   status: 'loading' | 'ready' | 'unsupported' | 'error'

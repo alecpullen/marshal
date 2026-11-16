@@ -18,7 +18,9 @@ const _fixtures = [
   'inbox',
   'intake',
   'projects',
+  'session',
   'spawn',
+  'stack',
   'stream',
 ];
 
@@ -71,9 +73,37 @@ final _codecs = <String, _Codec>{
   // projects.json
   'ProjectStatus': (json) => ProjectStatus.fromJson(_object(json)).toJson(),
   'TrustState': (json) => TrustState.fromWire(json! as String).wire,
+  // session.json
+  'SessionSummary': (json) => SessionSummary.fromJson(_object(json)).toJson(),
+  'SessionList': (json) => SessionList.fromJson(_object(json)).toJson(),
+  'PromptRequest': (json) => PromptRequest.fromJson(_object(json)).toJson(),
+  'SteerRequest': (json) => SteerRequest.fromJson(_object(json)).toJson(),
+  'ModeRequest': (json) => ModeRequest.fromJson(_object(json)).toJson(),
+  'Roster': (json) => Roster.fromJson(_object(json)).toJson(),
+  'RosterRole': (json) => RosterRole.fromJson(_object(json)).toJson(),
+  'RosterBudget': (json) => RosterBudget.fromJson(_object(json)).toJson(),
   // spawn.json
   'SpawnRequest': (json) => SpawnRequest.fromJson(_object(json)).toJson(),
   'SpawnResult': (json) => SpawnResult.fromJson(_object(json)).toJson(),
+  // stack.json
+  'StackSnapshot': (json) => StackSnapshot.fromJson(_object(json)).toJson(),
+  'StackPatch': (json) => StackPatch.fromJson(_object(json)).toJson(),
+  'WireNode': (json) => WireNode.fromJson(_object(json)).toJson(),
+  'WireStep': (json) => WireStep.fromJson(_object(json)).toJson(),
+  'WireTodoLabel': (json) => WireTodoLabel.fromJson(_object(json)).toJson(),
+  'WireThought': (json) => WireThought.fromJson(_object(json)).toJson(),
+  'WireTool': (json) => WireTool.fromJson(_object(json)).toJson(),
+  'WireCall': (json) => WireCall.fromJson(_object(json)).toJson(),
+  'WireRunning': (json) => WireRunning.fromJson(_object(json)).toJson(),
+  'WireCompletion': (json) => WireCompletion.fromJson(_object(json)).toJson(),
+  'WirePlan': (json) => WirePlan.fromJson(_object(json)).toJson(),
+  'WireMessage': (json) => WireMessage.fromJson(_object(json)).toJson(),
+  'WireThinking': (json) => WireThinking.fromJson(_object(json)).toJson(),
+  'WireRunEvent': (json) => WireRunEvent.fromJson(_object(json)).toJson(),
+  'WireBand': (json) => WireBand.fromJson(_object(json)).toJson(),
+  'WireTask': (json) => WireTask.fromJson(_object(json)).toJson(),
+  'WireBandEntity': (json) => WireBandEntity.fromJson(_object(json)).toJson(),
+  'WireReceipt': (json) => WireReceipt.fromJson(_object(json)).toJson(),
   // stream.json
   'BudgetDelta': (json) => BudgetDelta.fromJson(_object(json)).toJson(),
   'BudgetScope': (json) => BudgetScope.fromWire(json! as String).wire,

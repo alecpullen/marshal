@@ -12,6 +12,28 @@ import 'thread_ref.dart';
 /// unavailable.
 enum PullGroup { ready, failing, beingFixed, inProgress, unavailable }
 
+/// One check on a pull request's head, in the model's own vocabulary.
+///
+/// A screen maps these to the kit's `CheckState`; the wire type stays here,
+/// because `ui/` reads `model/` and never imports `client/` (F1's boundary).
+enum PullCheckState { passed, failed, running, pending }
+
+/// One check as a screen draws it: the forge's name for it and its state.
+@immutable
+class PullCheckView {
+  const PullCheckView(this.name, this.state, {this.logTail});
+
+  final String name;
+  final PullCheckState state;
+
+  /// The tail of a failed check's log, when the detail route filled it. Only
+  /// the detail route does.
+  final String? logTail;
+
+  @override
+  String toString() => 'PullCheckView($name, ${state.name})';
+}
+
 /// One pull request as a screen draws it: the record, the thread it came from,
 /// its group, and the one-line summary of its checks.
 ///
@@ -24,6 +46,8 @@ class PullView {
     required this.thread,
     required this.group,
     required this.checkSummary,
+    this.checks = const [],
+    this.failureTail,
     this.sending = false,
     this.error,
   });
@@ -35,11 +59,60 @@ class PullView {
   /// The checks in one line, in the card's own words.
   final String checkSummary;
 
+  /// Every check on the current head, in the forge's order.
+  final List<PullCheckView> checks;
+
+  /// The last lines of the first failing check's log, when the detail route
+  /// carried them.
+  final String? failureTail;
+
   /// A dispatch for this pull request is in flight.
   final bool sending;
 
   /// Why the last dispatch failed, in the bridge's words.
   final String? error;
+
+  /// The record's identity, in the model's words: a screen needs these and
+  /// must not reach into the wire record for them.
+  String get id => record.id;
+  int get number => record.number;
+  String get title => record.title;
+  String get repo => record.repoID;
+  String get branch => record.headRef;
+  String get base => record.baseRef;
+  int get adds => record.additions;
+  int get dels => record.deletions;
+  bool get draft => record.draft;
+  String get reviews => record.reviews;
+
+  /// The project the pull request belongs to: where its settings live.
+  String get projectRoot => record.projectRoot;
+
+  /// When the record last changed, which is what a card's age counts from.
+  DateTime get updatedAt =>
+      DateTime.fromMillisecondsSinceEpoch(record.updatedAt, isUtc: true);
+
+  /// What a card calls where this came from: the thread's title while the
+  /// fleet still lists it, else the automation or id the record was written
+  /// with, so the line is never blank.
+  String get sourceTitle {
+    final current = thread;
+    if (current != null) return current.title;
+    for (final candidate in [
+      record.automation,
+      record.agentID,
+      record.factoryItem,
+      record.repoID,
+    ]) {
+      final value = candidate ?? '';
+      if (value.isNotEmpty) return value;
+    }
+    return record.repoID;
+  }
+
+  /// Whether a factory item opened this one: a card with no thread left draws
+  /// it as a work item rather than as an agent's.
+  bool get fromFactoryItem => record.origin == PullOrigin.pullOriginFactory;
 
   PullView copyWith({bool? sending, String? error, bool clearError = false}) =>
       PullView(
@@ -47,6 +120,8 @@ class PullView {
         thread: thread,
         group: group,
         checkSummary: checkSummary,
+        checks: checks,
+        failureTail: failureTail,
         sending: sending ?? this.sending,
         error: clearError ? null : (error ?? this.error),
       );
@@ -219,6 +294,31 @@ class PullsModel extends ChangeNotifier {
     PullState.unknown => PullGroup.inProgress,
   };
 
+  /// One check in the model's vocabulary, so a screen needs no wire type.
+  static PullCheckView checkOf(PullCheck check) => PullCheckView(
+    check.name,
+    checkStateOf(check.state),
+    logTail: check.logTail,
+  );
+
+  static PullCheckState checkStateOf(CheckState state) => switch (state) {
+    CheckState.checkPassed => PullCheckState.passed,
+    CheckState.checkFailed => PullCheckState.failed,
+    CheckState.checkRunning => PullCheckState.running,
+    CheckState.checkPending || CheckState.unknown => PullCheckState.pending,
+  };
+
+  /// The failing check's log tail, when the record carries one. Only the
+  /// detail route fills it, so a card drawn from the index shows none.
+  static String? tailOf(PullRecord record) {
+    for (final check in record.checks) {
+      if (check.state != CheckState.checkFailed) continue;
+      final tail = check.logTail ?? '';
+      if (tail.trim().isNotEmpty) return tail;
+    }
+    return null;
+  }
+
   /// The host whose index holds [id], or null when none does.
   String? _hostOf(String id) {
     for (final host in _pulls.hosts) {
@@ -255,6 +355,8 @@ class PullsModel extends ChangeNotifier {
             thread: _pulls.threadOf(host, record),
             group: groupOf(record),
             checkSummary: summaryOf(record),
+            checks: [for (final check in record.checks) checkOf(check)],
+            failureTail: tailOf(record),
             sending: overlay?.sending ?? false,
             error: overlay?.error,
           ),

@@ -6,43 +6,74 @@ import '../support/kit.dart';
 void main() {
   final e = tokens();
 
-  PullRequestFacts pull(PrState state, {bool draft = false}) =>
-      PullRequestFacts(
-        number: 123,
-        title: 'Quiet capture mode',
-        repo: 'alecpullen/marshal',
-        branch: 'factory/voice-planning',
-        adds: 412,
-        dels: 96,
-        checks: [
-          const Check('build', CheckState.passed),
-          Check('test', switch (state) {
-            PrState.failing || PrState.fixing => CheckState.failed,
-            PrState.inProgress => CheckState.running,
-            PrState.ready => CheckState.passed,
-          }),
-        ],
-        reviews: '2 reviews passed',
-        age: '26m',
-        state: state,
-        draft: draft,
-        failureTail: '--- FAIL: TestScriptedRecorderQuietMode (4.21s)',
-        sourceKind: ThreadKind.workItem,
-        sourceTitle: 'Voice planning',
-      );
+  /// The facts one card shows, in [state]. The summary is the model's own
+  /// sentence (F5 decision 11), so the test hands the card the words it would
+  /// have been given rather than expecting it to re-derive them.
+  PullRequestFacts pull(
+    PrState state, {
+    bool draft = false,
+    bool sending = false,
+    String? dispatchError,
+  }) => PullRequestFacts(
+    number: 123,
+    title: 'Quiet capture mode',
+    repo: 'alecpullen/marshal',
+    branch: 'factory/voice-planning',
+    adds: 412,
+    dels: 96,
+    checks: switch (state) {
+      PrState.unavailable => const [],
+      PrState.failing || PrState.fixing => const [
+        Check('build', CheckState.passed),
+        Check('test', CheckState.failed),
+      ],
+      PrState.inProgress => const [
+        Check('build', CheckState.passed),
+        Check('test', CheckState.running),
+      ],
+      PrState.ready => const [
+        Check('build', CheckState.passed),
+        Check('test', CheckState.passed),
+      ],
+    },
+    reviews: '2 reviews passed',
+    age: '26m',
+    state: state,
+    draft: draft,
+    failureTail: '--- FAIL: TestScriptedRecorderQuietMode (4.21s)',
+    checkSummary: switch (state) {
+      PrState.ready => '2 of 2 checks passed',
+      PrState.failing || PrState.fixing => '1 failing: test',
+      PrState.inProgress => '1 of 2 checks passed, the rest running',
+      PrState.unavailable =>
+        'Checks unavailable: the credential is an SSH key, which cannot call '
+            'the API',
+    },
+    sending: sending,
+    dispatchError: dispatchError,
+    sourceKind: ThreadKind.workItem,
+    sourceTitle: 'Voice planning',
+  );
 
   Future<void> pump(
     WidgetTester tester,
     PrState state, {
     PrActions actions = const PrActions(),
     bool draft = false,
+    bool sending = false,
+    String? dispatchError,
     double width = 860,
   }) => pumpKit(
     tester,
     SizedBox(
       width: width - 32,
       child: PrCard(
-        pull: pull(state, draft: draft),
+        pull: pull(
+          state,
+          draft: draft,
+          sending: sending,
+          dispatchError: dispatchError,
+        ),
         actions: actions,
       ),
     ),
@@ -111,6 +142,39 @@ void main() {
     expect(investigated, 1);
   });
 
+  testWidgets('failing and sending: the dispatch is acknowledged, not done', (
+    tester,
+  ) async {
+    var fixed = 0;
+    await pump(
+      tester,
+      PrState.failing,
+      sending: true,
+      actions: PrActions(fix: () => fixed++),
+    );
+
+    expect(find.text('Sending…'), findsOneWidget);
+    expect(
+      tester.widget<Btn>(find.byType(Btn).first).onTap,
+      isNull,
+      reason: 'one dispatch is in flight; a second is not posted',
+    );
+  });
+
+  testWidgets('a refused dispatch says why, in the bridge words', (
+    tester,
+  ) async {
+    await pump(
+      tester,
+      PrState.failing,
+      dispatchError: 'that check is not failing',
+      actions: PrActions(fix: () {}),
+    );
+
+    expect(find.text('that check is not failing'), findsOneWidget);
+    expect(styleOf(tester, 'that check is not failing').color, e.err);
+  });
+
   testWidgets('fixing: a worker is on it, with Watch and Stop', (tester) async {
     await pump(tester, PrState.fixing);
     expect(find.text('A worker is on it'), findsOneWidget);
@@ -126,6 +190,34 @@ void main() {
     expect(labels(tester), ['Open on forge']);
     expect(find.text('Draft'), findsOneWidget);
     expect(find.text('1 of 2 checks passed, the rest running'), findsOneWidget);
+  });
+
+  testWidgets('checks unavailable: the reason, and never shown as passing', (
+    tester,
+  ) async {
+    await pump(tester, PrState.unavailable);
+    expect(labels(tester), ['Open on forge'], reason: 'nothing to fix');
+    expect(
+      find.text(
+        'Checks unavailable: the credential is an SSH key, which cannot call '
+        'the API',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      tester.widget<Box>(find.byType(Box)).tone,
+      BoxTone.plain,
+      reason: 'unreadable checks are not a failure',
+    );
+    expect(
+      styleOf(
+        tester,
+        'Checks unavailable: the credential is an SSH key, which cannot call '
+        'the API',
+      ).color,
+      e.muted,
+    );
+    expect(find.byType(CheckStrip), findsNothing);
   });
 
   testWidgets('every icon names itself', (tester) async {

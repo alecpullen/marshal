@@ -541,6 +541,20 @@ class _GalleryState extends State<Gallery> {
         AskAction('Dismiss', onTap: () {}),
       ],
     ),
+    AskCard(
+      kind: AskKind.pull,
+      title: '#131 · the fix was refused as a forbidden change',
+      body:
+          'unit · it wanted to delete the failing test · the test is right '
+          'and the code is wrong · Fix it by hand, or ask a worker with a note',
+      waiting: '6m',
+      source: 'acme/widgets › Quiet capture mode',
+      actions: [
+        AskAction('Open', onTap: () {}),
+        AskAction('Try again', onTap: () {}),
+        AskAction('Dismiss', onTap: () {}),
+      ],
+    ),
   ];
 
   static const _fixChoices = [
@@ -568,6 +582,7 @@ class _GalleryState extends State<Gallery> {
         reviews: '2 reviews passed',
         age: '26m',
         state: PrState.ready,
+        checkSummary: '4 of 4 checks passed',
         sourceKind: ThreadKind.workItem,
         sourceTitle: 'CI-first change review',
       ),
@@ -590,6 +605,7 @@ class _GalleryState extends State<Gallery> {
         reviews: 'review waits for checks',
         age: '4m',
         state: PrState.failing,
+        checkSummary: '1 failing: unit',
         failureTail:
             '--- FAIL: TestScriptedRecorderQuietMode (4.21s)\n'
             '    recorder_test.go:88: planner question interrupted a quiet '
@@ -623,6 +639,7 @@ class _GalleryState extends State<Gallery> {
         reviews: 'no reviewers configured',
         age: '31m',
         state: PrState.fixing,
+        checkSummary: '1 failing: test',
         sourceKind: ThreadKind.agent,
         sourceTitle: 'Fix flaky calendar test',
       ),
@@ -644,9 +661,30 @@ class _GalleryState extends State<Gallery> {
         reviews: 'no reviews yet',
         age: '2m',
         state: PrState.inProgress,
+        checkSummary: '1 of 3 checks passed, the rest running',
         draft: true,
         sourceKind: ThreadKind.planRun,
         sourceTitle: 'P6 plan 4',
+      ),
+      actions: PrActions(openOnForge: () {}, openSource: () {}),
+    ),
+    PrCard(
+      pull: const PullRequestFacts(
+        number: 125,
+        title: 'Release config: sign the binaries',
+        repo: 'alecpullen/marshal',
+        branch: 'agent/sign-binaries',
+        adds: 24,
+        dels: 3,
+        checks: [],
+        reviews: 'no reviews yet',
+        age: '8m',
+        state: PrState.unavailable,
+        checkSummary:
+            'Checks unavailable: the credential is an SSH key, which cannot '
+            'call the API',
+        sourceKind: ThreadKind.agent,
+        sourceTitle: 'Sign the binaries',
       ),
       actions: PrActions(openOnForge: () {}, openSource: () {}),
     ),

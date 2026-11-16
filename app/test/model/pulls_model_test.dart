@@ -6,7 +6,6 @@ import 'package:marshal_app/src/model/pulls_model.dart';
 import 'package:marshal_app/src/model/pulls_store.dart';
 
 import '../support/fake_bridge.dart';
-import 'pulls_store_test.dart' show pull;
 import 'support.dart';
 
 /// The pull requests' rules (F5 decisions 10–12, 15): the groups, the one-line
@@ -284,14 +283,50 @@ void main() {
     expect(model.groups[PullGroup.failing], hasLength(1));
   });
 
+  test('a note rides the dispatch', () async {
+    final (fixture, _, model) = await modelFor([record()]);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/pulls/${Uri.encodeComponent('acme/widgets#1')}/fix',
+      const FakeReply(202, body: '{}'),
+    );
+
+    await model.fix(
+      model.groups[PullGroup.failing]!.single,
+      note: 'the clock is pinned in the fixture',
+    );
+
+    final posted = fixture
+        .requests('local')
+        .lastWhere((r) => r.method == 'POST' && r.uri.endsWith('/fix'));
+    expect(jsonDecode(posted.body), {
+      'check': 'unit',
+      'mode': 'fix',
+      'note': 'the clock is pinned in the fixture',
+    });
+  });
+
+  test('investigate only is the same dispatch with its own mode', () async {
+    final (fixture, _, model) = await modelFor([record()]);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/pulls/${Uri.encodeComponent('acme/widgets#1')}/fix',
+      const FakeReply(202, body: '{}'),
+    );
+
+    await model.fix(
+      model.groups[PullGroup.failing]!.single,
+      mode: 'investigate',
+    );
+
+    final posted = fixture
+        .requests('local')
+        .lastWhere((r) => r.method == 'POST' && r.uri.endsWith('/fix'));
+    expect(jsonDecode(posted.body), {'check': 'unit', 'mode': 'investigate'});
+  });
+
   test('auto-fix changes the project setting', () async {
     final (fixture, _, model) = await modelFor([record()]);
-    const settings = {
-      'workspace': 'default',
-      'automations': {
-        'ciFixer': {'enabled': true, 'repoId': 'acme/widgets'},
-      },
-    };
     fixture.bridges['local']!
       ..reply(
         'GET',
@@ -317,6 +352,5 @@ void main() {
       isTrue,
       reason: 'the other automations survive the write',
     );
-    expect(settings['automations'], isNotNull);
   });
 }

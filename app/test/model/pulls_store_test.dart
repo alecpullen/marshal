@@ -49,8 +49,8 @@ PullRecord pull({
 /// One frame of the fleet's `pull` delta.
 Map<String, Object?> pullDelta({PullRecord? record, String? removed}) => {
   'kind': DeltaKind.deltaPull.wire,
-  if (record != null) 'pull': record.toJson(),
-  if (removed != null) 'removed': removed,
+  'pull': ?record?.toJson(),
+  'removed': ?removed,
 };
 
 void main() {

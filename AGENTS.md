@@ -72,7 +72,9 @@ and a trust there applies to the running session without restarting the
 program. `marshal daemon pin [dir]` keeps a project's child running with no
 session, with its index watched, until `marshal daemon unpin`. A fleet agent
 the local daemon starts on a local project runs on that project's child,
-beside the TUI's sessions.
+beside the TUI's sessions. The bridge follows each fleet agent's session, so a
+turn started from its session screen shows in the fleet and its requests reach
+the bridge.
 
 ### End-to-end and usability suites
 

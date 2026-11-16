@@ -2751,6 +2751,191 @@ func TestExternalChangeAfterWriterIsStale(t *testing.T) {
 	}
 }
 
+// TestExternalChangeAfterWriterRecoversOnRetry pins the escape hatch the stale
+// error promises the writer: the error embeds the current region and records it
+// as a read, so the retry it asks for must be accepted. The newest writer's
+// exemption otherwise ignores every read, and one external touch (a formatter, a
+// checkout, a shell-side edit) turns the path into one this session can never
+// edit again — the same refusal for every retry, for the rest of the session.
+func TestExternalChangeAfterWriterRecoversOnRetry(t *testing.T) {
+	root, filePath := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	child := testActorRegistry(t, root, ft, "child", "a subagent (review)")
+
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.write", `{"path":"app.txt","content":"alpha\nbeta\ngamma\n"}`)
+
+	// An external writer the ledger never sees rewrites the path just after the
+	// agent's own recorded write. Its timestamp is pinned from the ledger
+	// rather than left to the filesystem, whose coarse inode clock can put a
+	// real write behind the recorded one.
+	write, err := ft.WriteState(filePath)
+	if err != nil || !write.OK {
+		t.Fatalf("WriteState: %v (ok=%v)", err, write.OK)
+	}
+	changed := write.At.Add(time.Millisecond)
+	if err := os.WriteFile(filePath, []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chtimes(filePath, changed, changed); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	_, editErr := invokeTool(t, child, "file.edit", editArgs("app.txt", "beta", "BETA"))
+	if editErr == nil {
+		t.Fatal("expected the writer's edit to be stale after an external change, got nil")
+	}
+	if !strings.Contains(editErr.Error(), "read mark was refreshed") {
+		t.Fatalf("the stale error should license a retry from the shown region, got: %v", editErr)
+	}
+
+	// The retry the message asked for is the way out.
+	mustInvoke(t, child, "file.edit", editArgs("app.txt", "beta", "BETA"))
+
+	got, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
+	}
+	if string(got) != "alpha\nBETA\ngamma\n" {
+		t.Fatalf("file content = %q, want the retried edit applied", got)
+	}
+}
+
+// TestSkewedMtimeRecoversOnRetry pins the same escape hatch when the file's
+// modification time runs ahead of this process's clock — a remote or
+// coarse-grained filesystem, a container sharing a host clock. The read a stale
+// error records is the version it displayed, not the wall clock, so the retry is
+// licensed even though the file's timestamp is still in the future.
+func TestSkewedMtimeRecoversOnRetry(t *testing.T) {
+	root, filePath := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	child := testActorRegistry(t, root, ft, "child", "a subagent (review)")
+
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.write", `{"path":"app.txt","content":"alpha\nbeta\ngamma\n"}`)
+
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filePath, future, future); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	if _, err := invokeTool(t, child, "file.edit", editArgs("app.txt", "beta", "BETA")); err == nil {
+		t.Fatal("expected the writer's edit to be stale after an external change, got nil")
+	}
+
+	mustInvoke(t, child, "file.edit", editArgs("app.txt", "beta", "BETA"))
+
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "alpha\nBETA\ngamma\n" {
+		t.Fatalf("file content = %q, want the retried edit applied", got)
+	}
+}
+
+// TestFutureStampedFileRefusedAfterExternalChange pins that a read mark is the
+// version's own stamp, not a clock watermark. A file whose modification time
+// runs ahead of this process's clock — one brought in from a host with an ahead
+// clock, extracted from a tarball, or stamped with `touch -d` — must not
+// license an edit over bytes that changed after the read: a writer in this
+// clock's domain stamps its version behind that watermark, so a watermark
+// comparison would accept the edit while equality refuses it.
+func TestFutureStampedFileRefusedAfterExternalChange(t *testing.T) {
+	root, filePath := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	child := testActorRegistry(t, root, ft, "child", "a subagent (review)")
+
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filePath, future, future); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+
+	// An external writer replaces the bytes with a version stamped in this
+	// clock's domain, behind the watermark the read recorded.
+	if err := os.WriteFile(filePath, []byte("alpha\nbeta\ngamma\ndelta\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, editErr := invokeTool(t, child, "file.edit", editArgs("app.txt", "beta", "BETA"))
+	if editErr == nil {
+		t.Fatal("expected an edit over bytes that changed after the read to be stale, got nil")
+	}
+	if !strings.Contains(editErr.Error(), "changed on disk") {
+		t.Fatalf("error should report a stale file, got: %v", editErr)
+	}
+
+	// The read the error asks for clears it: the mark becomes the version it
+	// shows, however that version is stamped.
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.edit", editArgs("app.txt", "beta", "BETA"))
+}
+
+// TestBackdatedChangeRecoversOnRead pins that a re-read records the version it
+// shows even when that version is stamped behind the mark it replaces — a path
+// restored from an archive, or a checkout that preserved timestamps. Without
+// it, the read the stale error asks for could never clear the mark and the path
+// would be un-editable for the rest of the session, which is the failure this
+// guard exists to avoid.
+func TestBackdatedChangeRecoversOnRead(t *testing.T) {
+	root, filePath := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	child := testActorRegistry(t, root, ft, "child", "a subagent (review)")
+
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+
+	if err := os.WriteFile(filePath, []byte("alpha\nbeta\ngamma\ndelta\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	past := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(filePath, past, past); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	if _, err := invokeTool(t, child, "file.edit", editArgs("app.txt", "beta", "BETA")); err == nil {
+		t.Fatal("expected an edit over bytes that changed after the read to be stale, got nil")
+	}
+
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.edit", editArgs("app.txt", "beta", "BETA"))
+
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "alpha\nBETA\ngamma\ndelta\n" {
+		t.Fatalf("file content = %q, want the edit applied", got)
+	}
+}
+
+// TestRecordWriteStampsTheCommittedVersion pins that the writer exemption is
+// compared against the version the write produced, not against this process's
+// clock: on a filesystem whose stamps run ahead of the clock (a remote mount, a
+// container sharing a host clock) a clock-stamped write would make the agent's
+// own commit look like a change that landed after it, and its next edit would
+// be refused before any re-read.
+func TestRecordWriteStampsTheCommittedVersion(t *testing.T) {
+	root, filePath := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	child := testActorRegistry(t, root, ft, "child", "a subagent (review)")
+
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.write", `{"path":"app.txt","content":"alpha\nbeta\ngamma\n"}`)
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	write, err := ft.WriteState(filePath)
+	if err != nil || !write.OK {
+		t.Fatalf("WriteState: %v (ok=%v)", err, write.OK)
+	}
+	if !write.At.Equal(info.ModTime()) {
+		t.Fatalf("recorded write time = %v, want the committed version's stamp %v", write.At, info.ModTime())
+	}
+}
+
 // TestWholeFileWriteDoesNotRefreshStaleRead pins that a whole-file overwrite
 // cannot be retried from one embedded region, so it never refreshes the read
 // mark: the caller still has to re-read the file it is about to replace.

@@ -110,7 +110,10 @@ func (s *Service) WriteState(path string) (WriteState, error)
 Both state queries are session-scoped. A missing row returns `OK == false` and a
 zero time; a malformed stored timestamp returns an error with `OK == false`.
 `RecordWrite` increments the revision; it does not read the path or refresh the
-shared read mark. `RecordRead` stores the caller's observed revision and never
+shared read mark. The caller records the version it committed — `recordWrite`
+stats the path after the write and stores that modification time — so the
+own-write exemption also holds on a filesystem whose stamps run ahead of the
+process's clock. `RecordRead` stores the caller's observed revision and never
 regresses an existing higher revision:
 
 ```sql
@@ -138,7 +141,18 @@ records that revision with the read:
 2. query `WriteState` (best effort; a failure is logged and observation falls
    back to revision 0);
 3. open, size-check, and read the file;
-4. `RecordRead(path, time.Now(), observedRevision)`.
+4. `RecordRead(path, info.ModTime(), observedRevision)`.
+
+The mark is the modification time of the version the read was shown, not the
+reader's clock. The guard licenses an edit by comparing that stamp with the
+file's current one, so the version — never a clock reading — is what proves the
+bytes are the ones this read saw. A clock-based mark is wrong in both
+directions: on a filesystem whose stamps run ahead of the reader's clock (a
+remote mount, a container sharing a host clock) a path stamped ahead could never
+be edited at all, while a mark behind such a stamp would license an edit over
+bytes that landed after the read. The upsert above lets the latest read at a
+revision record a version stamped *behind* the mark it replaces, so a path
+restored with an older timestamp is still re-readable and still editable.
 
 Observing before the read is deliberately conservative. If another agent writes
 between steps 2 and 3, the reader records the older revision, and its next edit
@@ -154,15 +168,23 @@ newer write still leaves the path stale.
 For an existing file, with `read := ReadState(path)`, `write := WriteState(path)`,
 and `info := os.Stat(path)`:
 
-1. If `write.OK` and the current actor is the newest writer:
+1. If `read.OK` and (`!write.OK` or `read.Revision >= write.Revision`) and
+   `info.ModTime().Equal(read.At)`, allow: the read was of the version now on
+   disk. A read of that version is knowledge of the bytes whoever wrote them,
+   so this is decided before the writer exemption. Otherwise the exemption
+   would ignore every read mark — including the one a stale error had just
+   refreshed — and a path that changed once after the writer's own commit could
+   never be edited again in that session. Equality, not a watermark, is what
+   keeps the licence honest when a file's stamp runs ahead of the process's
+   clock.
+2. If `write.OK` and the current actor is the newest writer:
    - if `info.ModTime().After(write.At)`, the file changed externally after the
      write, so reject as stale;
    - otherwise allow, without advancing the shared read revision.
-2. If there is no read:
-   - reject with the existing “never read this session” error.
-3. If `write.OK && write.Revision > read.Revision`, reject as stale.
-4. If `info.ModTime().After(read.At)`, reject as stale (an external change).
-5. Otherwise allow.
+3. If there is no read, reject with the existing “never read this session”
+   error.
+4. Otherwise reject as stale: the read predates the newest write, or the file
+   changed after that read.
 
 The current actor's identity is `AgentID`, falling back to `AgentLabel` when
 `AgentID` is empty so stand-alone toolsets and tests still get a writer
@@ -174,11 +196,22 @@ Consequences:
 - W writes revision 1, another agent reads revision 1, W writes revision 2;
   the reader is stale, W is exempt;
 - W writes revision 1, an external formatter changes the file; W's next edit is
-  stale because `mtime > write.At`;
+  stale because `mtime > write.At`, and the retry from the region that error
+  embedded is accepted: the read mark it recorded is at revision 1 and carries
+  the stamp of the version the error displayed;
+- a read of a file whose stamp runs ahead of this process's clock licenses
+  edits on that file — the mark is the version's own stamp — and stops
+  licensing them once the file changes, because a version written in this
+  clock's domain no longer matches the mark;
+- a path restored with an older stamp is re-readable: the newer read records
+  the older version's stamp instead of keeping the mark it replaces, so the
+  path is editable rather than refused for the rest of the session;
 - the newest writer writes again without reading; it is exempt and does not
   clear the epoch for anyone else;
 - any agent's full read or embedded-region read advances the shared read
-  revision and clears the epoch for all.
+  revision and clears the epoch for all, the writer included;
+- a refusal is always answerable by the read it asks for, so no path becomes
+  permanently un-editable while the ledger is reachable.
 
 New-file creation keeps its existing path: a path that does not exist has no
 on-disk version to be stale against. After the write, the writer is exempt and
@@ -219,7 +252,11 @@ blank line before the retry sentence.
 
 The error retains the failing chunk's nearest-matching region with exact
 `lines N-M` numbers. For exact-match patch paths (`file.edit` and the internal
-`file.write_patch`), it also records the observed revision and appends:
+`file.write_patch`), it also records the observed revision against the version
+it displayed — that version's own modification time, stat'd from the descriptor
+the region was read from rather than from the guard's earlier stat, so a write
+landing in between cannot stamp the mark with a version other than the one
+shown — and appends:
 
 ```text
 Retry with an old_string taken from those lines; the read mark was refreshed

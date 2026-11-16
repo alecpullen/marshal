@@ -2649,7 +2649,178 @@ that does not bite — is true of the code as committed.
 passed with 127 packages ok and exit 0. No Go test failed, so no failure is
 to be re-proved by either plan.
 
-_To be filled by the executor of plan 7._
+**What was built.** `internal/fleetprofile` owns `fleet.toml`: `Path` joins
+`config.UserDir(home)` and the file's name; `Load` stats the file first, so a
+file others can read is refused before its contents are trusted (decision 3:
+`fleet.toml at <path> is mode <mode>: run chmod 600 <path>`, or "… belongs to
+uid <n>, not you"), then decodes strictly into its own raw types with `notify`
+as a pointer, then applies decision 2 — the name's alphabet, `local` refused as
+a name, `url` an origin (`https`, or `http` on `localhost`/loopback), `ca_file`
+resolved against the file's directory, a `token` field refused with its own
+sentence, any other unknown field named. A missing file is the empty file with
+notifications on. `Lookup` answers a server or an error carrying the path and
+the names it has, or a starter table when it has none. `Token` runs `token_cmd`
+through `/bin/sh -c` under a 10s limit with the terminal's stdin, keeps its
+first stderr line and reports it on failure, treats empty output as failure,
+and otherwise reads the keychain at `marshal:fleet:<name>` under the `marshal`
+service, answering "no token for <name>: run `marshal fleet login <name>`" or
+the no-keychain sentence. `TLSConfig` is the system roots plus every
+certificate in `ca_file`, TLS 1.2 minimum, `http/1.1` the only protocol, and
+nil for a loopback `http` origin.
+
+`internal/fleetclient.HTTPS` is the profile's transport: the base without a
+trailing slash, its own `http.Transport` with the TLS configuration, no proxy,
+a 10s handshake bound, `Local` false so the daemon's info is never read, and
+the token function on every request.
+
+`internal/daemon`'s `Client` gained `dial`, `host` and `token`. `NewClient`
+keeps the unix dial, the `daemon` host and no token; `Remote` parses the base,
+defaults the port (443 or 80), and dials TCP plus a TLS handshake under the
+caller's context. It completes a clone of the caller's configuration with the
+URL's host as `ServerName` and `http/1.1` as the only offered protocol, since a
+hand-built `tls.Client` has no `http.Transport` to do it. `upgrade` now dials
+through the client, names the request's host from it, and adds the bearer token
+before anything is dialled; everything after the dial, the deadline and
+cancellation handling included, is unchanged.
+
+`web/bridge` serves the agent attach on the network listener. `NewServer`
+builds `networkAttach` when it has a token — the agent attach behind
+`bearerAuth` with that token, then `overTLSOrLoopback`, then `attachAgent` —
+and leaves it nil without one, so that listener still answers 404.
+`ServeHTTP` sends an agent attach path to it through `agentAttachID` and every
+other path, the SPA's included, the way it did. `overTLSOrLoopback` reads
+`r.TLS`, else the connection's local address from `http.LocalAddrContextKey`
+(`*net.TCPAddr` first, any other `net.Addr` by `SplitHostPort` and
+`ParseIP(...).IsLoopback()`, no address at all not loopback), and a request
+outside both answers 403 `the agent attach needs TLS`. The project attach and
+the pin stay socket-only, 404 on the network listener.
+
+`internal/launch.ServerFleet` resolves the TLS configuration and the token
+first — a failure is the run's error, prefixed `launch: the server profile
+<name>` — and fails before any program runs. It hands one closure over the
+resolved token to both `fleetclient.HTTPS` and `daemon.Remote`, puts them in
+`options.remote`, and runs `runDaemon` with a fleet step first, so the needs-you
+count, the watch and `/fleet` are plan 4b's and plan 6's unchanged. With
+`remote` set, `fleetClientFor` builds the profile's client, `dialDaemon`
+attaches through the remote client and dials `SharedFilesystem: false`,
+`daemonTUIOptions` leaves out the connect panel, and the version note reads
+"This marshal is <ours>; the server's agent is <theirs>." without the restart
+advice. An injected client still wins in both places. The spawn modal says "add
+a project from the web UI" when the state carries no daemon info, and keeps
+today's sentence otherwise.
+
+`cmd/marshal` reads the file once per invocation. `runFleet` parses
+`--server NAME`, `--server=NAME` and `login NAME`, refuses everything else and
+`--embedded` as it did, and passes `launch.WithNotify` from the server or from
+`[local]`; `localNotify` gives plain `marshal` and `marshal attach` the local
+table, saying why on stderr and keeping notifications on when the file cannot
+be loaded. `runFleetLogin` refuses a profile the file does not name and one
+that sets `token_cmd`, prompts "Token for <name>: " on stderr and reads without
+echo when stdin is a terminal (`term.ReadPassword`), otherwise reads one line
+from stdin, refuses an empty token, stores it under `KeychainKey`, and prints
+"Stored the token for <name>."
+
+**Where the plan was short, and how that was filled.**
+
+- **`TMPDIR`.** `/private/tmp` is macOS's; this Linux host ran every Verify with
+  `TMPDIR=/tmp/p5-7-suite`. No test depends on the path.
+- **The token is resolved once, in `ServerFleet`.** The plan says it is kept
+  for the run; a closure over the resolved string is what makes the fleet
+  stream and every attach reuse it, and `TestAServerFleetResolvesTheTokenOnce`
+  pins it.
+- **`token_cmd`'s 10s limit needed a seam.** `tokenLimit` is a package
+  variable and `tokenLimitText` the figure in the sentence, so
+  `TestATokenCommandIsBounded` finishes in 20ms and still sees decision 4's
+  "did not finish in 10s".
+- **`fleetprofile`'s tests are in the package**, so `checkPrivate` and the
+  limit are reachable without new exported API; `TestTheFileMustBePrivate` is
+  in a `//go:build unix` file, since the check is a no-op elsewhere.
+- **`daemonTUIOptions` gained a `local` argument** rather than the whole
+  `options`, so "the server's config is not this machine's" is one condition at
+  the one place that decides it; the version note moved into
+  `(*options).versionNote`, whose daemon wording is byte-identical to before.
+- **`remoteTarget.name` is stored but not read.** The plan's struct has it;
+  the transport's `Server` is what the footer and "token rejected for <name>"
+  actually show, so the name reaches the screen through `HTTPS`.
+- **`cmd/marshal` observes `WithNotify` without exporting anything from
+  `launch`.** `notifyOption` is a variable aliasing `launch.WithNotify`, so a
+  test can replace it and read what a runner was handed; the option list itself
+  stays opaque.
+- **`isolateHome` also blanks `XDG_CONFIG_HOME` and `MARSHAL_CONFIG_DIR`**, and
+  the two tests that count every option `run` passes (`TestPlainMarshalTriesTheDaemon`,
+  `TestEmbeddedSkipsTheDaemon`) count one more. Both follow from plain `marshal`
+  now reading `fleet.toml`.
+- **`marshal fleet login` writes its prompt and its confirmation to stderr.**
+  The signature the plan gives has no stdout, and the prompt belongs beside the
+  read; login errors carry a `marshal fleet login: ` prefix.
+- **The network attach's transport rule lives in `attach.go`** and wraps
+  `bearerAuth` rather than changing it: the attach path is already under
+  `/api/`, so the bearer check needed no new call site. `ServesTLS` sets
+  `req.TLS` on a recorder, because a real TLS listener on this host only ever
+  reports a loopback local address, and `ServesLoopbackHTTP` drives a real
+  `httptest` server with a hand-written HTTP/1.1 request, since `attachAgent`
+  hijacks and a recorder cannot.
+- **`daemon.Remote`'s `http.Client` is built over the same dial.** Only
+  `AttachAgent` is served there, but a nil client would be an obscure panic;
+  the dial is shared.
+- **The real-bridge harness embeds `*daemonHarness`**, so the fleet, project
+  root, state dir and child re-exec are the local profile's own, and its
+  `resolve` runs the production path (`Load` → `Lookup` → `Token` with the real
+  `RunShell` → `TLSConfig`) and hands the triple to `HTTPS` and `Remote`.
+  Nothing in `test/daemon` was changed to make room.
+
+**Tests.** Every test the plan names passes, with the plan's mutation checks
+failing as described: accepting mode `0644` fails
+`TestTheFileMustBePrivate/0644`; making `overTLSOrLoopback` answer true fails
+`TestTheNetworkAttachNeedsTLSOffLoopback` (it reaches `attachAgent`'s 409);
+dialling a server's session with `SharedFilesystem: true` fails
+`TestAServerFleetDialsWithoutASharedFilesystem`. W8 is
+`TestAServerProfileOpensAnAgentOverTLS` against a real bridge: a git agent from
+a local bare repository takes a turn, the HTTPS client lists it, `AttachAgent`
+opens its session, a stream dialled with `SharedFilesystem: false` reads the
+turn's transcript, and the fleet still lists it after the viewer leaves. Beside
+it, `TestAServerProfileRefusesAWrongToken` (401, and the client's state
+rejected) and `TestTheServerFleetOpensAnAgentAndComesBack` (`launch.ServerFleet`
+opens the agent, the session screen is on its session, the loop comes back with
+it selected). The existing `TestAttach*`, `TestAttachAgent*` and the local
+fleet's loop tests pass unchanged.
+
+**The manual run.** The plan's step 3 asks for a person at a terminal; this run
+had none, so the same steps went through the same production code against a
+real `webbridge` — `--profile server`, `--addr 127.0.0.1:17844`, a self-signed
+certificate with `IP:127.0.0.1`, a token, and a `0600` `fleet.toml` naming it
+with `ca_file` and `token_cmd = "cat <token file>"`. A driver over
+`fleetprofile` → `fleetclient.HTTPS` → `launch.ServerFleet` → `daemon.Remote`
+saw, in order: the profile's server, URL and `notify`; a 17-byte token from
+`token_cmd`; a TLS configuration with `min 0x0303`, protocols `[http/1.1]` and
+`ServerName` from the URL; a connected HTTPS client whose state names the
+profile and lists the projects; an agent spawned over TLS and listed by the
+fleet; the fleet screen opening it, the session screen on its session, and the
+loop coming back to the fleet with it selected; its diff; and a discard. Three
+limits are recorded rather than hidden.
+
+- **Keystrokes.** The screen's own keys are the TUI's; the loop was driven by a
+  program runner, as `test/daemon` drives it. Nothing here shows a rendered
+  footer.
+- **`marshal fleet login` against a real keychain.** Not run: the login path is
+  covered by `cmd/marshal`'s tests over `credentials.MemStore`, and the keyring
+  round trip is `internal/credentials`' opt-in live test
+  (`MARSHAL_CREDENTIALS_LIVE_TEST=1`), which this run did not enable.
+- **Host processes.** This host has a working `podman`, so a server-profile
+  bridge here containerizes its agents, and opening one is plan 6's 409 until
+  plan 8 lands. The run removed `podman` and `docker` from the bridge's `PATH`
+  so `probeRuntime` found none and the bridge fell back to a host process, which
+  is the path plan 7 is about. Also worth recording: the discarded agent stayed
+  listed as `idle` in the fleet for the ten seconds the driver waited. Discard
+  is plan 5b's and this plan does not touch it; it is noted, not diagnosed.
+
+**Verification.** `gofmt -l internal cmd test web` prints nothing; `go vet
+./...` is clean; CI's suite command (`scripts/test.sh full`) passed at
+`TMPDIR=/tmp/p5-7-suite` with no package failing, `test/daemon` in 12.3s,
+`web/bridge` in 155.8s and the scripted usability suite among the `ok`s;
+`CGO_ENABLED=1 go build ./cmd/marshal` succeeds; and `go test ./test/usability/...`
+ran inside that suite rather than on its own.
+
 
 ### Plan 8 — containers' viewers and their allowlist
 

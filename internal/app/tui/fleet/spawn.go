@@ -21,6 +21,21 @@ import (
 // in (decision 6). Nothing is spawned.
 const noProjectText = "add a project from the web UI or `marshal daemon pin`"
 
+// noProjectOnServerText is the same sentence on a server profile (decision 11):
+// there is no daemon on this machine to pin a project on, so it names the one
+// place a project can be added.
+const noProjectOnServerText = "add a project from the web UI"
+
+// noProject is decision 11's sentence for the fleet the model is showing: a
+// server's state carries no daemon info — only the local daemon's does — so
+// the daemon's sentence is the one that names the pin.
+func (m Model) noProject() string {
+	if m.state.Daemon == nil {
+		return noProjectOnServerText
+	}
+	return noProjectText
+}
+
 // recentPromptLimit is how many of a project's recent prompts the modal keeps
 // for ctrl+r (decision 6).
 const recentPromptLimit = 20
@@ -109,7 +124,7 @@ func newSpawnModal(m Model) *spawnModal {
 		}
 	}
 	if len(s.projects) == 0 {
-		s.refusal = noProjectText
+		s.refusal = m.noProject()
 		return s
 	}
 	s.recent = m.recentPrompts(s.project())
@@ -153,7 +168,7 @@ func (s *spawnModal) update(m Model, msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	}
 	if msg.Code == tea.KeyEnter && len(s.projects) == 0 {
 		// There is nothing to spawn in: the modal says so and does nothing.
-		s.refusal = noProjectText
+		s.refusal = m.noProject()
 		return m, nil
 	}
 	if msg.Code == tea.KeyTab {
@@ -249,7 +264,7 @@ func (s *spawnModal) project() string {
 // spawn builds the request from the fields and starts the agent (decision 6).
 func (s *spawnModal) spawn(m Model) (Model, tea.Cmd) {
 	if len(s.projects) == 0 {
-		s.refusal = noProjectText
+		s.refusal = m.noProject()
 		return m, nil
 	}
 	if m.refusedWhileDown() {

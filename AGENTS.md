@@ -82,6 +82,17 @@ in its status line — the fleet queue's items apart from the shown agent's own 
 and opening the fleet turns on the bell and the desktop notification
 (`internal/app/notify`, never imported by the TUI).
 
+`marshal fleet --server NAME` runs that same screen on a server-profile bridge
+elsewhere, over TLS. The profiles live in `fleet.toml` in the user's config
+directory (`~/.config/marshal/fleet.toml` by default), which must be private —
+`0600`, owned by the user — and holds no token: a server's token comes from its
+`token_cmd`, or from the keychain, where `marshal fleet login NAME` stores it.
+Each `[servers.<name>]` table names an `https://` origin (or a loopback
+`http://` one) and may set `ca_file` and `notify`; `[local] notify` turns
+notifications off for the local daemon. The bridge serves the agent attach on
+its network listener behind the bearer token, over TLS or on a loopback
+address, and refuses it 403 elsewhere. `internal/fleetprofile` owns that file.
+
 ### End-to-end and usability suites
 
 ```bash
@@ -119,6 +130,7 @@ App shell & config
   internal/launch/         embedded mode's composition root: the run loop, the agent host on a pipe, the TUI over its client
   internal/daemon/         the local daemon's paths, service units and commands, and its socket's client, attach handshake included
   internal/fleetclient/    the fleet client over the daemon's socket: the fleet screen's read of a bridge
+  internal/fleetprofile/   fleet.toml: server profiles, their token (token_cmd or keychain) and their TLS config
   internal/app/            Embedded() and ServiceDeps(): runtimes, dependency wiring, repo instructions
   internal/app/notify/     the desktop notifier launch gives the fleet's watch (osascript / notify-send)
   internal/app/config/     TOML loading, defaults, merge rules

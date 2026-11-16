@@ -7,10 +7,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"marshal/internal/app/config"
+	"marshal/internal/credentials"
+	"marshal/internal/fleetprofile"
 	"marshal/internal/launch"
 	"marshal/internal/trust"
 )
@@ -273,14 +276,58 @@ func isolateHome(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("MARSHAL_DATA_DIR", "")
 	t.Setenv("XDG_DATA_HOME", "")
+	// The fleet file is read from the config dir, so the developer's must not
+	// answer: an ambient XDG_CONFIG_HOME would point the tests at it.
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("MARSHAL_CONFIG_DIR", "")
 	return home
 }
 
+// isolateFleetConfig isolates the environment, then points the config dir — and
+// so fleet.toml — at a fresh directory of its own.
+func isolateFleetConfig(t *testing.T) (home, dir string) {
+	t.Helper()
+	home = isolateHome(t)
+	dir = t.TempDir()
+	t.Setenv("MARSHAL_CONFIG_DIR", dir)
+	return home, dir
+}
+
+// writeFleetFile writes fleet.toml with body into dir at mode 0600, and
+// answers its path.
+func writeFleetFile(t *testing.T, dir, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, "fleet.toml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write fleet.toml: %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod fleet.toml: %v", err)
+	}
+	return path
+}
+
+// recordNotify replaces notifyOption so a test reads the flag a runner was
+// handed: launch's options are unexported.
+func recordNotify(t *testing.T) *bool {
+	t.Helper()
+	on := true
+	old := notifyOption
+	notifyOption = func(notify bool) launch.Option {
+		on = notify
+		return old(notify)
+	}
+	t.Cleanup(func() { notifyOption = old })
+	return &on
+}
+
 // TestPlainMarshalTriesTheDaemon pins P4 D5's default: a plain launch offers
-// the daemon socket to launch.Run, which decides between daemon and embedded.
+// the daemon socket to launch.Run, which decides between daemon and embedded,
+// and notifications from the fleet file (decision 9).
 func TestPlainMarshalTriesTheDaemon(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	isolateHome(t)
+	on := recordNotify(t)
 	got := -1
 	oldApp := appRunner
 	defer func() { appRunner = oldApp }()
@@ -292,16 +339,21 @@ func TestPlainMarshalTriesTheDaemon(t *testing.T) {
 	if err := run(context.Background(), nil, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	if got != 1 {
-		t.Fatalf("appRunner got %d options, want 1 (the daemon socket)", got)
+	if got != 2 {
+		t.Fatalf("appRunner got %d options, want 2 (the daemon socket and notify)", got)
+	}
+	if !*on {
+		t.Error("run() turned notifications off with no fleet file, want them on")
 	}
 }
 
-// TestEmbeddedSkipsTheDaemon pins --embedded: the option is never offered, so
-// the session stays in this process.
+// TestEmbeddedSkipsTheDaemon pins --embedded: the daemon option is never
+// offered, so the session stays in this process. The fleet file's notify
+// still is.
 func TestEmbeddedSkipsTheDaemon(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	isolateHome(t)
+	recordNotify(t)
 	got := -1
 	oldApp := appRunner
 	defer func() { appRunner = oldApp }()
@@ -313,8 +365,8 @@ func TestEmbeddedSkipsTheDaemon(t *testing.T) {
 	if err := run(context.Background(), []string{"--embedded"}, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	if got != 0 {
-		t.Fatalf("appRunner got %d options, want 0 with --embedded", got)
+	if got != 1 {
+		t.Fatalf("appRunner got %d options, want 1 (notify alone) with --embedded", got)
 	}
 }
 
@@ -393,15 +445,21 @@ func TestFleetRoutesToTheFleetRunner(t *testing.T) {
 	}
 }
 
-// TestFleetRefusesArgumentsAndEmbedded pins the refusals: fleet takes no
-// arguments yet (plan 7 adds --server and login), and --embedded is refused
-// wherever it appears.
+// TestFleetRefusesArgumentsAndEmbedded pins the refusals: --embedded is
+// refused wherever it appears, and every fleet form the parser does not know is
+// named rather than ignored.
 func TestFleetRefusesArgumentsAndEmbedded(t *testing.T) {
-	isolateHome(t)
+	isolateFleetConfig(t)
 	oldFleet := fleetRunner
 	defer func() { fleetRunner = oldFleet }()
 	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
 		t.Fatal("the fleet runner was called for a refused invocation")
+		return nil
+	}
+	oldServer := fleetServerRunner
+	defer func() { fleetServerRunner = oldServer }()
+	fleetServerRunner = func(ctx context.Context, out io.Writer, srv fleetprofile.Server, opts ...launch.Option) error {
+		t.Fatal("the server fleet runner was called for a refused invocation")
 		return nil
 	}
 
@@ -412,8 +470,16 @@ func TestFleetRefusesArgumentsAndEmbedded(t *testing.T) {
 		{[]string{"--embedded", "fleet"}, "--embedded cannot be combined with fleet"},
 		{[]string{"fleet", "--embedded"}, "--embedded cannot be combined with fleet"},
 		{[]string{"fleet", "--embedded=1"}, "--embedded cannot be combined with fleet"},
-		{[]string{"fleet", "login"}, "unexpected argument"},
-		{[]string{"fleet", "--server", "x"}, "unexpected argument"},
+		{[]string{"fleet", "login", "--embedded"}, "--embedded cannot be combined with fleet"},
+		{[]string{"fleet", "stray"}, "unexpected argument"},
+		{[]string{"fleet", "--server"}, "requires a server name"},
+		{[]string{"fleet", "--server="}, "requires a server name"},
+		{[]string{"fleet", "--server", ""}, "requires a server name"},
+		{[]string{"fleet", "--server", "a", "--server", "b"}, "given more than once"},
+		{[]string{"fleet", "--frobnicate"}, "unexpected flag"},
+		{[]string{"fleet", "--server", "a", "login", "b"}, "cannot be combined with login"},
+		{[]string{"fleet", "login"}, "a server name is required"},
+		{[]string{"fleet", "login", "a", "b"}, "at most one server name"},
 	}
 	for _, tc := range cases {
 		var stdout, stderr bytes.Buffer
@@ -458,5 +524,342 @@ func TestAttachRefusesExtraArgumentsAndEmbedded(t *testing.T) {
 		if !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("run(%v) error = %q, want it to name %q", tc.args, err, tc.want)
 		}
+	}
+}
+
+// TestFleetServerRoutesToTheServerRunner pins `marshal fleet --server NAME`:
+// both spellings reach the server fleet runner with the profile the file names
+// for NAME (decision 9).
+func TestFleetServerRoutesToTheServerRunner(t *testing.T) {
+	_, dir := isolateFleetConfig(t)
+	writeFleetFile(t, dir, "[servers.example]\nurl = \"https://fleet.example.com\"\n")
+
+	oldFleet := fleetRunner
+	defer func() { fleetRunner = oldFleet }()
+	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
+		t.Fatal("the local fleet runner was called for --server")
+		return nil
+	}
+	oldServer := fleetServerRunner
+	defer func() { fleetServerRunner = oldServer }()
+
+	for _, args := range [][]string{
+		{"fleet", "--server", "example"},
+		{"fleet", "--server=example"},
+	} {
+		var stdout, stderr bytes.Buffer
+		called := false
+		var got fleetprofile.Server
+		fleetServerRunner = func(ctx context.Context, out io.Writer, srv fleetprofile.Server, opts ...launch.Option) error {
+			called = true
+			got = srv
+			return nil
+		}
+
+		if err := run(context.Background(), args, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
+			t.Fatalf("run(%v) error = %v", args, err)
+		}
+		if !called {
+			t.Fatalf("run(%v) did not reach the server fleet runner", args)
+		}
+		if got.Name != "example" {
+			t.Errorf("run(%v) profile name = %q, want %q", args, got.Name, "example")
+		}
+		if got.URL != "https://fleet.example.com" {
+			t.Errorf("run(%v) profile url = %q, want the file's %q", args, got.URL, "https://fleet.example.com")
+		}
+	}
+}
+
+// TestFleetServerNeedsAKnownName pins decision 9's refusal: a name the file
+// lacks fails, and the error names the file and the servers it has.
+func TestFleetServerNeedsAKnownName(t *testing.T) {
+	_, dir := isolateFleetConfig(t)
+	path := writeFleetFile(t, dir, "[servers.one]\nurl = \"https://one.example.com\"\n\n[servers.two]\nurl = \"https://two.example.com\"\n")
+
+	oldServer := fleetServerRunner
+	defer func() { fleetServerRunner = oldServer }()
+	fleetServerRunner = func(ctx context.Context, out io.Writer, srv fleetprofile.Server, opts ...launch.Option) error {
+		t.Fatal("the server fleet runner was called for an unknown name")
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"fleet", "--server", "nope"}, bytes.NewBuffer(nil), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run() returned no error for a name the file lacks")
+	}
+	for _, want := range []string{path, `no server "nope"`, "one, two"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err, want)
+		}
+	}
+}
+
+// TestFleetServerWithoutAFileGivesAStarter pins decision 9's other half: no
+// fleet.toml at all is not an error, and --server answers a starter table for
+// the name.
+func TestFleetServerWithoutAFileGivesAStarter(t *testing.T) {
+	_, dir := isolateFleetConfig(t)
+
+	oldServer := fleetServerRunner
+	defer func() { fleetServerRunner = oldServer }()
+	fleetServerRunner = func(ctx context.Context, out io.Writer, srv fleetprofile.Server, opts ...launch.Option) error {
+		t.Fatal("the server fleet runner was called with no file")
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"fleet", "--server", "example"}, bytes.NewBuffer(nil), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run() returned no error with no file and an unknown name")
+	}
+	for _, want := range []string{filepath.Join(dir, "fleet.toml"), "names no servers", "[servers.example]", "url = "} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err, want)
+		}
+	}
+}
+
+// TestFleetRefusesAFileItCannotRead pins decision 3 through decision 9: a
+// fleet.toml others can read stops the fleet screen with the sentence that
+// says how to fix it, for both the daemon's form and --server's.
+func TestFleetRefusesAFileItCannotRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the mode check is unix's")
+	}
+	_, dir := isolateFleetConfig(t)
+	path := writeFleetFile(t, dir, "[servers.example]\nurl = \"https://fleet.example.com\"\n")
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod fleet.toml: %v", err)
+	}
+
+	oldFleet := fleetRunner
+	defer func() { fleetRunner = oldFleet }()
+	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
+		t.Fatal("the local fleet runner was called for an unreadable file")
+		return nil
+	}
+	oldServer := fleetServerRunner
+	defer func() { fleetServerRunner = oldServer }()
+	fleetServerRunner = func(ctx context.Context, out io.Writer, srv fleetprofile.Server, opts ...launch.Option) error {
+		t.Fatal("the server fleet runner was called for an unreadable file")
+		return nil
+	}
+
+	for _, args := range [][]string{
+		{"fleet"},
+		{"fleet", "--server", "example"},
+	} {
+		var stdout, stderr bytes.Buffer
+		err := run(context.Background(), args, bytes.NewBuffer(nil), &stdout, &stderr)
+		if err == nil {
+			t.Fatalf("run(%v) returned no error for mode 0644", args)
+		}
+		want := fmt.Sprintf("fleet.toml at %s is mode 0644: run chmod 600 %s", path, path)
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("run(%v) error = %q, want it to carry %q", args, err, want)
+		}
+	}
+}
+
+// TestFleetPassesTheFilesNotify pins decision 9's notify: the local table's
+// notify reaches the daemon runner, and a server's reaches the server runner.
+func TestFleetPassesTheFilesNotify(t *testing.T) {
+	t.Run("local", func(t *testing.T) {
+		_, dir := isolateFleetConfig(t)
+		writeFleetFile(t, dir, "[local]\nnotify = false\n")
+		on := recordNotify(t)
+
+		oldFleet := fleetRunner
+		t.Cleanup(func() { fleetRunner = oldFleet })
+		called := false
+		fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
+			called = true
+			return nil
+		}
+
+		var stdout, stderr bytes.Buffer
+		if err := run(context.Background(), []string{"fleet"}, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+		if !called {
+			t.Fatal("run() did not reach the fleet runner")
+		}
+		if *on {
+			t.Error("notifications = on, want the file's local.notify = false")
+		}
+	})
+
+	t.Run("server", func(t *testing.T) {
+		_, dir := isolateFleetConfig(t)
+		writeFleetFile(t, dir, "[servers.example]\nurl = \"https://fleet.example.com\"\nnotify = false\n")
+		on := recordNotify(t)
+
+		oldServer := fleetServerRunner
+		t.Cleanup(func() { fleetServerRunner = oldServer })
+		called := false
+		fleetServerRunner = func(ctx context.Context, out io.Writer, srv fleetprofile.Server, opts ...launch.Option) error {
+			called = true
+			return nil
+		}
+
+		var stdout, stderr bytes.Buffer
+		if err := run(context.Background(), []string{"fleet", "--server", "example"}, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+		if !called {
+			t.Fatal("run() did not reach the server fleet runner")
+		}
+		if *on {
+			t.Error("notifications = on, want the profile's notify = false")
+		}
+	})
+}
+
+// TestPlainMarshalKeepsGoingPastABadFleetFile pins decision 9's asymmetry: a
+// fleet file that cannot be loaded does not stop a plain session, which keeps
+// notifications on and says on stderr why.
+func TestPlainMarshalKeepsGoingPastABadFleetFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the mode check is unix's")
+	}
+	_, dir := isolateFleetConfig(t)
+	path := writeFleetFile(t, dir, "[local]\nnotify = false\n")
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod fleet.toml: %v", err)
+	}
+	on := recordNotify(t)
+
+	oldApp := appRunner
+	defer func() { appRunner = oldApp }()
+	called := false
+	appRunner = func(ctx context.Context, out io.Writer, opts ...launch.Option) error {
+		called = true
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), nil, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v, want the session to start anyway", err)
+	}
+	if !called {
+		t.Fatal("run() did not reach the app runner past a bad fleet file")
+	}
+	if !*on {
+		t.Error("notifications = off, want them kept on when the file cannot be loaded")
+	}
+	if !strings.Contains(stderr.String(), path) {
+		t.Errorf("stderr = %q, want it to name the file %q", stderr.String(), path)
+	}
+}
+
+// TestFleetLoginStoresTheToken pins decision 10: a piped token lands in the
+// keychain under decision 4's key, trimmed.
+func TestFleetLoginStoresTheToken(t *testing.T) {
+	_, dir := isolateFleetConfig(t)
+	writeFleetFile(t, dir, "[servers.example]\nurl = \"https://fleet.example.com\"\n")
+
+	store := credentials.NewMemStore()
+	oldStore := fleetLoginStore
+	defer func() { fleetLoginStore = oldStore }()
+	fleetLoginStore = func() (credentials.Store, error) { return store, nil }
+
+	var stdout, stderr bytes.Buffer
+	stdin := strings.NewReader("  s3cret-token  \n")
+	if err := run(context.Background(), []string{"fleet", "login", "example"}, stdin, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	got, err := store.Get(fleetprofile.KeychainKey("example"))
+	if err != nil {
+		t.Fatalf("the token was not stored: %v", err)
+	}
+	if string(got) != "s3cret-token" {
+		t.Errorf("stored token = %q, want the piped line trimmed", string(got))
+	}
+	if !strings.Contains(stderr.String(), "Stored the token for example.") {
+		t.Errorf("stderr = %q, want it to report the token was stored", stderr.String())
+	}
+}
+
+// TestFleetLoginRefusesAnUnknownServer pins decision 10's first check: a name
+// the file lacks is refused before anything is read or stored.
+func TestFleetLoginRefusesAnUnknownServer(t *testing.T) {
+	_, dir := isolateFleetConfig(t)
+	writeFleetFile(t, dir, "[servers.one]\nurl = \"https://one.example.com\"\n")
+
+	opened := false
+	oldStore := fleetLoginStore
+	defer func() { fleetLoginStore = oldStore }()
+	fleetLoginStore = func() (credentials.Store, error) {
+		opened = true
+		return credentials.NewMemStore(), nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"fleet", "login", "nope"}, strings.NewReader("tok\n"), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run() returned no error for a name the file lacks")
+	}
+	if !strings.Contains(err.Error(), "one") {
+		t.Errorf("error = %q, want it to name the servers the file has", err)
+	}
+	if opened {
+		t.Error("the keychain was opened for an unknown server")
+	}
+}
+
+// TestFleetLoginRefusesATokenCmdServer pins decision 10: a profile that reads
+// its token from token_cmd has no use for a stored one.
+func TestFleetLoginRefusesATokenCmdServer(t *testing.T) {
+	_, dir := isolateFleetConfig(t)
+	writeFleetFile(t, dir, "[servers.example]\nurl = \"https://fleet.example.com\"\ntoken_cmd = \"pass show fleet/example\"\n")
+
+	opened := false
+	oldStore := fleetLoginStore
+	defer func() { fleetLoginStore = oldStore }()
+	fleetLoginStore = func() (credentials.Store, error) {
+		opened = true
+		return credentials.NewMemStore(), nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"fleet", "login", "example"}, strings.NewReader("tok\n"), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run() returned no error for a token_cmd profile")
+	}
+	if !strings.Contains(err.Error(), "token_cmd") {
+		t.Errorf("error = %q, want it to name token_cmd", err)
+	}
+	if opened {
+		t.Error("the keychain was opened for a token_cmd profile")
+	}
+}
+
+// TestFleetLoginRefusesAnEmptyToken pins decision 10's last check: a blank
+// line stores nothing.
+func TestFleetLoginRefusesAnEmptyToken(t *testing.T) {
+	_, dir := isolateFleetConfig(t)
+	writeFleetFile(t, dir, "[servers.example]\nurl = \"https://fleet.example.com\"\n")
+
+	opened := false
+	oldStore := fleetLoginStore
+	defer func() { fleetLoginStore = oldStore }()
+	fleetLoginStore = func() (credentials.Store, error) {
+		opened = true
+		return credentials.NewMemStore(), nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"fleet", "login", "example"}, strings.NewReader("   \n"), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run() returned no error for an empty token")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error = %q, want it to say the token is empty", err)
+	}
+	if opened {
+		t.Error("the keychain was opened for an empty token")
 	}
 }

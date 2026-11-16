@@ -1,15 +1,21 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/x/term"
+
 	"marshal/internal/acp"
 	"marshal/internal/app/config"
+	"marshal/internal/credentials"
+	"marshal/internal/fleetprofile"
 	"marshal/internal/launch"
 	"marshal/internal/llm/provider"
 	"marshal/internal/procenv"
@@ -20,6 +26,18 @@ import (
 var appRunner = launch.Run
 var attachRunner = launch.Attach
 var fleetRunner = launch.Fleet
+var fleetServerRunner = launch.ServerFleet
+
+// fleetLoginStore opens the keychain `marshal fleet login` writes to; tests
+// replace it.
+var fleetLoginStore fleetprofile.OpenStore = func() (credentials.Store, error) {
+	return credentials.New("marshal")
+}
+
+// notifyOption is launch.WithNotify, indirected so a test can read the flag a
+// runner was handed: launch's options are unexported.
+var notifyOption = launch.WithNotify
+
 var acpRunner = acp.Run
 var acpListener = acp.ListenAndServe
 var acpViewersRunner = acp.RunWithViewers
@@ -124,10 +142,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return daemonRunner(ctx, args[1:], stdin, stdout, stderr)
 	}
 	if len(args) > 0 && args[0] == "attach" {
-		return runAttach(ctx, args[1:], stdout, *embeddedFlag)
+		return runAttach(ctx, args[1:], stdout, stderr, *embeddedFlag)
 	}
 	if len(args) > 0 && args[0] == "fleet" {
-		return runFleet(ctx, args[1:], stdout, *embeddedFlag)
+		return runFleet(ctx, args[1:], stdin, stdout, stderr, *embeddedFlag)
 	}
 	if len(args) > 0 {
 		return fmt.Errorf("unknown argument %q", args[0])
@@ -137,18 +155,21 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	// --embedded keeps today's mode, and so does a missing home, which leaves
 	// no socket to look for.
 	if *embeddedFlag {
+		if home, err := os.UserHomeDir(); err == nil {
+			return appRunner(ctx, stdout, notifyOption(localNotify(home, stderr)))
+		}
 		return appRunner(ctx, stdout)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return appRunner(ctx, stdout)
 	}
-	return appRunner(ctx, stdout, launch.WithDaemon(config.DaemonSocketPath(home)))
+	return appRunner(ctx, stdout, launch.WithDaemon(config.DaemonSocketPath(home)), notifyOption(localNotify(home, stderr)))
 }
 
 // runAttach dispatches `marshal attach [session-id]`: it reattaches the TUI to
 // a daemon session, the project's most recently active one when no ID is given.
-func runAttach(ctx context.Context, args []string, stdout io.Writer, embedded bool) error {
+func runAttach(ctx context.Context, args []string, stdout, stderr io.Writer, embedded bool) error {
 	// --embedded is refused wherever it appears in the invocation, and says
 	// why: attach has no embedded mode, so "unexpected flag" would misdescribe
 	// the mistake.
@@ -174,14 +195,16 @@ func runAttach(ctx context.Context, args []string, stdout io.Writer, embedded bo
 	if err != nil {
 		return fmt.Errorf("marshal attach: find home directory: %w", err)
 	}
-	return attachRunner(ctx, stdout, config.DaemonSocketPath(home), sessionID)
+	return attachRunner(ctx, stdout, config.DaemonSocketPath(home), sessionID, notifyOption(localNotify(home, stderr)))
 }
 
 // runFleet dispatches `marshal fleet`: it runs the fleet screen on the local
-// daemon (P5 F4), which is the only daemon that serves one.
-func runFleet(ctx context.Context, args []string, stdout io.Writer, embedded bool) error {
+// daemon (P5 F4), on the server profile `--server NAME` names (P5 F7), or
+// stores a token for `login NAME` (decision 10).
+func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, embedded bool) error {
 	// --embedded is refused wherever it appears in the invocation, and says
-	// why: the fleet screen reads a daemon, so there is nothing to embed.
+	// why: the fleet screen reads a daemon, so there is nothing to embed, and
+	// login writes the keychain.
 	if embedded {
 		return fmt.Errorf("marshal fleet: --embedded cannot be combined with fleet: the fleet screen needs the daemon")
 	}
@@ -190,14 +213,153 @@ func runFleet(ctx context.Context, args []string, stdout io.Writer, embedded boo
 			return fmt.Errorf("marshal fleet: --embedded cannot be combined with fleet: the fleet screen needs the daemon")
 		}
 	}
-	if len(args) > 0 {
-		return fmt.Errorf("marshal fleet: unexpected argument %q", args[0])
+
+	server := ""
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--server":
+			// An empty value is refused here as it is after `--server=`: an
+			// empty name is indistinguishable from no flag, and would quietly
+			// open the local daemon's fleet instead of the one named.
+			if i+1 >= len(args) || args[i+1] == "" {
+				return fmt.Errorf("marshal fleet: --server requires a server name")
+			}
+			if server != "" {
+				return fmt.Errorf("marshal fleet: --server given more than once")
+			}
+			server = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--server="):
+			if server != "" {
+				return fmt.Errorf("marshal fleet: --server given more than once")
+			}
+			server = strings.TrimPrefix(args[i], "--server=")
+			if server == "" {
+				return fmt.Errorf("marshal fleet: --server requires a server name")
+			}
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("marshal fleet: unexpected flag %q", args[i])
+		default:
+			rest = append(rest, args[i])
+		}
 	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("marshal fleet: find home directory: %w", err)
 	}
-	return fleetRunner(ctx, stdout, config.DaemonSocketPath(home))
+
+	// `login NAME` is the one positional form; anything else is refused.
+	if len(rest) > 0 {
+		if rest[0] != "login" {
+			return fmt.Errorf("marshal fleet: unexpected argument %q", rest[0])
+		}
+		if server != "" {
+			return fmt.Errorf("marshal fleet: --server cannot be combined with login: login names its server")
+		}
+		return runFleetLogin(ctx, rest[1:], stdin, stderr, home)
+	}
+
+	// Decision 9: the file is read once per invocation, and a file that cannot
+	// be loaded stops the fleet screen rather than being ignored.
+	file, err := fleetprofile.Load(fleetprofile.Path(home))
+	if err != nil {
+		return fmt.Errorf("marshal fleet: %w", err)
+	}
+	if server == "" {
+		return fleetRunner(ctx, stdout, config.DaemonSocketPath(home), notifyOption(file.Local.Notify))
+	}
+	srv, err := file.Lookup(server)
+	if err != nil {
+		return fmt.Errorf("marshal fleet: %w", err)
+	}
+	return fleetServerRunner(ctx, stdout, srv, notifyOption(srv.Notify))
+}
+
+// runFleetLogin is `marshal fleet login NAME` (decision 10): it stores a token
+// for a profile the file names, under the keychain key decision 4 reads.
+func runFleetLogin(ctx context.Context, args []string, stdin io.Reader, stderr io.Writer, home string) error {
+	switch {
+	case len(args) == 0:
+		return fmt.Errorf("marshal fleet login: a server name is required")
+	case len(args) > 1:
+		return fmt.Errorf("marshal fleet login: at most one server name")
+	case strings.HasPrefix(args[0], "-"):
+		return fmt.Errorf("marshal fleet login: unexpected flag %q", args[0])
+	}
+	name := args[0]
+
+	file, err := fleetprofile.Load(fleetprofile.Path(home))
+	if err != nil {
+		return fmt.Errorf("marshal fleet login: %w", err)
+	}
+	srv, err := file.Lookup(name)
+	if err != nil {
+		return fmt.Errorf("marshal fleet login: %w", err)
+	}
+	// A stored token would never be read for a profile whose token comes from
+	// token_cmd, so naming it is a mistake worth reporting.
+	if srv.TokenCmd != "" {
+		return fmt.Errorf("marshal fleet login: %s reads its token from token_cmd, so a stored token would never be read", name)
+	}
+
+	token, err := readFleetToken(name, stdin, stderr)
+	if err != nil {
+		return err
+	}
+	store, err := fleetLoginStore()
+	if err != nil {
+		return fmt.Errorf("marshal fleet login: open the keychain: %w", err)
+	}
+	if err := store.Set(fleetprofile.KeychainKey(name), []byte(token)); err != nil {
+		return fmt.Errorf("marshal fleet login: store the token for %s: %w", name, err)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	fmt.Fprintf(stderr, "Stored the token for %s.\n", name)
+	return nil
+}
+
+// readFleetToken reads the token for name: without echo and behind a prompt
+// on a terminal, else one line from stdin, so a password manager can pipe it
+// in (decision 10).
+func readFleetToken(name string, stdin io.Reader, stderr io.Writer) (string, error) {
+	var raw []byte
+	if f, ok := stdin.(*os.File); ok && term.IsTerminal(f.Fd()) {
+		fmt.Fprintf(stderr, "Token for %s: ", name)
+		b, err := term.ReadPassword(f.Fd())
+		fmt.Fprintln(stderr)
+		if err != nil {
+			return "", fmt.Errorf("marshal fleet login: read the token: %w", err)
+		}
+		raw = b
+	} else {
+		line, err := bufio.NewReader(stdin).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", fmt.Errorf("marshal fleet login: read the token: %w", err)
+		}
+		raw = []byte(line)
+	}
+	token := strings.TrimSpace(string(raw))
+	if token == "" {
+		return "", fmt.Errorf("marshal fleet login: the token for %s is empty", name)
+	}
+	return token, nil
+}
+
+// localNotify is local.notify for plain marshal and marshal attach, printing
+// why on stderr when the file cannot be loaded (decision 9). A fleet file must
+// not stop the session screen, so a file that cannot be loaded keeps
+// notifications on.
+func localNotify(home string, stderr io.Writer) bool {
+	file, err := fleetprofile.Load(fleetprofile.Path(home))
+	if err != nil {
+		fmt.Fprintf(stderr, "marshal: %v; notifications stay on\n", err)
+		return true
+	}
+	return file.Local.Notify
 }
 
 // acpListenSpec extracts the value of --listen (or --listen=VALUE) from

@@ -389,8 +389,8 @@ func implementationReport(prompt string) (string, error) {
 		"outcome":        "complete",
 		"summary":        "implemented the approved scope with the delegated analysis incorporated",
 		"narration": map[string]any{
-			"issue":     "the fixture issue",
-			"approach":  "the fixture approach",
+			"issue":        "the fixture issue",
+			"approach":     "the fixture approach",
 			"verification": "the fixture verification",
 		},
 	}

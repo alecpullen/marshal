@@ -317,3 +317,48 @@ func notLoaded(out []byte, err error) bool {
 	}
 	return false
 }
+
+// LingerState is systemd's per-user linger bit, as loginctl reports it.
+// Supported is false on darwin, and on a Linux without loginctl: neither is
+// a failure, so the caller can report the fact instead of failing.
+type LingerState struct {
+	Supported bool `json:"supported"`
+	Enabled   bool `json:"enabled"`
+}
+
+// Linger reads the user's linger bit. It asks about m.UID rather than a user
+// name: loginctl accepts either, and the UID is already how launchd is
+// addressed.
+func (m *Manager) Linger(ctx context.Context) (LingerState, error) {
+	if m.GOOS != "linux" {
+		return LingerState{}, nil
+	}
+	out, err := m.Run(ctx, "loginctl", "show-user", strconv.Itoa(m.UID), "-p", "Linger")
+	if err != nil {
+		// A machine with no loginctl, or no logind for this user, has no
+		// linger bit to report. That is not a Marshal failure.
+		if notLoaded(out, err) || errors.Is(err, exec.ErrNotFound) {
+			return LingerState{}, nil
+		}
+		return LingerState{}, fmt.Errorf("loginctl show-user: %w", err)
+	}
+	state := LingerState{Supported: true}
+	for _, line := range strings.Split(string(out), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok && key == "Linger" {
+			state.Enabled = strings.TrimSpace(value) == "yes"
+		}
+	}
+	return state, nil
+}
+
+// EnableLinger sets the user's linger bit.
+func (m *Manager) EnableLinger(ctx context.Context) error {
+	if m.GOOS != "linux" {
+		return nil
+	}
+	if out, err := m.Run(ctx, "loginctl", "enable-linger", strconv.Itoa(m.UID)); err != nil {
+		return fmt.Errorf("loginctl enable-linger: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}

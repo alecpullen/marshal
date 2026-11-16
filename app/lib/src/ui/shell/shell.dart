@@ -1,5 +1,6 @@
 import '../../model/age.dart';
 import '../../model/composer_model.dart';
+import '../../model/new_work_model.dart';
 import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
 import '../../model/inbox_model.dart' as inbox;
@@ -12,6 +13,7 @@ import '../inbox/inbox.dart' show Inbox;
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
 import '../../model/overview_model.dart' show buildOverview;
+import '../new_work/new_work_dialog.dart';
 import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
 import 'placeholder.dart';
@@ -237,6 +239,7 @@ class Studio extends StatefulWidget {
     this.read,
     this.threadStore,
     this.composerFor,
+    this.newWorkFor,
     this.initialPlace = const Place.overview(),
   });
 
@@ -255,6 +258,10 @@ class Studio extends StatefulWidget {
   /// Builds a thread place's composer. Null leaves the thread without one.
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
+
+  /// Builds the new-work dialog's model for a thread's project. Null leaves
+  /// `⌘N` without a dialog.
+  final NewWorkModel Function(model.ThreadRef thread)? newWorkFor;
 
   /// The place a deep link names.
   final Place initialPlace;
@@ -356,6 +363,9 @@ class _StudioState extends State<Studio> {
           thread: thread,
           buildStore: build,
           composerFor: widget.composerFor,
+          newWorkFor: widget.newWorkFor,
+          onThreadStarted: (id) =>
+              _go(Place(PlaceKind.thread, host: thread.host, id: id)),
           asks: [
             for (final ask in widget.inbox.asks)
               if (ask.thread?.host == thread.host &&
@@ -391,6 +401,8 @@ class _ThreadPlace extends StatefulWidget {
     required this.thread,
     required this.buildStore,
     this.composerFor,
+    this.newWorkFor,
+    this.onThreadStarted,
     this.asks = const [],
     this.onAnswer,
     this.now,
@@ -400,6 +412,11 @@ class _ThreadPlace extends StatefulWidget {
   final StackStore Function(model.ThreadRef thread) buildStore;
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
+
+  /// Builds the new-work dialog's model for a thread's project. Null leaves
+  /// `⌘N` without a dialog.
+  final NewWorkModel Function(model.ThreadRef thread)? newWorkFor;
+  final void Function(String agentId)? onThreadStarted;
   final List<inbox.Ask> asks;
   final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
   final DateTime? now;
@@ -430,6 +447,25 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
     super.dispose();
   }
 
+  /// Opens the new-work dialog, and the thread it starts.
+  Future<void> _openNewWork(BuildContext context) async {
+    final build = widget.newWorkFor;
+    if (build == null) return;
+    final model = build(widget.thread);
+    await Sheet.show<void>(
+      context,
+      newWorkDialog(
+        model,
+        onCancel: () => Navigator.maybePop(context),
+        onStarted: (agentId) {
+          Navigator.maybePop(context);
+          widget.onThreadStarted?.call(agentId);
+        },
+      ),
+    );
+    model.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final composer = _composer;
@@ -440,6 +476,7 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
       asks: widget.asks,
       onAnswer: widget.onAnswer,
       now: widget.now,
+      onNewWork: widget.newWorkFor == null ? null : () => _openNewWork(context),
       composer: composer == null
           ? null
           : ThreadComposer(model: composer, view: _view),

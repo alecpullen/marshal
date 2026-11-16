@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -58,6 +59,10 @@ type Client struct {
 	host string
 	// token is the bearer token an attach carries; nil on the socket.
 	token func(ctx context.Context) (string, error)
+	// remote marks a client of a server profile rather than of the local
+	// socket. A remote enrolls over the authenticated path or not at all: the
+	// local socket's credential never leaves this machine.
+	remote bool
 }
 
 // NewClient is a client for the daemon listening on socket.
@@ -131,6 +136,7 @@ func Remote(base string, tlsConfig *tls.Config, token func(ctx context.Context) 
 		dial:   dial,
 		host:   u.Host,
 		token:  token,
+		remote: true,
 	}
 	c.http = &http.Client{
 		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -450,3 +456,394 @@ type attachConn struct {
 func (a *attachConn) Read(p []byte) (int, error)  { return a.reader.Read(p) }
 func (a *attachConn) Write(p []byte) (int, error) { return a.conn.Write(p) }
 func (a *attachConn) Close() error                { return a.conn.Close() }
+
+// Enrollment. A session asks the daemon it runs on to bind it to the project
+// the daemon already tracks for it, and holds the short-lived credential it
+// answers with. The bridge speaks this as an external client — the JSON names
+// are the binding, exactly as the attach's are — so nothing under web/ is
+// imported here and no internal type leaks into it.
+
+// marshalEnrollPath is the bridge's enrollment route. It is served on the
+// daemon's owner-only socket; a server profile that does not serve it answers
+// 404, which this client reports as unsupported rather than retrying elsewhere.
+const marshalEnrollPath = "/api/marshal/enroll"
+
+// The enrollment states the bridge reports.
+const (
+	// MarshalStateConnected is a verified binding with a credential.
+	MarshalStateConnected = "connected"
+	// MarshalStateAmbiguous is more than one candidate instance or project:
+	// nothing was granted, and the user has to choose.
+	MarshalStateAmbiguous = "ambiguous"
+	// MarshalStateUnsupported is an instance that does not serve enrollment.
+	MarshalStateUnsupported = "unsupported"
+	// MarshalStateUnavailable is an instance that is absent, offline, or does
+	// not register the project. A session works without it.
+	MarshalStateUnavailable = "unavailable"
+)
+
+var (
+	// ErrMarshalUnsupported is an instance that does not serve enrollment — no
+	// token source for a remote, a 404 from a bridge without the route, or a
+	// refusal. Never a reason to fall back to a broader access path.
+	ErrMarshalUnsupported = errors.New("marshal enrollment unsupported")
+	// ErrMarshalAmbiguous is more than one instance or project to choose from.
+	ErrMarshalAmbiguous = errors.New("marshal enrollment ambiguous")
+	// ErrMarshalUnavailable is an instance that could not be reached or could
+	// not bind this session. It never fails the session that asked.
+	ErrMarshalUnavailable = errors.New("marshal enrollment unavailable")
+)
+
+// MarshalInstance is one daemon instance's identity: the name that is stable
+// for its life — the canonical socket path, or a server profile's base URL —
+// and the generation that changes when it restarts or changes owner.
+type MarshalInstance struct {
+	ID         string
+	Generation string
+	Remote     bool
+}
+
+// MarshalStatus is what discovery and enrollment verified about one session's
+// connection: the state it reached, the identities it agrees on, and the
+// candidates an ambiguity offers. It carries no credential.
+type MarshalStatus struct {
+	State      string
+	InstanceID string
+	Generation string
+	ProjectID  string
+	SessionID  string
+	WorkerID   string
+	ItemID     string
+	Role       string
+	Candidates []string
+}
+
+// MarshalEnrollment is one session's enrollment: the status it reached and,
+// when that status is connected, the scoped credential to present and when it
+// lapses. The credential belongs to the trusted transport and nowhere else —
+// not session content, not a prompt, not a tool result, not a log, not a
+// project file, and not the child's environment.
+type MarshalEnrollment struct {
+	Status    MarshalStatus
+	Token     string
+	ExpiresAt time.Time
+}
+
+// marshalEnrollRequest is the enrollment request body.
+type marshalEnrollRequest struct {
+	ProjectRoot string `json:"projectRoot,omitempty"`
+	SessionID   string `json:"sessionId"`
+}
+
+// marshalEnrollAnswer is the bridge's answer, field for field.
+type marshalEnrollAnswer struct {
+	State      string   `json:"state"`
+	InstanceID string   `json:"instanceId,omitempty"`
+	Generation string   `json:"generation,omitempty"`
+	ProjectID  string   `json:"projectId,omitempty"`
+	SessionID  string   `json:"sessionId,omitempty"`
+	WorkerID   string   `json:"workerId,omitempty"`
+	ItemID     string   `json:"itemId,omitempty"`
+	Role       string   `json:"role,omitempty"`
+	Token      string   `json:"token,omitempty"`
+	ExpiresAt  string   `json:"expiresAt,omitempty"`
+	Candidates []string `json:"candidates,omitempty"`
+}
+
+// DiscoverMarshal reads the instance this client talks to: its identity, the
+// generation a credential is scoped to, and the projects it registers, all from
+// the daemon's own answer. A remote profile is named by its configured base URL
+// and the local daemon by its canonical socket path, so the two are never
+// mistaken for one another.
+func (c *Client) DiscoverMarshal(ctx context.Context) (MarshalInstance, error) {
+	info, err := c.Info(ctx)
+	if err != nil {
+		return MarshalInstance{}, fmt.Errorf("%w: %w", ErrMarshalUnavailable, err)
+	}
+	return c.marshalInstanceOf(info)
+}
+
+// marshalInstanceOf derives an instance identity from one daemon answer.
+func (c *Client) marshalInstanceOf(info Info) (MarshalInstance, error) {
+	id := strings.TrimSpace(c.socket)
+	if !c.remote {
+		if socket := strings.TrimSpace(info.Socket); socket != "" {
+			id = socket
+		}
+	}
+	if id == "" {
+		return MarshalInstance{}, fmt.Errorf("%w: instance names no identity", ErrMarshalUnsupported)
+	}
+	return MarshalInstance{
+		ID:         id,
+		Generation: fmt.Sprintf("%d:%d", info.PID, info.StartedAt),
+		Remote:     c.remote,
+	}, nil
+}
+
+// EnrollMarshal asks this instance to bind one session. root is the project root
+// the caller resolved (Marshal's project identity anchors at the git root), not
+// a path a model supplied; the instance resolves the rest of the association
+// itself.
+//
+// A remote enrolls over its configured, authenticated path or not at all: with
+// no token source there is nothing to authenticate with, and the answer is
+// unsupported rather than an unauthenticated request to a different instance.
+// Every failure this returns leaves the session that asked working.
+func (c *Client) EnrollMarshal(ctx context.Context, root, sessionID string) (MarshalEnrollment, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return MarshalEnrollment{}, fmt.Errorf("%w: no session to enroll", ErrMarshalUnsupported)
+	}
+	body, err := json.Marshal(marshalEnrollRequest{ProjectRoot: root, SessionID: sessionID})
+	if err != nil {
+		return MarshalEnrollment{}, fmt.Errorf("encode enrollment request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+c.host+marshalEnrollPath, bytes.NewReader(body))
+	if err != nil {
+		return MarshalEnrollment{}, fmt.Errorf("daemon request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.remote {
+		if c.token == nil {
+			return MarshalEnrollment{Status: MarshalStatus{State: MarshalStateUnsupported}}, fmt.Errorf("%w: %s has no credential", ErrMarshalUnsupported, c.socket)
+		}
+		token, err := c.token(ctx)
+		if err != nil {
+			return MarshalEnrollment{Status: MarshalStatus{State: MarshalStateUnsupported}}, fmt.Errorf("%w: enrollment token: %w", ErrMarshalUnsupported, err)
+		}
+		if token == "" {
+			return MarshalEnrollment{Status: MarshalStatus{State: MarshalStateUnsupported}}, fmt.Errorf("%w: %s has no credential", ErrMarshalUnsupported, c.socket)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return MarshalEnrollment{Status: MarshalStatus{State: MarshalStateUnavailable, SessionID: sessionID}},
+			fmt.Errorf("%w: daemon at %s: %w", ErrMarshalUnavailable, c.socket, err)
+	}
+	defer resp.Body.Close()
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return MarshalEnrollment{Status: MarshalStatus{State: MarshalStateUnavailable, SessionID: sessionID}},
+			fmt.Errorf("%w: read enrollment answer: %w", ErrMarshalUnavailable, err)
+	}
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		// The instance does not serve enrollment. That is the end of it: no
+		// other instance is tried, and no broader credential is sent.
+		return MarshalEnrollment{Status: MarshalStatus{State: MarshalStateUnsupported}},
+			fmt.Errorf("%w: %s does not serve enrollment", ErrMarshalUnsupported, c.socket)
+	case http.StatusUnauthorized, http.StatusForbidden:
+		detail := strings.TrimSpace(string(answer))
+		var refused struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(answer, &refused) == nil && refused.Error != "" {
+			detail = refused.Error
+		}
+		return MarshalEnrollment{Status: MarshalStatus{State: MarshalStateUnsupported}},
+			fmt.Errorf("%w: %s answered %s: %s", ErrMarshalUnsupported, c.socket, resp.Status, detail)
+	default:
+		detail := strings.TrimSpace(string(answer))
+		var refused struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(answer, &refused) == nil && refused.Error != "" {
+			detail = refused.Error
+		}
+		return MarshalEnrollment{Status: MarshalStatus{State: MarshalStateUnavailable}},
+			fmt.Errorf("%w: %s answered %s: %s", ErrMarshalUnavailable, c.socket, resp.Status, detail)
+	}
+
+	var out marshalEnrollAnswer
+	if err := json.Unmarshal(answer, &out); err != nil {
+		return MarshalEnrollment{Status: MarshalStatus{State: MarshalStateUnavailable, SessionID: sessionID}},
+			fmt.Errorf("%w: decode enrollment answer: %w", ErrMarshalUnavailable, err)
+	}
+	enrollment := MarshalEnrollment{
+		Status: MarshalStatus{
+			State:      out.State,
+			InstanceID: out.InstanceID,
+			Generation: out.Generation,
+			ProjectID:  out.ProjectID,
+			SessionID:  out.SessionID,
+			WorkerID:   out.WorkerID,
+			ItemID:     out.ItemID,
+			Role:       out.Role,
+			Candidates: out.Candidates,
+		},
+		Token: out.Token,
+	}
+	if out.ExpiresAt != "" {
+		if expiresAt, err := time.Parse(time.RFC3339, out.ExpiresAt); err == nil {
+			enrollment.ExpiresAt = expiresAt
+		}
+	}
+	switch out.State {
+	case MarshalStateConnected:
+		if enrollment.Token == "" {
+			return enrollment, fmt.Errorf("%w: %s enrolled without a credential", ErrMarshalUnavailable, c.socket)
+		}
+		return enrollment, nil
+	case MarshalStateAmbiguous:
+		return enrollment, fmt.Errorf("%w: %s offers %s", ErrMarshalAmbiguous, c.socket, strings.Join(out.Candidates, ", "))
+	case MarshalStateUnsupported:
+		return enrollment, fmt.Errorf("%w: %s refused this session", ErrMarshalUnsupported, c.socket)
+	default:
+		return enrollment, fmt.Errorf("%w: %s could not bind this session", ErrMarshalUnavailable, c.socket)
+	}
+}
+
+// ResolveMarshalInstance picks the one instance to enroll against: the selected
+// one when the user has chosen, the only candidate when there is exactly one,
+// and nothing at all when the choice is ambiguous. It never guesses between two
+// instances and never invents one.
+func ResolveMarshalInstance(candidates []MarshalInstance, selected string) (MarshalInstance, error) {
+	selected = strings.TrimSpace(selected)
+	if selected != "" {
+		for _, candidate := range candidates {
+			if candidate.ID == selected {
+				return candidate, nil
+			}
+		}
+		return MarshalInstance{}, fmt.Errorf("%w: no instance named %q", ErrMarshalUnsupported, selected)
+	}
+	if len(candidates) == 0 {
+		return MarshalInstance{}, fmt.Errorf("%w: no instance to enroll with", ErrMarshalUnavailable)
+	}
+	if len(candidates) > 1 {
+		return MarshalInstance{}, fmt.Errorf("%w: %d instances configured", ErrMarshalAmbiguous, len(candidates))
+	}
+	return candidates[0], nil
+}
+
+// Access. These are a person's settings for the built-in Studio integration —
+// a project's access defaults, one session's override and, when enrollment was
+// ambiguous, the project that session acts on. They are user-side routes on the
+// authenticated socket; no MCP route and nothing on the model-facing surface
+// names them.
+
+const (
+	marshalAccessPath          = "/api/marshal/access"
+	marshalAccessDefaultPath   = marshalAccessPath + "/default"
+	marshalAccessOverridePath  = marshalAccessPath + "/override"
+	marshalAccessSelectionPath = marshalAccessPath + "/selection"
+)
+
+// MarshalAccessAnswer is one answer from the access surface: the status the
+// bridge returned and its body, which is the seam's access view as JSON.
+//
+// A 409 is an answer and not an error: it carries the state that won, so the
+// editor can show the conflict and keep the edit it was making. Every other
+// non-2xx is an error, described without the workspace path.
+type MarshalAccessAnswer struct {
+	Status int
+	Body   []byte
+}
+
+// MarshalAccess reads the access surface for one session. An empty projectID
+// lets the bridge resolve the project the session acts on, and an empty
+// workerID resolves the session's own worker identity.
+func (c *Client) MarshalAccess(ctx context.Context, projectID, sessionID, workerID string) (MarshalAccessAnswer, error) {
+	query := url.Values{}
+	if projectID != "" {
+		query.Set("projectId", projectID)
+	}
+	if sessionID != "" {
+		query.Set("sessionId", sessionID)
+	}
+	if workerID != "" {
+		query.Set("workerId", workerID)
+	}
+	path := marshalAccessPath
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return c.marshalAccessDo(ctx, http.MethodGet, path, nil)
+}
+
+// SaveMarshalAccessDefault writes one project's access defaults against the
+// version the caller read.
+func (c *Client) SaveMarshalAccessDefault(ctx context.Context, body []byte) (MarshalAccessAnswer, error) {
+	return c.marshalAccessDo(ctx, http.MethodPut, marshalAccessDefaultPath, body)
+}
+
+// SaveMarshalAccessOverride writes one session's or worker's override against
+// the version the caller read.
+func (c *Client) SaveMarshalAccessOverride(ctx context.Context, body []byte) (MarshalAccessAnswer, error) {
+	return c.marshalAccessDo(ctx, http.MethodPut, marshalAccessOverridePath, body)
+}
+
+// SelectMarshalInstance records the project an ambiguous session acts on, or
+// clears the choice when the body names none.
+func (c *Client) SelectMarshalInstance(ctx context.Context, body []byte) (MarshalAccessAnswer, error) {
+	return c.marshalAccessDo(ctx, http.MethodPut, marshalAccessSelectionPath, body)
+}
+
+// marshalAccessDo issues one access request. A remote carries its configured
+// credential, and the local socket needs none: its routes are served on the
+// bare mux, where only the owner can reach them.
+func (c *Client) marshalAccessDo(ctx context.Context, method, path string, body []byte) (MarshalAccessAnswer, error) {
+	var payload io.Reader
+	if body != nil {
+		payload = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://"+c.host+path, payload)
+	if err != nil {
+		return MarshalAccessAnswer{}, fmt.Errorf("daemon request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.remote {
+		if c.token == nil {
+			return MarshalAccessAnswer{}, fmt.Errorf("%w: %s has no credential", ErrMarshalUnsupported, c.socket)
+		}
+		token, err := c.token(ctx)
+		if err != nil {
+			return MarshalAccessAnswer{}, fmt.Errorf("%w: access token: %w", ErrMarshalUnsupported, err)
+		}
+		if token == "" {
+			return MarshalAccessAnswer{}, fmt.Errorf("%w: %s has no credential", ErrMarshalUnsupported, c.socket)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return MarshalAccessAnswer{}, fmt.Errorf("%w: daemon at %s: %w", ErrMarshalUnavailable, c.socket, err)
+	}
+	defer resp.Body.Close()
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return MarshalAccessAnswer{}, fmt.Errorf("%w: read access answer: %w", ErrMarshalUnavailable, err)
+	}
+
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusConflict:
+		// A conflict is a conditional write that lost: the body names the
+		// value that won, so the caller shows it instead of guessing.
+		return MarshalAccessAnswer{Status: resp.StatusCode, Body: answer}, nil
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return MarshalAccessAnswer{}, fmt.Errorf("%w: %s does not serve access settings", ErrMarshalUnsupported, c.socket)
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return MarshalAccessAnswer{}, fmt.Errorf("%w: %s refused access settings: %s", ErrMarshalUnsupported, c.socket, marshalAccessDetail(answer, resp.Status))
+	default:
+		return MarshalAccessAnswer{}, fmt.Errorf("%w: %s answered %s: %s", ErrMarshalUnavailable, c.socket, resp.Status, marshalAccessDetail(answer, resp.Status))
+	}
+}
+
+// marshalAccessDetail is the bridge's own error text when it sent one, and the
+// status otherwise. It never includes a body that was not an error object.
+func marshalAccessDetail(body []byte, status string) string {
+	var refused struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &refused) == nil && strings.TrimSpace(refused.Error) != "" {
+		return refused.Error
+	}
+	return status
+}

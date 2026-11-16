@@ -61,6 +61,32 @@ func (r *Registry) Replace(tool Tool) error {
 	return r.Register(tool)
 }
 
+// Inherit registers every tool of src that r does not already hold, keeping
+// each tool exactly as src has it: the same handler, the same risk level, the
+// same schema and — because a handler closes over the connection it was built
+// on — the same actor authority.
+//
+// This is how a child registry takes the session's tools, and the rule it
+// encodes is that inheritance is a copy and never a re-derivation: a built-in
+// MCP client's tool acts with the session's own binding wherever it appears, so
+// a child cannot widen the authority, choose a stronger identity, or address a
+// different project by presenting its own. A tool r already holds is left
+// alone, so a child's own registration always wins over an inherited one.
+func (r *Registry) Inherit(src *Registry) error {
+	if r == nil || src == nil {
+		return nil
+	}
+	for _, tool := range src.List() {
+		if _, exists := r.tools[tool.Name]; exists {
+			continue
+		}
+		if err := r.Register(tool); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *Registry) Lookup(name string) (Tool, bool) {
 	tool, ok := r.tools[name]
 	if !ok {

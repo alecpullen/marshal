@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -64,6 +66,10 @@ type Server struct {
 	// server was built without one, and a factory tool then answers
 	// unavailable instead of taking an unauthorised path.
 	factory FactoryAPI
+	// marshalEnroll is the record of live built-in enrollments: one binding per
+	// enrolled session, in memory only, so a restart ends every one of them
+	// (marshal_enrollment.go).
+	marshalEnroll *marshalEnrollments
 }
 
 func NewServer(target any, args ...any) *Server {
@@ -100,7 +106,8 @@ func NewServer(target any, args ...any) *Server {
 		ws = fleet.ws
 	}
 	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux(),
-		factoryAuth: newFactoryMCPAuthorizer(ws)}
+		factoryAuth:   newFactoryMCPAuthorizer(ws),
+		marshalEnroll: newMarshalEnrollments()}
 	s.routes()
 	// The planner API owns live backend sessions, so it exists only when this
 	// server has a fleet to hold them.
@@ -173,6 +180,13 @@ func (s *Server) SocketHandler() http.Handler {
 		}
 		if r.URL.Path == pinPath {
 			s.pinProject(w, r)
+			return
+		}
+		if r.URL.Path == marshalEnrollPath {
+			// Enrollment is the socket's own operation: it is reached only
+			// where the owner is the caller, never on the network listener,
+			// which answers it 404 (marshal_enrollment.go).
+			s.enrollMarshal(w, r)
 			return
 		}
 		s.route(s.mux, w, r)
@@ -278,6 +292,11 @@ func (s *Server) routes() {
 	// reach them: an MCP client cannot change its own authority.
 	s.mux.HandleFunc("GET /api/clients/{clientId}/factory-grants/{projectId}", s.getFactoryGrant)
 	s.mux.HandleFunc("PUT /api/clients/{clientId}/factory-grants/{projectId}", s.putFactoryGrant)
+	// The built-in session's own access is the same kind of management
+	// surface: it hangs off /api/, so /mcp can never reach it and a session's
+	// model-facing tools cannot widen their own authority. Reads and writes
+	// are versioned, and a field reset to unset restores inheritance.
+	s.marshalAccessRoutes()
 	s.mux.HandleFunc("GET /api/pending", s.listPending)
 	s.mux.HandleFunc("POST /api/pending/{id}/approve", s.approvePending)
 	s.mux.HandleFunc("POST /api/pending/{id}/deny", s.denyPending)
@@ -1438,4 +1457,442 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 		events = []AuditEvent{}
 	}
 	writeJSON(w, http.StatusOK, events)
+}
+
+// marshalStateUnauthorized is the state a user-side access surface reports for
+// a pair the server will not act on: a session that is not associated with the
+// project it named, or a project this instance does not hold. It names neither
+// the reason nor which of the two was wrong, so the route is not an oracle for
+// which IDs exist.
+const marshalStateUnauthorized = "unauthorized"
+
+// MarshalAccessLayer is one level's stored built-in access and the opaque
+// version a write to it must name. A level is the project's defaults when it
+// carries no session, and one session's (or worker's) override when it does.
+// Unset fields inherit the level beneath; an explicit false is a denial that
+// stays one until it is reset.
+type MarshalAccessLayer struct {
+	Access  MarshalFactoryAccess `json:"access"`
+	Version string               `json:"version"`
+}
+
+// MarshalAccessView is one session's Studio connection and effective built-in
+// access, as the user-side surface reads it and as every write answers.
+//
+// State is the connection the surface reports: connected, ambiguous,
+// unavailable, unsupported or unauthorized. The layers, the effective access
+// and its Source are the policy, which is stored whether or not a connection
+// is up: an offline state never implies an unreadable or unwritable policy.
+type MarshalAccessView struct {
+	State      string   `json:"state"`
+	InstanceID string   `json:"instanceId,omitempty"`
+	Generation string   `json:"generation,omitempty"`
+	ProjectID  string   `json:"projectId,omitempty"`
+	SessionID  string   `json:"sessionId,omitempty"`
+	WorkerID   string   `json:"workerId,omitempty"`
+	Candidates []string `json:"candidates,omitempty"`
+	// SelectedProjectID is the project a person chose for a session whose
+	// enrollment named more than one. SelectionVersion is the opaque version
+	// a selection write must name.
+	SelectedProjectID string              `json:"selectedProjectId,omitempty"`
+	SelectionVersion  string              `json:"selectionVersion,omitempty"`
+	Default           MarshalAccessLayer  `json:"default"`
+	Override          *MarshalAccessLayer `json:"override,omitempty"`
+	// OverrideVersion is the version a session-layer write must name. It is
+	// present even when no override is stored: that level reports the stable
+	// version of the absent value, so the first write from an editor that has
+	// read it is conditional on exactly what it was shown.
+	OverrideVersion string               `json:"overrideVersion,omitempty"`
+	Effective       MarshalFactoryAccess `json:"effective"`
+	Source          map[string]string    `json:"source,omitempty"`
+	// Editable says the surface may write both layers. It follows the policy
+	// the server will actually store, not the connection state.
+	Editable bool `json:"editable"`
+}
+
+// price recomputes the effective access from the layers the view carries, in
+// the order the authorizer resolves them. A write that replaces one layer calls
+// it so the answer describes exactly the value that write left behind.
+func (v *MarshalAccessView) price() {
+	layers := []MarshalFactoryAccess{v.Default.Access}
+	if v.Override != nil {
+		layers = append(layers, v.Override.Access)
+	}
+	v.Effective = resolveMarshalFactoryAccess(layers...)
+}
+
+// marshalAccessRoutes registers the built-in session's user-side access
+// surface. Every route hangs off /api/, so /mcp cannot reach one: the model
+// a session runs holds no call that widens its own authority.
+func (s *Server) marshalAccessRoutes() {
+	s.mux.HandleFunc("GET /api/marshal/access", s.getMarshalAccess)
+	s.mux.HandleFunc("PUT /api/marshal/access/default", s.putMarshalAccessDefaultRoute)
+	s.mux.HandleFunc("PUT /api/marshal/access/override", s.putMarshalAccessOverrideRoute)
+	s.mux.HandleFunc("PUT /api/marshal/access/selection", s.putMarshalSelectionRoute)
+}
+
+// getMarshalAccess answers GET /api/marshal/access. projectId names the project
+// whose defaults to read; sessionId (and optionally workerId) names the
+// session whose override and connection state to report. A session with no
+// project resolves the project from the server's own associations, reporting
+// ambiguous when they name more than one.
+func (s *Server) getMarshalAccess(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	view, err := s.marshalAccessView(q.Get("projectId"), q.Get("sessionId"), q.Get("workerId"))
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// putMarshalAccessDefaultRoute answers PUT /api/marshal/access/default: the
+// whole project-default layer plus the version it was edited from.
+func (s *Server) putMarshalAccessDefaultRoute(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ProjectID string               `json:"projectId"`
+		Access    MarshalFactoryAccess `json:"access"`
+		Version   string               `json:"version"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if err := validateMarshalAccessLayer(body.Access); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(body.Version) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "version is required"})
+		return
+	}
+	wrote, state, err := s.factoryAuth.putMarshalAccessDefault(body.ProjectID, body.Access, body.Version)
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	view, err := s.marshalAccessView(body.ProjectID, "", "")
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	// The layer this write left behind is the one the store reported, not a
+	// second read: a racing writer must not make the answer describe its value.
+	view.Default = MarshalAccessLayer{Access: state.Access, Version: state.Version}
+	view.price()
+	status := http.StatusOK
+	if !wrote {
+		// The layer moved since the caller read it. The answer carries the
+		// value that won, so the editor shows the conflict instead of
+		// re-reading blind and discarding what the user typed.
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, view)
+}
+
+// putMarshalAccessOverrideRoute answers PUT /api/marshal/access/override: one
+// session's (or worker's) override and the version it was edited from. An
+// access with every field unset is the reset: it stores a level that inherits
+// everything, which is what a revoke means.
+func (s *Server) putMarshalAccessOverrideRoute(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ProjectID string               `json:"projectId"`
+		SessionID string               `json:"sessionId"`
+		WorkerID  string               `json:"workerId"`
+		Access    MarshalFactoryAccess `json:"access"`
+		Version   string               `json:"version"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if err := validateMarshalAccessLayer(body.Access); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(body.SessionID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sessionId is required"})
+		return
+	}
+	if strings.TrimSpace(body.Version) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "version is required"})
+		return
+	}
+	wrote, state, err := s.factoryAuth.putMarshalAccessOverride(body.ProjectID, body.SessionID, body.WorkerID, body.Access, body.Version)
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	view, err := s.marshalAccessView(body.ProjectID, body.SessionID, body.WorkerID)
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	view.Override = &MarshalAccessLayer{Access: state.Access, Version: state.Version}
+	view.price()
+	status := http.StatusOK
+	if !wrote {
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, view)
+}
+
+// putMarshalSelectionRoute answers PUT /api/marshal/access/selection: the
+// project a person picked for a session whose enrollment was ambiguous. An
+// empty projectId clears the choice, which is the reset: the session is
+// ambiguous again and the surface says so.
+func (s *Server) putMarshalSelectionRoute(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SessionID string `json:"sessionId"`
+		ProjectID string `json:"projectId"`
+		Version   string `json:"version"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.SessionID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sessionId is required"})
+		return
+	}
+	if strings.TrimSpace(body.Version) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "version is required"})
+		return
+	}
+	wrote, state, err := s.putMarshalSelection(body.SessionID, body.ProjectID, body.Version)
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	view, err := s.marshalAccessView(body.ProjectID, body.SessionID, "")
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	view.SelectedProjectID, view.SelectionVersion = state.ProjectID, state.Version
+	status := http.StatusOK
+	if !wrote {
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, view)
+}
+
+// putMarshalSelection stores one session's selected project under the policy
+// lock, so a choice cannot land inside an admitted mutation. A project that is
+// not one of the session's candidates is refused: a selection answers the
+// question the server asked, it does not introduce a project.
+func (s *Server) putMarshalSelection(sessionID, projectID, expected string) (bool, marshalFactorySelectionState, error) {
+	if s == nil || s.factoryAuth == nil {
+		return false, marshalFactorySelectionState{}, fmt.Errorf("%w: no authorizer", ErrFactoryUnavailable)
+	}
+	if projectID != "" && !s.marshalIsCandidate(sessionID, projectID) {
+		return false, marshalFactorySelectionState{}, fmt.Errorf("%w: project is not a candidate for this session", errFactoryGrantInvalid)
+	}
+	var (
+		wrote bool
+		state marshalFactorySelectionState
+	)
+	err := s.factoryAuth.withPolicy(func() error {
+		next, current, err := s.factoryAuth.ws.putMarshalSelectionIfMatch(sessionID, projectID, expected)
+		wrote, state = next, current
+		return err
+	})
+	if err != nil {
+		return false, state, err
+	}
+	return wrote, state, nil
+}
+
+// validateMarshalAccessLayer refuses a layer whose fields no resolution could
+// honour. An unset authority is inheritance, so it is not checked; a named one
+// must be one of the three, and asking for approval without any authority is a
+// contradictory request rather than a stricter one.
+func validateMarshalAccessLayer(a MarshalFactoryAccess) error {
+	if a.ApprovalAuthority != nil {
+		switch *a.ApprovalAuthority {
+		case factoryAuthorityNone, factoryAuthorityUserDirected, factoryAuthorityStanding:
+		case "":
+			return fmt.Errorf("%w: approvalAuthority must be none, user_directed or standing", errFactoryGrantInvalid)
+		default:
+			return fmt.Errorf("%w: approvalAuthority must be none, user_directed or standing", errFactoryGrantInvalid)
+		}
+	}
+	if a.ApproveAndQueue != nil && *a.ApproveAndQueue && a.ApprovalAuthority != nil && *a.ApprovalAuthority == factoryAuthorityNone {
+		return fmt.Errorf("%w: approveAndQueue requires user_directed or standing authority", errFactoryGrantInvalid)
+	}
+	return nil
+}
+
+// marshalAccessView builds the user-side view of one session's Studio
+// connection and effective access.
+//
+// The connection state is the server's own reading of what it tracks — the
+// instance identity it reports and the associations it persisted — never a
+// value a request supplies. The policy below it is read from the store whatever
+// the state is: a session that is offline, ambiguous or unauthorized still has
+// stored defaults, and an operator may still change them.
+func (s *Server) marshalAccessView(projectID, sessionID, workerID string) (MarshalAccessView, error) {
+	if s == nil || s.fleet == nil || s.fleet.ws == nil {
+		return MarshalAccessView{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	ws := s.fleet.ws
+	view := MarshalAccessView{SessionID: sessionID, WorkerID: workerID}
+	instanceID, generation, ok := s.marshalInstance()
+	if !ok {
+		// Not a daemon instance, or one that names no socket: there is no
+		// Studio to be connected to, and inventing an identity would bind
+		// nothing. The policy is still readable, so the defaults are below.
+		view.State = marshalStateUnsupported
+		projectID = s.marshalDefaultProject(projectID)
+		s.fillMarshalAccessLayers(&view, projectID)
+		return view, nil
+	}
+	view.InstanceID, view.Generation = instanceID, generation
+	view.Candidates = s.marshalCandidateProjects(sessionID)
+	if selection, ok := ws.marshalSelection(sessionID); ok {
+		view.SelectedProjectID, view.SelectionVersion = selection.ProjectID, selection.Version
+	} else {
+		view.SelectionVersion = marshalSelectionState(sessionID, "").Version
+	}
+	resolved, state := s.marshalResolveProject(projectID, sessionID, view.Candidates, view.SelectedProjectID)
+	view.State = state
+	if resolved == "" {
+		// A state that names no project still reads the project the caller
+		// named, when it named one: the defaults are the project's setting,
+		// not the session's, and an operator may change them while the
+		// session is offline, ambiguous or unauthorized.
+		if projectID != "" {
+			s.fillMarshalAccessLayers(&view, projectID)
+		}
+		return view, nil
+	}
+	view.ProjectID = resolved
+	s.fillMarshalAccessLayers(&view, resolved)
+	return view, nil
+}
+
+// marshalDefaultProject is the project whose defaults a surface reads when the
+// server is not a daemon instance and the caller named none: the first
+// registered project, which is the only one such a server can hold.
+func (s *Server) marshalDefaultProject(projectID string) string {
+	if projectID != "" || s == nil || s.fleet == nil || s.fleet.ws == nil {
+		return projectID
+	}
+	projects := s.fleet.ws.Projects()
+	if len(projects) == 0 {
+		return ""
+	}
+	if id, ok := s.fleet.ws.ProjectID(projects[0]); ok {
+		return id
+	}
+	return ""
+}
+
+// marshalResolveProject picks the project a view is about and the connection
+// state that goes with it. An empty result is a state that names no project.
+func (s *Server) marshalResolveProject(projectID, sessionID string, candidates []string, selected string) (string, string) {
+	named := strings.TrimSpace(projectID)
+	if named == "" {
+		switch {
+		case len(candidates) == 0:
+			// The server tracks no project for this session: there is no
+			// enrollment to report and none can be made by asking.
+			return "", marshalStateUnavailable
+		case len(candidates) == 1:
+			return candidates[0], marshalStateConnected
+		default:
+			if selected != "" && slices.Contains(candidates, selected) {
+				return selected, marshalStateConnected
+			}
+			return "", marshalStateAmbiguous
+		}
+	}
+	if s.fleet == nil || s.fleet.ws == nil {
+		return "", marshalStateUnavailable
+	}
+	if _, ok := s.fleet.ws.ProjectRootByID(named); !ok {
+		return "", marshalStateUnauthorized
+	}
+	if len(candidates) == 0 {
+		// The server tracks no project for this session, so nothing verifies
+		// that it acts on the one the caller named.
+		return "", marshalStateUnavailable
+	}
+	if !slices.Contains(candidates, named) {
+		// The session is tracked, and it is not this project's.
+		return "", marshalStateUnauthorized
+	}
+	return named, marshalStateConnected
+}
+
+// fillMarshalAccessLayers reads the stored layers for one project (and, when
+// the view names a session, that session's override) and resolves them.
+func (s *Server) fillMarshalAccessLayers(view *MarshalAccessView, projectID string) {
+	if view == nil || s == nil || s.fleet == nil || s.fleet.ws == nil || projectID == "" {
+		return
+	}
+	ws := s.fleet.ws
+	if _, ok := ws.ProjectRootByID(projectID); !ok {
+		return
+	}
+	view.ProjectID = projectID
+	view.Editable = true
+	// An absent default is not an empty one: it reports the zero layer and the
+	// stable version of it, so an editor's first write is conditional on
+	// exactly what it was shown.
+	project := marshalAccessState(projectID, "", "", MarshalFactoryAccess{})
+	source := map[string]string{"project": "default"}
+	if stored, ok := ws.marshalAccessDefault(projectID); ok {
+		project = stored
+		source["project"] = "override"
+	}
+	view.Default = MarshalAccessLayer{Access: project.Access, Version: project.Version}
+	view.Override = nil
+	if view.SessionID != "" {
+		// The version an editor holds is the version of the scope it edits: a
+		// worker's panel writes the worker's record, never its session's. What
+		// it displays may still be inherited from the session, until the worker
+		// has a record of its own.
+		view.OverrideVersion = marshalAccessState(projectID, view.SessionID, view.WorkerID, MarshalFactoryAccess{}).Version
+		if override, ok := ws.marshalAccessOverride(projectID, view.SessionID, view.WorkerID); ok && marshalLayerApplies(override, view.WorkerID) {
+			source["session"] = "override"
+			if override.WorkerID == view.WorkerID {
+				// This scope's own record, so this is what a save is
+				// conditional on.
+				view.OverrideVersion = override.Version
+			}
+			view.Override = &MarshalAccessLayer{Access: override.Access, Version: view.OverrideVersion}
+		}
+	}
+	view.Source = source
+	view.price()
+}
+
+// marshalLayerApplies reports whether a stored override is the one this view's
+// session (or worker) holds. A record that names no worker is the session's
+// own; one that names a worker is that worker's, and a sibling worker inherits
+// the project default instead.
+func marshalLayerApplies(override marshalFactoryAccessState, workerID string) bool {
+	return override.WorkerID == "" || override.WorkerID == workerID
+}
+
+// marshalCandidateProjects is every project the server's own associations name
+// for sessionID, resolved to opaque project IDs and sorted. It replaces the
+// request as the source of what a session may be bound to.
+func (s *Server) marshalCandidateProjects(sessionID string) []string {
+	if sessionID == "" || s == nil || s.fleet == nil || s.fleet.ws == nil {
+		return nil
+	}
+	var out []string
+	for _, assoc := range s.marshalAssociations(sessionID) {
+		if id, ok := s.fleet.ws.ProjectID(assoc.root); ok && !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// marshalIsCandidate reports whether projectID is one of the session's
+// candidates. A session the server does not track has none, so no selection can
+// be made for it.
+func (s *Server) marshalIsCandidate(sessionID, projectID string) bool {
+	return slices.Contains(s.marshalCandidateProjects(sessionID), projectID)
 }

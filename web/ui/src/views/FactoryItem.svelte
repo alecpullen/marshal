@@ -12,6 +12,7 @@
   import ReviewView from '../lib/factory/ReviewView.svelte'
   import Button from '../lib/ui/Button.svelte'
   import AgentConversation from '../lib/session/AgentConversation.svelte'
+  import MarshalAccessPanel from '../lib/marshal/MarshalAccessPanel.svelte'
   import FactoryRevision from '../lib/FactoryRevision.svelte'
   import { APIError, commandFactoryItem, errMessage, factoryRevisionCommand, getProjectSettings, listClients } from '../lib/api'
   import { effectiveAutoAssess, provenanceLine } from '../lib/factory'
@@ -438,6 +439,35 @@
                 />
               {/key}
             </div>
+            <!--
+              This worker's own Studio access. It is the same control set the
+              session screen and the project settings use — only the identities
+              differ — and the bridge treats a factory worker's override as the
+              worker's, not as its session's.
+
+              Like the conversation above it, it is keyed by the worker it
+              describes. The panel loads its view and versions on mount, so a
+              switch of worker without a remount would leave the previous
+              worker's draft and override version in place while the props name
+              the new worker — and a save would then carry one worker's version
+              with another worker's identity. Layer versions are content hashes,
+              so the bridge would accept that write when the two records happen
+              to hold equal values.
+            -->
+            {#key conversationWorker.agentId}
+              <details class="mt-3" data-testid="worker-studio-access">
+                <summary class="cursor-pointer text-xs text-muted">Worker access</summary>
+                <div class="mt-2">
+                  <MarshalAccessPanel
+                    sessionId={conversationWorker.agentId}
+                    workerId={conversationWorker.agentId}
+                    levels={['session']}
+                    heading="This worker"
+                    testId="worker-marshal-access"
+                  />
+                </div>
+              </details>
+            {/key}
           {:else}
             <!-- An id the item does not carry is not quietly swapped for
                  another worker: the pane says so and offers the way back. -->

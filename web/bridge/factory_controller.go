@@ -1059,17 +1059,25 @@ func (c *FactoryController) Command(ctx context.Context, itemID string, cmd Fact
 	return c.command(ctx, itemID, cmd, nil)
 }
 
-// CommandAuthorized is Command for a mutation an authenticated MCP client
+// CommandAuthorized is Command for a mutation an authenticated principal
 // proposed. The caller holds the policy lock and has authorized the capability;
-// the journal records the client's provenance in the same append that applies
-// the command, and the request identity is namespaced so two clients naming one
-// ID remain two operations.
+// the journal records the principal's provenance in the same append that
+// applies the command, and the request identity is namespaced so two principals
+// naming one ID remain two operations.
+//
+// A principal is either an MCP client or a verified built-in session: a client
+// names its registered client id, and a built-in session names its instance,
+// project and session instead. Both are authenticated by the transport before
+// this runs — neither identity is ever taken from a command or a tool argument
+// — so requiring a client id here would refuse every built-in session while
+// saying nothing about whether the caller was authenticated.
 //
 // Nothing external runs here: the caller has already preflighted the candidate
 // (including an approval's draft configuration) outside the policy lock.
 func (c *FactoryController) CommandAuthorized(ctx context.Context, itemID string, cmd FactoryCommand, p factoryPrincipal) (FactoryItem, error) {
-	if strings.TrimSpace(p.ClientID) == "" || strings.TrimSpace(p.Action) == "" {
-		return FactoryItem{}, fmt.Errorf("%w: authenticated client and action required", errFactoryInput)
+	if strings.TrimSpace(p.Action) == "" ||
+		(strings.TrimSpace(p.ClientID) == "" && strings.TrimSpace(p.SessionID) == "") {
+		return FactoryItem{}, fmt.Errorf("%w: authenticated principal and action required", errFactoryInput)
 	}
 	if c.store == nil {
 		return FactoryItem{}, ErrFactoryUnavailable

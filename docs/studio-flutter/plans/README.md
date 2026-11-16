@@ -30,7 +30,7 @@ F0 was executed directly from its spec and has no plan.
 
 | # | Plan | Runs after |
 |---|---|---|
-| 1 | [F1 client](2026-11-17-f1-client-plan.md) | F0 (PR #129) |
+| 1 | [F1 client](2026-11-17-f1-client-plan.md) | F0, on `main` |
 | 2 | [F2 shell, Overview, Inbox](2026-11-17-f2-shell-plan.md) | 1 |
 | 3 | [F3 agent thread](2026-11-17-f3-agent-thread-plan.md) | 2 |
 | 4 | [F4 inspector](2026-11-17-f4-inspector-plan.md) | 3 |

@@ -2,7 +2,7 @@
 
 Date: 2026-11-17. Status: ready for review.
 
-Base: branch `f0-foundations` at `52221495`. Go only; it does not depend on
+Base: `main` at `11957d83`, which contains F0. Go only; it does not depend on
 the Flutter plans and may run beside F2–F4. Followed by
 [F5 plan 2](2026-11-17-f5-2-pulls-app-plan.md).
 

@@ -2,7 +2,7 @@
 
 Date: 2026-11-17. Status: ready for review.
 
-Base: branch `f0-foundations` at `52221495`. Runs after every other plan in
+Base: `main` at `11957d83`, which contains F0. Runs after every other plan in
 this directory, and only when `docs/studio-flutter/route-parity.md` has no
 unmapped route.
 

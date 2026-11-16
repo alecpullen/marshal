@@ -2,7 +2,7 @@
 
 Date: 2026-11-17. Status: ready for review.
 
-Base: branch `f0-foundations` at `52221495`. Runs after
+Base: `main` at `11957d83`, which contains F0. Runs after
 [the F3 plan](2026-11-17-f3-agent-thread-plan.md). Re-check the names the
 F1–F3 plans declare before starting.
 

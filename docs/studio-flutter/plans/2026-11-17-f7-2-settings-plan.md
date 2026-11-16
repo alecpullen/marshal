@@ -2,7 +2,7 @@
 
 Date: 2026-11-17. Status: ready for review.
 
-Base: branch `f0-foundations` at `52221495`. Runs after
+Base: `main` at `11957d83`, which contains F0. Runs after
 [F7 plan 1](2026-11-17-f7-1-automations-library-plan.md).
 
 Approved design:

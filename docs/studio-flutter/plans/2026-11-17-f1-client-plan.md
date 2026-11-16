@@ -2,8 +2,8 @@
 
 Date: 2026-11-17. Status: ready for review.
 
-Base: branch `f0-foundations` at `52221495` (PR #129). Anchors were checked
-there.
+Base: `main` at `11957d83`, which contains F0. Anchors were checked on the
+F0 branch at `52221495`, whose content `main` now has.
 
 Approved design: [f1-client.md](../f1-client.md). Programme:
 [programme.md](../programme.md). Rules for any UI:
@@ -63,8 +63,7 @@ copy.
 
 ## Execution
 
-- Branch `f1-client` from `f0-foundations` (or from `main` once #129 has
-  merged).
+- Branch `f1-client` from `main`.
 - Run each task's Verify and commit it as `f1-client: task N — <title>`.
   Stage explicit paths only.
 - Run `gofmt -w` on Go files and `dart format` on Dart files a task touches.

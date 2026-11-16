@@ -2,7 +2,7 @@
 
 Date: 2026-11-17. Status: ready for review.
 
-Base: branch `f0-foundations` at `52221495`. Runs after
+Base: `main` at `11957d83`, which contains F0. Runs after
 [F5 plan 1](2026-11-17-f5-1-pulls-bridge-plan.md) and
 [the F4 plan](2026-11-17-f4-inspector-plan.md). Re-check the names they
 declare before starting.

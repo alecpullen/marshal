@@ -168,6 +168,53 @@ The `token_cmd` mirrors the helper's own data-dir resolution, so it survives
 marshal fleet --server studio
 ```
 
+## Reaching studio from another machine
+
+The unit binds `127.0.0.1:7700`, so on a headless box studio is not reachable
+from the LAN or a tailnet until something forwards to it. Forward; do not
+rebind.
+
+```bash
+tailscale serve --bg --https=8443 7700     # https://<host>.<tailnet>.ts.net:8443/
+tailscale serve status                     # shows the 8443 entry beside whatever owns 443
+```
+
+Port 443 may already belong to another service on the same host (this box
+serves `:8200` at the root), so pick a free `--https=` port. Tailscale issues
+and renews the certificate, so there is no `--tls-cert` to manage, and the
+entry is tailnet-only — no LAN exposure, no public DNS record. Remove just it
+with `tailscale serve --https=8443 off`; `tailscale serve reset` clears every
+entry on the host, including ones you did not create.
+
+Forwarding is also what keeps **agent sessions** usable. The agent attach
+refuses a request that is neither TLS nor on a loopback connection, answering
+403 `the agent attach needs TLS` (`overTLSOrLoopback`, `web/bridge/attach.go`).
+Traffic forwarded by `tailscaled` reaches webbridge on loopback, so the
+transport rule passes and sessions open normally from a remote browser.
+Verified: `POST /api/agents/<id>/attach` through the forwarded port reaches
+`attachAgent` (it rejects the missing upgrade header) instead of 403.
+
+Binding the bridge itself to a routable address instead (`--addr 0.0.0.0:7700`)
+is not equivalent: plain HTTP off loopback gets the SPA and `/api` but every
+attach is refused, so studio becomes read-only-ish — you can spawn and watch
+the fleet, but you cannot open a session. If you do need a direct bind, give it
+TLS with `--tls-cert`/`--tls-key` (both, or it refuses to start), and remember
+the bearer token then travels in an `Authorization` header over whatever
+network that is.
+
+Two things do not travel through the forward:
+
+- **Preview URLs** are gated to localhost hostnames (`isLocalhostName` in
+  `web/bridge/preview.go`), so previews opened from the tailnet hostname are
+  refused. Browse those from the box itself.
+- **`marshal fleet --server studio`** from another machine needs the forwarded
+  URL rather than the loopback one in `fleet.toml`:
+
+  ```toml
+  [servers.studio]
+  url = "https://<host>.<tailnet>.ts.net:8443"
+  ```
+
 ## Restart cost
 
 - The daemon's restart ends running turns. The TUI is told

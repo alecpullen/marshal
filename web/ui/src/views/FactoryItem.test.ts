@@ -10,6 +10,9 @@ import type { PreviewDeployment, PreviewReport } from '../lib/preview'
 vi.mock('../lib/api', async (actual) => ({
   ...await actual<typeof import('../lib/api')>(),
   commandFactoryItem: vi.fn(), getPreviewEnvironments: vi.fn(), getModels: vi.fn(),
+  // The project's automatic-assessment setting, which the revision section
+  // shows as the effective value rather than a default of its own.
+  getProjectSettings: vi.fn(),
   /*
     The activity view's conversation is the real embeddable one, so the
     session reads it owns are mocked exactly as Chat's own test does: off
@@ -59,6 +62,9 @@ beforeEach(() => {
   vi.mocked(api.listClients).mockReset()
   // Provenance names a client when the list knows it and shows the stable ID otherwise.
   vi.mocked(api.listClients).mockResolvedValue([{ id: 'c1', name: 'Cursor' }] as unknown as api.MCPClient[])
+  // The project's factory settings: absent means automatic assessment is on.
+  vi.mocked(api.getProjectSettings).mockReset()
+  vi.mocked(api.getProjectSettings).mockResolvedValue({ intake: {} } as never)
   // The retry's route pickers offer the real profiles the models API reports.
   vi.mocked(api.getModels).mockReset()
   vi.mocked(api.getModels).mockResolvedValue({ profiles: {
@@ -127,6 +133,39 @@ it('requires explicit approval before a draft starts', async () => {
   expect(screen.getByTestId('config-reviewer').textContent).toBe('strict')
   expect(approvalBlock.textContent).not.toContain('"profile"')
   expect(approvalBlock.textContent).not.toContain('{')
+})
+it('proposalSaveDoesNotApprove', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  const item = { ...base, state: 'implementing', approvals: [approval(1, 'Approved plan', 'Approved spec')] } as Item
+  const saved = {
+    ...item,
+    version: 2,
+    proposals: [{
+      id: 'p1', version: 1, baseRevision: 1, baseHash: 'hash-1', plan: 'Changed plan', spec: 'Approved spec',
+      candidateHash: 'cand-1', createdBy: 'user', autoAssess: true, status: 'proposed', assessmentState: 'pending',
+      createdAt: '', updatedAt: '',
+    }],
+  } as unknown as Item
+  getItem.mockResolvedValue(item)
+  vi.mocked(api.commandFactoryItem).mockResolvedValue(saved)
+  renderItem()
+
+  // The section is here without a planner, an assessor or a decision: writing
+  // a candidate is not something to wait for a helper to allow.
+  const plan = await screen.findByLabelText('Proposed plan')
+  await fireEvent.input(plan, { target: { value: 'Changed plan' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Save proposal' }))
+
+  const cmd = vi.mocked(api.commandFactoryItem).mock.calls.at(-1)?.[1]
+  expect(cmd?.kind).toBe('revision_propose')
+  expect(cmd?.revision).toMatchObject({ plan: 'Changed plan', baseRevision: 1, baseHash: 'hash-1' })
+  // Saving is exactly one act: no approve-and-queue, no authorize, no answer.
+  expect(vi.mocked(api.commandFactoryItem)).toHaveBeenCalledTimes(1)
+  expect(vi.mocked(api.commandFactoryItem).mock.calls.some(([, c]) => c.kind === 'revision_authorize')).toBe(false)
+  expect(upsert).toHaveBeenCalledWith(saved)
+  // And the screen says what it did, not that anything is approved.
+  expect(await screen.findByText(/Proposal saved\. It is not approved/)).toBeTruthy()
+  expect(screen.queryByText(/Revision approved/)).toBeNull()
 })
 it('answers the current decision and refreshes on a stale version', async () => {
   const item = { ...base, state: 'needs_input', decision: { id: 'q1', kind: 'question', question: 'Which route?', reason: '' } } as Item

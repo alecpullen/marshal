@@ -62,8 +62,98 @@ export interface FactoryProvenance {
   authority?: string; decisionId?: string
 }
 export interface FactoryEvent { sequence: number; at: string; kind: string; message: string; effectId: string; provenance?: FactoryProvenance }
-export interface FactoryItem { id: string; title: string; state: string; stage: string; repoId: string; projectRoot: string; hostId: string; branch: string; baseSha: string; version: number; draft: Omit<FactoryCreate, 'config'> & { config: FactoryConfig }; approvals: FactoryApproval[] | null; grants: FactoryGrant[] | null; rounds: FactoryRound[] | null; workers: FactoryWorker[] | null; prs: FactoryPR[] | null; effects: FactoryEffect[] | null; decision: FactoryDecision | null; history: FactoryEvent[] | null; createdAt: string; approvedAt: string; updatedAt: string }
-export interface FactoryCommand { requestId: string; kind: 'approve' | 'answer' | 'stop' | 'retry' | 'reconcile' | 'recover'; expectedVersion: number; decisionId?: string; answer?: string; reason?: string; additionalRounds?: number; replacement?: FactoryCreate; implementerRouting?: Record<string, unknown>; reviewerRouting?: Record<string, unknown>; confirmPreviousWorkerStopped?: boolean }
+export interface FactoryItem { id: string; title: string; state: string; stage: string; repoId: string; projectRoot: string; hostId: string; branch: string; baseSha: string; version: number; draft: Omit<FactoryCreate, 'config'> & { config: FactoryConfig }; approvals: FactoryApproval[] | null; grants: FactoryGrant[] | null; rounds: FactoryRound[] | null; workers: FactoryWorker[] | null; prs: FactoryPR[] | null; effects: FactoryEffect[] | null; decision: FactoryDecision | null; history: FactoryEvent[] | null; createdAt: string; approvedAt: string; updatedAt: string; /** Plan-change proposals; absent on a record written before revisions existed. */ proposals?: FactoryRevisionProposal[] | null }
+
+/**
+ * One proposal's assessment, as the assessor reported it. `recommendation` is
+ * the assessor's advice; `strategy` is how the change can be delivered to work
+ * already in flight, and `hold` means it cannot be delivered while that work
+ * runs.
+ */
+export interface FactoryRevisionAssessment {
+  classification: 'routine_clarification' | 'scope_change' | 'needs_user' | string
+  reason: string
+  affectedEffectId?: string
+  affectedWorkerId?: string
+  recommendation: 'amend' | 'follow_up' | string
+  strategy: 'wait_safe' | 'interrupt' | 'hold' | string
+  assessorId: string
+  candidateHash: string
+  baseRevision: number
+}
+/**
+ * An attempt to hand one revision to the session doing the work. Every state
+ * before `delivered` is a receipt about the request, never a claim that the
+ * agent applied anything.
+ */
+export interface FactoryRevisionDelivery {
+  strategy: 'wait_safe' | 'interrupt' | 'hold' | string
+  state: 'pending' | 'dispatching' | 'accepted' | 'interrupting' | 'waiting_safe_boundary' | 'waiting_for_resume' | 'delivered' | 'undelivered' | 'uncertain' | string
+  sessionId?: string
+  turnId?: string
+  requestId?: string
+  candidateHash: string
+}
+/**
+ * One candidate revision of a work item's plan and specification. It is not
+ * work: a proposal is authorized separately, and its delivery is a third step
+ * the receipt reports on. `baseRevision` and `baseHash` name the approved
+ * revision it was written against, so evidence recorded for that revision
+ * cannot be read as covering this candidate.
+ */
+export interface FactoryRevisionProposal {
+  id: string
+  version: number
+  baseRevision: number
+  baseHash: string
+  plan: string
+  spec: string
+  candidateHash: string
+  createdBy: string
+  autoAssess: boolean
+  status: 'proposed' | 'awaiting_authorization' | 'authorized' | 'activated' | 'rejected' | 'superseded' | 'follow_up_pending' | 'followed_up' | string
+  assessmentState: 'not_requested' | 'pending' | 'assessing' | 'assessed' | 'unavailable' | 'uncertain' | 'failed' | string
+  assessmentAttemptId?: string
+  assessment?: FactoryRevisionAssessment
+  authorizedBy?: string
+  authority?: string
+  routing?: 'amend' | 'follow_up' | string
+  pauseState?: 'requested' | 'stopping' | 'paused' | 'uncertain' | string
+  pauseRequestId?: string
+  delivery?: FactoryRevisionDelivery
+  followUpRequestId?: string
+  followUpItemId?: string
+  createdAt: string
+  updatedAt: string
+}
+/**
+ * The revision half of a command. Only the fields the command names are sent;
+ * the envelope (request id, expected version, decision) stays in `FactoryCommand`.
+ */
+export interface FactoryRevisionCommand {
+  proposalId?: string
+  proposalVersion?: number
+  baseRevision?: number
+  baseHash?: string
+  plan?: string
+  spec?: string
+  candidateHash?: string
+  attemptId?: string
+  assessment?: FactoryRevisionAssessment
+  routing?: string
+  strategy?: string
+  followUp?: FactoryCreate
+}
+/** The revision lifecycle commands the bridge accepts in `FactoryCommand.revision`. */
+export type FactoryRevisionCommandKind =
+  | 'revision_propose'
+  | 'revision_supersede'
+  | 'revision_reject'
+  | 'revision_assess_request'
+  | 'revision_authorize'
+  | 'revision_delivery_choice'
+  | 'revision_follow_up_confirm'
+export interface FactoryCommand { requestId: string; kind: 'approve' | 'answer' | 'stop' | 'retry' | 'reconcile' | 'recover' | FactoryRevisionCommandKind; expectedVersion: number; decisionId?: string; answer?: string; reason?: string; additionalRounds?: number; replacement?: FactoryCreate; implementerRouting?: Record<string, unknown>; reviewerRouting?: Record<string, unknown>; confirmPreviousWorkerStopped?: boolean; revision?: FactoryRevisionCommand }
 export type FactoryFilter = 'current' | 'needs-you' | 'ready' | 'history'
 export type FactoryItemView = 'approval' | 'activity' | 'review' | 'prs' | 'documents'
 /**
@@ -121,6 +211,140 @@ export function provenanceLine(p: FactoryProvenance, clientName?: string): strin
   if (p.decisionId) parts.push(`decision ${p.decisionId}`)
   return parts.join(' · ')
 }
+/**
+ * The proposal a screen shows: the newest one the item carries, which is the
+ * one an action would apply to. Nothing here decides what the bridge accepts;
+ * the proposal's own `status` says whether it is still live.
+ */
+export function latestProposal(item: Pick<FactoryItem, 'proposals'>): FactoryRevisionProposal | null {
+  const list = item.proposals ?? []
+  return list.length ? list[list.length - 1] : null
+}
+
+/**
+ * The project's automatic-assessment preference: absent (or a project that
+ * could not be read) means on, because that is the handoff's default. An
+ * explicit false is the user's override and is the only value that turns it
+ * off.
+ */
+export function effectiveAutoAssess(settings: { autoAssessPlanChanges?: boolean } | null | undefined): boolean {
+  return settings?.autoAssessPlanChanges !== false
+}
+
+/** Assessment states that mean no assessment is coming without a person asking again. */
+const ASSESSMENT_UNAVAILABLE = new Set(['unavailable', 'uncertain', 'failed'])
+
+/** True when the assessor did not answer, so the person has to decide without it. */
+export function assessmentUnavailable(proposal: Pick<FactoryRevisionProposal, 'assessmentState'>): boolean {
+  return ASSESSMENT_UNAVAILABLE.has(proposal.assessmentState)
+}
+
+/** True while the assessment is still coming. */
+export function assessmentPending(proposal: Pick<FactoryRevisionProposal, 'assessmentState'>): boolean {
+  return proposal.assessmentState === 'pending' || proposal.assessmentState === 'assessing'
+}
+
+/** The proposal states that still accept a decision. */
+const LIVE_PROPOSAL = new Set(['proposed', 'awaiting_authorization', 'authorized'])
+
+/** True when this proposal is still the one an approve, amend or follow-up applies to. */
+export function proposalIsLive(proposal: Pick<FactoryRevisionProposal, 'status'>): boolean {
+  return LIVE_PROPOSAL.has(proposal.status)
+}
+
+export function proposalStatusLabel(status: string): string {
+  switch (status) {
+    case 'proposed': return 'Proposed — not approved'
+    case 'awaiting_authorization': return 'Waiting for your approval'
+    case 'authorized': return 'Approved — not delivered'
+    case 'activated': return 'Active'
+    case 'rejected': return 'Rejected'
+    case 'superseded': return 'Superseded'
+    case 'follow_up_pending': return 'Follow-up requested'
+    case 'followed_up': return 'Moved to a follow-up item'
+    default: return status
+  }
+}
+
+export function assessmentStateLabel(state: string): string {
+  switch (state) {
+    case 'not_requested': return 'No assessment requested'
+    case 'pending': return 'Assessment pending'
+    case 'assessing': return 'Assessing…'
+    case 'assessed': return 'Assessed'
+    case 'unavailable': return 'Planner unavailable'
+    case 'uncertain': return 'Assessment uncertain'
+    case 'failed': return 'Assessment failed'
+    default: return state
+  }
+}
+
+export function classificationLabel(classification: string): string {
+  switch (classification) {
+    case 'routine_clarification': return 'Routine clarification'
+    case 'scope_change': return 'Scope change'
+    case 'needs_user': return 'Needs your decision'
+    default: return classification
+  }
+}
+
+export function recommendationLabel(recommendation: string): string {
+  switch (recommendation) {
+    case 'amend': return 'Amend the running work'
+    case 'follow_up': return 'Start a follow-up item'
+    default: return recommendation
+  }
+}
+
+export function strategyLabel(strategy: string): string {
+  switch (strategy) {
+    case 'wait_safe': return 'Wait for a safe boundary'
+    case 'interrupt': return 'Interrupt the running step'
+    case 'hold': return 'Hold until the work finishes'
+    default: return strategy
+  }
+}
+
+/**
+ * How each delivery state reads to a person. Only `delivered` is a delivery:
+ * everything before it is a receipt about the request, and saying otherwise
+ * would tell someone their change is in when the agent has not seen it.
+ */
+export interface DeliveryReceipt { tone: 'ok' | 'warn' | 'neutral'; headline: string; meaning: string }
+export function deliveryReceipt(delivery: FactoryRevisionDelivery): DeliveryReceipt {
+  switch (delivery.state) {
+    case 'delivered':
+      return { tone: 'ok', headline: 'Delivered', meaning: 'The agent has this revision. This is the only state that means it was delivered.' }
+    case 'accepted':
+      return { tone: 'warn', headline: 'Accepted — not delivered', meaning: 'The session accepted the request and recorded it. That is a receipt, not a delivery: the agent has not necessarily read or applied anything yet.' }
+    case 'pending':
+      return { tone: 'neutral', headline: 'Queued — not delivered', meaning: 'The request is waiting to be sent. Nothing has reached the agent.' }
+    case 'dispatching':
+      return { tone: 'neutral', headline: 'Sending — not delivered', meaning: 'The request is on its way to the session. It has not been confirmed as delivered.' }
+    case 'interrupting':
+      return { tone: 'warn', headline: 'Interrupting — not delivered', meaning: 'The running step is being interrupted so the revision can be handed over. It is not delivered yet.' }
+    case 'waiting_safe_boundary':
+      return { tone: 'neutral', headline: 'Waiting for a safe boundary — not delivered', meaning: 'The revision is held until the agent reaches a boundary where it can be applied safely.' }
+    case 'waiting_for_resume':
+      return { tone: 'neutral', headline: 'Waiting for the work to resume — not delivered', meaning: 'The revision is queued behind paused work and will not be handed over until that work resumes.' }
+    case 'undelivered':
+      return { tone: 'warn', headline: 'Not delivered', meaning: 'The agent did not receive this revision. Nothing on it has been applied.' }
+    case 'uncertain':
+      return { tone: 'warn', headline: 'Uncertain', meaning: 'The bridge cannot tell whether the agent received it. Check the session before assuming either way.' }
+    default:
+      return { tone: 'neutral', headline: delivery.state, meaning: 'This build does not know this delivery state, so treat the outcome as unconfirmed.' }
+  }
+}
+
+/** The delivery strategies a person can choose when the recommendation cannot be followed. */
+export const DELIVERY_STRATEGIES: FactoryRevisionDelivery['strategy'][] = ['wait_safe', 'interrupt', 'hold']
+
+/**
+ * One revision command's trip to the bridge: `true` when the bridge accepted
+ * it, `false` when it refused, which leaves the person's text where it is.
+ */
+export type FactoryRevisionRun = (kind: FactoryRevisionCommandKind, revision: FactoryRevisionCommand) => Promise<boolean>
+
 export interface PollSeam {
   document?: Pick<Document, 'hidden' | 'addEventListener' | 'removeEventListener'>
   setTimeout?: typeof setTimeout

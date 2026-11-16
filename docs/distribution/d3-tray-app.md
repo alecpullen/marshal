@@ -436,6 +436,56 @@ Run and passing on this machine (Linux, no Xcode):
 - The release jobs pass `APP_VERSION` with its leading `v` stripped, so the
   version-skew suffix in the status line stays silent on a normal release.
 
+### Review follow-ups
+
+Four findings from the review, fixed in three commits beside this one, each
+at the layer that had the wrong answer.
+
+**`not answering` had no reading.** `_stateLine`
+(`app/lib/src/menu/model.dart`) mapped every silent socket to
+`Marshal — daemon stopped`, which the service manager contradicts while the
+service is running — §4's missing fourth reading. A running service with a
+silent socket now reads `Marshal — daemon not answering`; a service that is
+not running still reads `stopped`, and the action selection is untouched: a
+running daemon stays stoppable.
+
+**A missing binary had no state.** `status()`
+(`app/lib/src/daemon/cli.dart`) threw only `DaemonException`, so §5's
+"missing binary is not fatal" came out as the generic
+`· status unavailable` and was indistinguishable from a hung daemon. A
+spawn's errno 2 is now `MarshalMissingException`; `menuFor`
+(`app/lib/src/menu/model.dart`) takes the state, renders
+`Marshal — marshal not found`, and offers no daemon action over it, and
+`run` reports the same way whichever action hit it. `Open Fleet…`,
+`Open Log…` and the login toggle are not daemon actions and stay. Two tests
+pin the behavior: the menu's label and empty action set
+(`app/test/menu_model_test.dart`), and the cli's classification of a
+missing-binary spawn (`app/test/daemon_cli_test.dart`).
+
+**A lazy cast could kill the tray.** `DaemonInfo.fromJson`
+(`app/lib/src/daemon/status.dart`) left `projects` a lazily cast view, so a
+mistyped entry threw only when the menu read `daemon.projects.length` — in
+menu build, outside the poll's try, an uncaught async error from the refresh
+timer that takes the isolate down. The cast is forced with `.toList()`.
+
+**macOS opened a blank window, and closing it quit the app.** The template's
+window (`app/macos/Runner/Base.lproj/MainMenu.xib`) is visible at launch and
+nothing hid it, while `applicationShouldTerminateAfterLastWindowClosed`
+returned true, so closing that window ended the tray app. `awakeFromNib`
+(`app/macos/Runner/MainFlutterWindow.swift`) now orders the window out on
+the main thread — synchronously, and again on the next main-loop turn, in
+case AppKit honours the xib's visible-at-launch flag after the nib's
+`awakeFromNib` — and the delegate answers false, so a window close can never
+quit the app. **This fix is unverified**: no Mac and no Xcode on this host,
+so the Swift was never compiled; `flutter build macos` and a launch are the
+proof it needs.
+
+Dart gates ran before each code commit and stay clean: `flutter analyze`
+reports no issues, `flutter test` passes 15 of 15 (the menu tests gained the
+`not answering` label and the not-found state, and `daemon_cli_test.dart`
+gained the spawn classification), and
+`dart format --output=none --set-exit-if-changed lib test` formats no file.
+
 ## Open questions
 
 None.

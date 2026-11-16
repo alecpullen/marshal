@@ -85,7 +85,7 @@ func TestSessionNewBindsSubagentSettingsToThatSession(t *testing.T) {
 func TestSessionNewRejectsInvalidSubagentSettings(t *testing.T) {
 	m, work := newRoutingSessionManager(t)
 
-	for _, concurrency := range []int{0, -1, 9} {
+	for _, concurrency := range []int{0, -1, session.MaxSubagentConcurrency + 1} {
 		params := `{"cwd":` + jsonString(work) + `,"mcpServers":[],"subagentSettings":` +
 			`{"enabled":true,"concurrency":` + jsonInt(concurrency) + `}}`
 		res, err := m.Create(context.Background(), json.RawMessage(params))

@@ -130,7 +130,7 @@ func TestStartRuntimeBindsSubagentSettingsSnapshot(t *testing.T) {
 // TestStartRuntimeRejectsInvalidSubagentSettings pins that an explicit snapshot
 // is validated, not clamped: a cap outside the supported range fails startup.
 func TestStartRuntimeRejectsInvalidSubagentSettings(t *testing.T) {
-	for _, cap := range []int{0, -1, 9} {
+	for _, cap := range []int{0, -1, session.MaxSubagentConcurrency + 1} {
 		_, err := StartRuntime(context.Background(),
 			WithWorkingDir(t.TempDir()),
 			WithHomeDir(t.TempDir()),

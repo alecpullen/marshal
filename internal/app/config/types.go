@@ -579,7 +579,7 @@ type AgentConfig struct {
 	SubtaskIterations int `toml:"subtask_iterations"`
 	// MaxConcurrentSubagents caps parallel agent.run children per session.
 	// 0 (or negative) = built-in default (3, aligned with the default swarm
-	// scout count); values above 8 clamp to 8 at the session seam.
+	// scout count); values above 10 clamp to 10 at the session seam.
 	MaxConcurrentSubagents int `toml:"max_concurrent_subagents"`
 	// Mode is the canonical interaction mode: "ask" or "act".
 	Mode interaction.Mode `toml:"mode"`

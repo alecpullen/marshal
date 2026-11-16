@@ -112,11 +112,11 @@ class Host extends ChangeNotifier {
 /// A host that cannot be reached is kept: it is marked unreachable with its
 /// last contact, never dropped for being down (decision 8).
 class HostRegistry extends ChangeNotifier {
-  HostRegistry({required HostDiscovery discovery, FleetFor? fleetFor})
-    : _discovery = discovery,
-      _fleetFor = fleetFor ?? _fleet;
+  HostRegistry({required this.discovery, FleetFor? fleetFor})
+    : _fleetFor = fleetFor ?? _fleet;
 
-  final HostDiscovery _discovery;
+  /// Finds the hosts to show. Read-only data, so a test supplies its own.
+  final HostDiscovery discovery;
   final FleetFor _fleetFor;
   final _hosts = <Host>[];
 
@@ -127,7 +127,7 @@ class HostRegistry extends ChangeNotifier {
   /// known is left alone: its stream is the fresher truth, and a host being
   /// down is not a reason to forget it.
   Future<void> discover() async {
-    final specs = await _discovery();
+    final specs = await discovery();
     var added = false;
     for (final spec in specs) {
       final known = _hosts.any(

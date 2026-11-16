@@ -50,16 +50,15 @@ class EventStream {
   EventStream(
     this._transport,
     this.path, {
-    Map<String, String> query = const {},
     DateTime Function()? now,
     Future<void> Function(Duration)? wait,
+    this.query = const {},
     this.staleAfter = const Duration(seconds: 10),
     this.firstBackoff = const Duration(milliseconds: 500),
     this.maxBackoff = const Duration(seconds: 30),
     this.jitter = 0.2,
     Random? random,
-  }) : _query = query,
-       _now = now ?? DateTime.now,
+  }) : _now = now ?? DateTime.now,
        _wait = wait ?? _delay,
        _random = random ?? Random() {
     _backoff = firstBackoff;
@@ -67,6 +66,9 @@ class EventStream {
 
   final Transport _transport;
   final String path;
+
+  /// The query every connection carries, besides `lastEventId`.
+  final Map<String, String> query;
 
   /// How long a live stream may stay silent before it is stale. A heartbeat
   /// counts as contact, so only a dead connection reaches it.
@@ -81,7 +83,6 @@ class EventStream {
   /// so several clients do not retry in step.
   final double jitter;
 
-  final Map<String, String> _query;
   final DateTime Function() _now;
   final Future<void> Function(Duration) _wait;
   final Random _random;
@@ -159,7 +160,7 @@ class EventStream {
   Future<void> _consume() async {
     final request = Request(
       path: path,
-      query: {..._query, if (_lastEventId > 0) 'lastEventId': '$_lastEventId'},
+      query: {...query, if (_lastEventId > 0) 'lastEventId': '$_lastEventId'},
     );
     await for (final line in _transport.lines(request)) {
       if (!_running) return;

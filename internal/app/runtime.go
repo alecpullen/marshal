@@ -2019,8 +2019,11 @@ func (rt *Runtime) recordMarshalStatus(status daemon.MarshalStatus) {
 	rt.mu.Lock()
 	rt.MarshalStatus = status
 	rt.mu.Unlock()
-	if rt.State != nil {
-		rt.State.RecordMarshalSession(session.MarshalSession{
+	// The state is read through the same lock a replacement installs it under:
+	// a revalidation can land beside a session swap, and reading the field bare
+	// would race it.
+	if state := rt.currentState(); state != nil {
+		state.RecordMarshalSession(session.MarshalSession{
 			InstanceID: status.InstanceID,
 			Generation: status.Generation,
 			ProjectID:  status.ProjectID,
@@ -2067,6 +2070,14 @@ func enrollMarshalStudio(homeDir, projectRoot, sessionID string) daemon.MarshalE
 		if errors.Is(err, daemon.ErrMarshalAmbiguous) {
 			enrollment.Status.State = daemon.MarshalStateAmbiguous
 		}
+	}
+	// A "connected" answer that carries no credential is not a connection: the
+	// built-in client presents a token, so a session holding none has no Studio
+	// tools however the state is spelled. Recording it as connected would claim
+	// a Studio this session cannot use, and — because revalidation is only ever
+	// provoked by a client that was never built — nothing would correct it.
+	if enrollment.Status.State == daemon.MarshalStateConnected && enrollment.Token == "" {
+		enrollment.Status.State = daemon.MarshalStateUnavailable
 	}
 	return enrollment
 }

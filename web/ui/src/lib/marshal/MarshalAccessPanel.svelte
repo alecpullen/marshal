@@ -142,14 +142,19 @@
     }
   }
 
-  /** save reports what happened, and keeps the draft when the write lost so the edit is not discarded. */
-  async function save(work: () => Promise<MarshalAccessView>, saved: string) {
+  /**
+   * save reports what happened, and keeps the draft when the write lost so the
+   * edit is not discarded. It answers whether the write landed, so a caller
+   * that clears a draft (a reset) does so only once it has.
+   */
+  async function save(work: () => Promise<MarshalAccessView>, saved: string): Promise<boolean> {
     busy = true
     error = ''
     notice = ''
     try {
       apply(await work())
       notice = saved
+      return true
     } catch (e) {
       if (e instanceof MarshalAccessConflictError) {
         // The write named a version that moved. The answer carries the value
@@ -163,6 +168,7 @@
       } else {
         error = errMessage(e)
       }
+      return false
     } finally {
       busy = false
     }
@@ -174,11 +180,14 @@
     void save(() => putMarshalAccessDefault(resolvedProject, projectDraft, layer), 'Project defaults saved')
   }
 
-  function resetProject() {
+  async function resetProject() {
     if (!view) return
-    projectDraft = {}
     const layer = view.default.version
-    void save(() => putMarshalAccessDefault(resolvedProject, {}, layer), 'Project defaults reset to inherit')
+    // The draft is cleared only once the write has landed. Clearing it first
+    // would leave the selects reading "inherit" after a refused write while the
+    // stored layer still holds values, and Save would then be disabled.
+    const saved = await save(() => putMarshalAccessDefault(resolvedProject, {}, layer), 'Project defaults reset to inherit')
+    if (saved) projectDraft = {}
   }
 
   function saveSession() {
@@ -187,11 +196,11 @@
     void save(() => putMarshalAccessOverride(resolvedProject, sessionId, sessionDraft, version, workerId), 'This session’s access saved')
   }
 
-  function revokeSession() {
+  async function revokeSession() {
     if (!view) return
-    sessionDraft = {}
     const version = view.overrideVersion ?? view.override?.version ?? ''
-    void save(() => putMarshalAccessOverride(resolvedProject, sessionId, {}, version, workerId), 'This session inherits the project defaults again')
+    const saved = await save(() => putMarshalAccessOverride(resolvedProject, sessionId, {}, version, workerId), 'This session inherits the project defaults again')
+    if (saved) sessionDraft = {}
   }
 
   function saveSelection() {

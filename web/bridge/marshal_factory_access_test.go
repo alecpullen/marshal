@@ -49,7 +49,7 @@ func (fx *marshalAccessFixture) projectState(t *testing.T) marshalFactoryAccessS
 // one.
 func (fx *marshalAccessFixture) overrideState(t *testing.T, sessionID string) marshalFactoryAccessState {
 	t.Helper()
-	if state, ok := fx.s.fleet.ws.marshalAccessOverride(fx.projectID, sessionID); ok {
+	if state, ok := fx.s.fleet.ws.marshalAccessOverride(fx.projectID, sessionID, ""); ok {
 		return state
 	}
 	return marshalAccessState(fx.projectID, sessionID, "", MarshalFactoryAccess{})

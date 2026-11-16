@@ -428,7 +428,7 @@ func (w *Workspace) Load() (string, error) {
 		if r.ProjectID == "" || r.SessionID == "" {
 			continue
 		}
-		w.marshalOverrides[marshalOverrideKey(r.ProjectID, r.SessionID)] = marshalFactoryAccessRecord{
+		w.marshalOverrides[marshalOverrideKey(r.ProjectID, r.SessionID, r.WorkerID)] = marshalFactoryAccessRecord{
 			ProjectID: r.ProjectID, SessionID: r.SessionID, WorkerID: r.WorkerID, Access: r.Access.clone(),
 		}
 	}
@@ -675,7 +675,13 @@ func (w *Workspace) save() error {
 		if f.MarshalFactoryOverrides[i].ProjectID != f.MarshalFactoryOverrides[j].ProjectID {
 			return f.MarshalFactoryOverrides[i].ProjectID < f.MarshalFactoryOverrides[j].ProjectID
 		}
-		return f.MarshalFactoryOverrides[i].SessionID < f.MarshalFactoryOverrides[j].SessionID
+		if f.MarshalFactoryOverrides[i].SessionID != f.MarshalFactoryOverrides[j].SessionID {
+			return f.MarshalFactoryOverrides[i].SessionID < f.MarshalFactoryOverrides[j].SessionID
+		}
+		// One session may hold its own record and a worker's, so the worker is
+		// part of the order: an unchanged collection must still write the same
+		// bytes on every save.
+		return f.MarshalFactoryOverrides[i].WorkerID < f.MarshalFactoryOverrides[j].WorkerID
 	})
 	for _, r := range w.marshalSelections {
 		f.MarshalFactorySelections = append(f.MarshalFactorySelections, r)
@@ -849,9 +855,11 @@ func (w *Workspace) RemoveProject(root string) error {
 	return w.save()
 }
 
-// revokeProjectGrantsLocked drops every client grant naming projectID. It
-// runs inside the removal's own save, so no grant outlives the project it
-// authorizes.
+// revokeProjectGrantsLocked drops every record that names projectID: the client
+// grants, the built-in access a verified session inherits or overrides, and the
+// selections that resolved an ambiguous enrollment onto it. It runs inside the
+// removal's own save, so no authority — and no policy row for an ID that no
+// longer resolves — outlives the project it describes.
 func (w *Workspace) revokeProjectGrantsLocked(projectID string) {
 	if projectID == "" {
 		return
@@ -872,6 +880,17 @@ func (w *Workspace) revokeProjectGrantsLocked(projectID string) {
 		}
 		next.FactoryGrants = kept
 		w.clients[id] = next
+	}
+	delete(w.marshalDefaults, projectID)
+	for key, r := range w.marshalOverrides {
+		if r.ProjectID == projectID {
+			delete(w.marshalOverrides, key)
+		}
+	}
+	for sessionID, r := range w.marshalSelections {
+		if r.ProjectID == projectID {
+			delete(w.marshalSelections, sessionID)
+		}
 	}
 }
 
@@ -1280,10 +1299,15 @@ func marshalAccessState(projectID, sessionID, workerID string, a MarshalFactoryA
 	}
 }
 
-// marshalOverrideKey is one session override's collection key: the project ID
-// and the session ID, the pair the record is versioned and written against.
-func marshalOverrideKey(projectID, sessionID string) string {
-	return projectID + "\x00" + sessionID
+// marshalOverrideKey is one override record's collection key: the project, the
+// session and — when the record names one — the worker. The worker is part of
+// the key because a worker's access is the worker's: with one slot per session,
+// a worker editor that had been shown its session's record would replace that
+// record, and its session and every sibling worker would silently fall back to
+// the project default. An empty worker is the session's own record, which is
+// what a worker inherits until it is given one of its own.
+func marshalOverrideKey(projectID, sessionID, workerID string) string {
+	return projectID + "\x00" + sessionID + "\x00" + workerID
 }
 
 // marshalFactorySelectionRecord is one person's answer to an ambiguous
@@ -1465,16 +1489,24 @@ func (w *Workspace) marshalAccessDefault(projectID string) (marshalFactoryAccess
 	return marshalAccessState(projectID, "", "", a), true
 }
 
-// marshalAccessOverride returns one session's stored override and its version.
-// A record that names a worker is that worker's override; the caller decides
-// whether it applies to the worker it holds.
-func (w *Workspace) marshalAccessOverride(projectID, sessionID string) (marshalFactoryAccessState, bool) {
+// marshalAccessOverride returns the override that applies to one worker's
+// scope and the version of that scope's own record. A worker's own record wins;
+// with none, the session's record applies, and the returned WorkerID says which
+// one this is. The version reported here is always the version of the scope
+// that was asked for, so an editor holding it writes that scope's record and
+// never its parent's.
+func (w *Workspace) marshalAccessOverride(projectID, sessionID, workerID string) (marshalFactoryAccessState, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if projectID == "" || sessionID == "" {
 		return marshalFactoryAccessState{}, false
 	}
-	r, ok := w.marshalOverrides[marshalOverrideKey(projectID, sessionID)]
+	if workerID != "" {
+		if r, ok := w.marshalOverrides[marshalOverrideKey(projectID, sessionID, workerID)]; ok {
+			return marshalAccessState(r.ProjectID, r.SessionID, r.WorkerID, r.Access), true
+		}
+	}
+	r, ok := w.marshalOverrides[marshalOverrideKey(projectID, sessionID, "")]
 	if !ok {
 		return marshalFactoryAccessState{}, false
 	}
@@ -1529,7 +1561,7 @@ func (w *Workspace) putMarshalAccessOverrideIfMatch(projectID, sessionID, worker
 	if strings.TrimSpace(projectID) == "" || strings.TrimSpace(sessionID) == "" {
 		return false, marshalFactoryAccessState{}, errors.New("bridge: an access override needs a project and a session id")
 	}
-	key := marshalOverrideKey(projectID, sessionID)
+	key := marshalOverrideKey(projectID, sessionID, workerID)
 	next := marshalFactoryAccessRecord{ProjectID: projectID, SessionID: sessionID, WorkerID: workerID, Access: access.clone()}
 	w.mu.Lock()
 	defer w.mu.Unlock()

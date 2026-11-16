@@ -450,7 +450,7 @@ func (a *factoryMCPAuthorizer) marshalStatusLocked(binding MarshalSessionBinding
 	if stored {
 		source["project"] = "override"
 	}
-	if override, ok := a.ws.marshalAccessOverride(binding.ProjectID, binding.SessionID); ok && marshalOverrideApplies(override, binding) {
+	if override, ok := a.ws.marshalAccessOverride(binding.ProjectID, binding.SessionID, binding.WorkerID); ok && marshalOverrideApplies(override, binding) {
 		effective = resolveMarshalFactoryAccess(project.Access, override.Access)
 		source["session"] = "override"
 	}

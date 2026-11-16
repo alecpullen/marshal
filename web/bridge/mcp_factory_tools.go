@@ -1103,10 +1103,26 @@ func factoryToolHistory(events []FactoryEvent) []FactoryEvent {
 		out = append(out, FactoryEvent{
 			Sequence: e.Sequence, At: e.At, Kind: e.Kind,
 			Message:  factoryToolClip(e.Message, factoryToolTextLimit),
-			EffectID: e.EffectID, Provenance: e.Provenance,
+			EffectID: e.EffectID, Provenance: factoryToolProvenance(e.Provenance),
 		})
 	}
 	return out
+}
+
+// factoryToolProvenance is the attribution one client is shown for a journal
+// entry. InstanceID names the daemon instance a mutation came through — a
+// socket path locally, an origin remotely — which is a host detail and not the
+// client's to see, so it is dropped here exactly as factoryToolConfigView drops
+// ProjectRoot. The session, worker and role stay: they are the attribution a
+// client is meant to read. The journal itself keeps the instance, so the
+// operator surfaces still attribute an entry fully.
+func factoryToolProvenance(p *FactoryProvenance) *FactoryProvenance {
+	if p == nil {
+		return nil
+	}
+	view := *p
+	view.InstanceID = ""
+	return &view
 }
 
 // factoryToolClip bounds one string without splitting a rune.

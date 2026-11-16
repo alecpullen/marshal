@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -56,8 +57,13 @@ func studioRows(t *testing.T, f *frame) map[string]*field {
 
 // loadedStudioState is a state that has read one access view: the starting
 // point of every frame test below.
+//
+// The view is reported editable, which is what the server says for a tracked
+// session. The one view it reports read-only — an untracked session — has its
+// own test, so the rows here are the editable ones.
 func loadedStudioState(view acpwire.MarshalAccessView) *state {
 	s := newState(config.Default())
+	view.Editable = true
 	s.access = view
 	s.accessLoaded = true
 	return s
@@ -346,4 +352,47 @@ func TestMarshalStudioAccessSectionIsRegistered(t *testing.T) {
 		return
 	}
 	t.Fatal("no Studio section in the settings browser")
+}
+
+// TestMarshalStudioAccessFrameReadOnlyRefusesWrites proves a view the server
+// reports as read-only keeps its rows visible and refuses every write locally.
+// The server says read-only for exactly one session — one it does not track, so
+// no write could name it — and a row that offered the edit anyway would let the
+// person type a change the agent side must then refuse.
+func TestMarshalStudioAccessFrameReadOnlyRefusesWrites(t *testing.T) {
+	s := loadedStudioState(acpwire.MarshalAccessView{
+		State:           acpwire.MarshalAccessUnavailable,
+		ProjectID:       "project-1",
+		SessionID:       "s1",
+		Default:         acpwire.MarshalAccessLayer{Version: "default-1"},
+		OverrideVersion: "session-1",
+	})
+	s.access.Editable = false
+	sess := &studioSession{view: s.access}
+	s.sess = sess
+
+	project := studioRows(t, studioAccessLayerFrame(s, acpwire.MarshalAccessScopeProject))
+	// The value is still reported: read-only is a refusal to write, not a
+	// refusal to say what is stored.
+	if got := project["studio.project.read"].GetStr(); got != studioInherit {
+		t.Fatalf("a read-only layer lost its value: %q", got)
+	}
+	if err := project["studio.project.read"].SetStr("allow"); !errors.Is(err, errStudioNotEditable) {
+		t.Fatalf("a read-only capability row accepted a write: %v", err)
+	}
+	if err := project["studio.project.approval_authority"].SetStr("standing"); !errors.Is(err, errStudioNotEditable) {
+		t.Fatalf("a read-only authority row accepted a write: %v", err)
+	}
+
+	// The reset asks twice, as every destructive row does: the first press arms
+	// it and the second is the one that would write.
+	reset := studioRows(t, studioAccessLayerFrame(s, acpwire.MarshalAccessScopeProject))[studioAccessRowID(acpwire.MarshalAccessScopeProject)]
+	reset.Act()
+	reset.Act()
+	if s.takePendingCmd() != nil {
+		t.Fatal("a read-only layer queued a reset write")
+	}
+	if len(sess.saves) != 0 {
+		t.Fatalf("a read-only layer wrote %d times", len(sess.saves))
+	}
 }

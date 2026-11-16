@@ -117,6 +117,17 @@ describe('MarshalAccessPanel writes', () => {
     await fireEvent.click(screen.getByTestId('marshal-access-project-save'))
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('changed elsewhere'))
     expect((screen.getByLabelText('Project Create drafts') as HTMLSelectElement).value).toBe('deny')
+
+    // The winner's version is the one the next write names, so a conflict does
+    // not repeat forever against a version nobody holds any more.
+    ;(api.putMarshalAccessDefault as Mock).mockResolvedValueOnce(
+      accessView({ default: { access: { read: false, createDraft: false }, version: 'default-3' } }),
+    )
+    await fireEvent.change(screen.getByLabelText('Project Read'), { target: { value: 'deny' } })
+    await fireEvent.click(screen.getByTestId('marshal-access-project-save'))
+    await waitFor(() =>
+      expect(api.putMarshalAccessDefault).toHaveBeenLastCalledWith('project-1', expect.anything(), 'default-2'),
+    )
   })
 
   it('writes a session override, and revoking it writes a level that inherits', async () => {

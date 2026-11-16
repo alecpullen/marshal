@@ -211,10 +211,16 @@ func (b *BrowserPanel) OwnsMsg(msg tea.Msg) bool {
 func (b *BrowserPanel) handleMarshalAccess(msg marshalAccessMsg) tea.Cmd {
 	st := b.reg.st
 	if msg.err != nil {
-		st.accessErr = msg.err.Error()
-		if msg.fieldID != "" {
-			st.applyActionResult(msg.fieldID, "✗ "+strutil.Truncate(msg.err.Error(), 37, true))
+		if msg.fieldID == "" {
+			// A refused read is the connection's own state: the section
+			// reports it and refuses writes until the next read answers.
+			st.accessErr = msg.err.Error()
+			return nil
 		}
+		// A refused write says nothing about the connection. The cached view
+		// and its versions stay as they were, so the section keeps editing
+		// instead of being locked until someone re-reads by hand.
+		st.applyActionResult(msg.fieldID, "✗ "+strutil.Truncate(msg.err.Error(), 37, true))
 		return nil
 	}
 	st.accessErr = ""

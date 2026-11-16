@@ -1846,12 +1846,19 @@ func (s *Server) fillMarshalAccessLayers(view *MarshalAccessView, projectID stri
 	view.Default = MarshalAccessLayer{Access: project.Access, Version: project.Version}
 	view.Override = nil
 	if view.SessionID != "" {
-		absent := marshalAccessState(projectID, view.SessionID, "", MarshalFactoryAccess{})
-		view.OverrideVersion = absent.Version
-		if override, ok := ws.marshalAccessOverride(projectID, view.SessionID); ok && marshalLayerApplies(override, view.WorkerID) {
-			view.Override = &MarshalAccessLayer{Access: override.Access, Version: override.Version}
-			view.OverrideVersion = override.Version
+		// The version an editor holds is the version of the scope it edits: a
+		// worker's panel writes the worker's record, never its session's. What
+		// it displays may still be inherited from the session, until the worker
+		// has a record of its own.
+		view.OverrideVersion = marshalAccessState(projectID, view.SessionID, view.WorkerID, MarshalFactoryAccess{}).Version
+		if override, ok := ws.marshalAccessOverride(projectID, view.SessionID, view.WorkerID); ok && marshalLayerApplies(override, view.WorkerID) {
 			source["session"] = "override"
+			if override.WorkerID == view.WorkerID {
+				// This scope's own record, so this is what a save is
+				// conditional on.
+				view.OverrideVersion = override.Version
+			}
+			view.Override = &MarshalAccessLayer{Access: override.Access, Version: view.OverrideVersion}
 		}
 	}
 	view.Source = source

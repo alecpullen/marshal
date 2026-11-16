@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -41,7 +42,7 @@ func studioFrame(s *state) *frame {
 				ID:     "studio.connection",
 				Title:  "Connection",
 				Kind:   kindScalar,
-				Desc:   "the Studio instance this session enrolled on; r re-reads it",
+				Desc:   "the Studio instance this session enrolled on; Re-read connection asks again",
 				GetStr: func() string { return s.studioConnection() },
 			},
 			{
@@ -173,6 +174,12 @@ var studioCapabilities = []studioCapability{
 	},
 }
 
+// errStudioNotEditable is the refusal a writable-looking row gives when the
+// server reports this session's access as read-only — an untracked session,
+// which no write can name. The flag is the server's, not a local guess, so the
+// row says why instead of letting a write be refused after the fact.
+var errStudioNotEditable = errors.New("this session's Studio access is read-only")
+
 // studioCapabilityField is one capability's row at one level. The value cell is
 // what the level stores; the badge is the effective value the resolution
 // reaches, so a row never hides what a session actually holds.
@@ -190,6 +197,9 @@ func studioCapabilityField(s *state, scope string, capability studioCapability) 
 				"→ " + studioTriState(capability.get(s.access.Effective))
 		},
 		SetStr: func(v string) error {
+			if !s.access.Editable {
+				return errStudioNotEditable
+			}
 			next, ok := s.studioLayerFor(scope)
 			if !ok {
 				return fmt.Errorf("read the connection first")
@@ -237,6 +247,9 @@ func studioAuthorityField(s *state, scope string) *field {
 			return value, "→ " + effective
 		},
 		SetStr: func(v string) error {
+			if !s.access.Editable {
+				return errStudioNotEditable
+			}
 			next, ok := s.studioLayerFor(scope)
 			if !ok {
 				return fmt.Errorf("read the connection first")
@@ -283,6 +296,10 @@ func studioResetField(s *state, scope string) *field {
 				return nil
 			}
 			delete(s.actionState, id)
+			if !s.access.Editable {
+				s.applyActionResult(id, "✗ "+errStudioNotEditable.Error())
+				return nil
+			}
 			if _, ok := s.studioLayerFor(scope); !ok {
 				s.applyActionResult(id, "✗ read the connection first")
 				return nil

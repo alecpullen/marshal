@@ -215,7 +215,7 @@ func enrollStudioSession(t *testing.T, b *handoffBridge, agent Agent, access *Ma
 	}
 	if access != nil {
 		version := marshalAccessState(b.projectID, agent.SessionID, "", MarshalFactoryAccess{}).Version
-		if current, ok := b.fleet.ws.marshalAccessOverride(b.projectID, agent.SessionID); ok {
+		if current, ok := b.fleet.ws.marshalAccessOverride(b.projectID, agent.SessionID, ""); ok {
 			version = current.Version
 		}
 		wrote, _, err := b.srv.factoryAuth.putMarshalAccessOverride(b.projectID, agent.SessionID, "", *access, version)
@@ -396,7 +396,7 @@ func TestMarshalStudioRealSessionRevokedBetweenCalls(t *testing.T) {
 
 	// The editor's write: the read the session relied on, and the drafting it
 	// used, both denied explicitly. A revocation is a value, not a signal.
-	current, ok := b.fleet.ws.marshalAccessOverride(b.projectID, "session-1")
+	current, ok := b.fleet.ws.marshalAccessOverride(b.projectID, "session-1", "")
 	if !ok {
 		t.Fatal("the session override is missing")
 	}

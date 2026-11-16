@@ -318,6 +318,12 @@ hashed assets, and the next `go build` picks them up.
 go test ./test/usability/... -run TestScripted -v   # synthetic-user scenarios
 ```
 
+To run the local daemon and the Web Studio from a working tree — rebuilt and
+restarted on your own commits instead of a release — use
+`scripts/dev-daemon.sh` and `scripts/dev-studio.sh`; see
+[docs/dev-loop.md](docs/dev-loop.md) for setup, the daily loop, and the agent
+image they need.
+
 Architecture, the package map, and the data flow of a single turn live in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

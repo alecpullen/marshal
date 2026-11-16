@@ -1,0 +1,45 @@
+# Fast dev agent image: the host's own marshal, copied in, with no Go
+# compilation inside the image.
+#
+# build/Dockerfile is the portable image the release builds: it compiles marshal
+# in a golang builder stage and runs on debian:bookworm-slim. That is the right
+# thing to publish and the wrong thing to run on every dev commit, because a
+# rebuild pulls a Go builder and recompiles the whole module.
+#
+# This file trades portability for speed. The binary is built on the host
+# (`CGO_ENABLED=1 go build ./cmd/marshal`) and copied in, so refreshing the
+# image is a copy, and the agent inside always runs the build the TUI does.
+#
+# The base image must match the host's glibc. marshal links tree-sitter through
+# cgo, so the binary is dynamically linked against the build machine's libc and
+# will not start on an older one ("GLIBC_2.43 not found"). Fedora 44 links
+# against 2.43 where debian:bookworm-slim carries 2.36, so the release image's
+# base cannot be reused here. scripts/dev-studio.sh derives the base from
+# /etc/os-release; pass a different one with --build-arg BASE_IMAGE=.
+#
+# Dev-only: do not publish this image.
+
+ARG BASE_IMAGE=docker.io/library/fedora:44
+FROM ${BASE_IMAGE}
+
+# git and ca-certificates for the reasons build/Dockerfile gives: the agent reads
+# git state, and it calls the model provider over HTTPS from in here. dnf and
+# apt-get are both handled so a deb-based build arg works.
+RUN if command -v dnf >/dev/null 2>&1; then \
+      dnf install -y --setopt=install_weak_deps=0 git ca-certificates \
+      && dnf clean all; \
+    elif command -v apt-get >/dev/null 2>&1; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends git ca-certificates \
+      && rm -rf /var/lib/apt/lists/*; \
+    else \
+      echo "Dockerfile.dev: ${BASE_IMAGE} has neither dnf nor apt-get" >&2; \
+      exit 1; \
+    fi
+
+# The context holds only this binary (the script builds a temp dir for it), so
+# there is nothing else to exclude.
+COPY marshal /usr/local/bin/marshal
+
+WORKDIR /work
+ENTRYPOINT ["marshal"]

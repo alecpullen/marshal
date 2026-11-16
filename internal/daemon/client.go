@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,27 +43,116 @@ type Info = contract.DaemonInfo
 // PinState is the contract's PinState; see that declaration.
 type PinState = contract.PinState
 
-// Client talks HTTP to the daemon over its socket.
+// Client talks HTTP to the daemon over its socket, or to a server-profile
+// bridge over TCP.
 type Client struct {
 	socket string
 	http   *http.Client
+
+	// dial opens the connection an attach handshake is written to: the unix
+	// socket for the local daemon, a TCP (and TLS) connection for a server
+	// profile.
+	dial func(ctx context.Context) (net.Conn, error)
+	// host is the request's Host on the wire, and the host the request URL
+	// names.
+	host string
+	// token is the bearer token an attach carries; nil on the socket.
+	token func(ctx context.Context) (string, error)
 }
 
 // NewClient is a client for the daemon listening on socket.
 func NewClient(socket string) *Client {
+	// Every request goes to the socket regardless of the host in the URL: the
+	// address is a name, not a lookup.
+	dial := func(ctx context.Context) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", socket)
+	}
 	return &Client{
 		socket: socket,
+		dial:   dial,
+		host:   "daemon",
 		http: &http.Client{
-			// Every request goes to the socket regardless of the
-			// host in the URL: the address is a name, not a lookup.
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, "unix", socket)
-				},
-			},
+			Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return dial(ctx)
+			}},
 		},
 	}
+}
+
+// Remote is the attach client of a server-profile bridge at base (decision 6).
+// Only AttachAgent is served there.
+func Remote(base string, tlsConfig *tls.Config, token func(ctx context.Context) (string, error)) (*Client, error) {
+	u, err := url.Parse(base)
+	if err != nil {
+		return nil, fmt.Errorf("server profile %q: %w", base, err)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("server profile %q names no host", base)
+	}
+
+	// The port is the scheme's default when the URL carries none, so a
+	// profile can name a host alone.
+	address := u.Host
+	if u.Port() == "" {
+		port := "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+		address = net.JoinHostPort(u.Hostname(), port)
+	}
+	config := remoteTLSConfig(u, tlsConfig)
+	dial := func(ctx context.Context) (net.Conn, error) {
+		var d net.Dialer
+		conn, err := d.DialContext(ctx, "tcp", address)
+		if err != nil {
+			return nil, err
+		}
+		if config == nil {
+			return conn, nil
+		}
+		// The handshake is the caller's to bound, so a listener that accepts
+		// and then says nothing ends with the attach's context, not later.
+		tlsConn := tls.Client(conn, config)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return tlsConn, nil
+	}
+
+	c := &Client{
+		socket: base,
+		dial:   dial,
+		host:   u.Host,
+		token:  token,
+	}
+	c.http = &http.Client{
+		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dial(ctx)
+		}},
+	}
+	return c, nil
+}
+
+// remoteTLSConfig is the configuration a server profile's dial handshakes
+// with: the caller's, completed with what the handshake needs and narrowed to
+// the one protocol the attach speaks. nil when there is none: a loopback http
+// base.
+func remoteTLSConfig(u *url.URL, tlsConfig *tls.Config) *tls.Config {
+	if tlsConfig == nil {
+		return nil
+	}
+	// The connection is built by hand rather than by an *http.Client, so
+	// nothing fills in the name the certificate is checked against.
+	config := tlsConfig.Clone()
+	if config.ServerName == "" && !config.InsecureSkipVerify {
+		config.ServerName = u.Hostname()
+	}
+	// The handshake over this connection is HTTP/1.1 by construction: an
+	// h2 connection would take a framing the attach does not speak.
+	config.NextProtos = []string{"http/1.1"}
+	return config
 }
 
 // Info reads GET /api/daemon, bounded by ctx.
@@ -211,22 +301,32 @@ func (c *Client) upgrade(ctx context.Context, path string, body []byte) (*Attach
 	if body != nil {
 		payload = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://daemon"+path, payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+c.host+path, payload)
 	if err != nil {
 		return nil, fmt.Errorf("daemon request: %w", err)
 	}
 	// The response is hijacked, so this request goes on a connection of
 	// its own: a *http.Client would take the connection back.
-	req.Host = "daemon"
+	req.Host = c.host
 	req.ContentLength = int64(len(body))
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", attachProtocol)
+	if c.token != nil {
+		// A token that cannot be fetched ends the attach here: nothing is
+		// dialled, so a bridge never sees a request it cannot authorize.
+		token, err := c.token(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("attach token: %w", err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
 
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "unix", c.socket)
+	conn, err := c.dial(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("daemon at %s: %w", c.socket, err)
 	}

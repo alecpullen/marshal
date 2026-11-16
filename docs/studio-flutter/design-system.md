@@ -60,6 +60,7 @@ Derived, defined once in `tokens.dart` and nowhere else:
 | `diffAdded` | `ok` at 12% | An added line |
 | `attention` | `warn` at 55% | The border of something that needs you |
 | `failing` | `err` at 55% | The border of something that failed |
+| `none` | fully transparent | An absent underline; a barrier that does not dim. Not a colour, the lack of one (added in F0) |
 
 Rules:
 
@@ -160,6 +161,30 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Field` | A text input | Border only; the label is above it |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
 | `Sheet` | A dialog or bottom sheet | One per screen at most |
+
+Variants as built in F0, beyond the table: `Box.flush` (no inner padding,
+for rows separated by `Hairline`s, as `Rows` uses); `Btn` and `Btn.primary`;
+`Pill`, `Pill.icon` (whose tooltip is required) and a mono label for
+identifiers; `Meter` and `Meter.fault`; `PageBody`'s width, `full` (1180) or
+`list` (860), from §4; `AskCard`'s placement — Inbox (everything), Overview
+(the body only for a decision) or its own thread (no source line);
+`PrCard`'s four states — ready, failing, in progress, being fixed.
+
+Supporting pieces, shared by the components and exported with them by
+`kit.dart`. None is drawn on its own, and none has variants:
+
+- `EmberApp` — the root every window, the gallery and every widget test put
+  the kit under: tokens for light or dark, the one background, the default
+  text role, an overlay, the default shortcuts.
+- `Tip` — the one tooltip. The components put it on themselves; a screen uses
+  it for anything else it must explain, such as the exact time behind a
+  relative one (§8).
+- `Status`, `ThreadKind`, `CheckState` and `Check` — the vocabulary of §6, so
+  the kit takes data without importing `model/`.
+- `Glyphs` — the one icon set (Cupertino's, bundled by `cupertino_icons`).
+- `Press`, not exported — the one way anything is clickable (§9): pointer
+  cursor, hover, keyboard focus with the `accent` ring, Enter and Space, and
+  the 44 target on the narrow layout.
 
 Rules:
 

@@ -199,5 +199,10 @@ void main() {
       isTrue,
       reason: '$ui/tokens.dart is exempt from the Material rule; it has moved',
     );
+    expect(
+      Directory('$ui/kit').existsSync(),
+      isTrue,
+      reason: '$ui/kit is exempt from the Material rule; it has moved',
+    );
   });
 }

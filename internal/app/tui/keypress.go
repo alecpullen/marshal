@@ -117,9 +117,11 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if !readlineShortcutAvailable() {
 			return *m, nil, false
 		}
-		// Drill into the most recently registered running subagent so
-		// inspecting live work does not require a mouse. Esc pops back.
-		if m.drillIntoLatestRunningSubagent() {
+		// Drill into the subagent the user selected — the row or tray card
+		// under the browse cursor, else the card they expanded — and fall back
+		// to the most recently registered running one, so inspecting live work
+		// never needs a mouse. Esc pops back.
+		if m.drillIntoSelectedSubagent() {
 			m.refreshViewport()
 			return *m, nil, true
 		}

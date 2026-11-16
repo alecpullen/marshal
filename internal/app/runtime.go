@@ -22,6 +22,7 @@ import (
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
+	"marshal/internal/daemon"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
 	"marshal/internal/interaction"
@@ -182,6 +183,14 @@ type Runtime struct {
 	// TrustPromptPending reports that a project config exists but was not
 	// applied because the trust question was deferred to the TUI.
 	TrustPromptPending bool
+
+	// MarshalStatus is what this session's one Studio enrollment attempt
+	// learned: the state it reached, the identities it verified and the
+	// candidates an ambiguity offers. It is advisory only — an absent, offline,
+	// ambiguous or unsupported instance leaves the session working exactly as it
+	// was — and it carries no credential: that belongs to the transport that
+	// presents it (see enrollMarshalStudio).
+	MarshalStatus daemon.MarshalStatus
 
 	// clientTrust is WithClientTrust's answer: the session's marshal client
 	// answers the trust question and a trust applies in place (P4 D8).
@@ -1967,8 +1976,57 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		SubagentEvents: subagentBroker,
 		SessionEvents:  eventBroker,
 	}, runOpts.now)
+	// Studio enrollment is attempted here, exactly once, and is never required:
+	// an absent, offline, ambiguous or unsupported instance leaves the session
+	// working with a status that says why (decision 8). It runs after everything
+	// else is built so it cannot fail startup, and it registers no tool — the
+	// MCP transport that presents the credential owns that.
+	rt.MarshalStatus = enrollMarshalStudio(homeDir, workingDir, sessionID).Status
 	started = true
 	return rt, nil
+}
+
+// marshalEnrollTimeout bounds the startup enrollment attempt. A daemon that
+// answers is one unix socket away; one that does not must never hold a session's
+// start.
+var marshalEnrollTimeout = 3 * time.Second
+
+// enrollMarshalStudio attempts this session's one Studio enrollment against the
+// local daemon and reports what it learned.
+//
+// Absent, offline, unsupported and ambiguous are statuses, not failures: a
+// session works without Studio, so nothing here can fail startup and no caller
+// has to handle an error. projectRoot is the root Marshal already resolved
+// (its project identity anchors at the git root), which is what makes a
+// subdirectory launch enroll as the project it belongs to.
+//
+// The credential the daemon issues is returned to the caller that will present
+// it and is never recorded here: it does not reach session content, a prompt, a
+// tool result, a log line, a project file or the child's environment.
+func enrollMarshalStudio(homeDir, projectRoot, sessionID string) daemon.MarshalEnrollment {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(projectRoot) == "" {
+		return daemon.MarshalEnrollment{Status: daemon.MarshalStatus{
+			State:     daemon.MarshalStateUnavailable,
+			SessionID: sessionID,
+		}}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), marshalEnrollTimeout)
+	defer cancel()
+	client := daemon.NewClient(daemon.PathsFor(homeDir).Socket)
+	enrollment, err := client.EnrollMarshal(ctx, projectRoot, sessionID)
+	if enrollment.Status.State == "" {
+		enrollment.Status = daemon.MarshalStatus{
+			State:     daemon.MarshalStateUnavailable,
+			SessionID: sessionID,
+		}
+		if errors.Is(err, daemon.ErrMarshalUnsupported) {
+			enrollment.Status.State = daemon.MarshalStateUnsupported
+		}
+		if errors.Is(err, daemon.ErrMarshalAmbiguous) {
+			enrollment.Status.State = daemon.MarshalStateAmbiguous
+		}
+	}
+	return enrollment
 }
 
 // autoloadSkills injects the configured always-on skills into the session

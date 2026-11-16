@@ -64,6 +64,10 @@ type Server struct {
 	// server was built without one, and a factory tool then answers
 	// unavailable instead of taking an unauthorised path.
 	factory FactoryAPI
+	// marshalEnroll is the record of live built-in enrollments: one binding per
+	// enrolled session, in memory only, so a restart ends every one of them
+	// (marshal_enrollment.go).
+	marshalEnroll *marshalEnrollments
 }
 
 func NewServer(target any, args ...any) *Server {
@@ -100,7 +104,8 @@ func NewServer(target any, args ...any) *Server {
 		ws = fleet.ws
 	}
 	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux(),
-		factoryAuth: newFactoryMCPAuthorizer(ws)}
+		factoryAuth:   newFactoryMCPAuthorizer(ws),
+		marshalEnroll: newMarshalEnrollments()}
 	s.routes()
 	// The planner API owns live backend sessions, so it exists only when this
 	// server has a fleet to hold them.
@@ -173,6 +178,13 @@ func (s *Server) SocketHandler() http.Handler {
 		}
 		if r.URL.Path == pinPath {
 			s.pinProject(w, r)
+			return
+		}
+		if r.URL.Path == marshalEnrollPath {
+			// Enrollment is the socket's own operation: it is reached only
+			// where the owner is the caller, never on the network listener,
+			// which answers it 404 (marshal_enrollment.go).
+			s.enrollMarshal(w, r)
 			return
 		}
 		s.route(s.mux, w, r)

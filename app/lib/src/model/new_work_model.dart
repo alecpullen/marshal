@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
+import '../client/transport.dart';
 
 /// What a new work item may start (spec decision 11). Only an agent is built
 /// in this phase; a "Plan first" run and a work item are drawn in the planned
@@ -22,24 +23,6 @@ enum NewWorkKind {
 
   /// Whether this phase can start it. The other two arrive with F6.
   bool get planned => this != NewWorkKind.agent;
-}
-
-/// One issue a new agent could be started from.
-@immutable
-class NewWorkIssue {
-  const NewWorkIssue(this.id, this.title);
-
-  final String id;
-  final String title;
-}
-
-/// One recipe that fills the prompt.
-@immutable
-class NewWorkRecipe {
-  const NewWorkRecipe(this.name, this.prompt);
-
-  final String name;
-  final String prompt;
 }
 
 /// The choices the dialog opens with, taken from the project rather than
@@ -84,19 +67,25 @@ class NewWorkDefaults {
 /// One new-work dialog's state: the prompt, the kind, the chips, and the
 /// three lists that fill the prompt (spec decision 11).
 ///
+/// The lists hold the bridge's own declarations — [RepoIssue] and [Recipe] —
+/// rather than a second shape per list, so the dialog and the route cannot
+/// disagree about a field.
+///
 /// The routes are functions so a test drives every list and the spawn with no
 /// socket, the way the other models do (model/README.md).
 class NewWorkModel extends ChangeNotifier {
   NewWorkModel({
     required this.defaults,
     required Future<RecentPrompts> Function() recentPrompts,
-    required Future<List<NewWorkIssue>> Function(String project) issues,
-    required Future<List<NewWorkRecipe>> Function() recipes,
+    required Future<List<RepoIssue>> Function(String project) issues,
+    required Future<List<Recipe>> Function() recipes,
     required Future<SpawnResult> Function(SpawnRequest request) spawn,
+    bool issuesFromRepo = false,
   }) : _recentPrompts = recentPrompts,
        _issues = issues,
        _recipes = recipes,
        _spawn = spawn,
+       _issuesFromRepo = issuesFromRepo,
        _choices = {
          'Project': defaults.project,
          'Base branch': defaults.baseBranch,
@@ -108,33 +97,61 @@ class NewWorkModel extends ChangeNotifier {
        };
 
   /// The dialog a project's own routes back.
+  ///
+  /// [repoId] is a registered repo's id — what `GET /api/repos` reports, and
+  /// what `GET /api/repos/{id}/issues` is keyed by. No bridge route names the
+  /// repo of a project root yet, so a caller that has none passes none, and
+  /// the Issues list is then empty for a stated reason (a project with no
+  /// registered repo) rather than an invented one.
   factory NewWorkModel.forProject(
     ProjectStatus project,
     BridgeClient client, {
     String host = 'local',
+    String? repoId,
   }) => NewWorkModel(
     defaults: NewWorkDefaults.fromProject(project, host: host),
     recentPrompts: () => client.recentPrompts(),
-    issues: (root) async => const [],
-    recipes: () async => const [],
+    issues: (root) async {
+      final id = repoId;
+      if (id == null || id.isEmpty) return const [];
+      try {
+        return await client.issues(id);
+      } on BridgeFailure {
+        // A repo whose registration names no forge, or whose forge refused
+        // the credentials, serves no issues: the dialog says so and its other
+        // lists still load.
+        return const [];
+      }
+    },
+    recipes: () async {
+      try {
+        return await client.recipes();
+      } on BridgeFailure {
+        return const [];
+      }
+    },
     spawn: (request) => client.spawn(request),
+    issuesFromRepo: repoId != null && repoId.isNotEmpty,
   );
 
   /// The values the dialog opened with.
   final NewWorkDefaults defaults;
 
   final Future<RecentPrompts> Function() _recentPrompts;
-  final Future<List<NewWorkIssue>> Function(String project) _issues;
-  final Future<List<NewWorkRecipe>> Function() _recipes;
+  final Future<List<RepoIssue>> Function(String project) _issues;
+  final Future<List<Recipe>> Function() _recipes;
   final Future<SpawnResult> Function(SpawnRequest request) _spawn;
 
   final Map<String, String> _choices;
 
+  /// Whether the issues list came from a registered repo's own route.
+  final bool _issuesFromRepo;
+
   NewWorkKind _kind = NewWorkKind.agent;
   String _prompt = '';
-  List<NewWorkIssue> _issueList = const [];
+  List<RepoIssue> _issueList = const [];
   List<String> _recentList = const [];
-  List<NewWorkRecipe> _recipeList = const [];
+  List<Recipe> _recipeList = const [];
   bool _loading = false;
   String? _failure;
   SpawnResult? _started;
@@ -150,14 +167,20 @@ class NewWorkModel extends ChangeNotifier {
 
   List<String> get chipNames => List.unmodifiable(_choices.keys);
 
-  /// The issues the project offers, once [load] has run.
-  List<NewWorkIssue> get issues => _issueList;
+  /// The issues the project's registered repo offers, once [load] has run.
+  List<RepoIssue> get issues => _issueList;
+
+  /// Whether the Issues list can be asked at all: it needs a registered repo,
+  /// because an issue belongs to a remote and a project is a checkout. False
+  /// means an empty [issues] list is "no repo named", not "the repo has no
+  /// open issues".
+  bool get issuesFromRepo => _issuesFromRepo;
 
   /// The prompts worth offering again.
   List<String> get recentPrompts => _recentList;
 
   /// The recipes that fill the prompt.
-  List<NewWorkRecipe> get recipes => _recipeList;
+  List<Recipe> get recipes => _recipeList;
 
   bool get loading => _loading;
 

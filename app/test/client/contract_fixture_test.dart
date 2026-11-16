@@ -17,7 +17,9 @@ const _fixtures = [
   'finish',
   'inbox',
   'intake',
+  'issues',
   'projects',
+  'recipes',
   'session',
   'spawn',
   'stack',
@@ -73,6 +75,14 @@ final _codecs = <String, _Codec>{
   // projects.json
   'ProjectStatus': (json) => ProjectStatus.fromJson(_object(json)).toJson(),
   'TrustState': (json) => TrustState.fromWire(json! as String).wire,
+  // issues.json
+  'RepoIssue': (json) => RepoIssue.fromJson(_object(json)).toJson(),
+  // recipes.json
+  'Recipe': (json) => Recipe.fromJson(_object(json)).toJson(),
+  'RecipeInput': (json) => RecipeInput.fromJson(_object(json)).toJson(),
+  'RecipeLimits': (json) => RecipeLimits.fromJson(_object(json)).toJson(),
+  'RecipeRun': (json) => RecipeRun.fromJson(_object(json)).toJson(),
+  'RecipeCopy': (json) => RecipeCopy.fromJson(_object(json)).toJson(),
   // session.json
   'SessionSummary': (json) => SessionSummary.fromJson(_object(json)).toJson(),
   'SessionList': (json) => SessionList.fromJson(_object(json)).toJson(),

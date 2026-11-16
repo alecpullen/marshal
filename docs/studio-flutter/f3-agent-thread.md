@@ -52,8 +52,8 @@ The session routes this phase uses: `stack`, `nodes/{nodeId}`, `prompt`,
 `steer`, `cancel`, `mode`, `load`, `access`, `roster`, and
 `POST /api/permissions/{toolCallId}` and `POST /api/questions/{questionId}`
 for asks. Starting an agent is `POST /api/agents`, with
-`GET /api/prompts/recent`, `GET /api/repos/{id}/issues` and
-`GET /api/recipes` behind the dialog's three lists.
+`GET /api/prompts/recent`, `GET /api/recipes` and
+`GET /api/repos/{id}/issues` behind the dialog's three lists.
 
 The stack types are hand-written TypeScript in `lib/stack.ts` today.
 
@@ -229,11 +229,31 @@ The recorder test was deleted after it wrote the files.
   usage), so a copy of the transcript matches what is drawn.
 - `Ask` gained an optional `step`, read from a pending request's `stepId`, so
   the transcript can pin the card where it was raised.
-- The new-work dialog's Issues and Recipes lists need routes the F1 client
-  does not have (`GET /api/repos/{id}/issues`, `GET /api/recipes`); the
-  model takes them as injected functions and the production factory returns
-  empty lists, which the dialog draws as "No issues for this project" and
-  "No recipes yet". Recent prompts work end to end.
+- The new-work dialog's three lists are the bridge's own routes. Recipes come
+  from `GET /api/recipes` (`web/bridge/recipes_http.go`) through
+  `BridgeClient.recipes` and the `contract.Recipe` declaration, whose type
+  names and JSON keys are the ones `studio/f7-1-automations-library` also
+  declares, so the two branches merge rather than diverge. Issues come from
+  `GET /api/repos/{id}/issues` through `BridgeClient.issues` and
+  `contract.RepoIssue`, which transcribes the keys the route actually sends
+  (`web/bridge/forge.go`'s `Issue` carries no struct tags, so they are the Go
+  field names) — `TestListRepoIssuesAnswerIsContractRepoIssue` in
+  `web/bridge` holds the two together.
+- **Issues need a repo id the app cannot yet name.** An issue belongs to a
+  registered remote repo (`GET /api/repos` reports ids such as
+  `owner/name`), while a project is a local checkout: no bridge route maps a
+  project root to a repo id, and `GET /api/projects` carries none. So
+  `NewWorkModel.forProject` takes an optional `repoId` and wires the route
+  when it is given one; with none it asks nothing, and the dialog says "No
+  registered repo for this project" rather than "No issues for this project"
+  (`NewWorkModel.issuesFromRepo`). Disclosed, not papered over: the app gets
+  the mapping with the project settings surface that names a project's repo
+  (F6's project defaults, F7's repositories), and the client method and
+  contract type are already in place for it.
+- The two lists' `const []` fallbacks are for a genuine failure only: a route
+  that answers non-2xx leaves that one list empty and the dialog's other
+  lists loading (`a route that refuses leaves an empty list, not a failed
+  dialog` in `app/test/model/new_work_model_test.dart`).
 - The new-work dialog is a `Sheet`, not a `ScreenCase`: it is not registered
   in `test/support/screens.dart`, because the §7 states it has are its
   lists' empty states and a failure line, not a screen's.

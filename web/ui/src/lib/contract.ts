@@ -511,6 +511,17 @@ export interface ActionStatus {
 }
 
 /**
+ * RepoIssue is one issue GET /api/repos/{id}/issues lists.
+ */
+export interface RepoIssue {
+  Number: number;
+  Title: string;
+  Body: string;
+  URL: string;
+  Labels?: string[];
+}
+
+/**
  * TrustState is a project's trust decision.
  */
 export type TrustState = 'na' | 'untrusted' | 'trusted';
@@ -541,6 +552,77 @@ export interface ProjectStatus {
    * claims. Reported, never deleted — they may hold uncommitted work.
    */
   orphanWorktrees?: string[];
+}
+
+/**
+ * RecipeInput declares one placeholder a recipe's prompt may use.
+ */
+export interface RecipeInput {
+  name: string;
+  label?: string;
+  required?: boolean;
+}
+
+/**
+ * RecipeLimits bound one run. Zero means unlimited.
+ */
+export interface RecipeLimits {
+  maxMinutes?: number;
+  maxUsd?: number;
+}
+
+/**
+ * Recipe is a stored, parameterised prompt (or run) with limits:
+ * GET /api/recipes' answer and the body PUT /api/recipes/{name} takes
+ * (web/bridge/recipes.go).
+ *
+ * A built-in recipe cannot be changed or deleted; the bridge refuses both, and
+ * copying it under a new name is the way to edit one.
+ */
+export interface Recipe {
+  name: string;
+  title?: string;
+  description?: string;
+  kind: string;
+  mode?: string;
+  /**
+   * Auto is the starting Auto choice; absent means the recipe sets none.
+   */
+  auto?: boolean;
+  workspace?: string;
+  routing?: unknown;
+  inputs?: RecipeInput[];
+  prompt: string;
+  limits?: RecipeLimits;
+  output?: string;
+  /**
+   * Builtin marks a recipe the bridge ships, which is copy only.
+   */
+  builtin?: boolean;
+  /**
+   * Diagnostic reports why a stored recipe could not be read or validated.
+   * It never appears on a built-in or a successfully saved recipe.
+   */
+  diagnostic?: string;
+}
+
+/**
+ * RecipeRun is the body POST /api/recipes/{name}/run takes: where the run
+ * starts, and the value of each of the recipe's inputs.
+ */
+export interface RecipeRun {
+  project: string;
+  repoId: string;
+  ref: string;
+  inputs: Record<string, string>;
+}
+
+/**
+ * RecipeCopy is the body POST /api/recipes/{name}/copy takes: the name the
+ * copy is stored under.
+ */
+export interface RecipeCopy {
+  name: string;
 }
 
 /**

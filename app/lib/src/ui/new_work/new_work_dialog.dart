@@ -142,14 +142,20 @@ class _NewWorkFormState extends State<NewWorkForm> {
               spacing: Space.s8,
               runSpacing: Space.s8,
               children: [
-                _fillMenu('Issues', [
-                  for (final issue in model.issues)
-                    MenuChoice(
-                      issue.title,
-                      'Fill the prompt from this issue',
-                      onSelect: () => model.prefill(issue.title),
-                    ),
-                ], empty: 'No issues for this project'),
+                _fillMenu(
+                  'Issues',
+                  [
+                    for (final issue in model.issues)
+                      MenuChoice(
+                        issue.title,
+                        'Fill the prompt from this issue',
+                        onSelect: () => model.prefill(issue.title),
+                      ),
+                  ],
+                  empty: model.issuesFromRepo
+                      ? 'No issues for this project'
+                      : 'No registered repo for this project',
+                ),
                 _fillMenu('Recent prompts', [
                   for (final prompt in model.recentPrompts)
                     MenuChoice(
@@ -161,7 +167,7 @@ class _NewWorkFormState extends State<NewWorkForm> {
                 _fillMenu('Recipes', [
                   for (final recipe in model.recipes)
                     MenuChoice(
-                      recipe.name,
+                      recipe.title ?? recipe.name,
                       'Fill the prompt from this recipe',
                       onSelect: () => model.prefill(recipe.prompt),
                     ),

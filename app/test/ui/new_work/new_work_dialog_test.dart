@@ -22,10 +22,20 @@ import '../../support/kit.dart';
     recentPrompts: () async =>
         const RecentPrompts(prompts: ['Clean up the fixtures']),
     issues: (project) async => const [
-      NewWorkIssue('42', 'Fix the login redirect'),
+      RepoIssue(
+        number: 42,
+        title: 'Fix the login redirect',
+        body: 'The return path is lost.',
+        url: 'https://github.com/owner/name/issues/42',
+      ),
     ],
     recipes: () async => const [
-      NewWorkRecipe('Fix a bug', 'Find the bug and add a test.'),
+      Recipe(
+        name: 'fix-a-bug',
+        title: 'Fix a bug',
+        kind: 'prompt',
+        prompt: 'Find the bug and add a test.',
+      ),
     ],
     spawn: (request) async {
       spawns.add(request);
@@ -34,6 +44,23 @@ import '../../support/kit.dart';
   );
   return (model: model, spawns: spawns);
 }
+
+/// A dialog whose three lists are all empty, for the empty-state tests.
+NewWorkModel _empty({required bool issuesFromRepo}) => NewWorkModel(
+  defaults: NewWorkDefaults.fromProject(
+    const ProjectStatus(
+      root: '/home/u/marshal',
+      available: true,
+      trust: TrustState.trustTrusted,
+      isolation: 'unavailable',
+    ),
+  ),
+  recentPrompts: () async => const RecentPrompts(prompts: []),
+  issues: (project) async => const [],
+  recipes: () async => const [],
+  spawn: (request) async => const SpawnResult(agentID: 'a-9'),
+  issuesFromRepo: issuesFromRepo,
+);
 
 void main() {
   testWidgets('the prompt comes first, with every chip beneath it', (
@@ -101,29 +128,29 @@ void main() {
     model.dispose();
   });
 
-  testWidgets('an empty list says so instead of offering nothing', (
+  testWidgets('an empty issue list says which kind of empty it is', (
     tester,
   ) async {
-    final model = NewWorkModel(
-      defaults: NewWorkDefaults.fromProject(
-        const ProjectStatus(
-          root: '/home/u/marshal',
-          available: true,
-          trust: TrustState.trustTrusted,
-          isolation: 'unavailable',
-        ),
-      ),
-      recentPrompts: () async => const RecentPrompts(prompts: []),
-      issues: (project) async => const [],
-      recipes: () async => const [],
-      spawn: (request) async => const SpawnResult(agentID: 'a-9'),
-    );
-    await pumpKit(tester, newWorkDialog(model), height: 900);
+    // No repo was named, so the list cannot be asked at all: the dialog says
+    // that rather than claiming the repo has no open issues.
+    final withoutRepo = _empty(issuesFromRepo: false);
+    await pumpKit(tester, newWorkDialog(withoutRepo), height: 900);
+    await tester.tap(find.text('Issues'));
+    await tester.pumpAndSettle();
+    expect(find.text('No registered repo for this project'), findsOneWidget);
+    expect(find.text('No issues for this project'), findsNothing);
+    withoutRepo.dispose();
+  });
 
+  testWidgets('an asked, empty issue list says the repo has none', (
+    tester,
+  ) async {
+    final asked = _empty(issuesFromRepo: true);
+    await pumpKit(tester, newWorkDialog(asked), height: 900);
     await tester.tap(find.text('Issues'));
     await tester.pumpAndSettle();
     expect(find.text('No issues for this project'), findsOneWidget);
-
-    model.dispose();
+    expect(find.text('No registered repo for this project'), findsNothing);
+    asked.dispose();
   });
 }

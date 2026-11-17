@@ -7,7 +7,7 @@ import 'pull_facts.dart';
 
 /// The fix control behind a failing pull request's card (F5 decision 12): one
 /// primary action that posts the dispatch with no further input, and a caret
-/// with exactly four ways to say more before it starts.
+/// with exactly three ways to say more before it starts.
 ///
 /// It is the one place a card's actions are built, so the place, the review
 /// head and the Inbox all dispatch the same way. The card itself draws the
@@ -56,11 +56,6 @@ PrActions pullCardActions(
             'Fix with a note',
             'Tell the worker what you suspect',
             onSelect: () => unawaited(_fixWithNote(context, pull, model)),
-          ),
-          MenuChoice(
-            'Choose the worker',
-            'Model, and how many attempts: planned',
-            onSelect: () => unawaited(_chooseWorker(context)),
           ),
           MenuChoice(
             'Always fix failures automatically in ${_projectName(pull)}',
@@ -112,22 +107,6 @@ Future<void> _fixWithNote(
   if (text.isEmpty) return;
   await model.fix(pull, note: text);
 }
-
-/// Choosing a worker is not built: the bridge dispatches a fix on the
-/// project's own routing and ignores the request's, so offering a picker here
-/// would promise something that does not happen (§7: never drawn as working).
-Future<void> _chooseWorker(BuildContext context) => Sheet.show<void>(
-  context,
-  Sheet(
-    title: 'Choose the worker',
-    child: const StateMessage.planned(
-      name: 'Choosing the worker',
-      note:
-          'A fix runs on this project’s routing and limits; choosing the '
-          'model and the attempts here is planned',
-    ),
-  ),
-);
 
 /// The setting is the project's, and the sheet says what happened: a bridge
 /// that changes a pull request on its own is a surprise unless the project

@@ -308,6 +308,42 @@ func TestRerouteAppliesOnFireAndUndoRestores(t *testing.T) {
 	}
 }
 
+func TestWatchesListCarriesTheRerouteItsUndoNeeds(t *testing.T) {
+	h := newRoutingHarness(t)
+	h.ctl.results["session/watch_list"] = map[string]any{"watches": []map[string]any{
+		{"id": "w1", "name": "disk", "state": "fired"},
+	}}
+	h.startRerouteWatch()
+	// A watch that has not tripped has nothing to undo.
+	if _, ok := listedWatch(t, h.s, "w1")["lastReroute"]; ok {
+		t.Fatal("a watch that has not tripped carries a reroute")
+	}
+
+	h.fire("fired")
+	waitFor(t, 5*time.Second, "reroute applied", func() bool { return len(rerouteDeltas(h.f)) == 1 })
+	want := rerouteDeltas(h.f)[0].ID
+
+	var last struct {
+		ID string `json:"id"`
+		At int64  `json:"at"`
+	}
+	row := listedWatch(t, h.s, "w1")
+	if err := json.Unmarshal(row["lastReroute"], &last); err != nil {
+		t.Fatalf("lastReroute = %s: %v", row["lastReroute"], err)
+	}
+	if last.ID != want || last.At == 0 {
+		t.Fatalf("lastReroute = %+v, want the trip record %s", last, want)
+	}
+	// The row's id is the one the undo route takes.
+	if rec := doReq(t, h.s, http.MethodPost, "/api/reroutes/"+last.ID+"/undo", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("undo = %d %s", rec.Code, rec.Body.String())
+	}
+	// An undone reroute is not offered again: the route would refuse it.
+	if row := listedWatch(t, h.s, "w1"); row["lastReroute"] != nil {
+		t.Fatalf("an undone reroute is still on the row: %v", row)
+	}
+}
+
 func TestRerouteUndoRefusesToOverwriteALaterEdit(t *testing.T) {
 	h := newRoutingHarness(t)
 	h.startRerouteWatch()

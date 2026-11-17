@@ -238,6 +238,7 @@ final _codecs = <String, _Codec>{
       ReviewBotSettings.fromJson(_object(json)).toJson(),
   'ReviewDraft': (json) => ReviewDraft.fromJson(_object(json)).toJson(),
   // watches.json
+  'LastReroute': (json) => LastReroute.fromJson(_object(json)).toJson(),
   'OnTrip': (json) => OnTrip.fromJson(_object(json)).toJson(),
   'RerouteRule': (json) => RerouteRule.fromJson(_object(json)).toJson(),
   'WatchInfo': (json) => WatchInfo.fromJson(_object(json)).toJson(),

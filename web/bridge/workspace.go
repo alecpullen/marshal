@@ -1668,7 +1668,6 @@ func (w *Workspace) ResolveReviewComment(agentID, id string, at time.Time) error
 	list := w.reviews[agentID]
 	for i := range list {
 		if list[i].ID == id {
-			at := at
 			list[i].ResolvedAt = &at
 			return w.save()
 		}

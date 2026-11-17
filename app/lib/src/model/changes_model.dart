@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
+import '../client/transport.dart';
 import 'age.dart';
 import 'stack_store.dart';
 
@@ -12,7 +13,19 @@ enum ChangesStatus { loading, ready, failed }
 /// How a ship attempt ended (f4-inspector.md decision 7): five results, each
 /// with what to do next. A gate or a forge that refused is a result, not an
 /// error: nothing was pushed and the message says why.
-enum ShipOutcome { pullRequest, pushed, gateRefused, forgeRefused, patch }
+///
+/// [failed] is the sixth: the ship did not finish, and what reached the forge
+/// is unknown. The bridge pushes before it answers, so a dropped connection
+/// or a 5xx says nothing about whether the work was pushed — and only the
+/// bridge's own refusal answer says nothing was.
+enum ShipOutcome {
+  pullRequest,
+  pushed,
+  gateRefused,
+  forgeRefused,
+  patch,
+  failed,
+}
 
 /// One ship attempt's result.
 @immutable
@@ -490,10 +503,19 @@ class ChangesModel extends ChangeNotifier {
         );
       }
       return ShipResult(ShipOutcome.pushed, message: result.branch ?? '');
+    } on BridgeFailure catch (failure) {
+      // The bridge answered, and its answer is a refusal only when it says so
+      // itself: a 4xx is the bridge declining to ship at all, before any push.
+      // A 5xx is its own fault — and since it pushes before it answers, the
+      // work may already be on the forge (decision 7).
+      if (failure.status >= 400 && failure.status < 500) {
+        return ShipResult(ShipOutcome.forgeRefused, message: failure.message);
+      }
+      return ShipResult(ShipOutcome.failed, message: failure.message);
     } catch (error) {
-      // The only refusal left is the forge's: the gate's is a blocked
-      // result, and a source that is read-only is a patch.
-      return ShipResult(ShipOutcome.forgeRefused, message: '$error');
+      // No answer at all: the connection dropped or timed out. Nothing here
+      // says whether the push happened.
+      return ShipResult(ShipOutcome.failed, message: '$error');
     }
   }
 

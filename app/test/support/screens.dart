@@ -240,7 +240,6 @@ NavModel shellNavFor(Place place) => NavModel(
           PlaceKind.library => 'Library',
           _ => 'Settings',
         },
-        planned: true,
         active: place.kind == kind,
       ),
   ],

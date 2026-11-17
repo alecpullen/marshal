@@ -25,7 +25,6 @@ class NavPlace {
     required this.label,
     this.count,
     this.active = false,
-    this.planned = false,
   });
 
   final PlaceKind kind;
@@ -37,27 +36,22 @@ class NavPlace {
   /// This place is where the person is.
   final bool active;
 
-  /// The place has no screen yet; its row opens the message naming the phase
-  /// that brings it (§7: never drawn as working).
-  final bool planned;
-
   @override
   bool operator ==(Object other) =>
       other is NavPlace &&
       other.kind == kind &&
       other.label == label &&
       other.count == count &&
-      other.active == active &&
-      other.planned == planned;
+      other.active == active;
 
   @override
-  int get hashCode => Object.hash(kind, label, count, active, planned);
+  int get hashCode => Object.hash(kind, label, count, active);
 
   @override
   String toString() =>
       'NavPlace(${kind.name}, "$label"'
       '${count == null ? '' : ', $count'}'
-      '${active ? ', active' : ''}${planned ? ', planned' : ''})';
+      '${active ? ', active' : ''})';
 }
 
 /// One project row: the project's name, its current threads, and how many
@@ -152,14 +146,7 @@ NavModel buildNavModel(
       PlaceKind.library,
       PlaceKind.settings,
     ])
-      NavPlace(
-        kind: kind,
-        label: _label(kind),
-        // Every one of these arrives in a later phase; until then its row
-        // opens the message that says so.
-        planned: true,
-        active: place.kind == kind,
-      ),
+      NavPlace(kind: kind, label: _label(kind), active: place.kind == kind),
   ];
 
   // A project live on two hosts is one row: the app is one fleet, and each

@@ -128,11 +128,6 @@ void main() {
     final row = nav.fixed.singleWhere((place) => place.kind == PlaceKind.pulls);
     expect(row.label, 'Pull requests');
     expect(row.count, 2);
-    expect(
-      row.planned,
-      isFalse,
-      reason: 'the place exists, so its row opens it',
-    );
     expect(row.active, isTrue);
   });
 }

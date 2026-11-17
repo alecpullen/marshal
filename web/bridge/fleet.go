@@ -390,9 +390,32 @@ type Fleet struct {
 	// pruneMu; provMu is a leaf, so that is the only order it is ever
 	// taken in.
 	pruneMu sync.Mutex
+
+	// backfillAgentsOnce and backfillFactoryOnce run the pull request record
+	// backfill once per source: the agents when polling starts, the factory
+	// items when the controller is wired. The factory's runs from
+	// SetFactoryController alone, so a poller that starts before the controller
+	// is wired cannot spend it on a nil controller.
+	//
+	// SetFactoryController must be called before StartPoller starts the pull
+	// request observer: `factory` is written once, there, and read by the
+	// observer goroutine without a lock. cmd/webbridge wires the recovered
+	// controller in openRecoveredFactory, before fleet.StartPoller.
+	backfillAgentsOnce  sync.Once
+	backfillFactoryOnce sync.Once
 }
 
-func (f *Fleet) SetFactoryController(c *FactoryController) { f.factory = c }
+func (f *Fleet) SetFactoryController(c *FactoryController) {
+	f.factory = c
+	if c == nil {
+		return
+	}
+	c.SetPullRecorder(f.recordFactoryPull)
+	// The factory's items may already carry pull requests from before the
+	// bridge kept records; they are added here rather than from the poller's
+	// start, which may already have run with no controller to ask.
+	f.backfillFactoryOnce.Do(f.backfillFactoryPulls)
+}
 
 func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string, projectMounts []ProjectMount, stateVolume string) *Fleet {
 	if stateDir == "" {

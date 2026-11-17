@@ -23,6 +23,9 @@ type InboxItemKind string
 const (
 	InboxItemAgent  InboxItemKind = "agent"
 	InboxItemIntake InboxItemKind = "intake"
+	// InboxItemPull is a fix that could not finish: it names the pull
+	// request, the check, what was tried and what the user can do.
+	InboxItemPull InboxItemKind = "pull"
 )
 
 // InboxItem is one entry in the needs-you queue, oldest first.
@@ -30,7 +33,9 @@ type InboxItem struct {
 	Kind       InboxItemKind      `json:"kind"`
 	AgentID    string             `json:"agentId,omitempty"`
 	Submission *PendingSubmission `json:"submission,omitempty"`
-	At         time.Time          `json:"at"`
+	// Pull carries a "pull" item's ask. It is nil for every other kind.
+	Pull *PullAsk  `json:"pull,omitempty"`
+	At   time.Time `json:"at"`
 }
 
 // InboxDelta is the "inbox" delta on the fleet stream.

@@ -17,7 +17,10 @@ import (
 	"marshal/web/bridge/contract"
 )
 
-const workspaceVersion = 11
+// workspaceVersion is the fleet-state format. 12 added the pull request
+// records and the asks that go with them; a version-11 file loads with no
+// records.
+const workspaceVersion = 12
 
 // ErrUnknownRepo is returned when a repo id is not registered.
 var ErrUnknownRepo = errors.New("bridge: unknown repo")
@@ -294,6 +297,13 @@ type workspaceFile struct {
 	Notifications NotifyConfig `json:"notifications,omitzero"`
 	// StatusLinks are revocable public status page tokens, stored hashed (v11).
 	StatusLinks []StatusLink `json:"statusLinks,omitempty"`
+	// Pulls are the pull requests the bridge opened and has not seen close
+	// (v12). They are optional: a file written before they existed loads with
+	// none, so a v11 file simply has no records.
+	Pulls []contract.PullRecord `json:"pulls,omitempty"`
+	// PullAsks are the fix outcomes the Inbox still asks about, one per pull
+	// request, keyed by the record's id (v12).
+	PullAsks []contract.PullAsk `json:"pullAsks,omitempty"`
 	// Pinned are the project roots the local daemon keeps running (P4 D9).
 	Pinned []string `json:"pinned,omitempty"`
 }
@@ -349,7 +359,13 @@ type Workspace struct {
 	schedules         map[string]Schedule
 	notifications     NotifyConfig
 	statusLinks       map[string]StatusLink
-	pinned            []string
+	// pulls maps a record id (<repoId>#<number>) to the pull request the
+	// bridge opened for it (v12).
+	pulls map[string]contract.PullRecord
+	// pullAsks maps a pull record id to the ask the Inbox still shows about
+	// its fix (v12). One ask per pull request: a new dispatch replaces it.
+	pullAsks map[string]contract.PullAsk
+	pinned   []string
 }
 
 func NewWorkspace(path string) *Workspace {
@@ -370,6 +386,8 @@ func NewWorkspace(path string) *Workspace {
 		marshalSelections: make(map[string]marshalFactorySelectionRecord),
 		schedules:         make(map[string]Schedule),
 		statusLinks:       make(map[string]StatusLink),
+		pulls:             make(map[string]contract.PullRecord),
+		pullAsks:          make(map[string]contract.PullAsk),
 	}
 }
 
@@ -471,6 +489,14 @@ func (w *Workspace) Load() (string, error) {
 	w.statusLinks = make(map[string]StatusLink, len(f.StatusLinks))
 	for _, l := range f.StatusLinks {
 		w.statusLinks[l.ID] = l
+	}
+	w.pulls = make(map[string]contract.PullRecord, len(f.Pulls))
+	for _, p := range f.Pulls {
+		w.pulls[p.ID] = p
+	}
+	w.pullAsks = make(map[string]contract.PullAsk, len(f.PullAsks))
+	for _, a := range f.PullAsks {
+		w.pullAsks[a.Pull] = a
 	}
 	w.pinned = make([]string, 0, len(f.Pinned))
 	seenPins := make(map[string]bool, len(f.Pinned))
@@ -736,6 +762,14 @@ func (w *Workspace) save() error {
 		f.StatusLinks = append(f.StatusLinks, l)
 	}
 	sort.Slice(f.StatusLinks, func(i, j int) bool { return f.StatusLinks[i].ID < f.StatusLinks[j].ID })
+	for _, p := range w.pulls {
+		f.Pulls = append(f.Pulls, p)
+	}
+	sort.Slice(f.Pulls, func(i, j int) bool { return f.Pulls[i].ID < f.Pulls[j].ID })
+	for _, a := range w.pullAsks {
+		f.PullAsks = append(f.PullAsks, a)
+	}
+	sort.Slice(f.PullAsks, func(i, j int) bool { return f.PullAsks[i].Pull < f.PullAsks[j].Pull })
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode workspace: %w", err)
@@ -1712,5 +1746,113 @@ func (w *Workspace) DeleteWatchRule(watchID string) error {
 		return nil
 	}
 	delete(w.watchRules, watchID)
+	return w.save()
+}
+
+// PutPull stores one pull request record, keyed by its id. Recording the same
+// id again replaces the record, so a writer that runs twice leaves one entry.
+func (w *Workspace) PutPull(rec contract.PullRecord) error {
+	if rec.ID == "" {
+		return errors.New("pull record id is required")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pulls[rec.ID] = rec
+	return w.save()
+}
+
+// Pull returns one pull request record.
+func (w *Workspace) Pull(id string) (contract.PullRecord, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	rec, ok := w.pulls[id]
+	return rec, ok
+}
+
+// Pulls returns every pull request record, ordered by id.
+func (w *Workspace) Pulls() []contract.PullRecord {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]contract.PullRecord, 0, len(w.pulls))
+	for _, rec := range w.pulls {
+		out = append(out, rec)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// UpdatePull applies mutate to one record and saves. mutate runs under the
+// store's lock, so a read-modify-write cannot interleave with another.
+func (w *Workspace) UpdatePull(id string, mutate func(*contract.PullRecord) error) (contract.PullRecord, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	rec, ok := w.pulls[id]
+	if !ok {
+		return contract.PullRecord{}, ErrUnknownPull
+	}
+	if err := mutate(&rec); err != nil {
+		return contract.PullRecord{}, err
+	}
+	w.pulls[id] = rec
+	return rec, w.save()
+}
+
+// RemovePull drops one record and the ask that belongs to it.
+func (w *Workspace) RemovePull(id string) (contract.PullRecord, bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	rec, ok := w.pulls[id]
+	if !ok {
+		return contract.PullRecord{}, false, nil
+	}
+	delete(w.pulls, id)
+	delete(w.pullAsks, id)
+	return rec, true, w.save()
+}
+
+// PutPullAsk stores the ask the Inbox shows about one pull request's fix. One
+// ask per pull request: a newer one replaces the older. A record that is gone
+// takes no ask: the pull request was closed while the fix finished, and an ask
+// naming it would have no card to show on and no route to dismiss it.
+func (w *Workspace) PutPullAsk(pull string, ask contract.PullAsk) error {
+	if pull == "" {
+		return errors.New("a pull ask needs a pull id")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.pulls[pull]; !ok {
+		return nil
+	}
+	ask.Pull = pull
+	w.pullAsks[pull] = ask
+	return w.save()
+}
+
+// PullAsks returns every outstanding ask, oldest first.
+func (w *Workspace) PullAsks() []contract.PullAsk {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]contract.PullAsk, 0, len(w.pullAsks))
+	for _, a := range w.pullAsks {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].At != out[j].At {
+			return out[i].At < out[j].At
+		}
+		return out[i].Pull < out[j].Pull
+	})
+	return out
+}
+
+// ClearPullAsk drops the ask for one pull request. Clearing an absent ask is
+// not an error.
+func (w *Workspace) ClearPullAsk(pull string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.pullAsks[pull]; !ok {
+		return nil
+	}
+	delete(w.pullAsks, pull)
 	return w.save()
 }

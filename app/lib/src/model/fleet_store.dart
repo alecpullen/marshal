@@ -315,6 +315,11 @@ class FleetStore extends ChangeNotifier {
         // yet: the thread's gate and run screens arrive in F3. Accepted and
         // set aside, never guessed at.
         return;
+      case DeltaKind.deltaPull:
+        // A pull's record and the state of its checks have no place in
+        // `AgentStatus` either: the pull it names is the recorded store's, and
+        // the rows that read it arrive with F5.2. Accepted and set aside.
+        return;
       case DeltaKind.deltaWatch:
       case DeltaKind.deltaBudget:
       case DeltaKind.deltaProjectRemoved:

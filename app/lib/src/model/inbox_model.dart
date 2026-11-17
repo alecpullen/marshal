@@ -442,6 +442,11 @@ class InboxModel extends ChangeNotifier {
         final submission = item.submission;
         if (submission == null) return null;
         return _askForIntake(host, submission, _time(item.at));
+      case InboxItemKind.inboxItemPull:
+        // A pull item carries a `PullAsk` — the fix a failing check asked for
+        // — and this build has no row to answer it from: the pulls pages
+        // arrive with F5.2.
+        return null;
       case InboxItemKind.unknown:
         return null;
     }

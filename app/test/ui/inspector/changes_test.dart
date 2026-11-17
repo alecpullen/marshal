@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:marshal_app/src/client/contract.g.dart';
+// The kit's `CheckState` is the one a screen draws with; the wire's enum of the
+// same name is hidden here, as `pr_card.dart` reaches only the kit.
+import 'package:marshal_app/src/client/contract.g.dart' hide CheckState;
 import 'package:marshal_app/src/model/changes_model.dart';
 import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/stack_store.dart';

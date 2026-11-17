@@ -688,7 +688,7 @@ export interface InboxGroups {
 /**
  * InboxItemKind is what an entry in the needs-you queue is.
  */
-export type InboxItemKind = 'agent' | 'intake';
+export type InboxItemKind = 'agent' | 'intake' | 'pull';
 
 /**
  * InboxItem is one entry in the needs-you queue, oldest first.
@@ -697,6 +697,10 @@ export interface InboxItem {
   kind: InboxItemKind;
   agentId?: string;
   submission?: PendingSubmission;
+  /**
+   * Pull carries a "pull" item's ask. It is nil for every other kind.
+   */
+  pull?: PullAsk;
   at: string;
 }
 
@@ -1302,6 +1306,143 @@ export interface ProjectStatus {
    * claims. Reported, never deleted — they may hold uncommitted work.
    */
   orphanWorktrees?: string[];
+}
+
+/**
+ * PullOrigin is where a recorded pull request came from: an agent that
+ * shipped, a factory item, or one of the bridge's automations.
+ */
+export type PullOrigin = 'agent' | 'factory' | 'automation';
+
+/**
+ * PullState is a pull request's derived state, which is what a client shows.
+ * It is derived from the evidence on the current head and is never a claim
+ * about a head that has moved.
+ */
+export type PullState = 'ready' | 'failing' | 'in_progress' | 'being_fixed' | 'checks_unavailable';
+
+/**
+ * CheckState is one check's state on a pull request's head.
+ */
+export type CheckState = 'passed' | 'failed' | 'running' | 'pending';
+
+/**
+ * PullCheck is one check on a pull request's head.
+ */
+export interface PullCheck {
+  name: string;
+  state: CheckState;
+  url?: string;
+  /**
+   * LogTail is the tail of a failed check's log. Only the detail route
+   * fills it, so an index stays small.
+   */
+  logTail?: string;
+}
+
+/**
+ * PullRecord is one pull request the bridge opened, with the evidence it holds
+ * for the head it last observed. Its id is <repoId>#<number>.
+ */
+export interface PullRecord {
+  id: string;
+  repoId: string;
+  projectRoot: string;
+  number: number;
+  url: string;
+  title: string;
+  headRef: string;
+  baseRef: string;
+  headSha: string;
+  draft: boolean;
+  additions: number;
+  deletions: number;
+  origin: PullOrigin;
+  agentId?: string;
+  factoryItemId?: string;
+  automation?: string;
+  state: PullState;
+  checks: PullCheck[];
+  reviews: string;
+  /**
+   * Unavailable says why the checks cannot be read, when they cannot.
+   * A record carrying it is never shown as passing.
+   */
+  checksUnavailable?: string;
+  /**
+   * Report is the engineer's narrated report, when the origin has one.
+   * Only the detail route fills it.
+   */
+  report?: string;
+  /**
+   * Fix is the dispatched fix, when a worker is on this pull request.
+   */
+  fix?: PullFix;
+  /**
+   * ObservedAt is when the evidence above was last read, in Unix millis.
+   * UpdatedAt is when the record itself last changed.
+   */
+  observedAt: number;
+  updatedAt: number;
+}
+
+/**
+ * PullFix is one dispatched fix. It is bound to the head it was asked about:
+ * a worker that starts after the head has moved is cancelled rather than run
+ * against different code.
+ */
+export interface PullFix {
+  id: string;
+  check: string;
+  headSha: string;
+  /**
+   * "fix" | "investigate"
+   */
+  mode: string;
+  agentId?: string;
+  startedAt: number;
+}
+
+/**
+ * PullFixRequest is what POST /api/pulls/{id}/fix accepts.
+ */
+export interface PullFixRequest {
+  check: string;
+  /**
+   * Mode is "fix" or "investigate"; empty means fix.
+   */
+  mode?: string;
+  note?: string;
+  routing?: unknown;
+}
+
+/**
+ * PullDelta is the "pull" fleet delta's payload: the record that changed, or
+ * the id of one that went away.
+ */
+export interface PullDelta {
+  pull?: PullRecord;
+  removed?: string;
+}
+
+/**
+ * PullAsk is the inbox item a fix that could not finish leaves behind: which
+ * pull request and check, what the worker tried, what it found, and what the
+ * user can do next. An investigate-only run always ends in one, carrying the
+ * finding.
+ */
+export interface PullAsk {
+  pull: string;
+  check: string;
+  /**
+   * Outcome is what became of the fix: "not_reproduced", "gave_up",
+   * "forbidden_change", "stopped", "head_moved" or "investigated".
+   */
+  outcome: string;
+  tried?: string;
+  finding?: string;
+  action?: string;
+  at?: number;
 }
 
 /**
@@ -1939,7 +2080,7 @@ export interface StackPatch {
 /**
  * DeltaKind is the discriminator of a fleet-stream delta.
  */
-export type DeltaKind = 'activity' | 'mode' | 'telemetry' | 'watch' | 'run' | 'pending' | 'gate' | 'hold' | 'budget' | 'project_removed' | 'inbox';
+export type DeltaKind = 'activity' | 'mode' | 'telemetry' | 'watch' | 'run' | 'pending' | 'gate' | 'hold' | 'budget' | 'project_removed' | 'inbox' | 'pull';
 
 /**
  * FleetDelta is one entry on the fleet stream.

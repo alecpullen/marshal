@@ -590,6 +590,10 @@ type FactoryController struct {
 	// is contacted, nothing is retried, and the intent waits for an explicit
 	// request.
 	planner revisionPlanner
+	// pulls, when set, is told about a pull request the controller first
+	// stored on an item, so the fleet's one index of pull requests knows it.
+	// A controller built without a fleet records nothing.
+	pulls func(item FactoryItem, pr FactoryPR)
 }
 
 func NewFactoryController(store *FactoryStore, effects FactoryEffects, now func() time.Time) *FactoryController {
@@ -597,6 +601,85 @@ func NewFactoryController(store *FactoryStore, effects FactoryEffects, now func(
 		now = time.Now
 	}
 	return &FactoryController{store: store, effects: effects, now: now, execCancels: map[string]context.CancelFunc{}, wake: make(chan struct{}, 1), readyWake: make(chan struct{}, 1), after: time.After}
+}
+
+// SetPullRecorder installs the recorder the controller calls when it first
+// stores a pull request on an item. A nil recorder records nothing.
+func (c *FactoryController) SetPullRecorder(fn func(item FactoryItem, pr FactoryPR)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pulls = fn
+}
+
+// Item returns one item from the journal, and whether it is there.
+func (c *FactoryController) Item(id string) (FactoryItem, bool) {
+	if c == nil || c.store == nil {
+		return FactoryItem{}, false
+	}
+	i, err := c.store.Get(id)
+	return i, err == nil
+}
+
+// Items returns every item in the journal.
+func (c *FactoryController) Items() []FactoryItem {
+	if c == nil || c.store == nil {
+		return nil
+	}
+	return c.store.List()
+}
+
+// noteNewPulls tells the recorder about each pull request the update added, so
+// the fleet's index gains a record the moment the factory journals one.
+func (c *FactoryController) noteNewPulls(before, after FactoryItem) {
+	if c.pulls == nil || len(after.PRs) <= len(before.PRs) {
+		return
+	}
+	for _, pr := range after.PRs[len(before.PRs):] {
+		c.pulls(after, pr)
+	}
+}
+
+// RequestRepair issues the item's existing repair for a person who asked for
+// it: the controller's own scheduler then dispatches the round, with its usual
+// guards. A decision that blocks dispatch is cleared, and when the round
+// allowance is already spent the request buys exactly one more round, recorded
+// as a FactoryGrant whose reason says who asked. It reports whether it granted
+// that round.
+func (c *FactoryController) RequestRepair(itemID, requestID, reason string) (FactoryItem, bool, error) {
+	if c == nil || c.store == nil {
+		return FactoryItem{}, false, ErrFactoryConflict
+	}
+	item, err := c.store.Get(itemID)
+	if err != nil {
+		return FactoryItem{}, false, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closing {
+		return FactoryItem{}, false, ErrFactoryUnavailable
+	}
+	granted := false
+	saved, err := c.internalUpdate(item, "requested_repair", func(dst *FactoryItem) error {
+		switch dst.State {
+		case "draft", "closed", "stopped":
+			return fmt.Errorf("%w: item %s is %s", ErrFactoryConflict, dst.ID, dst.State)
+		}
+		if len(dst.Rounds) >= factoryAllowance(*dst) {
+			dst.Grants = append(dst.Grants, FactoryGrant{
+				ID: requestID, Reason: reason, AdditionalRounds: 1, At: c.now(),
+			})
+			granted = true
+		}
+		dst.Decision = nil
+		dst.State = "repairing"
+		dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "requested_repair", Message: reason})
+		return nil
+	})
+	if err != nil {
+		return saved, false, err
+	}
+	c.Wake()
+	return saved, granted, nil
 }
 
 // autoAssess reports whether a proposal saved for projectRoot records an
@@ -1407,6 +1490,7 @@ func (c *FactoryController) finishEffect(ctx context.Context, dispatched Factory
 	}
 	_, err = c.internalUpdate(dispatched, "complete", func(dst *FactoryItem) error { *dst = next; dst.Version = dispatched.Version; return nil })
 	if err == nil {
+		c.noteNewPulls(dispatched, next)
 		c.Wake()
 	}
 	return err

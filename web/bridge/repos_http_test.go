@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -166,7 +167,7 @@ func TestCredentialsSurviveReloadAndMigrate(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(path)
-	if !strings.Contains(string(raw), `"version": 11`) || !strings.Contains(string(raw), "vault:git/x") {
+	if !strings.Contains(string(raw), fmt.Sprintf(`"version": %d`, workspaceVersion)) || !strings.Contains(string(raw), "vault:git/x") {
 		t.Fatalf("file = %s", raw)
 	}
 	ws2 := NewWorkspace(path)
@@ -193,7 +194,7 @@ func TestCredentialsSurviveReloadAndMigrate(t *testing.T) {
 	}
 	ws3.PutCredential(Credential{ID: "n", Kind: "none", OwnerID: "local"})
 	raw, _ = os.ReadFile(old)
-	if !strings.Contains(string(raw), `"version": 11`) {
+	if !strings.Contains(string(raw), fmt.Sprintf(`"version": %d`, workspaceVersion)) {
 		t.Fatalf("v8 not rewritten: %s", raw)
 	}
 	// Removing an unknown credential is reported.

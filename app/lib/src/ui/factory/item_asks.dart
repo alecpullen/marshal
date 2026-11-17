@@ -156,6 +156,9 @@ class _ItemAsksState extends State<ItemAsks> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (ask.kind == model.AskKind.decision) ...[
+          // At most one decision ask is built from asksOf (it is gated on the
+          // item's single pending decision), so one answer controller is
+          // enough; a second decision would need its own.
           Field(
             label: 'Your answer',
             controller: _draft.answer,
@@ -312,18 +315,23 @@ class WorkItemAskDraft extends ChangeNotifier {
 
   final Set<String> _pending = {};
   int _version = -1;
+  bool _disposed = false;
 
   /// Whether [askID]'s command is in flight.
   bool isPending(String askID) => _pending.contains(askID);
 
   /// Acknowledges a command at once (design-system.md §7).
   void begin(String askID) {
-    if (_pending.add(askID)) notifyListeners();
+    if (_pending.add(askID) && !_disposed) notifyListeners();
   }
 
   /// The command has finished: it is no longer pending.
+  ///
+  /// A command can outlive the screen that started it — the person leaves the
+  /// item while an answer is sending — so this never notifies a draft that has
+  /// already been disposed.
   void end(String askID) {
-    if (_pending.remove(askID)) notifyListeners();
+    if (_pending.remove(askID) && !_disposed) notifyListeners();
   }
 
   /// Forgets what was in flight when the item itself moved: a new version has
@@ -337,6 +345,7 @@ class WorkItemAskDraft extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     answer.dispose();
     super.dispose();
   }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart' hide CheckState;
 import 'package:marshal_app/src/ui/factory/work_item_screen.dart';
@@ -148,6 +150,7 @@ void main() {
     Widget? center,
     Future<void> Function(String answer)? onAnswer,
     VoidCallback? onProposeChange,
+    double width = 1000,
     double height = 2000,
   }) => pumpKit(
     tester,
@@ -160,7 +163,7 @@ void main() {
       onAnswer: onAnswer,
       onProposeChange: onProposeChange,
     ),
-    width: 1000,
+    width: width,
     height: height,
   );
 
@@ -349,7 +352,9 @@ void main() {
     expect(answerText(tester), 'the rounds');
 
     // The store polls: the item moves to a new version and the body rebuilds
-    // under the field.
+    // under the field. The ask card stays mounted here, so this half alone
+    // would also pass with a card-owned controller; the drill-in below is the
+    // proof that the draft outlives the card.
     await show(
       tester,
       item(version: 2, pending: decision()),
@@ -398,5 +403,49 @@ void main() {
     await tester.tap(find.text('Answer'));
     await tester.pump();
     expect(posted, ['the rounds'], reason: 'the words are sent as written');
+  });
+
+  testWidgets('leaving the item while an answer sends does not use a disposed '
+      'draft', (tester) async {
+    final gate = Completer<void>();
+    await show(tester, item(pending: decision()), onAnswer: (_) => gate.future);
+    await tester.enterText(find.byType(EditableText), 'the rounds');
+    await tester.pump();
+    await tester.tap(find.text('Answer'));
+    await tester.pump();
+    expect(find.text('Sending…'), findsOneWidget);
+
+    // The person leaves the item: its screen and draft are disposed while the
+    // command is still in flight.
+    await pumpKit(tester, const SizedBox.shrink());
+    gate.complete();
+    await tester.pump();
+
+    expect(
+      tester.takeException(),
+      isNull,
+      reason: 'the finished command must not notify a disposed draft',
+    );
+  });
+
+  testWidgets('the Plan tab and revision entry stay above the activity on a '
+      'phone', (tester) async {
+    await show(
+      tester,
+      item(),
+      onProposeChange: () {},
+      width: 390,
+      height: 2600,
+    );
+    await openTab(tester, 'Plan');
+    final activity = find.byWidgetPredicate(
+      (widget) => widget is Label && widget.text == 'Activity',
+    );
+    expect(find.text('Propose a change'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('Propose a change')).dy,
+      lessThan(tester.getTopLeft(activity).dy),
+      reason: 'a phone still reaches the revision entry before the timeline',
+    );
   });
 }

@@ -19,24 +19,41 @@ void main() {
   final now = DateTime.utc(2026, 11, 17, 12);
 
   /// One effect as a worker-state fixture writes one.
-  FactoryEffect effect(String id, {String status = 'dispatched'}) =>
-      FactoryEffect.fromJson({
-        'id': id,
-        'kind': 'implement',
-        'status': status,
-        'workerRole': 'implementer',
-        'round': 1,
-        'approvalRevision': 1,
-        'worker': null,
-        'expectedHead': 'head-1',
-        'expectedBase': 'base-1',
-        'createdAt': '2026-11-17T09:10:00Z',
-        'outcome': null,
-      });
+  FactoryEffect effect(
+    String id, {
+    String status = 'dispatched',
+    Map<String, Object?>? outcome,
+  }) => FactoryEffect.fromJson({
+    'id': id,
+    'kind': 'implement',
+    'status': status,
+    'workerRole': 'implementer',
+    'round': 1,
+    'approvalRevision': 1,
+    'worker': null,
+    'expectedHead': 'head-1',
+    'expectedBase': 'base-1',
+    'createdAt': '2026-11-17T09:10:00Z',
+    'outcome': outcome,
+  });
 
-  /// The item: four workers the item's own effects say different things
-  /// about — one dispatched, one completed, one parked, one with no effect
-  /// this build can read.
+  /// One failed outcome: a completed effect whose own record carries an error.
+  Map<String, Object?> failedOutcome() => {
+    'effectId': 'effect-failed',
+    'stopReason': 'completed',
+    'error': 'the worker stopped',
+    'headSha': 'head-1',
+    'treeSha': 'tree-1',
+    'baseSha': 'base-1',
+    'worker': null,
+    'pr': null,
+    'report': null,
+    'confirmed': true,
+  };
+
+  /// The item: five workers the item's own effects say different things
+  /// about — one dispatched, one completed, one parked, one failed and one
+  /// with no effect this build can read.
   FactoryItem item({
     String state = 'implementing',
     List<FactoryEvent>? history,
@@ -60,10 +77,16 @@ void main() {
         role: 'reviewer',
         spawnEffectId: 'effect-never-seen',
       ),
+      factoryWorker(
+        agentId: 'agent-failed',
+        sessionId: 'sess-failed',
+        spawnEffectId: 'effect-failed',
+      ),
     ],
     effects: [
       effect('effect-implementer'),
       effect('effect-reviewer', status: 'completed'),
+      effect('effect-failed', status: 'completed', outcome: failedOutcome()),
     ],
     history: history ?? [factoryEvent(1, 'created', 'the draft was created')],
   );
@@ -166,6 +189,7 @@ void main() {
     expect(find.text('Finished'), findsOneWidget);
     expect(find.text('Parked'), findsOneWidget);
     expect(find.text('Unknown'), findsOneWidget);
+    expect(find.text('Failed'), findsOneWidget);
 
     final rows = tester
         .widget<WorkItemScreen>(find.byType(WorkItemScreen))
@@ -176,7 +200,8 @@ void main() {
       ('The reviewer', 'Finished', 'agent-rev'),
       ('The implementer', 'Parked', 'agent-park'),
       ('The reviewer', 'Unknown', 'agent-unknown'),
-    ], reason: 'a parked or unreadable worker is never called Working');
+      ('The implementer', 'Failed', 'agent-failed'),
+    ], reason: 'a parked, failed or unreadable worker is never called Working');
     // The identity stays inspectable: the row names the agent it opens.
     expect(find.text('agent-park'), findsOneWidget);
   });

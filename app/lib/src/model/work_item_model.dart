@@ -389,6 +389,9 @@ WorkerState workerStateOf(FactoryItem item, FactoryWorker worker) {
   if (worker.parked) return WorkerState.parked;
   for (final effect in item.effects) {
     if (effect.id != worker.spawnEffectID) continue;
+    // The bridge journals prepared, dispatched, completed and uncertain;
+    // 'done' is kept for older records and fixtures. A failure normally
+    // arrives as the outcome's error, so the report check is defensive.
     return switch (effect.status) {
       'done' || 'completed' =>
         (effect.outcome?.error ?? '').isNotEmpty ||

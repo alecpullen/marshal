@@ -571,7 +571,22 @@ void main() {
     await tester.enterText(find.byType(EditableText), typed);
     await tester.pump();
 
-    // Cancel is a way out, and it asks before the text is lost.
+    // The sheet's own close is the most common exit, and it asks too.
+    await tester.tap(find.byTooltip('Close'));
+    await tester.pump();
+    expect(
+      find.textContaining('Your proposal has not been sent.'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Keep writing'));
+    await tester.pump();
+    expect(
+      tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+      typed,
+      reason: 'closing the sheet costs nothing that was typed',
+    );
+
+    // Cancel is another way out, and it asks before the text is lost.
     await tester.tap(find.text('Cancel'));
     await tester.pump();
     expect(
@@ -598,6 +613,35 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(RevisionSheet), findsNothing);
     expect(find.text('Open'), findsOneWidget);
+  });
+
+  testWidgets('a revision being written survives a refresh behind the sheet', (
+    tester,
+  ) async {
+    final model = RevisionModel(
+      approved: '## Task 1\nRead the item.\n',
+      spec: 'Ship.',
+      baseRevision: 1,
+      baseHash: 'hash-1',
+      submit: (plan) async {},
+    );
+    addTearDown(model.dispose);
+    await pumpKit(tester, revisionHost(model), width: 900, height: 1600);
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+
+    const typed = '## Task 1\nRead the item first.\n';
+    await tester.enterText(find.byType(EditableText), typed);
+    await tester.pump();
+
+    // The host refreshes underneath the open sheet, as a poll does.
+    await pumpKit(tester, revisionHost(model), width: 900, height: 1600);
+    await tester.pump();
+    expect(
+      tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+      typed,
+      reason: 'a poll behind the sheet does not lose the proposal',
+    );
   });
 
   testWidgets('a sending proposal cannot be dismissed', (tester) async {

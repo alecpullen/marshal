@@ -23,6 +23,11 @@ import 'pulls_tab.dart';
 /// The screen takes a [WorkItemView] and callbacks and never fetches (§5):
 /// the store it projects from, the pull requests and the change tab are the
 /// host's.
+///
+/// Its order is deliberate: the asks it is blocked on come first, then the
+/// tabs that read its plan, workers, checks, change and pull requests, and
+/// its history last. What needs a person, and what they might revise, are not
+/// buried under the timeline.
 class WorkItemScreen extends StatefulWidget {
   const WorkItemScreen({
     super.key,

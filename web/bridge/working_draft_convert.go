@@ -418,6 +418,16 @@ func workingDraftFactoryRequest(draft WorkingDraft, requestID string) (FactoryCr
 // form, while accepting `commit_status:ctx:` only by silently dropping its last
 // colon. A line that does not parse is refused rather than dropped, so a
 // conversion can never require fewer checks than the one that was reviewed.
+//
+// Whitespace is where the app's own parser decides, because a handoff it
+// approves must not be refused here and a handoff it refuses must not be
+// accepted here. parseExpectedChecks (app/lib/src/model/expected_checks.dart)
+// trims the whole line and nothing else: the kind is the text before the first
+// colon verbatim, so `check_run :b:1` has an unknown kind; a commit status'
+// context is the entire remainder verbatim, so `commit_status: x` states " x";
+// and a check run's name is verbatim while its app id goes through
+// int.tryParse, which reads no surrounding space, so `check_run:b: 1` is not a
+// number. Each of those is mirrored below rather than tidied up.
 func workingDraftExpectedChecks(mode, text string) ([]FactoryCheckKey, error) {
 	switch strings.TrimSpace(mode) {
 	case "", workingDraftChecksInherit:
@@ -430,38 +440,48 @@ func workingDraftExpectedChecks(mode, text string) ([]FactoryCheckKey, error) {
 	}
 	refuse := fmt.Errorf("%w: each expected check must be check_run:name:appId or commit_status:context", errFactoryInput)
 	var checks []FactoryCheckKey
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
+	for _, raw := range strings.Split(text, "\n") {
+		// The whole line is the only thing trimmed: it is how a line's leading
+		// and trailing whitespace stops counting, and how blank lines vanish.
+		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
-		// The first colon names the kind; the rest of the line belongs to the
-		// check and may hold colons of its own.
+		// The first colon names the kind, verbatim; the rest of the line
+		// belongs to the check and may hold colons of its own. Nothing after the
+		// colon is trimmed on either side of the kind.
 		colon := strings.Index(line, ":")
 		if colon < 0 {
 			return nil, refuse
 		}
-		kind, rest := strings.TrimSpace(line[:colon]), line[colon+1:]
+		kind, rest := line[:colon], line[colon+1:]
 		switch kind {
 		case "commit_status":
-			// The context is the entire remainder, so `commit_status:ci:lint`
-			// states "ci:lint" and `commit_status:ctx:` keeps its last colon.
-			if context := strings.TrimSpace(rest); context != "" {
-				checks = append(checks, FactoryCheckKey{Kind: kind, Name: context})
-				continue
+			// The context is the entire remainder, verbatim, so
+			// `commit_status:ci:lint` states "ci:lint", `commit_status:ctx:`
+			// keeps its last colon, and `commit_status: x` states " x". Only an
+			// exactly empty context states no check.
+			if rest == "" {
+				return nil, refuse
 			}
+			checks = append(checks, FactoryCheckKey{Kind: kind, Name: rest})
+			continue
 		case "check_run":
 			// The last colon separates the app id from a name that may itself
-			// contain colons, as `check_run:Windows:Build:1234` does.
+			// contain colons, as `check_run:Windows:Build:1234` does. The name
+			// is taken verbatim — a name of " " is a name — and the app id is
+			// read as written, so a space before it is not a number.
 			idStart := strings.LastIndex(rest, ":")
 			if idStart < 0 {
 				return nil, refuse
 			}
-			name := strings.TrimSpace(rest[:idStart])
-			if id, err := strconv.ParseInt(strings.TrimSpace(rest[idStart+1:]), 10, 64); err == nil && id > 0 && name != "" {
-				checks = append(checks, FactoryCheckKey{Kind: kind, Name: name, AppID: id})
-				continue
+			name := rest[:idStart]
+			id, err := strconv.ParseInt(rest[idStart+1:], 10, 64)
+			if name == "" || err != nil || id <= 0 {
+				return nil, refuse
 			}
+			checks = append(checks, FactoryCheckKey{Kind: kind, Name: name, AppID: id})
+			continue
 		}
 		return nil, refuse
 	}

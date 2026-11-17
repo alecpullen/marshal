@@ -281,6 +281,43 @@ func TestWorkingDraftExpectedChecksReadsCanonicalLines(t *testing.T) {
 			},
 		},
 
+		// Whitespace cases, traced from parseExpectedChecks in
+		// app/lib/src/model/expected_checks.dart, which is the parser the app's
+		// field validates with. Both directions matter: a line the app approves
+		// must not be refused here, a line it refuses must not be accepted here,
+		// and a line it keeps verbatim must not be altered on the way in.
+		//
+		// D3. A whitespace-only name is a name; the app accepts it, so this side
+		// must too, or an approved handoff is refused at conversion.
+		{
+			name: "whitespace-only-check-run-name-is-a-name",
+			mode: workingDraftChecksCustom, text: "check_run: :1",
+			want: []FactoryCheckKey{{Kind: "check_run", Name: " ", AppID: 1}},
+		},
+		// D2. int.tryParse reads no surrounding space, so " 1" is not a number.
+		{name: "refuse-check-run-app-id-with-leading-space", mode: workingDraftChecksCustom, text: "check_run:b: 1", fail: true},
+		// D1. The kind is the text before the first colon, verbatim: "check_run "
+		// is not in the wire's vocabulary.
+		{name: "refuse-check-run-kind-with-trailing-space", mode: workingDraftChecksCustom, text: "check_run :b:1", fail: true},
+		// D4. A context is the whole remainder, untrimmed, so what the sheet
+		// holds is exactly what the item records.
+		{
+			name: "commit-status-context-keeps-its-leading-space",
+			mode: workingDraftChecksCustom, text: "commit_status: x",
+			want: []FactoryCheckKey{{Kind: "commit_status", Name: " x"}},
+		},
+		{
+			name: "commit-status-context-keeps-every-leading-space",
+			mode: workingDraftChecksCustom, text: "commit_status:  x",
+			want: []FactoryCheckKey{{Kind: "commit_status", Name: "  x"}},
+		},
+		// D4, the check-run half: the name is verbatim too.
+		{
+			name: "check-run-name-keeps-its-spaces",
+			mode: workingDraftChecksCustom, text: "check_run: build :42",
+			want: []FactoryCheckKey{{Kind: "check_run", Name: " build ", AppID: 42}},
+		},
+
 		{name: "refuse-check-run-without-a-name", mode: workingDraftChecksCustom, text: "check_run::42", fail: true},
 		{name: "refuse-check-run-without-an-app-id", mode: workingDraftChecksCustom, text: "check_run:build", fail: true},
 		{name: "refuse-check-run-non-numeric-app-id", mode: workingDraftChecksCustom, text: "check_run:build:abc", fail: true},

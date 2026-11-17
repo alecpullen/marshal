@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../../model/expected_checks.dart';
 import '../../model/handoff_model.dart';
 import '../kit/kit.dart';
 
@@ -80,7 +81,7 @@ class _HandoffFormState extends State<HandoffForm> {
 
   String _text(String field) {
     final value = widget.model.valueOf(field);
-    if (value is List<String>) return value.join(', ');
+    if (value is List<ExpectedCheck>) return formatExpectedChecks(value);
     return '$value';
   }
 
@@ -184,7 +185,7 @@ class _HandoffFormState extends State<HandoffForm> {
     ),
     HandoffField.checks: _field(
       HandoffField.checks,
-      hint: 'Comma separated, e.g. build, unit',
+      hint: 'One per line, e.g. check_run:build:42',
     ),
     HandoffField.rounds: _field(HandoffField.rounds, hint: '3'),
     HandoffField.authority: _menu(
@@ -264,13 +265,11 @@ class _HandoffFormState extends State<HandoffForm> {
   }
 
   /// The value a typed field means: the round allowance is a number, the
-  /// expected checks are a list, and everything else is its own text.
+  /// expected checks are the canonical raw lines parsed, and everything else
+  /// is its own text.
   Object _valueOf(String field, String text) => switch (field) {
     HandoffField.rounds => int.tryParse(text.trim()) ?? 0,
-    HandoffField.checks => [
-      for (final name in text.split(','))
-        if (name.trim().isNotEmpty) name.trim(),
-    ],
+    HandoffField.checks => parseExpectedChecks(text).checks,
     _ => text.trim(),
   };
 

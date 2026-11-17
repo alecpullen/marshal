@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
+import 'package:marshal_app/src/model/expected_checks.dart';
 import 'package:marshal_app/src/model/handoff_model.dart';
 
 /// A handoff for a project whose defaults name no repository: what a project
@@ -60,7 +61,10 @@ void main() {
         targetBranch: 'main',
         implementerModel: 'local-fast',
         reviewerModel: 'local-strong',
-        expectedChecks: ['build', 'unit'],
+        expectedChecks: [
+          ExpectedCheck(kind: 'check_run', name: 'build', appID: 42),
+          ExpectedCheck(kind: 'commit_status', name: 'unit'),
+        ],
         maxRounds: 4,
         plannerAuthority: HandoffAuthority.ordering,
       ),
@@ -71,7 +75,7 @@ void main() {
     expect(model.words(HandoffField.repository), 'repo-1');
     expect(model.words(HandoffField.implementer), 'local-fast');
     expect(model.words(HandoffField.reviewer), 'local-strong');
-    expect(model.words(HandoffField.checks), 'build, unit');
+    expect(model.words(HandoffField.checks), 'build (App 42), unit');
     expect(model.words(HandoffField.rounds), '4');
     expect(model.words(HandoffField.environment), 'On this host');
     expect(model.words(HandoffField.authority), HandoffAuthority.ordering);
@@ -80,10 +84,12 @@ void main() {
     expect(draft.config.repoID, 'repo-1');
     expect(draft.config.targetBranch, 'main');
     expect(draft.config.maxRounds, 4);
-    expect(draft.config.expectedChecks.map((check) => check.name), [
-      'build',
-      'unit',
-    ]);
+    expect(
+      draft.config.expectedChecks.map(
+        (check) => (check.kind, check.name, check.appID),
+      ),
+      [('check_run', 'build', 42), ('commit_status', 'unit', 0)],
+    );
   });
 
   test('an override is marked', () {
@@ -183,8 +189,8 @@ void main() {
           'targetBranch': 'main',
           'maxRounds': 5,
           'expectedChecks': [
-            {'appId': 42, 'kind': 'check', 'name': 'build'},
-            {'appId': 42, 'kind': 'check', 'name': 'unit'},
+            {'appId': 42, 'kind': 'check_run', 'name': 'build'},
+            {'appId': 0, 'kind': 'commit_status', 'name': 'unit'},
           ],
         },
       }),
@@ -194,7 +200,10 @@ void main() {
     expect(defaults.repoID, 'repo-1');
     expect(defaults.hostID, 'local', reason: 'the project names no host');
     expect(defaults.targetBranch, 'main');
-    expect(defaults.expectedChecks, ['build', 'unit']);
+    expect(defaults.expectedChecks, [
+      const ExpectedCheck(kind: 'check_run', name: 'build', appID: 42),
+      const ExpectedCheck(kind: 'commit_status', name: 'unit'),
+    ]);
     expect(defaults.maxRounds, 5);
     expect(defaults.native, isTrue, reason: 'no workspace is named');
 
@@ -202,7 +211,7 @@ void main() {
     addTearDown(model.dispose);
     expect(model.sourceOf(HandoffField.repository), FieldSource.inherited);
     expect(model.words(HandoffField.repository), 'repo-1');
-    expect(model.words(HandoffField.checks), 'build, unit');
+    expect(model.words(HandoffField.checks), 'build (App 42), unit');
     expect(model.words(HandoffField.rounds), '5');
     expect(
       model.canApprove,
@@ -244,5 +253,116 @@ void main() {
       reason: 'the sheet blocks on what the project does not state',
     );
     expect(model.blockers, contains('Choose the repository the work is on.'));
+  });
+
+  test('the checks keep their exact keys through the handoff', () {
+    // A check is its kind, its name and its app: the same name on two apps
+    // is two checks, a colon can belong to a name or a context, and case is
+    // the forge's. None of that survives a list reduced to names.
+    final model = _handoff(
+      defaults: const ProjectDefaults(
+        repoID: 'repo-1',
+        expectedChecks: [
+          ExpectedCheck(kind: 'check_run', name: 'build', appID: 42),
+          ExpectedCheck(kind: 'check_run', name: 'build', appID: 7),
+          ExpectedCheck(kind: 'commit_status', name: 'ci:lint'),
+          ExpectedCheck(kind: 'check_run', name: 'Windows:Build', appID: 1234),
+        ],
+        maxRounds: 3,
+      ),
+    );
+    addTearDown(model.dispose);
+
+    expect(
+      model.words(HandoffField.checks),
+      'build (App 42), build (App 7), ci:lint, Windows:Build (App 1234)',
+    );
+    final draft = model.draft;
+    expect(
+      draft.config.expectedChecks.map(
+        (check) => (check.kind, check.name, check.appID),
+      ),
+      [
+        ('check_run', 'build', 42),
+        ('check_run', 'build', 7),
+        ('commit_status', 'ci:lint', 0),
+        ('check_run', 'Windows:Build', 1234),
+      ],
+    );
+    // The working draft holds the same keys, as the canonical raw lines.
+    final content = model.draftContent;
+    expect(content.checksMode, 'custom');
+    expect(content.noRequiredCIAcknowledged, isFalse);
+    expect(
+      content.expectedChecksText,
+      [
+        'check_run:build:42',
+        'check_run:build:7',
+        'commit_status:ci:lint',
+        'check_run:Windows:Build:1234',
+      ].join('\n'),
+    );
+  });
+
+  test('no required checks is acknowledged, not derived', () {
+    // A project that states no checks is followed until the person says the
+    // work needs none: the draft inherits rather than silently requiring
+    // nothing.
+    final model = _handoff(
+      defaults: const ProjectDefaults(repoID: 'repo-1', maxRounds: 3),
+    );
+    addTearDown(model.dispose);
+
+    expect(model.noRequiredCIAcknowledged, isFalse);
+    expect(model.words(HandoffField.checks), 'None required');
+    expect(model.draftContent.checksMode, 'inherit');
+    expect(model.draft.config.noRequiredCIAcknowledged, isFalse);
+
+    // The acknowledgement reaches both drafts, and it is never read back out
+    // of the list.
+    model.setNoRequiredCIAcknowledged(true);
+    expect(model.noRequiredCIAcknowledged, isTrue);
+    expect(model.draftContent.checksMode, 'none');
+    expect(model.draftContent.noRequiredCIAcknowledged, isTrue);
+    expect(model.draft.config.noRequiredCIAcknowledged, isTrue);
+
+    // Taking it back follows the project again.
+    model.setNoRequiredCIAcknowledged(false);
+    expect(model.draftContent.checksMode, 'inherit');
+
+    // Stated checks do not acknowledge anything by existing, and an
+    // acknowledgement stands even when checks are stated.
+    model.set(HandoffField.checks, const [
+      ExpectedCheck(kind: 'check_run', name: 'build', appID: 42),
+    ]);
+    expect(model.draftContent.checksMode, 'custom');
+    expect(model.draftContent.expectedChecksText, 'check_run:build:42');
+    expect(model.draft.config.noRequiredCIAcknowledged, isFalse);
+
+    model.setNoRequiredCIAcknowledged(true);
+    expect(model.draftContent.checksMode, 'none');
+    expect(model.draft.config.noRequiredCIAcknowledged, isTrue);
+  });
+
+  test('a check the bridge sent is never dropped for having no name', () {
+    // The old mapping dropped empty names as if they were noise; a check the
+    // project states is the bridge's to refuse, not this mapping's to lose.
+    final defaults = ProjectDefaults.fromSettings(
+      ProjectSettings.fromJson({
+        'intake': {'repoId': 'repo-1'},
+        'factoryDefaults': {
+          'expectedChecks': [
+            {'appId': 0, 'kind': 'commit_status', 'name': ''},
+            {'appId': 42, 'kind': 'check_run', 'name': 'build'},
+          ],
+        },
+      }),
+      hostID: 'local',
+    );
+
+    expect(defaults.expectedChecks, [
+      const ExpectedCheck(kind: 'commit_status', name: ''),
+      const ExpectedCheck(kind: 'check_run', name: 'build', appID: 42),
+    ]);
   });
 }

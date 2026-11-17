@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/contract.g.dart';
 import 'drafts_model.dart';
+import 'expected_checks.dart';
 
 // The create route and the defaults are passed in, so their fields stay
 // private: Dart has no private named parameter.
@@ -101,8 +102,9 @@ class ProjectDefaults {
   final String implementerModel;
   final String reviewerModel;
 
-  /// Every check that must pass, by the name the forge gives it.
-  final List<String> expectedChecks;
+  /// Every check that must pass, exactly as the forge names it: its kind, its
+  /// name and, for a `check_run`, the app that runs it.
+  final List<ExpectedCheck> expectedChecks;
 
   /// How many repair rounds the work may take.
   final int maxRounds;
@@ -136,9 +138,11 @@ class ProjectDefaults {
       // that names none runs it on the host that holds the project.
       native: workspace.isEmpty,
       expectedChecks: [
+        // Every key the bridge sent is kept, in its order: a check with an
+        // empty name is the bridge's to refuse, not this mapping's to drop.
         for (final check
             in factory?.expectedChecks ?? const <FactoryCheckKey>[])
-          if (check.name.trim().isNotEmpty) check.name.trim(),
+          ExpectedCheck.of(check),
       ],
       maxRounds: factory?.maxRounds ?? 3,
     );
@@ -221,6 +225,11 @@ class HandoffModel extends ChangeNotifier {
   FactoryItem? _created;
   int _requests = 0;
 
+  /// Whether the person acknowledged that this work requires no checks at
+  /// all. Theirs to choose, never derived: a project that states no checks is
+  /// still followed until they say otherwise.
+  bool _noRequiredCIAcknowledged = false;
+
   /// The settings version this review is bound to, and the one in force when
   /// an approval last checked. [settingsConflict] is worded from the two.
   String? _reviewed;
@@ -236,6 +245,11 @@ class HandoffModel extends ChangeNotifier {
 
   /// The item the last [approve] created, if it created one.
   FactoryItem? get created => _created;
+
+  /// Whether the person acknowledged that this work requires no checks. The
+  /// acknowledgement is theirs to give or take back; it is never read out of
+  /// how many checks are stated.
+  bool get noRequiredCIAcknowledged => _noRequiredCIAcknowledged;
 
   /// The settings-version conflict, in the words the sheet needs: the version
   /// this review displayed and the one now in force. Null when they agree, or
@@ -305,8 +319,10 @@ class HandoffModel extends ChangeNotifier {
 
   /// The value [field] runs with, as words the sheet draws.
   String words(String field) => switch (valueOf(field)) {
-    final List<String> values =>
-      values.isEmpty ? 'None required' : values.join(', '),
+    final List<ExpectedCheck> checks =>
+      checks.isEmpty
+          ? 'None required'
+          : [for (final check in checks) check.words].join(', '),
     final String value => value.trim().isEmpty ? 'Not stated' : value.trim(),
     final Object value => '$value',
     null => 'Not stated',
@@ -323,6 +339,15 @@ class HandoffModel extends ChangeNotifier {
   /// Puts one field back to the project's value.
   void reset(String field) {
     if (_overrides.remove(field) == null) return;
+    _autosave();
+    notifyListeners();
+  }
+
+  /// Records the person's acknowledgement that this work requires no checks,
+  /// or takes it back. Like a field edit it autosaves the draft, so the
+  /// acknowledgement survives a page that closes.
+  void setNoRequiredCIAcknowledged(bool acknowledged) {
+    _noRequiredCIAcknowledged = acknowledged;
     _autosave();
     notifyListeners();
   }
@@ -350,12 +375,18 @@ class HandoffModel extends ChangeNotifier {
     maxRoundsOverride: '$_rounds',
     ciPollOverride: '',
     ciWaitOverride: '',
-    checksMode: _checks.isEmpty ? 'none' : 'custom',
-    expectedChecksText: _checks.join(', '),
+    // The checks mode states which of the three shapes the review holds: the
+    // person acknowledged that nothing is required ('none'), the project
+    // states its own checks ('custom'), or neither — the item follows the
+    // project rather than silently requiring nothing ('inherit').
+    checksMode: _noRequiredCIAcknowledged
+        ? 'none'
+        : (_checks.isEmpty ? 'inherit' : 'custom'),
+    expectedChecksText: formatExpectedChecks(_checks),
     native: _native,
     nativeChosen: true,
     implementerAuto: true,
-    noRequiredCIAcknowledged: _checks.isEmpty,
+    noRequiredCIAcknowledged: _noRequiredCIAcknowledged,
   );
 
   /// What stops approval, in plain words. Empty means Approve may be pressed.
@@ -397,11 +428,8 @@ class HandoffModel extends ChangeNotifier {
       reviewerRouting: _routing(_model(HandoffField.reviewer)),
       reviewerInstructions: '',
       implementerAuto: true,
-      expectedChecks: [
-        for (final name in _checks)
-          FactoryCheckKey(kind: 'check_run', name: name, appID: 0),
-      ],
-      noRequiredCIAcknowledged: _checks.isEmpty,
+      expectedChecks: [for (final check in _checks) check.toKey()],
+      noRequiredCIAcknowledged: _noRequiredCIAcknowledged,
       maxRounds: _rounds,
       ciPollSeconds: 30,
       ciWaitSeconds: 900,
@@ -455,8 +483,8 @@ class HandoffModel extends ChangeNotifier {
       : '';
   bool get _native =>
       (valueOf(HandoffField.environment) as String) != _workspaceEnvironment;
-  List<String> get _checks =>
-      (valueOf(HandoffField.checks) as List<String>).toList();
+  List<ExpectedCheck> get _checks =>
+      (valueOf(HandoffField.checks) as List<ExpectedCheck>).toList();
   String _model(String field) => (valueOf(field) as String).trim();
 
   String get _repoWords => _repoID.isEmpty ? 'the repository' : _repoID;

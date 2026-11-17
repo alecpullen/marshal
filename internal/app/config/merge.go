@@ -445,6 +445,17 @@ func merge(cfg *Config, file configFile) error {
 		}
 		set(&cfg.Desktop.ScreenshotFormat, file.Desktop.ScreenshotFormat)
 	}
+	if file.Capture != nil {
+		set(&cfg.Capture.Enabled, file.Capture.Enabled)
+		set(&cfg.Capture.Backend, file.Capture.Backend)
+		if file.Capture.Timeout != nil && *file.Capture.Timeout != "" {
+			d, err := time.ParseDuration(*file.Capture.Timeout)
+			if err != nil {
+				return fmt.Errorf("capture.timeout: %w", err)
+			}
+			cfg.Capture.Timeout = d
+		}
+	}
 	if file.Session != nil && file.Session.Rollover != nil {
 		r := file.Session.Rollover
 		set(&cfg.Session.Rollover.Enabled, r.Enabled)

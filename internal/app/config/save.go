@@ -437,7 +437,12 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	if cfg.Postmortem != def.Postmortem {
 		file.Postmortem = &filePostmortem{OnExit: strutil.Ptr(cfg.Postmortem.OnExit)}
 	}
-	if len(cfg.Permissions.Rules) > 0 {
+	// A pristine file omits a default-valued section, and since the default
+	// rule set is no longer empty, "has rules" no longer means "differs from
+	// the default". The file clause keeps a cleared rule set explicit: the
+	// user deleting every rule must write rules = [], because a nil rules key
+	// on load would otherwise restore the default set.
+	if file.Permissions != nil || !reflect.DeepEqual(cfg.Permissions, def.Permissions) {
 		file.Permissions = &filePermissions{Rules: cfg.Permissions.Rules}
 	}
 	if !reflect.DeepEqual(cfg.Diagnostics, def.Diagnostics) {

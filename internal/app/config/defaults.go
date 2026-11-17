@@ -147,6 +147,11 @@ func Default() Config {
 			DefaultTimeout:   30 * time.Second,
 			ScreenshotFormat: "png",
 		},
+		Capture: CaptureConfig{
+			Enabled: false,
+			Backend: "",
+			Timeout: 10 * time.Second,
+		},
 		MCP: MCPConfig{
 			Servers:                  map[string]MCPServerConfig{},
 			Policies:                 map[string]string{},
@@ -173,7 +178,11 @@ func Default() Config {
 			GlobalMaxBytes:    DefaultGlobalMaxBytes,
 		},
 		Permissions: PermissionsConfig{
-			Rules: nil,
+			// capture is a read-only tool, so risk alone cannot prompt it; the
+			// rule is what makes "switched on" different from "unattended".
+			Rules: []PermissionRule{
+				{Permission: "image.capture", Pattern: "*", Action: "ask"},
+			},
 		},
 		Session: SessionConfig{
 			Rollover: RolloverConfig{

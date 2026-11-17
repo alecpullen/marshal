@@ -162,6 +162,44 @@ Time to first usable screen **on a phone was not measured**: this host has no
 browser and no phone (see the environment-blocked list). The byte counts stand
 in for it until one does.
 
+## Owed debt: end-to-end checks still aimed at Svelte
+
+Task 3 (end-to-end migration) has not started — the gate in decision 6 stopped
+the phase at the swap. Two end-to-end surfaces therefore still describe the
+Studio that used to be at `/`, and **neither is evidence about the Flutter
+Studio until Task 3 re-expresses it**:
+
+- **`scripts/e2e/checks_spa.py`, group I ("spa and auth").** Its premise is the
+  Svelte document at `/`: `_asset_paths` collects the same-origin `<script
+  src>` and `.css` paths the document names, and the bundle checks then grep
+  those files for the client's token handling. The Flutter Studio's index names
+  only `<script src="flutter_bootstrap.js">` — relative, so the same-origin
+  filter drops it — and the app's own `main.dart.js` is injected by that loader
+  at run time, so it is never in the collected set. "the shell is served and
+  names its assets" therefore reports that the document names no script
+  bundle; "the served bundle normalizes a pasted token", "… bounds prompt
+  declines" and "… stops on a rejected token" have nothing to inspect and
+  skip; and "content-hashed assets are immutable" skips too, because Flutter
+  emits unhashed names. A green run here would say nothing about the Studio a
+  browser now loads. The group's HTTP checks — `/api` 404s, the bearer
+  requirement, `/mcp`, previews — still tell the truth, because they exercise
+  the bridge rather than the Studio.
+- **`scripts/e2e/run_browser_checks.sh` and `web/ui/playwright.config.ts`.**
+  The script builds the Svelte Studio into `web/bridge/static` and runs the
+  `*.pw.ts` specs with `baseURL` at the root. That build now lands under
+  `/classic/`, while `/` serves the Flutter Studio, whose DOM is a CanvasKit
+  canvas rather than the elements the specs address (the shell's routes, deep
+  links, roadmap, and the project and factory settings surfaces). Every spec —
+  `studio-shell.pw.ts`, `project-settings.pw.ts`, `studio-fleet.pw.ts`,
+  `factory-item.pw.ts`, `factory-handoff.pw.ts` — is aimed at the wrong
+  Studio, and the fixture it builds no longer reaches the page under test.
+
+Task 3 owes both: the group I checks re-expressed against the Flutter document
+and its `main.dart.js`, and the Playwright specs re-expressed against the
+Flutter Studio or shown to be covered by a phase's own suite, in the table
+decision 5 requires. Nothing here is repaired in this task; it is written down
+so that the gap is not mistaken for coverage.
+
 ## Done when
 
 - A tagged release contains no Svelte and no Node step, and its Studio is

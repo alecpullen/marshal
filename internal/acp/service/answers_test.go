@@ -262,6 +262,92 @@ func TestAnAlwaysAnswerFallsBackToASessionRule(t *testing.T) {
 	}
 }
 
+// TestSessionAnswerGrantsCaptureForSession pins the session answer on a
+// command-less tool: the grant lands as a session permission rule, while a
+// shell call still records its command rule.
+func TestSessionAnswerGrantsCaptureForSession(t *testing.T) {
+	state := newState(t, "s1")
+	_, sess := New(Deps{State: state})
+	key, ch := registerApproval(t, state, &session.PendingToolCall{
+		ID:   "call-1",
+		Name: "image.capture",
+		Args: `{"target":"active_window"}`,
+	})
+
+	if err := sess.AnswerApproval(context.Background(), key.ID, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalSession}); err != nil {
+		t.Fatalf("AnswerApproval: %v", err)
+	}
+	if got := approvalDecision(t, ch); !got.Approved {
+		t.Errorf("delivered decision = %+v, want an approval", got)
+	}
+	want := session.PermissionGrant{Permission: "image.capture", Pattern: "active_window"}
+	if got := state.SessionPermissionRules(); len(got) != 1 || got[0] != want {
+		t.Errorf("SessionPermissionRules() = %+v, want [%+v]", got, want)
+	}
+	if got := state.SessionRules(); len(got) != 0 {
+		t.Errorf("SessionRules() = %v, want none for a command-less tool", got)
+	}
+
+	shellKey, shellCh := registerApproval(t, state, &session.PendingToolCall{
+		ID:      "call-2",
+		Name:    "shell.run",
+		Command: "go build ./...",
+	})
+	if err := sess.AnswerApproval(context.Background(), shellKey.ID, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalSession}); err != nil {
+		t.Fatalf("AnswerApproval: %v", err)
+	}
+	if got := approvalDecision(t, shellCh); !got.Approved {
+		t.Errorf("delivered decision = %+v, want an approval", got)
+	}
+	if got := state.SessionRules(); len(got) != 1 || got[0] != "go build ./..." {
+		t.Errorf("SessionRules() = %v, want the answered command", got)
+	}
+}
+
+// TestAlwaysAnswerFallbackGrantsSessionPermission pins the always answer whose
+// save fails on a command-less tool: the fallback is a session permission
+// grant, not an empty session command rule.
+func TestAlwaysAnswerFallbackGrantsSessionPermission(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	// A regular file where the config directory belongs makes every save fail.
+	cfgDir := filepath.Join(home, ".config", "marshal")
+	if err := os.RemoveAll(cfgDir); err != nil {
+		t.Fatalf("clear the config dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgDir), 0o755); err != nil {
+		t.Fatalf("create the config parent: %v", err)
+	}
+	if err := os.WriteFile(cfgDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("block the config dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(cfgDir) })
+
+	state := newState(t, "s1")
+	_, sess := New(Deps{State: state})
+	key, ch := registerApproval(t, state, &session.PendingToolCall{
+		ID:   "call-1",
+		Name: "image.capture",
+		Args: `{"target":"active_window"}`,
+	})
+
+	if err := sess.AnswerApproval(context.Background(), key.ID, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalAlways}); err != nil {
+		t.Fatalf("AnswerApproval: %v", err)
+	}
+	if got := approvalDecision(t, ch); !got.Approved {
+		t.Errorf("delivered decision = %+v, want an approval", got)
+	}
+	want := session.PermissionGrant{Permission: "image.capture", Pattern: "active_window"}
+	if got := state.SessionPermissionRules(); len(got) != 1 || got[0] != want {
+		t.Errorf("SessionPermissionRules() = %+v, want the fallback grant [%+v]", got, want)
+	}
+	if got := state.SessionRules(); len(got) != 0 {
+		t.Errorf("SessionRules() = %v, want none: the fallback must not append an empty command", got)
+	}
+}
+
 // TestAnswerSkillGateRefusesAnUnknownChoice keeps the service's vocabulary
 // check: a choice the wire does not carry settles nothing.
 func TestAnswerSkillGateRefusesAnUnknownChoice(t *testing.T) {

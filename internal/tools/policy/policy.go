@@ -355,6 +355,12 @@ func subjectsForTool(toolName string, args map[string]interface{}, normCmd strin
 			return []string{path}
 		}
 		return nil
+	case "image.capture":
+		target := "active_window"
+		if m, ok := args["target"].(string); ok && m != "" {
+			target = m
+		}
+		return []string{target}
 	default:
 		return []string{toolName}
 	}

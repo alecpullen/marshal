@@ -109,7 +109,7 @@ func (s *Session) alwaysRule(call *session.PendingToolCall) func() error {
 				return nil
 			}
 		}
-		s.state.AddSessionRule(call.Command)
+		s.grantForSession(call)
 		return nil
 	}
 }
@@ -118,9 +118,23 @@ func (s *Session) alwaysRule(call *session.PendingToolCall) func() error {
 // the session, whichever subagent asked.
 func (s *Session) sessionRule(call *session.PendingToolCall) func() error {
 	return func() error {
-		s.state.AddSessionRule(call.Command)
+		s.grantForSession(call)
 		return nil
 	}
+}
+
+// grantForSession records the answered call as a session rule: a command rule
+// for a shell call, and a permission grant for a command-less tool, which has
+// no command to match on.
+func (s *Session) grantForSession(call *session.PendingToolCall) {
+	if call.Command == "" {
+		s.state.AddSessionPermissionRule(session.PermissionGrant{
+			Permission: permissions.PermissionForTool(call.Name),
+			Pattern:    permissions.PatternForApproval(call),
+		})
+		return
+	}
+	s.state.AddSessionRule(call.Command)
 }
 
 // settleApproval settles one approval decision on the state that raised it,

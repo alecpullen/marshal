@@ -386,6 +386,62 @@ void main() {
     expect((body['automations'] as Map)['autoFix'], isTrue);
   });
 
+  test('a settings read then write names the tag it read', () async {
+    // The project page's own loop: projectSettings reads the document and the
+    // ETag that names it, and putProjectSettings writes it back naming that
+    // tag. A write that omitted If-Match would overwrite a change made after
+    // the read, which is what the page promises it will not do
+    // (web/bridge/projects.go).
+    final read = '"${'d' * 64}"';
+    final won = '"${'e' * 64}"';
+    fake
+      ..reply(
+        'GET',
+        '/api/projects/settings',
+        FakeReply(
+          200,
+          headers: {'content-type': 'application/json', 'etag': read},
+          body:
+              '{"workspace":"alpha","intake":{"repoId":"repo-1"},'
+              '"automations":{"autoFix":false}}',
+        ),
+      )
+      ..reply(
+        'PUT',
+        '/api/projects/settings',
+        FakeReply(
+          200,
+          headers: {'content-type': 'application/json', 'etag': won},
+          body:
+              '{"workspace":"alpha","intake":{"repoId":"repo-1"},'
+              '"automations":{"autoFix":true}}',
+        ),
+      );
+
+    final current = await client.projectSettings('/home/u/alpha');
+    expect(current.etag, read);
+
+    final written = await client.putProjectSettings(
+      '/home/u/alpha',
+      current.settings,
+      etag: current.etag,
+    );
+
+    final put = fake.requests.lastWhere((r) => r.method == 'PUT');
+    expect(
+      put.headers['if-match'],
+      read,
+      reason: 'the write names the tag its own read returned',
+    );
+    expect(put.uri, contains('root=%2Fhome%2Fu%2Falpha'));
+    expect(jsonDecode(put.body), current.settings.toJson());
+    expect(
+      written.etag,
+      won,
+      reason: 'the new tag is what the next save is decided against',
+    );
+  });
+
   test(
     'a settings write refused twice fails with the bridge’s answer',
     () async {

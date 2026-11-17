@@ -512,3 +512,41 @@ func TestBuildVersionOf(t *testing.T) {
 		}
 	}
 }
+
+// TestAChildThatGoesAwayBeforeTheRestartLeavesNoMarker: a child that is gone by
+// the time the sweep means to recycle it leaves no recycling marker open, and
+// no ready flag set. A marker nothing closes would make every later attach wait
+// on it until its own context ends.
+func TestAChildThatGoesAwayBeforeTheRestartLeavesNoMarker(t *testing.T) {
+	f, _, pc, _ := restartFleet(t)
+	ctx := ctlContext(t)
+
+	// The child went away between the sweep's checks and the note: a linger
+	// timer's stop, or a failed start's cleanup, leaves the entry like this.
+	pc.mu.Lock()
+	pc.child, pc.ready = nil, false
+	pc.mu.Unlock()
+
+	f.recycleProjectChild(ctx, pc, projectState{Stale: []string{"a new marshal build"}}, "v2")
+
+	pc.mu.Lock()
+	recycling, ready := pc.recycling, pc.ready
+	pc.mu.Unlock()
+	if recycling != nil {
+		t.Fatal("the restart left a recycling marker open: every later attach would wait on it")
+	}
+	if ready {
+		t.Error("the child is reported ready with nothing running")
+	}
+	// The sweep goes on: a child left in this state is skipped, not wedged.
+	done := make(chan struct{})
+	go func() {
+		f.SweepRestarts(ctx, time.Now())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a sweep after the abandoned restart did not return")
+	}
+}

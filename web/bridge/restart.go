@@ -91,12 +91,10 @@ func (f *Fleet) SweepRestarts(ctx context.Context, now time.Time) {
 			waitingFor = waitingForQuiet
 		}
 		pc.mu.Lock()
-		refused := ""
-		if pc.refused != nil && pc.restart != nil {
-			// The build that could not start is still the one on disk (the
-			// check below confirms it), so what it said is still true.
-			refused = pc.restart.Refused
-		}
+		// The refused build's sentence is kept beside the file it describes,
+		// so a sweep that saw the child current in between still reports why
+		// the build on disk was refused (decision 8).
+		refused := pc.refusedText
 		pc.restart = &DaemonRestart{Reasons: state.Stale, WaitingFor: waitingFor, Refused: refused}
 		pc.mu.Unlock()
 		if waitingFor != "" {
@@ -133,7 +131,7 @@ func (f *Fleet) SweepRestarts(ctx context.Context, now time.Time) {
 		if err != nil {
 			line := headerLine(err.Error())
 			pc.mu.Lock()
-			pc.refused = info
+			pc.refused, pc.refusedText = info, line
 			pc.restart = &DaemonRestart{Reasons: state.Stale, Refused: line}
 			pc.mu.Unlock()
 			staysOn := state.Version
@@ -147,7 +145,7 @@ func (f *Fleet) SweepRestarts(ctx context.Context, now time.Time) {
 			continue
 		}
 		pc.mu.Lock()
-		pc.refused = nil
+		pc.refused, pc.refusedText = nil, ""
 		if pc.restart != nil && pc.restart.Refused != "" {
 			// The build that could not start is gone or fixed, so its text
 			// no longer describes anything.
@@ -226,11 +224,20 @@ func (f *Fleet) recycleProjectChild(ctx context.Context, pc *projectChild, state
 	marker := make(chan struct{})
 	pc.mu.Lock()
 	child, reg := pc.child, pc.reg
-	pc.recycling, pc.ready = marker, false
-	pc.mu.Unlock()
 	if child == nil {
+		// The child went away between the sweep's checks and the note. There
+		// is nothing to recycle, and opening the marker here would leave
+		// every later attach waiting on a channel no one will close.
+		pc.mu.Unlock()
 		return
 	}
+	// The generation this restart means to end. Only a later generation
+	// counts as the restart coming back: spawn bumps the counter before
+	// OnRestart runs, so a handshake already in flight for an earlier
+	// generation can never be mistaken for this one's (decision 7).
+	ending := child.Generation()
+	pc.recycling, pc.ready = marker, false
+	pc.mu.Unlock()
 
 	f.announceRestart(reg, reasons, version)
 
@@ -238,21 +245,35 @@ func (f *Fleet) recycleProjectChild(ctx context.Context, pc *projectChild, state
 		f.dropProjectChild(pc, child, version, reasons, err)
 		return
 	}
-	restarted := true
+	var failure error
 	select {
 	case <-marker:
+		if child.Generation() <= ending {
+			failure = fmt.Errorf("the marker closed on generation %d, not past %d", child.Generation(), ending)
+		}
 	case <-time.After(recycleTimeout):
 		// The marker closing in the same moment the timeout fires is a
 		// restart that did come back: read it under the lock rather than
 		// acting on the race.
 		pc.mu.Lock()
-		restarted = pc.recycling != marker
+		closed := pc.recycling != marker
 		pc.closeRecycleLocked()
 		pc.mu.Unlock()
+		if !closed {
+			failure = fmt.Errorf("no new generation within %s", recycleTimeout)
+		} else if child.Generation() <= ending {
+			failure = fmt.Errorf("the marker closed on generation %d, not past %d", child.Generation(), ending)
+		}
+	case <-ctx.Done():
+		// The bridge is going away: end the marker so nothing waits on it,
+		// rather than hold the sweep for the rest of recycleTimeout.
+		pc.mu.Lock()
+		pc.closeRecycleLocked()
+		pc.mu.Unlock()
+		failure = fmt.Errorf("the bridge closed before the new generation came up: %w", ctx.Err())
 	}
-	if !restarted {
-		f.dropProjectChild(pc, child, version, reasons,
-			fmt.Errorf("no new generation within %s", recycleTimeout))
+	if failure != nil {
+		f.dropProjectChild(pc, child, version, reasons, failure)
 		return
 	}
 	pc.mu.Lock()

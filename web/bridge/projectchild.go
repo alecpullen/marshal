@@ -44,8 +44,8 @@ type projectChild struct {
 	// caps are the capabilities its initialize advertised (P4 D10). They
 	// belong to the generation that answered, so every handshake sets them
 	// again.
-	// mu guards ready, linger, envWarning, caps, restart, refused and
-	// recycling.
+	// mu guards ready, linger, envWarning, caps, restart, refused, refusedText
+	// and recycling.
 	mu         sync.Mutex
 	ready      bool
 	linger     func() // stops the armed linger timer; nil when none
@@ -56,8 +56,11 @@ type projectChild struct {
 	restart *DaemonRestart
 	// refused is the marshal binary whose --version check failed, so a
 	// restart that would spawn it is refused until the file changes
-	// (decision 8).
-	refused os.FileInfo
+	// (decision 8). refusedText is what that build said, kept beside the file
+	// it describes so the refusal still reads the same after a sweep that saw
+	// the child current.
+	refused     os.FileInfo
+	refusedText string
 	// recycling is open while a restart is in flight: from before the old
 	// process ends until the new generation's handshake is done (decision 4).
 	recycling chan struct{}

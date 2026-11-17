@@ -948,7 +948,8 @@ The commits, in the order they landed:
 - **The end-to-end tests** in `test/daemon/restart_test.go` cover L1 to L5
   over a real daemon, a real project child and a real session screen: the
   restart when idle, the held restart while a turn runs, the watch that holds
-  it, the draft that comes back, and `marshal daemon status`.
+  it, the draft that comes back, and the status's data that the command
+  renders.
 
 **Deviations and gaps filled.**
 
@@ -991,8 +992,10 @@ The commits, in the order they landed:
   (`case false && len(state.Busy) > 0:`), which failed: `restart_test.go:318:
   the held restart reaching the session's status did not happen within 30s:
   the status carries no restart`. So the plan's literal mutation alone was not
-  sufficient: the sweep refuses a busy child twice, and only removing both
-  shows that the test has a grip on it.
+  sufficient for that test: the sweep refuses a busy child twice, and only
+  removing both shows that the test has a grip on it. The literal half is not
+  unguarded though — `TestABuildThatGoesBusyWaits` fails under it, because a
+  single `project/state` answer that is idle lets the sweep recycle.
 
 **The manual run was not performed.** It needs a person at a terminal with the
 daemon installed from this build: a draft typed into a session screen,

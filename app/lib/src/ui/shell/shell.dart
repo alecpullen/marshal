@@ -12,6 +12,7 @@ import '../../model/nav_model.dart';
 import '../../model/overview_model.dart' show buildOverview;
 import '../../model/place.dart';
 import '../../model/planning_model.dart';
+import '../../model/project_model.dart';
 import '../../model/pulls_model.dart';
 import '../../model/revision_model.dart';
 import '../../model/run_model.dart';
@@ -28,6 +29,7 @@ import '../factory/run_screen.dart';
 import '../factory/work_item_screen.dart';
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
+import '../project/project_page.dart';
 import '../pulls/fix_control.dart';
 import '../pulls/merge_control.dart';
 import '../pulls/pulls_place.dart';
@@ -298,6 +300,7 @@ class Studio extends StatefulWidget {
     this.planningFor,
     this.handoffFor,
     this.runFor,
+    this.projectFor,
     this.initialPlace = const Place.overview(),
   });
 
@@ -347,6 +350,11 @@ class Studio extends StatefulWidget {
   /// plan run's place unbuilt rather than drawing an empty run.
   final RunModel Function(String host, String agentID)? runFor;
 
+  /// Builds a project's page model for one host and root (F6 decision 12).
+  /// Null leaves the project place planned, so a host that wires no settings
+  /// never draws an editor that cannot save.
+  final ProjectModel Function(String host, String root)? projectFor;
+
   /// The place a deep link names.
   final Place initialPlace;
 
@@ -371,6 +379,11 @@ class _StudioState extends State<Studio> {
   /// The plan runs this screen opened, by agent id (F6 decision 11). A run is
   /// an agent's session, so the agent id is its identity.
   final _runs = <String, model.ThreadRef>{};
+
+  /// The digest each run this screen opened carried, by agent id: a run a
+  /// project page lists is drawn from the list's own digest rather than a
+  /// second read.
+  final _runDigests = <String, Map<String, dynamic>>{};
 
   @override
   void initState() {
@@ -486,17 +499,44 @@ class _StudioState extends State<Studio> {
         ),
       );
     }
+    if (place.kind == PlaceKind.project) {
+      final root = place.id;
+      final build = widget.projectFor;
+      // A host that wires no settings leaves the place planned rather than
+      // drawing an editor whose Save could only fail.
+      if (root == null || build == null) return plannedPlace(place, nav);
+      final host = _hostOfProject(root);
+      return _ProjectPlace(
+        key: ValueKey('project/$host/$root'),
+        root: root,
+        host: host,
+        build: build,
+        factory: widget.factory,
+        store: widget.store,
+        guard: navigation.unsaved,
+        now: widget.store.now,
+        onOpenItem: (item) =>
+            navigation.go(Place(PlaceKind.thread, host: host, id: item.id)),
+        onOpenAgent: (agent) =>
+            navigation.go(Place(PlaceKind.thread, host: host, id: agent.id)),
+        onOpenRun: (run) => _openRun(navigation, host, run),
+        onOpenAutomations: () =>
+            navigation.go(const Place(PlaceKind.automations)),
+      );
+    }
     if (place.kind == PlaceKind.thread) {
       final build = widget.threadStore;
       final thread = _threadRef(place);
       final factory = widget.factory;
       if (thread != null && thread.kind == model.ThreadKind.planRun) {
+        final digest = _runDigests[thread.id];
         final build = widget.runFor;
-        if (build != null) {
+        if (build != null || digest != null) {
           return _RunPlace(
             key: ValueKey('run/${thread.host}/${thread.id}'),
             thread: thread,
-            run: build(thread.host, thread.id),
+            run: build?.call(thread.host, thread.id),
+            digest: digest,
             now: widget.store.now,
           );
         }
@@ -611,6 +651,40 @@ class _StudioState extends State<Studio> {
     return () => navigation.go(
       Place(PlaceKind.thread, host: thread.host, id: thread.id),
     );
+  }
+
+  /// The host whose fleet lists [root]. A project place carries no host of its
+  /// own, and its page's model needs one client; a project no host lists yet
+  /// is read from the first host there is.
+  String _hostOfProject(String root) {
+    for (final host in widget.store.hosts) {
+      for (final project in widget.store.projects(host: host.name)) {
+        if (project.root == root) return host.name;
+      }
+    }
+    final hosts = widget.store.hosts;
+    return hosts.isEmpty ? 'local' : hosts.first.name;
+  }
+
+  /// Opens a run a project page listed (F6 decision 12): remembers it as a
+  /// plan-run thread and the digest the list carried, so its place draws the
+  /// run's lanes rather than the agent's transcript.
+  void _openRun(PlaceNavigation navigation, String host, ProjectRun run) {
+    setState(() {
+      _runs[run.agentID] = model.ThreadRef(
+        host: host,
+        id: run.agentID,
+        project: run.project,
+        title: run.name.isEmpty ? 'Plan run' : run.name,
+        kind: model.ThreadKind.planRun,
+        status: run.status,
+        headline: run.headline,
+        lastActive: run.at,
+      );
+      final digest = run.digest;
+      if (digest != null) _runDigests[run.agentID] = digest;
+    });
+    navigation.go(Place(PlaceKind.thread, host: host, id: run.agentID));
   }
 }
 
@@ -1093,19 +1167,120 @@ class _PlanningPlaceState extends State<_PlanningPlace> {
   );
 }
 
+/// One project's place (F6 decision 12): its work, its automations, its
+/// defaults and its health.
+///
+/// It owns the page's model, built from the app's seam and disposed when the
+/// place goes, and it reads the board's items from the one factory store that
+/// polls them (F6 decision 14) rather than fetching a list of its own.
+class _ProjectPlace extends StatefulWidget {
+  const _ProjectPlace({
+    super.key,
+    required this.root,
+    required this.host,
+    required this.build,
+    required this.store,
+    this.factory,
+    this.guard,
+    this.now,
+    this.onOpenItem,
+    this.onOpenAgent,
+    this.onOpenRun,
+    this.onOpenAutomations,
+  });
+
+  final String root;
+  final String host;
+  final ProjectModel Function(String host, String root) build;
+  final FleetStore store;
+  final FactoryStore? factory;
+  final UnsavedGuard? guard;
+  final DateTime? now;
+  final void Function(WorkItemView item)? onOpenItem;
+  final void Function(model.ThreadRef agent)? onOpenAgent;
+  final void Function(ProjectRun run)? onOpenRun;
+  final VoidCallback? onOpenAutomations;
+
+  @override
+  State<_ProjectPlace> createState() => _ProjectPlaceState();
+}
+
+class _ProjectPlaceState extends State<_ProjectPlace> {
+  /// The page's model: built once for this project, and disposed with it.
+  late final ProjectModel _model = widget.build(widget.host, widget.root);
+
+  @override
+  void initState() {
+    super.initState();
+    widget.factory?.addListener(_changed);
+    widget.store.addListener(_changed);
+  }
+
+  @override
+  void dispose() {
+    widget.store.removeListener(_changed);
+    widget.factory?.removeListener(_changed);
+    _model.dispose();
+    super.dispose();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final factory = widget.factory;
+    // The board draws views of the items the one factory store holds (F6
+    // decision 14).
+    final items = [
+      for (final item
+          in factory?.items(host: widget.host, projectRoot: widget.root) ??
+              const [])
+        WorkItemView.of(widget.host, item),
+    ];
+    // A factory worker is not an independent agent (F6 decision 13).
+    final workers = factory?.workerAgentIds ?? const <String>{};
+    final agents = [
+      for (final agent in widget.store.agents(host: widget.host))
+        if (agent.project == widget.root && !workers.contains(agent.id))
+          model.threadFor(widget.host, agent),
+    ];
+    return ProjectPage(
+      model: _model,
+      items: items,
+      agents: agents,
+      guard: widget.guard,
+      now: widget.now,
+      onOpenItem: widget.onOpenItem,
+      onOpenAgent: widget.onOpenAgent,
+      onOpenRun: widget.onOpenRun,
+      onOpenAutomations: widget.onOpenAutomations,
+    );
+  }
+}
+
 /// One plan run's place (F6 decision 11): the run's tasks as lanes, graph or
 /// timeline, with the live step beneath and the question it stopped on pinned
 /// above.
+///
+/// It takes either a model the app built ([run]) or the digest a project page
+/// listed ([digest]), which it owns and disposes when the place goes.
 class _RunPlace extends StatefulWidget {
   const _RunPlace({
     super.key,
     required this.thread,
-    required this.run,
+    this.run,
+    this.digest,
     this.now,
-  });
+  }) : assert(
+         run != null || digest != null,
+         'a run place needs a model or a digest',
+       );
 
   final model.ThreadRef thread;
-  final RunModel run;
+  final RunModel? run;
+  final Map<String, dynamic>? digest;
   final DateTime? now;
 
   @override
@@ -1113,13 +1288,20 @@ class _RunPlace extends StatefulWidget {
 }
 
 class _RunPlaceState extends State<_RunPlace> {
+  /// The model this place draws: the one it was given, or the one it built
+  /// from the digest. It disposes only what it built.
+  late final RunModel _model =
+      widget.run ?? RunModel.fromDigest(widget.thread.id, widget.digest!);
+
+  bool get _owned => widget.run == null;
+
   @override
   void dispose() {
-    widget.run.dispose();
+    if (_owned) _model.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) =>
-      RunScreen(model: widget.run, now: widget.now);
+      RunScreen(model: _model, now: widget.now);
 }

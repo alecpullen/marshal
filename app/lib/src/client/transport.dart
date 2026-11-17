@@ -17,6 +17,7 @@ class Request {
     required this.path,
     this.query = const {},
     this.body,
+    this.headers = const {},
   });
 
   final String method;
@@ -28,6 +29,10 @@ class Request {
 
   /// The body, encoded as JSON when it is not null.
   final Object? body;
+
+  /// Headers the route needs beyond the transport's own: a conditional write's
+  /// `If-Match`, and nothing else today.
+  final Map<String, String> headers;
 }
 
 /// One answer from a bridge.

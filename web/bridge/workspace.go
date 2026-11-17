@@ -143,54 +143,11 @@ func newProjectID() (string, error) {
 
 // ProjectSettings are a project's defaults for new agents and runs, and
 // its intake wiring (v9).
-type ProjectSettings struct {
-	// Workspace is the default workspace reference.
-	Workspace string `json:"workspace,omitempty"`
-	// Routing is a W3 routing object.
-	Routing json.RawMessage `json:"routing,omitempty"`
-	Mode    string          `json:"mode,omitempty"`
-	// Auto accompanies Mode as a starting default. It is a pointer so an
-	// absent value stays distinguishable from an explicit false.
-	Auto *bool `json:"auto,omitempty"`
-	// Isolated is the default isolation; nil leaves the caller's default.
-	Isolated *bool `json:"isolated,omitempty"`
-	// ShipTarget is merge, push or patch.
-	ShipTarget string        `json:"shipTarget,omitempty"`
-	Intake     ProjectIntake `json:"intake"`
-	// Automations configures the forge automations (W5.4). It is optional,
-	// so the workspace version does not change.
-	Automations *Automations `json:"automations,omitempty"`
-	// FactoryDefaults are the project's default factory configuration. A
-	// handoff inherits every field it leaves unset. It is optional, so the
-	// workspace file format does not change and workspaceVersion stays 11 —
-	// the same reasoning the Automations field already follows.
-	FactoryDefaults *FactoryDefaults `json:"factoryDefaults,omitempty"`
-	// PlannerDelegationEnabled lets one designated MCP client answer the
-	// planner's questions for this project. It is off by default: a client
-	// that was never given delegation answers nothing.
-	PlannerDelegationEnabled bool `json:"plannerDelegationEnabled,omitempty"`
-	// DesignatedMCPClientID names the one client that may answer while
-	// delegation is enabled. Empty means no client is designated.
-	//
-	// Both fields are optional, so a settings record written before they
-	// existed still marshals byte-identically, and workspaceVersion does
-	// not change.
-	DesignatedMCPClientID string `json:"designatedMCPClientId,omitempty"`
-	// AutoAssessPlanChanges turns automatic assessment of a proposed factory
-	// plan revision on or off. It is a pointer so an absent value stays
-	// distinguishable from an explicit false: nil means the default, which
-	// is on, and only an explicit false is a user override. It is optional,
-	// so a settings record written before it existed still marshals
-	// byte-identically and workspaceVersion does not change.
-	AutoAssessPlanChanges *bool `json:"autoAssessPlanChanges,omitempty"`
-}
+// ProjectSettings is contract.ProjectSettings: one project's settings document.
+type ProjectSettings = contract.ProjectSettings
 
-// ProjectIntake mirrors Repo.Watch/WatchLabel and the client allowedRepos.
-type ProjectIntake struct {
-	RepoID  string   `json:"repoId,omitempty"`
-	Labels  []string `json:"labels,omitempty"`
-	Clients []string `json:"clients,omitempty"`
-}
+// ProjectIntake is contract.ProjectIntake: the project's default intake.
+type ProjectIntake = contract.ProjectIntake
 
 // GateOverride is contract.GateOverride; see that declaration.
 type GateOverride = contract.GateOverride

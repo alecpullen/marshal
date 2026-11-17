@@ -27,6 +27,9 @@ Uri _uri(Uri base, Request request) => base.replace(
 HttpClientRequest _writeBody(HttpClientRequest httpRequest, Request request) {
   if (request.body != null) {
     httpRequest.headers.contentType = ContentType.json;
+    for (final entry in request.headers.entries) {
+      httpRequest.headers.set(entry.key, entry.value);
+    }
     httpRequest.write(jsonEncode(request.body));
   }
   return httpRequest;

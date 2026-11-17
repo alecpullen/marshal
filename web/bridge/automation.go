@@ -19,47 +19,16 @@ import (
 )
 
 // Automations is a project's forge automation settings.
-type Automations struct {
-	ReviewBot *ReviewBotSettings `json:"reviewBot,omitempty"`
-	CIFixer   *CIFixerSettings   `json:"ciFixer,omitempty"`
-	// AutoFix fixes a failing check on any of this project's Marshal pull
-	// requests without being asked, exactly as a click would. It is off by
-	// default: a bridge that changes a pull request on its own is a surprise
-	// unless the project asked for it. Factory items are unaffected, because
-	// they already repair inside their own allowance.
-	AutoFix bool `json:"autoFix,omitempty"`
-}
+// Automations is contract.Automations: a project's forge automation settings.
+type Automations = contract.Automations
 
 // ReviewBotSettings configures the PR review bot.
-type ReviewBotSettings struct {
-	Enabled bool   `json:"enabled"`
-	RepoID  string `json:"repoId"`
-	// Labels, Authors and SkipDrafts filter which PRs are reviewed. Empty
-	// lists match everything.
-	Labels     []string `json:"labels,omitempty"`
-	SkipDrafts bool     `json:"skipDrafts"`
-	Authors    []string `json:"authors,omitempty"`
-	// Routing overrides the review recipe's model routing.
-	Routing json.RawMessage `json:"routing,omitempty"`
-	// AutoPost posts a finished review without waiting, unless a finding
-	// has a severity in HoldSeverities.
-	AutoPost       bool     `json:"autoPost"`
-	HoldSeverities []string `json:"holdSeverities,omitempty"`
-}
+// ReviewBotSettings is contract.ReviewBotSettings.
+type ReviewBotSettings = contract.ReviewBotSettings
 
 // CIFixerSettings configures the CI fixer.
-type CIFixerSettings struct {
-	Enabled bool   `json:"enabled"`
-	RepoID  string `json:"repoId"`
-	// Branches are the watched branches, as path.Match patterns.
-	Branches   []string `json:"branches"`
-	MaxMinutes int      `json:"maxMinutes,omitempty"`
-	MaxUSD     float64  `json:"maxUsd,omitempty"`
-	// Push pushes a fix straight to a branch matching PushBranches; every
-	// other fix opens a pull request.
-	Push         bool     `json:"push"`
-	PushBranches []string `json:"pushBranches,omitempty"`
-}
+// CIFixerSettings is contract.CIFixerSettings.
+type CIFixerSettings = contract.CIFixerSettings
 
 var validSeverities = map[string]bool{"blocking": true, "should-fix": true, "nit": true}
 

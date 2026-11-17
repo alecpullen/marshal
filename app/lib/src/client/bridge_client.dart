@@ -863,6 +863,83 @@ class BridgeClient {
     return FactoryItem.fromJson(body['item'] as Map<String, dynamic>);
   }
 
+  // A project's settings, its health and its discovery report (F6).
+
+  /// One settings document and the ETag that names it.
+  ///
+  /// The tag is what a conditional write compares against: a write that names
+  /// a tag the bridge no longer holds is refused rather than overwriting a
+  /// change the person has not seen.
+  static ProjectSettingsVersion version(
+    ProjectSettings settings, {
+    String? etag,
+  }) => ProjectSettingsVersion(settings: settings, etag: etag);
+
+  /// GET /api/projects/settings: the document and the ETag naming exactly it.
+  /// The body and the tag come from one read, so a conditional write compares
+  /// against what was shown.
+  Future<ProjectSettingsVersion> projectSettings(String root) =>
+      _settingsOf('/api/projects/settings', query: {'root': root});
+
+  /// PUT /api/projects/settings: a conditional write when [etag] is given.
+  /// A stale write is refused with 412, changing nothing.
+  Future<ProjectSettingsVersion> putProjectSettings(
+    String root,
+    ProjectSettings settings, {
+    String? etag,
+  }) => _settingsOf(
+    '/api/projects/settings',
+    method: 'PUT',
+    query: {'root': root},
+    body: settings,
+    headers: {if (etag != null && etag.isNotEmpty) 'If-Match': etag},
+  );
+
+  /// GET /api/projects/health: the gate, the mirrors, the index, the retained
+  /// workspaces, the forge connection and the workspace.
+  Future<ProjectHealth> projectHealth(String root) => _objectOf(
+    '/api/projects/health',
+    ProjectHealth.fromJson,
+    query: {'root': root},
+  );
+
+  /// POST /api/repos/{id}/discover: the discovery report, which never writes
+  /// anything.
+  Future<DiscoveryReport> discoverRepo(String repoID) => _objectOf(
+    '/api/repos/${Uri.encodeComponent(repoID)}/discover',
+    DiscoveryReport.fromJson,
+    method: 'POST',
+  );
+
+  /// GET /api/runs: every plan run the bridge knows, with the digest each
+  /// agent last sent (F6 decision 11). A run's entry carries the whole digest,
+  /// so a thread opened from this list draws the run without a second read.
+  Future<List<RunListEntry>> runs() =>
+      _listOf('/api/runs', RunListEntry.fromJson);
+
+  /// One settings read or write, with the ETag the answer named.
+  Future<ProjectSettingsVersion> _settingsOf(
+    String path, {
+    Map<String, String> query = const {},
+    String method = 'GET',
+    Object? body,
+    Map<String, String> headers = const {},
+  }) async {
+    final response = await _send(
+      Request(
+        method: method,
+        path: path,
+        query: query,
+        body: body,
+        headers: headers,
+      ),
+    );
+    return ProjectSettingsVersion(
+      settings: ProjectSettings.fromJson(_object(response)),
+      etag: response.headers['etag'] ?? response.headers['ETag'],
+    );
+  }
+
   // Working drafts (F6). An unfinished handoff the bridge keeps, so a draft
   // edited on one device is not lost on another and never overwritten
   // silently.
@@ -1050,4 +1127,20 @@ class BridgeClient {
   }) async {
     await _send(Request(method: 'POST', path: path, query: query, body: body));
   }
+}
+
+/// One settings document and the ETag that names exactly it (F6 decision 12).
+///
+/// The tag is a header, never part of the body, so it travels beside the
+/// document: a conditional write sends it back as `If-Match`, and the bridge
+/// refuses a write that names a value it no longer holds rather than
+/// overwriting a change the person has not seen.
+class ProjectSettingsVersion {
+  const ProjectSettingsVersion({required this.settings, this.etag});
+
+  /// The document the bridge answered with.
+  final ProjectSettings settings;
+
+  /// The tag naming it, or null when the bridge sent none.
+  final String? etag;
 }

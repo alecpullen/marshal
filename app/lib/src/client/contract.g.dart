@@ -665,10 +665,17 @@ class Automations {
   const Automations({
     this.reviewBot,
     this.ciFixer,
+    this.autoFix,
   });
 
   final ReviewBotSettings? reviewBot;
   final CIFixerSettings? ciFixer;
+  /// AutoFix fixes a failing check on any of this project's Marshal pull
+  /// requests without being asked, exactly as a click would. It is off by
+  /// default: a bridge that changes a pull request on its own is a surprise
+  /// unless the project asked for it. Factory items are unaffected, because
+  /// they already repair inside their own allowance.
+  final bool? autoFix;
 
   factory Automations.fromJson(Map<String, dynamic> json) {
     return Automations(
@@ -680,6 +687,7 @@ class Automations {
         json['ciFixer'],
         CIFixerSettings.fromJson,
       ),
+      autoFix: json['autoFix'] as bool?,
     );
   }
 
@@ -690,6 +698,9 @@ class Automations {
     }
     if (ciFixer != null) {
       json['ciFixer'] = ciFixer!.toJson();
+    }
+    if (autoFix != null) {
+      json['autoFix'] = autoFix;
     }
     return json;
   }
@@ -8133,6 +8144,776 @@ class ProjectStatus {
     if (orphanWorktrees != null) {
       json['orphanWorktrees'] = orphanWorktrees!;
     }
+    return json;
+  }
+}
+
+/// ProjectIntake is the project's default intake configuration.
+class ProjectIntake {
+  const ProjectIntake({
+    this.repoID,
+    this.labels,
+    this.clients,
+  });
+
+  final String? repoID;
+  final List<String>? labels;
+  final List<String>? clients;
+
+  factory ProjectIntake.fromJson(Map<String, dynamic> json) {
+    return ProjectIntake(
+      repoID: json['repoId'] as String?,
+      labels: _listOrNull(
+        json['labels'],
+        (value) => value as String,
+      ),
+      clients: _listOrNull(
+        json['clients'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (repoID != null) {
+      json['repoId'] = repoID;
+    }
+    if (labels != null) {
+      json['labels'] = labels!;
+    }
+    if (clients != null) {
+      json['clients'] = clients!;
+    }
+    return json;
+  }
+}
+
+/// FactoryDefaults is a project's default factory configuration: every field a
+/// handoff inherits unless it states its own.
+class FactoryDefaults {
+  const FactoryDefaults({
+    this.targetBranch,
+    this.workspace,
+    this.hostID,
+    this.implementerRouting,
+    this.reviewerRouting,
+    this.reviewerInstructions,
+    this.expectedChecks,
+    this.maxRounds,
+    this.ciPollSeconds,
+    this.ciWaitSeconds,
+    this.implementerSubagents,
+    this.reviewerSubagents,
+  });
+
+  final String? targetBranch;
+  final String? workspace;
+  final String? hostID;
+  final Object? implementerRouting;
+  final Object? reviewerRouting;
+  final String? reviewerInstructions;
+  final List<FactoryCheckKey>? expectedChecks;
+  final int? maxRounds;
+  final int? ciPollSeconds;
+  final int? ciWaitSeconds;
+  final FactorySubagentOverrides? implementerSubagents;
+  final FactorySubagentOverrides? reviewerSubagents;
+
+  factory FactoryDefaults.fromJson(Map<String, dynamic> json) {
+    return FactoryDefaults(
+      targetBranch: json['targetBranch'] as String?,
+      workspace: json['workspace'] as String?,
+      hostID: json['hostId'] as String?,
+      implementerRouting: json['implementerRouting'],
+      reviewerRouting: json['reviewerRouting'],
+      reviewerInstructions: json['reviewerInstructions'] as String?,
+      expectedChecks: _listOrNull(
+        json['expectedChecks'],
+        (value) => _object(value, FactoryCheckKey.fromJson),
+      ),
+      maxRounds: (json['maxRounds'] as num?)?.toInt(),
+      ciPollSeconds: (json['ciPollSeconds'] as num?)?.toInt(),
+      ciWaitSeconds: (json['ciWaitSeconds'] as num?)?.toInt(),
+      implementerSubagents: _objectOrNull(
+        json['implementerSubagents'],
+        FactorySubagentOverrides.fromJson,
+      ),
+      reviewerSubagents: _objectOrNull(
+        json['reviewerSubagents'],
+        FactorySubagentOverrides.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (targetBranch != null) {
+      json['targetBranch'] = targetBranch;
+    }
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    if (hostID != null) {
+      json['hostId'] = hostID;
+    }
+    if (implementerRouting != null) {
+      json['implementerRouting'] = implementerRouting;
+    }
+    if (reviewerRouting != null) {
+      json['reviewerRouting'] = reviewerRouting;
+    }
+    if (reviewerInstructions != null) {
+      json['reviewerInstructions'] = reviewerInstructions;
+    }
+    if (expectedChecks != null) {
+      json['expectedChecks'] = [
+        for (final value in expectedChecks!) value.toJson(),
+      ];
+    }
+    if (maxRounds != null) {
+      json['maxRounds'] = maxRounds;
+    }
+    if (ciPollSeconds != null) {
+      json['ciPollSeconds'] = ciPollSeconds;
+    }
+    if (ciWaitSeconds != null) {
+      json['ciWaitSeconds'] = ciWaitSeconds;
+    }
+    if (implementerSubagents != null) {
+      json['implementerSubagents'] = implementerSubagents!.toJson();
+    }
+    if (reviewerSubagents != null) {
+      json['reviewerSubagents'] = reviewerSubagents!.toJson();
+    }
+    return json;
+  }
+}
+
+/// ProjectSettings is one project's settings document. The ETag that names a
+/// particular value is a header, never part of the body.
+class ProjectSettings {
+  const ProjectSettings({
+    this.workspace,
+    this.routing,
+    this.mode,
+    this.auto,
+    this.isolated,
+    this.shipTarget,
+    required this.intake,
+    this.automations,
+    this.factoryDefaults,
+    this.plannerDelegationEnabled,
+    this.designatedMCPClientID,
+    this.autoAssessPlanChanges,
+  });
+
+  final String? workspace;
+  final Object? routing;
+  final String? mode;
+  /// Auto accompanies Mode as a starting default. It is a pointer so an
+  /// absent value stays distinguishable from an explicit false.
+  final bool? auto;
+  /// Isolated is the default isolation; nil leaves the caller's default.
+  final bool? isolated;
+  final String? shipTarget;
+  final ProjectIntake intake;
+  final Automations? automations;
+  /// FactoryDefaults are the project's default factory configuration. A
+  /// handoff inherits every field it leaves unset.
+  final FactoryDefaults? factoryDefaults;
+  /// PlannerDelegationEnabled lets one designated MCP client answer the
+  /// planner's questions for this project.
+  final bool? plannerDelegationEnabled;
+  /// DesignatedMCPClientID names the one client that may answer while
+  /// delegation is enabled. Empty means no client is designated.
+  final String? designatedMCPClientID;
+  /// AutoAssessPlanChanges turns automatic assessment of a proposed factory
+  /// plan revision on or off. Nil means the default, which is on.
+  final bool? autoAssessPlanChanges;
+
+  factory ProjectSettings.fromJson(Map<String, dynamic> json) {
+    return ProjectSettings(
+      workspace: json['workspace'] as String?,
+      routing: json['routing'],
+      mode: json['mode'] as String?,
+      auto: json['auto'] as bool?,
+      isolated: json['isolated'] as bool?,
+      shipTarget: json['shipTarget'] as String?,
+      intake: _object(
+        json['intake'],
+        ProjectIntake.fromJson,
+      ),
+      automations: _objectOrNull(
+        json['automations'],
+        Automations.fromJson,
+      ),
+      factoryDefaults: _objectOrNull(
+        json['factoryDefaults'],
+        FactoryDefaults.fromJson,
+      ),
+      plannerDelegationEnabled: json['plannerDelegationEnabled'] as bool?,
+      designatedMCPClientID: json['designatedMCPClientId'] as String?,
+      autoAssessPlanChanges: json['autoAssessPlanChanges'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    if (routing != null) {
+      json['routing'] = routing;
+    }
+    if (mode != null) {
+      json['mode'] = mode;
+    }
+    if (auto != null) {
+      json['auto'] = auto;
+    }
+    if (isolated != null) {
+      json['isolated'] = isolated;
+    }
+    if (shipTarget != null) {
+      json['shipTarget'] = shipTarget;
+    }
+    json['intake'] = intake.toJson();
+    if (automations != null) {
+      json['automations'] = automations!.toJson();
+    }
+    if (factoryDefaults != null) {
+      json['factoryDefaults'] = factoryDefaults!.toJson();
+    }
+    if (plannerDelegationEnabled != null) {
+      json['plannerDelegationEnabled'] = plannerDelegationEnabled;
+    }
+    if (designatedMCPClientID != null) {
+      json['designatedMCPClientId'] = designatedMCPClientID;
+    }
+    if (autoAssessPlanChanges != null) {
+      json['autoAssessPlanChanges'] = autoAssessPlanChanges;
+    }
+    return json;
+  }
+}
+
+/// MirrorHealth is whether a repository's mirror exists and how fresh it is.
+class MirrorHealth {
+  const MirrorHealth({
+    required this.repoID,
+    required this.present,
+    this.ageSeconds,
+    this.head,
+  });
+
+  final String repoID;
+  /// Present is false when the repo has no mirror yet.
+  final bool present;
+  /// AgeSeconds is the time since the mirror last fetched.
+  final int? ageSeconds;
+  final String? head;
+
+  factory MirrorHealth.fromJson(Map<String, dynamic> json) {
+    return MirrorHealth(
+      repoID: json['repoId'] as String,
+      present: json['present'] as bool,
+      ageSeconds: (json['ageSeconds'] as num?)?.toInt(),
+      head: json['head'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['repoId'] = repoID;
+    json['present'] = present;
+    if (ageSeconds != null) {
+      json['ageSeconds'] = ageSeconds;
+    }
+    if (head != null) {
+      json['head'] = head;
+    }
+    return json;
+  }
+}
+
+/// WorkspaceHealth is whether a project's default workspace is usable.
+class WorkspaceHealth {
+  const WorkspaceHealth({
+    required this.ref,
+    required this.resolves,
+    required this.built,
+    this.error,
+  });
+
+  final String ref;
+  final bool resolves;
+  final bool built;
+  final String? error;
+
+  factory WorkspaceHealth.fromJson(Map<String, dynamic> json) {
+    return WorkspaceHealth(
+      ref: json['ref'] as String,
+      resolves: json['resolves'] as bool,
+      built: json['built'] as bool,
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['ref'] = ref;
+    json['resolves'] = resolves;
+    json['built'] = built;
+    if (error != null) {
+      json['error'] = error;
+    }
+    return json;
+  }
+}
+
+/// VerifyCommands is a project's configured gate commands. Empty strings mean
+/// unset, in which case the gate is skipped unless the engine detects a
+/// default.
+class VerifyCommands {
+  const VerifyCommands({
+    required this.build,
+    required this.test,
+  });
+
+  final String build;
+  final String test;
+
+  factory VerifyCommands.fromJson(Map<String, dynamic> json) {
+    return VerifyCommands(
+      build: json['build'] as String,
+      test: json['test'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['build'] = build;
+    json['test'] = test;
+    return json;
+  }
+}
+
+/// ProjectHealth is GET /api/projects/health.
+class ProjectHealth {
+  const ProjectHealth({
+    required this.gateRunnable,
+    required this.mirrorFresh,
+    required this.orphanWorktrees,
+    required this.trust,
+    this.workspaceResolves,
+    required this.verify,
+  });
+
+  /// GateRunnable is "yes", "no" (the last verify was skipped: nothing to
+  /// run) or "unknown" (no agent of the project has verified).
+  final String gateRunnable;
+  final List<MirrorHealth> mirrorFresh;
+  final List<String> orphanWorktrees;
+  final String trust;
+  final WorkspaceHealth? workspaceResolves;
+  /// Verify is the project's verify-gate commands from [sdd.verify] in
+  /// .marshal/config.toml. Only reported for a trusted project, since the
+  /// engine ignores an untrusted project's config.
+  final VerifyCommands verify;
+
+  factory ProjectHealth.fromJson(Map<String, dynamic> json) {
+    return ProjectHealth(
+      gateRunnable: json['gateRunnable'] as String,
+      mirrorFresh: _list(
+        json['mirrorFresh'],
+        (value) => _object(value, MirrorHealth.fromJson),
+      ),
+      orphanWorktrees: _list(
+        json['orphanWorktrees'],
+        (value) => value as String,
+      ),
+      trust: json['trust'] as String,
+      workspaceResolves: _objectOrNull(
+        json['workspaceResolves'],
+        WorkspaceHealth.fromJson,
+      ),
+      verify: _object(
+        json['verify'],
+        VerifyCommands.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['gateRunnable'] = gateRunnable;
+    json['mirrorFresh'] = [
+      for (final value in mirrorFresh) value.toJson(),
+    ];
+    json['orphanWorktrees'] = orphanWorktrees;
+    json['trust'] = trust;
+    if (workspaceResolves != null) {
+      json['workspaceResolves'] = workspaceResolves!.toJson();
+    }
+    json['verify'] = verify.toJson();
+    return json;
+  }
+}
+
+/// DiscoveryCapabilityState is the outcome of one read-only capability probe.
+enum DiscoveryCapabilityState {
+  discoveryCapabilitySupported('supported'),
+  discoveryCapabilityUnconfigured('unconfigured'),
+  discoveryCapabilityInsufficientPermission('insufficient_permission'),
+  discoveryCapabilityTemporarilyUnavailable('temporarily_unavailable'),
+  discoveryCapabilityUnsupported('unsupported'),
+  unknown('unknown');
+
+  const DiscoveryCapabilityState(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static DiscoveryCapabilityState fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// DiscoveryCapability is one capability the discovery probe tested.
+class DiscoveryCapability {
+  const DiscoveryCapability({
+    required this.key,
+    required this.state,
+    this.detail,
+    this.rawEnums = const {},
+  });
+
+  final String key;
+  final DiscoveryCapabilityState state;
+  final String? detail;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory DiscoveryCapability.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final stateWire = json['state'] as String;
+    final state = DiscoveryCapabilityState.fromWire(stateWire);
+    if (state == DiscoveryCapabilityState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return DiscoveryCapability(
+      key: json['key'] as String,
+      state: state,
+      detail: json['detail'] as String?,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['key'] = key;
+    json['state'] = rawEnums['state'] ?? state.wire;
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    return json;
+  }
+}
+
+/// DiscoveryFact is something detected in the checkout. Origin distinguishes a
+/// detected fact from a recommendation.
+class DiscoveryFact {
+  const DiscoveryFact({
+    required this.origin,
+    required this.section,
+    required this.kind,
+    required this.value,
+    required this.source,
+    this.revision,
+    this.size,
+    this.detail,
+  });
+
+  final String origin;
+  final String section;
+  final String kind;
+  final String value;
+  final String source;
+  final String? revision;
+  final int? size;
+  final String? detail;
+
+  factory DiscoveryFact.fromJson(Map<String, dynamic> json) {
+    return DiscoveryFact(
+      origin: json['origin'] as String,
+      section: json['section'] as String,
+      kind: json['kind'] as String,
+      value: json['value'] as String,
+      source: json['source'] as String,
+      revision: json['revision'] as String?,
+      size: (json['size'] as num?)?.toInt(),
+      detail: json['detail'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['origin'] = origin;
+    json['section'] = section;
+    json['kind'] = kind;
+    json['value'] = value;
+    json['source'] = source;
+    if (revision != null) {
+      json['revision'] = revision;
+    }
+    if (size != null) {
+      json['size'] = size;
+    }
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    return json;
+  }
+}
+
+/// DiscoveryRecommendation is an advisory setup option. It is never applied by
+/// discovery.
+class DiscoveryRecommendation {
+  const DiscoveryRecommendation({
+    required this.origin,
+    required this.section,
+    required this.kind,
+    required this.value,
+    required this.reason,
+  });
+
+  final String origin;
+  final String section;
+  final String kind;
+  final String value;
+  final String reason;
+
+  factory DiscoveryRecommendation.fromJson(Map<String, dynamic> json) {
+    return DiscoveryRecommendation(
+      origin: json['origin'] as String,
+      section: json['section'] as String,
+      kind: json['kind'] as String,
+      value: json['value'] as String,
+      reason: json['reason'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['origin'] = origin;
+    json['section'] = section;
+    json['kind'] = kind;
+    json['value'] = value;
+    json['reason'] = reason;
+    return json;
+  }
+}
+
+/// DiscoveryGap explains a capability that is not supported, so the UI can turn
+/// it into an actionable next step.
+class DiscoveryGap {
+  const DiscoveryGap({
+    required this.key,
+    required this.section,
+    required this.state,
+    required this.detail,
+    this.rawEnums = const {},
+  });
+
+  final String key;
+  final String section;
+  final DiscoveryCapabilityState state;
+  final String detail;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory DiscoveryGap.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final stateWire = json['state'] as String;
+    final state = DiscoveryCapabilityState.fromWire(stateWire);
+    if (state == DiscoveryCapabilityState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return DiscoveryGap(
+      key: json['key'] as String,
+      section: json['section'] as String,
+      state: state,
+      detail: json['detail'] as String,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['key'] = key;
+    json['section'] = section;
+    json['state'] = rawEnums['state'] ?? state.wire;
+    json['detail'] = detail;
+    return json;
+  }
+}
+
+/// DiscoveryWorktree is the locally observable Git state of a linked checkout.
+/// Dirty is a pointer: nil means not determined, which differs from a known
+/// clean checkout.
+class DiscoveryWorktree {
+  const DiscoveryWorktree({
+    required this.path,
+    this.branch,
+    this.head,
+    this.dirty,
+    this.dirtyFiles,
+    this.detail,
+  });
+
+  final String path;
+  final String? branch;
+  final String? head;
+  final bool? dirty;
+  final List<String>? dirtyFiles;
+  final String? detail;
+
+  factory DiscoveryWorktree.fromJson(Map<String, dynamic> json) {
+    return DiscoveryWorktree(
+      path: json['path'] as String,
+      branch: json['branch'] as String?,
+      head: json['head'] as String?,
+      dirty: json['dirty'] as bool?,
+      dirtyFiles: _listOrNull(
+        json['dirtyFiles'],
+        (value) => value as String,
+      ),
+      detail: json['detail'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['path'] = path;
+    if (branch != null) {
+      json['branch'] = branch;
+    }
+    if (head != null) {
+      json['head'] = head;
+    }
+    json['dirty'] = dirty;
+    if (dirtyFiles != null) {
+      json['dirtyFiles'] = dirtyFiles!;
+    }
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    return json;
+  }
+}
+
+/// DiscoveryReport is the single document `POST /api/repos/{id}/discover`
+/// returns. Status is "ok", "degraded" or "unavailable"; the report slices are
+/// always non-nil so the wire shape stays stable.
+class DiscoveryReport {
+  const DiscoveryReport({
+    required this.repoID,
+    required this.forge,
+    required this.status,
+    this.error,
+    this.revision,
+    this.branch,
+    this.worktree,
+    required this.capabilities,
+    required this.facts,
+    required this.recommended,
+    required this.gaps,
+  });
+
+  final String repoID;
+  final String forge;
+  final String status;
+  final String? error;
+  final String? revision;
+  final String? branch;
+  final DiscoveryWorktree? worktree;
+  final List<DiscoveryCapability> capabilities;
+  final List<DiscoveryFact> facts;
+  final List<DiscoveryRecommendation> recommended;
+  final List<DiscoveryGap> gaps;
+
+  factory DiscoveryReport.fromJson(Map<String, dynamic> json) {
+    return DiscoveryReport(
+      repoID: json['repoId'] as String,
+      forge: json['forge'] as String,
+      status: json['status'] as String,
+      error: json['error'] as String?,
+      revision: json['revision'] as String?,
+      branch: json['branch'] as String?,
+      worktree: _objectOrNull(
+        json['worktree'],
+        DiscoveryWorktree.fromJson,
+      ),
+      capabilities: _list(
+        json['capabilities'],
+        (value) => _object(value, DiscoveryCapability.fromJson),
+      ),
+      facts: _list(
+        json['facts'],
+        (value) => _object(value, DiscoveryFact.fromJson),
+      ),
+      recommended: _list(
+        json['recommended'],
+        (value) => _object(value, DiscoveryRecommendation.fromJson),
+      ),
+      gaps: _list(
+        json['gaps'],
+        (value) => _object(value, DiscoveryGap.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['repoId'] = repoID;
+    json['forge'] = forge;
+    json['status'] = status;
+    if (error != null) {
+      json['error'] = error;
+    }
+    if (revision != null) {
+      json['revision'] = revision;
+    }
+    if (branch != null) {
+      json['branch'] = branch;
+    }
+    if (worktree != null) {
+      json['worktree'] = worktree!.toJson();
+    }
+    json['capabilities'] = [
+      for (final value in capabilities) value.toJson(),
+    ];
+    json['facts'] = [
+      for (final value in facts) value.toJson(),
+    ];
+    json['recommended'] = [
+      for (final value in recommended) value.toJson(),
+    ];
+    json['gaps'] = [
+      for (final value in gaps) value.toJson(),
+    ];
     return json;
   }
 }

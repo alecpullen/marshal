@@ -24,6 +24,7 @@ const _fixtures = [
   'issues',
   'library',
   'planner',
+  'projectsettings',
   'projects',
   'recipes',
   'runs',
@@ -279,6 +280,25 @@ final _codecs = <String, _Codec>{
   'RunCommit': (json) => RunCommit.fromJson(_object(json)).toJson(),
   'RunGate': (json) => RunGate.fromJson(_object(json)).toJson(),
   'RunListEntry': (json) => RunListEntry.fromJson(_object(json)).toJson(),
+  // projectsettings.json — settings, health and discovery.
+  'ProjectIntake': (json) => ProjectIntake.fromJson(_object(json)).toJson(),
+  'FactoryDefaults': (json) => FactoryDefaults.fromJson(_object(json)).toJson(),
+  'ProjectSettings': (json) => ProjectSettings.fromJson(_object(json)).toJson(),
+  'MirrorHealth': (json) => MirrorHealth.fromJson(_object(json)).toJson(),
+  'WorkspaceHealth': (json) => WorkspaceHealth.fromJson(_object(json)).toJson(),
+  'VerifyCommands': (json) => VerifyCommands.fromJson(_object(json)).toJson(),
+  'ProjectHealth': (json) => ProjectHealth.fromJson(_object(json)).toJson(),
+  'DiscoveryCapabilityState': (json) =>
+      DiscoveryCapabilityState.fromWire(json! as String).wire,
+  'DiscoveryCapability': (json) =>
+      DiscoveryCapability.fromJson(_object(json)).toJson(),
+  'DiscoveryFact': (json) => DiscoveryFact.fromJson(_object(json)).toJson(),
+  'DiscoveryRecommendation': (json) =>
+      DiscoveryRecommendation.fromJson(_object(json)).toJson(),
+  'DiscoveryGap': (json) => DiscoveryGap.fromJson(_object(json)).toJson(),
+  'DiscoveryWorktree': (json) =>
+      DiscoveryWorktree.fromJson(_object(json)).toJson(),
+  'DiscoveryReport': (json) => DiscoveryReport.fromJson(_object(json)).toJson(),
   // stream.json
   'BudgetDelta': (json) => BudgetDelta.fromJson(_object(json)).toJson(),
   'BudgetScope': (json) => BudgetScope.fromWire(json! as String).wire,

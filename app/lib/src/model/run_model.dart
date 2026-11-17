@@ -293,6 +293,14 @@ class RunModel extends ChangeNotifier {
        _answer = answer,
        _view = view;
 
+  /// A model over the run digest a list carried (F6 decision 12), for a run a
+  /// project page lists: the shell opens it without naming a wire type.
+  factory RunModel.fromDigest(
+    String agentID,
+    Map<String, dynamic> digest, {
+    RunView view = RunView.lanes,
+  }) => RunModel(agentID: agentID, run: SDDRun.fromJson(digest), view: view);
+
   /// The agent the run is on: the id its questions are answered through.
   final String agentID;
 

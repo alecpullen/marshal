@@ -74,6 +74,9 @@ class WebTransport implements Transport {
     if (token != null) {
       headers.set('Authorization', 'Bearer $token');
     }
+    for (final entry in request.headers.entries) {
+      headers.set(entry.key, entry.value);
+    }
     final init = web.RequestInit(method: request.method, headers: headers);
     if (request.body != null) {
       headers.set('Content-Type', 'application/json');

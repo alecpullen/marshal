@@ -11,9 +11,11 @@ import 'src/model/composer_model.dart';
 import 'src/model/inbox_model.dart';
 import 'src/model/new_work_model.dart';
 import 'src/model/planning_model.dart';
+import 'src/model/project_model.dart';
 import 'src/model/pulls_model.dart';
 import 'src/model/pulls_store.dart';
 import 'src/model/stack_store.dart';
+import 'src/model/nav_model.dart' show projectName;
 import 'src/ui/kit/kit.dart';
 import 'src/ui/shell/shell.dart';
 
@@ -109,6 +111,29 @@ Future<void> main() async {
           spec: spec,
           create: (draft) => factory.create(thread.host, draft),
         ),
+        // The project page (F6 decision 12): its settings are one document
+        // read with the ETag that names it, so a save that names a tag the
+        // bridge no longer holds is refused rather than overwriting a change
+        // the person has not seen. Its runs are the runs of this project, read
+        // from the same client.
+        projectFor: (host, root) {
+          final client = hosts.hosts
+              .firstWhere((owner) => owner.name == host)
+              .client;
+          return ProjectModel(
+            root: root,
+            name: projectName(root),
+            read: () => client.projectSettings(root),
+            write: (settings, etag) =>
+                client.putProjectSettings(root, settings, etag: etag),
+            readHealth: () => client.projectHealth(root),
+            readRuns: () async => [
+              for (final run in await client.runs())
+                if (run.project == root) run,
+            ],
+            discover: (repoID) => client.discoverRepo(repoID),
+          );
+        },
       ),
     ),
   );

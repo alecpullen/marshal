@@ -206,6 +206,14 @@ export interface RecentPrompts {
 export interface Automations {
   reviewBot?: ReviewBotSettings;
   ciFixer?: CIFixerSettings;
+  /**
+   * AutoFix fixes a failing check on any of this project's Marshal pull
+   * requests without being asked, exactly as a click would. It is off by
+   * default: a bridge that changes a pull request on its own is a surprise
+   * unless the project asked for it. Factory items are unaffected, because
+   * they already repair inside their own allowance.
+   */
+  autoFix?: boolean;
 }
 
 /**
@@ -2361,6 +2369,218 @@ export interface ProjectStatus {
    * claims. Reported, never deleted — they may hold uncommitted work.
    */
   orphanWorktrees?: string[];
+}
+
+/**
+ * ProjectIntake is the project's default intake configuration.
+ */
+export interface ProjectIntake {
+  repoId?: string;
+  labels?: string[];
+  clients?: string[];
+}
+
+/**
+ * FactoryDefaults is a project's default factory configuration: every field a
+ * handoff inherits unless it states its own.
+ */
+export interface FactoryDefaults {
+  targetBranch?: string;
+  workspace?: string;
+  hostId?: string;
+  implementerRouting?: unknown;
+  reviewerRouting?: unknown;
+  reviewerInstructions?: string;
+  expectedChecks?: FactoryCheckKey[];
+  maxRounds?: number;
+  ciPollSeconds?: number;
+  ciWaitSeconds?: number;
+  implementerSubagents?: FactorySubagentOverrides;
+  reviewerSubagents?: FactorySubagentOverrides;
+}
+
+/**
+ * ProjectSettings is one project's settings document. The ETag that names a
+ * particular value is a header, never part of the body.
+ */
+export interface ProjectSettings {
+  workspace?: string;
+  routing?: unknown;
+  mode?: string;
+  /**
+   * Auto accompanies Mode as a starting default. It is a pointer so an
+   * absent value stays distinguishable from an explicit false.
+   */
+  auto?: boolean;
+  /**
+   * Isolated is the default isolation; nil leaves the caller's default.
+   */
+  isolated?: boolean;
+  shipTarget?: string;
+  intake: ProjectIntake;
+  automations?: Automations;
+  /**
+   * FactoryDefaults are the project's default factory configuration. A
+   * handoff inherits every field it leaves unset.
+   */
+  factoryDefaults?: FactoryDefaults;
+  /**
+   * PlannerDelegationEnabled lets one designated MCP client answer the
+   * planner's questions for this project.
+   */
+  plannerDelegationEnabled?: boolean;
+  /**
+   * DesignatedMCPClientID names the one client that may answer while
+   * delegation is enabled. Empty means no client is designated.
+   */
+  designatedMCPClientId?: string;
+  /**
+   * AutoAssessPlanChanges turns automatic assessment of a proposed factory
+   * plan revision on or off. Nil means the default, which is on.
+   */
+  autoAssessPlanChanges?: boolean;
+}
+
+/**
+ * MirrorHealth is whether a repository's mirror exists and how fresh it is.
+ */
+export interface MirrorHealth {
+  repoId: string;
+  /**
+   * Present is false when the repo has no mirror yet.
+   */
+  present: boolean;
+  /**
+   * AgeSeconds is the time since the mirror last fetched.
+   */
+  ageSeconds?: number;
+  head?: string;
+}
+
+/**
+ * WorkspaceHealth is whether a project's default workspace is usable.
+ */
+export interface WorkspaceHealth {
+  ref: string;
+  resolves: boolean;
+  built: boolean;
+  error?: string;
+}
+
+/**
+ * VerifyCommands is a project's configured gate commands. Empty strings mean
+ * unset, in which case the gate is skipped unless the engine detects a
+ * default.
+ */
+export interface VerifyCommands {
+  build: string;
+  test: string;
+}
+
+/**
+ * ProjectHealth is GET /api/projects/health.
+ */
+export interface ProjectHealth {
+  /**
+   * GateRunnable is "yes", "no" (the last verify was skipped: nothing to
+   * run) or "unknown" (no agent of the project has verified).
+   */
+  gateRunnable: string;
+  mirrorFresh: MirrorHealth[];
+  orphanWorktrees: string[];
+  trust: string;
+  workspaceResolves?: WorkspaceHealth;
+  /**
+   * Verify is the project's verify-gate commands from [sdd.verify] in
+   * .marshal/config.toml. Only reported for a trusted project, since the
+   * engine ignores an untrusted project's config.
+   */
+  verify: VerifyCommands;
+}
+
+/**
+ * DiscoveryCapabilityState is the outcome of one read-only capability probe.
+ */
+export type DiscoveryCapabilityState = 'supported' | 'unconfigured' | 'insufficient_permission' | 'temporarily_unavailable' | 'unsupported';
+
+/**
+ * DiscoveryCapability is one capability the discovery probe tested.
+ */
+export interface DiscoveryCapability {
+  key: string;
+  state: DiscoveryCapabilityState;
+  detail?: string;
+}
+
+/**
+ * DiscoveryFact is something detected in the checkout. Origin distinguishes a
+ * detected fact from a recommendation.
+ */
+export interface DiscoveryFact {
+  origin: string;
+  section: string;
+  kind: string;
+  value: string;
+  source: string;
+  revision?: string;
+  size?: number;
+  detail?: string;
+}
+
+/**
+ * DiscoveryRecommendation is an advisory setup option. It is never applied by
+ * discovery.
+ */
+export interface DiscoveryRecommendation {
+  origin: string;
+  section: string;
+  kind: string;
+  value: string;
+  reason: string;
+}
+
+/**
+ * DiscoveryGap explains a capability that is not supported, so the UI can turn
+ * it into an actionable next step.
+ */
+export interface DiscoveryGap {
+  key: string;
+  section: string;
+  state: DiscoveryCapabilityState;
+  detail: string;
+}
+
+/**
+ * DiscoveryWorktree is the locally observable Git state of a linked checkout.
+ * Dirty is a pointer: nil means not determined, which differs from a known
+ * clean checkout.
+ */
+export interface DiscoveryWorktree {
+  path: string;
+  branch?: string;
+  head?: string;
+  dirty: boolean | null;
+  dirtyFiles?: string[];
+  detail?: string;
+}
+
+/**
+ * DiscoveryReport is the single document `POST /api/repos/{id}/discover`
+ * returns. Status is "ok", "degraded" or "unavailable"; the report slices are
+ * always non-nil so the wire shape stays stable.
+ */
+export interface DiscoveryReport {
+  repoId: string;
+  forge: string;
+  status: string;
+  error?: string;
+  revision?: string;
+  branch?: string;
+  worktree?: DiscoveryWorktree;
+  capabilities: DiscoveryCapability[];
+  facts: DiscoveryFact[];
+  recommended: DiscoveryRecommendation[];
+  gaps: DiscoveryGap[];
 }
 
 /**

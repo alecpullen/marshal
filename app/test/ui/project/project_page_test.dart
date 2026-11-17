@@ -1,0 +1,236 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:marshal_app/src/client/bridge_client.dart'
+    show ProjectSettingsVersion;
+import 'package:marshal_app/src/client/contract.g.dart' as contract;
+import 'package:marshal_app/src/model/inbox_model.dart';
+import 'package:marshal_app/src/model/place.dart';
+import 'package:marshal_app/src/model/project_model.dart';
+import 'package:marshal_app/src/model/work_item_model.dart'
+    show Stage, WorkItemView;
+import 'package:marshal_app/src/ui/kit/kit.dart';
+import 'package:marshal_app/src/ui/project/project_page.dart';
+import 'package:marshal_app/src/ui/sections/unsaved_guard.dart';
+import 'package:marshal_app/src/ui/shell/shell.dart';
+
+import '../../model/support.dart'
+    show FixtureHost, ModelFixture, agent, factoryItem, project;
+
+/// The moment the page's fixtures are measured against.
+final _now = DateTime.utc(2026, 11, 17, 4, 12);
+
+/// A project's settings with a repository to discover and a factory default
+/// block, and health and runs beside them.
+ProjectModel _model() => ProjectModel(
+  root: '/home/u/alpha',
+  name: 'alpha',
+  now: () => _now,
+  read: () async => ProjectSettingsVersion(
+    settings: contract.ProjectSettings.fromJson({
+      'routing': {'profile': 'balanced'},
+      'mode': 'act',
+      'intake': {'repoId': 'repo-1'},
+      'factoryDefaults': {'targetBranch': 'main', 'maxRounds': 3},
+    }),
+    etag: 'v1',
+  ),
+  write: (next, etag) async =>
+      ProjectSettingsVersion(settings: next, etag: 'v2'),
+  readHealth: () async => contract.ProjectHealth.fromJson({
+    'gateRunnable': 'yes',
+    'mirrorFresh': <Object?>[],
+    'orphanWorktrees': <Object?>[],
+    'trust': 'trusted',
+    'verify': {'build': 'go build ./...', 'test': ''},
+  }),
+  readRuns: () async => const <contract.RunListEntry>[],
+  discover: (repoID) async => contract.DiscoveryReport.fromJson({
+    'repoId': repoID,
+    'forge': 'github',
+    'status': 'ok',
+    'branch': 'main',
+    'revision': 'abc1234f',
+    'capabilities': [
+      {'key': 'forge_metadata', 'state': 'supported', 'detail': 'It answered'},
+    ],
+    'facts': <Object?>[],
+    'recommended': <Object?>[],
+    'gaps': <Object?>[],
+  }),
+);
+
+/// A page tall enough that its discovery action is on screen.
+Future<void> _pumpTall(WidgetTester tester, Widget page) async {
+  tester.view.physicalSize = const Size(1440, 2400);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  await tester.pumpWidget(EmberApp(brightness: Brightness.light, home: page));
+  await tester.pump();
+}
+
+void main() {
+  testWidgets('board columns follow stage', (tester) async {
+    await _pumpTall(
+      tester,
+      ProjectPage(
+        model: _model(),
+        items: [
+          for (final item in [
+            factoryItem(
+              id: 'item-1',
+              title: 'Draft the intake',
+              state: 'queued',
+            ),
+            factoryItem(
+              id: 'item-2',
+              title: 'Reliable session recovery',
+              state: 'implementing',
+            ),
+            factoryItem(
+              id: 'item-3',
+              title: 'Review the inspector',
+              state: 'reviewing',
+            ),
+            factoryItem(id: 'item-4', title: 'Ready to land', state: 'ready'),
+          ])
+            WorkItemView.of('local', item),
+        ],
+        now: _now,
+      ),
+    );
+
+    for (final (stage, title) in [
+      (Stage.plan, 'Draft the intake'),
+      (Stage.implement, 'Reliable session recovery'),
+      (Stage.review, 'Review the inspector'),
+      (Stage.ready, 'Ready to land'),
+    ]) {
+      expect(
+        find.descendant(
+          of: find.byKey(ValueKey(stage)),
+          matching: find.text(title),
+        ),
+        findsOneWidget,
+        reason: '$title belongs in the ${stage.name} column',
+      );
+    }
+    // A column holds only its own stage's work.
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey(Stage.plan)),
+        matching: find.text('Ready to land'),
+      ),
+      findsNothing,
+    );
+  });
+
+  testWidgets('discovery shows its report', (tester) async {
+    final model = _model();
+    await _pumpTall(
+      tester,
+      ProjectPage(model: model, initialTab: 3, now: _now),
+    );
+    await tester.pump();
+
+    expect(find.text('Run discovery'), findsOneWidget);
+    await tester.tap(find.text('Run discovery'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('DISCOVERY REPORT'), findsOneWidget);
+    expect(find.text('forge_metadata'), findsOneWidget);
+    expect(find.text('supported'), findsOneWidget);
+    expect(model.discovery, isNotNull);
+  });
+
+  testWidgets('unsaved edits ask before leaving', (tester) async {
+    final model = _model();
+    final guard = UnsavedGuard();
+    addTearDown(guard.dispose);
+    bool? left;
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Builder(
+          builder: (context) => Column(
+            children: [
+              Btn(
+                'Leave',
+                onTap: () async => left = await guard.confirm(context),
+              ),
+              Expanded(
+                child: ProjectPage(
+                  model: model,
+                  guard: guard,
+                  initialTab: 2,
+                  now: _now,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(guard.hasUnsavedEdits, isFalse);
+
+    // The page watches the model while it is mounted, so an edit is the
+    // guard's to ask about.
+    model.setRounds('7');
+    await tester.pump();
+    expect(guard.hasUnsavedEdits, isTrue);
+
+    await tester.tap(find.text('Leave'));
+    await tester.pumpAndSettle();
+    expect(find.text('Leave without saving?'), findsOneWidget);
+
+    await tester.tap(find.text('Keep editing'));
+    await tester.pumpAndSettle();
+    expect(left, isFalse);
+    expect(model.draft!.rounds, '7');
+  });
+
+  testWidgets('the project place opens from the shell', (tester) async {
+    // The fixture bridge is real HTTP, so it is started and read outside the
+    // test's fake-async zone (test/ui/f2_flow_test.dart does the same).
+    final fixture = (await tester.runAsync(
+      () => ModelFixture.start([
+        FixtureHost(
+          name: 'local',
+          projects: [project('/home/u/alpha')],
+          // One agent keeps the shell from reading the host as unreachable;
+          // the project's own page does not depend on it.
+          agents: [agent(id: 'a-1', project: '/home/u/alpha')],
+        ),
+      ]),
+    ))!;
+    await tester.runAsync(() => fixture.refresh());
+    final inbox = InboxModel(fixture.store, client: fixture.clientFor);
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inbox,
+          projectFor: (host, root) => _model(),
+          initialPlace: const Place(PlaceKind.project, id: '/home/u/alpha'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    // The page's four tabs, not the placeholder a planned place draws. The
+    // sidebar also names Automations, so the tabs are matched inside the page.
+    final page = find.byType(ProjectPage);
+    expect(page, findsOneWidget);
+    for (final label in ['Work', 'Automations', 'Defaults', 'Health']) {
+      expect(
+        find.descendant(of: page, matching: find.text(label)),
+        findsOneWidget,
+        reason: 'the project page has a $label tab',
+      );
+    }
+  });
+}

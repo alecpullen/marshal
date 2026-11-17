@@ -73,7 +73,7 @@ var daemonStartTimeout = 5 * time.Second
 // stderr) so main.go's dispatch is uniform and tests can substitute streams.
 func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("marshal daemon: a subcommand is required (install|start|stop|status|pin|unpin|uninstall)")
+		return errors.New("marshal daemon: a subcommand is required (install|start|stop|status|pin|unpin|spawn|uninstall)")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -87,10 +87,12 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return runDaemonPin(ctx, rest, true, stdout, stderr)
 	case "unpin":
 		return runDaemonPin(ctx, rest, false, stdout, stderr)
+	case "spawn":
+		return runDaemonSpawn(ctx, rest, stdout, stderr)
 	case "refresh":
 		return runDaemonRefresh(ctx, rest, stderr)
 	default:
-		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|pin|unpin|uninstall)", sub)
+		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|pin|unpin|spawn|uninstall)", sub)
 	}
 }
 

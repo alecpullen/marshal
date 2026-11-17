@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../client/contract.g.dart';
+import 'age.dart';
 
 /// Whether the project states its own expected checks, or states nothing and
 /// follows the bridge's behaviour for the work.
@@ -99,8 +100,17 @@ class ObservedCheck {
   /// The round of the item that observed it.
   final int revision;
 
-  /// Where the evidence came from, in words.
-  String get provenance => 'revision $revision, observed $observedAt';
+  /// Where the evidence came from, in words: the round that saw it and how
+  /// long ago, short and relative (§8). The exact moment stays in
+  /// [observedAt].
+  String provenance(DateTime now) {
+    final at = DateTime.tryParse(observedAt);
+    if (at == null) return 'seen in round $revision';
+    final age = relativeAge(at, now);
+    return age == 'now'
+        ? 'seen in round $revision, just now'
+        : 'seen in round $revision, $age ago';
+  }
 }
 
 /// What parsing raw check text produced: the checks that parsed, the text as

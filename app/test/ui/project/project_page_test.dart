@@ -439,18 +439,26 @@ void main() {
         await _pumpTall(tester, page);
       }
       final within = find.byType(ProjectPage);
-      final identity = find.byKey(const ValueKey('identity'));
-      expect(identity, findsOneWidget, reason: narrow ? 'narrow' : 'wide');
+      // The page's header is the one place the project is named: its title and
+      // its subtitle, at every width (§1.4: quiet until it matters).
+      final header = find.byType(PageBody);
       expect(
-        find.descendant(of: identity, matching: find.text('alpha')),
-        findsOneWidget,
-        reason: 'the project\'s name, ${narrow ? 'narrow' : 'wide'}',
+        tester.widget<PageBody>(header).title,
+        'alpha',
+        reason: 'the header carries the project\'s name',
       );
       expect(
-        find.descendant(of: identity, matching: find.text('/home/u/alpha')),
-        findsOneWidget,
+        tester.widget<PageBody>(header).subtitle,
+        '/home/u/alpha',
         reason: 'the root tells two same-named projects apart',
       );
+      for (final text in ['alpha', '/home/u/alpha']) {
+        expect(
+          find.descendant(of: header, matching: find.text(text)),
+          findsOneWidget,
+          reason: '$text is drawn once, in the header',
+        );
+      }
       for (final label in ['Work', 'Automations', 'Defaults', 'Health']) {
         expect(
           find.descendant(of: within, matching: find.text(label)),
@@ -484,14 +492,17 @@ void main() {
     );
     await tester.pump();
 
-    // The identity line names it, machine path and all.
-    final identity = find.byKey(const ValueKey('identity'));
+    // The identity is the page's header: the name and the root, which is what
+    // tells two same-named projects apart.
+    final header = find.byType(PageBody);
+    expect(tester.widget<PageBody>(header).title, 'old one #2');
+    expect(tester.widget<PageBody>(header).subtitle, root);
     expect(
-      find.descendant(of: identity, matching: find.text('old one #2')),
+      find.descendant(of: header, matching: find.text('old one #2')),
       findsOneWidget,
     );
     expect(
-      find.descendant(of: identity, matching: find.text(root)),
+      find.descendant(of: header, matching: find.text(root)),
       findsOneWidget,
     );
 
@@ -651,10 +662,11 @@ void main() {
     // The stored check is the sheet's row, its name and app kept whole.
     expect(find.text('ci:build (App 42)'), findsOneWidget);
 
-    // A commit status whose context holds a colon, added from the form.
-    await tester.tap(find.text('check_run'));
+    // A commit status whose context holds a colon, added from the form. The
+    // kinds are chosen in plain words, and stored as the wire's spelling.
+    await tester.tap(find.text('Check run'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('commit_status'));
+    await tester.tap(find.text('Commit status'));
     await tester.pumpAndSettle();
     await _enter(tester, 'Name', 'ci:lint:repo');
     await tester.tap(find.text('Add the check'));
@@ -720,6 +732,63 @@ void main() {
     expect(written, isEmpty, reason: 'nothing unparsed reached the bridge');
   });
 
+  testWidgets('rows mode over text it cannot read offers no way to lose it', (
+    tester,
+  ) async {
+    final model = _model();
+    await _openChecks(tester, model);
+
+    // Rows hands over to the raw lines, which is where a person types.
+    await tester.tap(find.text('Rows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Raw text'));
+    await tester.pumpAndSettle();
+    await _enter(tester, 'Checks', 'nonsense');
+    final typed = model.draft!.expectedChecksText;
+    final dirtyAfterTyping = model.dirty;
+
+    // Back to rows: the text parses to no check, so the sheet says so in
+    // the parser's own words rather than claiming nothing is stated. An add
+    // form here would rewrite the text from the empty parse and lose it.
+    await tester.tap(find.text('Raw text'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rows'));
+    await tester.pumpAndSettle();
+
+    expect(
+      model.draft!.expectedChecksText,
+      typed,
+      reason: 'switching to rows leaves the typed text byte for byte',
+    );
+    expect(
+      model.dirty,
+      dirtyAfterTyping,
+      reason: 'merely viewing the unreadable text does not dirty the draft',
+    );
+    expect(find.textContaining('"nonsense" is neither'), findsOneWidget);
+    expect(
+      find.text('No check is stated.'),
+      findsNothing,
+      reason: 'the sheet does not claim the project states no check',
+    );
+    expect(
+      find.text('Add the check'),
+      findsNothing,
+      reason: 'no add form over text that cannot be read',
+    );
+    expect(
+      find.text('Show checks observed in this project'),
+      findsNothing,
+      reason: 'no suggestion list that would rewrite the text',
+    );
+
+    // The one way on is the text itself, still holding what was typed.
+    await tester.tap(find.text('Edit the text as raw lines'));
+    await tester.pumpAndSettle();
+    expect(find.text('nonsense'), findsOneWidget);
+    expect(model.draft!.expectedChecksText, typed);
+  });
+
   testWidgets('observed checks are offered only when asked, and added one at '
       'a time', (tester) async {
     final written = <Map<String, dynamic>>[];
@@ -744,16 +813,15 @@ void main() {
     await tester.pumpAndSettle();
 
     // Both are listed, told apart by their app, and each says where it came
-    // from.
+    // from: the round, and how long ago (§8: never a raw timestamp).
     expect(find.text('ci/build (App 11)'), findsOneWidget);
     expect(find.text('ci/build (App 12)'), findsOneWidget);
+    expect(find.text('seen in round 2, 1h 12m ago'), findsOneWidget);
+    expect(find.text('seen in round 3, 12m ago'), findsOneWidget);
     expect(
-      find.text('revision 2, observed 2026-11-17T03:00:00Z'),
-      findsOneWidget,
-    );
-    expect(
-      find.text('revision 3, observed 2026-11-17T04:00:00Z'),
-      findsOneWidget,
+      find.textContaining('2026-11-17T'),
+      findsNothing,
+      reason: 'no raw timestamp in person-facing copy',
     );
     expect(
       find.text(
@@ -792,7 +860,7 @@ void main() {
 
     // The add form is still there, and still the way in.
     await _enter(tester, 'Name', 'build');
-    await _enter(tester, 'GitHub App ID', '42');
+    await _enter(tester, 'App id', '42');
     await tester.tap(find.text('Add the check'));
     await tester.pumpAndSettle();
 

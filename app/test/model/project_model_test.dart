@@ -595,5 +595,41 @@ void main() {
         isNot(const ExpectedCheck(kind: 'check_run', name: 'build', appID: 42)),
       );
     });
+
+    test(
+      'observed evidence says its round and how long ago, never a stamp',
+      () {
+        final now = DateTime.utc(2026, 11, 17, 4, 12);
+        const check = ExpectedCheck(
+          kind: 'check_run',
+          name: 'build',
+          appID: 42,
+        );
+        expect(
+          const ObservedCheck(
+            check: check,
+            observedAt: '2026-11-17T03:00:00Z',
+            revision: 2,
+          ).provenance(now),
+          'seen in round 2, 1h 12m ago',
+        );
+        expect(
+          const ObservedCheck(
+            check: check,
+            observedAt: '2026-11-17T04:11:30Z',
+            revision: 3,
+          ).provenance(now),
+          'seen in round 3, just now',
+        );
+        expect(
+          const ObservedCheck(
+            check: check,
+            observedAt: 'not a time',
+            revision: 4,
+          ).provenance(now),
+          'seen in round 4',
+        );
+      },
+    );
   });
 }

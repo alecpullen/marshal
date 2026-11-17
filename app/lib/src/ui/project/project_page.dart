@@ -21,10 +21,10 @@ import 'status.dart';
 /// conditional write the bridge requires, asking before leaving an unsaved
 /// edit. Health reports what the bridge can see and offers discovery.
 ///
-/// The line above the sections names where the person is — the project's
-/// name with its root, so two same-named projects are told apart — and a
-/// project that cannot be reached is called out once, above the sections,
-/// whatever one is open.
+/// The line above the sections names what the section is for, and the page's
+/// own header carries the project's name with its root, so two same-named
+/// projects are told apart. A project that cannot be reached is called out
+/// once, above the sections, whatever one is open.
 ///
 /// The page takes the model and the views the shell holds and never fetches:
 /// the factory store is the one reader of the item list (F6 decision 14), and
@@ -131,19 +131,6 @@ class _ProjectPageState extends State<ProjectPage> {
       width: PageWidth.full,
       actions: _actions(),
       children: [
-        // Where the person is, without reading a machine path: the
-        // project's name beside its root, so two same-named projects are
-        // told apart. Wrap, with its default alignment: the roles differ
-        // in size, and the row wraps on a narrow width.
-        Wrap(
-          key: const ValueKey('identity'),
-          spacing: Space.s8,
-          children: [
-            Text(model.name, style: e.bodyStrong),
-            Text(model.root, style: e.monoSmall.tint(e.muted)),
-          ],
-        ),
-        const SizedBox(height: Space.s16),
         if (widget.state == StateKind.unavailable) ...[
           // An unreachable project is called out once, above the sections,
           // whichever one is open (§7: unavailable replaces the content, so

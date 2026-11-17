@@ -432,7 +432,11 @@ class DefaultsTab extends StatelessWidget {
       Sheet(
         title: 'Expected checks',
         actions: [Btn('Done', onTap: () => Navigator.maybePop(context))],
-        child: _ChecksSheet(model: model, observedChecks: observedChecks),
+        child: _ChecksSheet(
+          model: model,
+          observedChecks: observedChecks,
+          now: _now,
+        ),
       ),
     ),
   );
@@ -503,21 +507,32 @@ class DefaultsTab extends StatelessWidget {
 /// offered last and only when the person asks.
 ///
 /// Every render reads [ProjectModel.draft], and every edit is one model call,
-/// so the two modes cannot disagree about what is stated and switching from
-/// one to the other never drops a keystroke. The sheet listens to the model
-/// itself because it lives in an overlay route, outside the tab's rebuild.
+/// so switching from one mode to the other never drops a keystroke and raw
+/// mode always shows the draft's own text. Rows mode can only show what that
+/// text parses to: while it cannot be read as any check at all, rows mode
+/// states the parser's reason and offers the way back to the text instead of
+/// a list and an add form, which would rewrite the text from what parsed and
+/// lose the rest. The sheet listens to the model itself because it lives in
+/// an overlay route, outside the tab's rebuild.
 ///
 /// The recorded checks are evidence, never the requirement: each is listed
-/// with the round and the moment that saw it, it is added only when chosen,
+/// with the round that saw it and how long ago, it is added only when chosen,
 /// and a project with nothing recorded says so instead of looking for any.
 class _ChecksSheet extends StatefulWidget {
-  const _ChecksSheet({required this.model, required this.observedChecks});
+  const _ChecksSheet({
+    required this.model,
+    required this.observedChecks,
+    required this.now,
+  });
 
   final ProjectModel model;
 
   /// The checks the project's recorded work observed, as the factory store
   /// reported them; empty when it observed none.
   final List<ObservedCheck> observedChecks;
+
+  /// What a relative age is measured against.
+  final DateTime now;
 
   @override
   State<_ChecksSheet> createState() => _ChecksSheetState();
@@ -597,11 +612,22 @@ class _ChecksSheetState extends State<_ChecksSheet> {
         ),
         const SizedBox(height: Space.s12),
         if (_raw) _rawMode(context, draft) else _rowsMode(context, draft),
-        const SizedBox(height: Space.s20),
-        ..._suggestions(context),
+        // Text that cannot be read offers no mutation: adding a check here
+        // would rewrite it from the empty parse and lose what was typed.
+        if (_raw || !_unreadable(draft)) ...[
+          const SizedBox(height: Space.s20),
+          ..._suggestions(context),
+        ],
       ],
     );
   }
+
+  /// Whether the draft states its own checks in text that cannot be read as
+  /// any check. Rows mode has nothing to list for it and nothing safe to add
+  /// to it.
+  static bool _unreadable(ProjectDraft draft) =>
+      draft.expectedChecksChoice == ExpectedChecksChoice.custom &&
+      parseExpectedChecks(draft.expectedChecksText).error != null;
 
   /// Switches how the one draft is shown. Nothing is reset: rows mode reads
   /// the draft's checks and raw mode reads its text, and both are the draft.
@@ -612,9 +638,36 @@ class _ChecksSheetState extends State<_ChecksSheet> {
     });
   }
 
-  /// The draft's checks as rows, then the form that adds one.
+  /// The draft's checks as rows, then the form that adds one. Text that cannot
+  /// be read as any check is stated in the parser's own words instead, with
+  /// the one way back to the text that would fix it.
   Widget _rowsMode(BuildContext context, ProjectDraft draft) {
     final e = Ember.of(context);
+    final unreadable = _unreadable(draft);
+    if (unreadable) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'The stored text cannot be read as checks:',
+            style: e.small.tint(e.muted),
+          ),
+          const SizedBox(height: Space.s4),
+          Text(
+            parseExpectedChecks(draft.expectedChecksText).error!,
+            style: e.small.tint(e.err),
+          ),
+          const SizedBox(height: Space.s8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Btn(
+              'Edit the text as raw lines',
+              onTap: () => _mode(raw: true),
+            ),
+          ),
+        ],
+      );
+    }
     final checks = draft.expectedChecks;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -689,7 +742,7 @@ class _ChecksSheetState extends State<_ChecksSheet> {
         Menu(
           choices: [
             MenuChoice(
-              ExpectedCheck.checkRunKind,
+              _kindWords(ExpectedCheck.checkRunKind),
               'An app check, told apart by the app that runs it',
               onSelect: () => setState(() {
                 _kind = ExpectedCheck.checkRunKind;
@@ -697,7 +750,7 @@ class _ChecksSheetState extends State<_ChecksSheet> {
               }),
             ),
             MenuChoice(
-              ExpectedCheck.commitStatusKind,
+              _kindWords(ExpectedCheck.commitStatusKind),
               'A status the forge reports under its own context',
               onSelect: () => setState(() {
                 _kind = ExpectedCheck.commitStatusKind;
@@ -706,7 +759,7 @@ class _ChecksSheetState extends State<_ChecksSheet> {
             ),
           ],
           anchor: (context, toggle) =>
-              Btn(_kind, icon: Glyphs.chevron_down, onTap: toggle),
+              Btn(_kindWords(_kind), icon: Glyphs.chevron_down, onTap: toggle),
         ),
         const SizedBox(height: Space.s12),
         Field(
@@ -718,7 +771,7 @@ class _ChecksSheetState extends State<_ChecksSheet> {
         if (checkRun) ...[
           const SizedBox(height: Space.s12),
           Field(
-            label: 'GitHub App ID',
+            label: 'App id',
             controller: _appID,
             hint: '42',
             onChanged: (_) => _clearAddError(),
@@ -747,6 +800,11 @@ class _ChecksSheetState extends State<_ChecksSheet> {
     if (_addError != null) setState(() => _addError = null);
   }
 
+  /// The words a check's kind is chosen by. The wire's spelling stays in
+  /// [_kind], which is what the check stores.
+  static String _kindWords(String kind) =>
+      kind == ExpectedCheck.commitStatusKind ? 'Commit status' : 'Check run';
+
   /// Adds the form's check, or says why it cannot be added: nothing reaches
   /// the draft until the check is one the project can store.
   void _add() {
@@ -756,7 +814,7 @@ class _ChecksSheetState extends State<_ChecksSheet> {
     final error = name.isEmpty
         ? 'A check needs a name.'
         : checkRun && appID <= 0
-        ? 'A check run needs the positive GitHub App ID that runs it.'
+        ? 'A check run needs the app id that runs it, as a positive number.'
         : null;
     if (error != null) {
       setState(() => _addError = error);
@@ -802,7 +860,7 @@ class _ChecksSheetState extends State<_ChecksSheet> {
         for (final observed in widget.observedChecks)
           RowItem(
             name: observed.check.words,
-            description: observed.provenance,
+            description: observed.provenance(widget.now),
             value: 'Add',
             onTap: () => _addObserved(observed.check),
           ),

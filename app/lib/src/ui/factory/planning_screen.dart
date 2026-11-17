@@ -33,6 +33,12 @@ class PlanningScreen extends StatefulWidget {
   final String title;
 
   /// One line beneath the title: the planner's access mode and where it runs.
+  ///
+  /// Kept for callers, and no longer drawn: the context strip states the
+  /// connection, the mode (confirmed or only requested) and the workspace from
+  /// the record itself, so a caller-supplied sentence — which cannot tell a
+  /// requested mode from one in force — would be a second, softer claim about
+  /// the same three facts.
   final String? subtitle;
 
   /// The thread's data state, when it is not ready (§7).
@@ -92,7 +98,6 @@ class _PlanningScreenState extends State<PlanningScreen> {
     }
     return PageBody(
       title: widget.title,
-      subtitle: widget.subtitle,
       width: PageWidth.full,
       actions: [
         if (widget.onHandToFactory != null)
@@ -120,6 +125,8 @@ class _PlanningScreenState extends State<PlanningScreen> {
             ),
           const SizedBox(height: Space.s8),
         ],
+        _contextStrip(model),
+        const SizedBox(height: Space.s8),
         _conversation(model),
         if (model.failure != null) ...[
           const SizedBox(height: Space.s8),
@@ -139,13 +146,71 @@ class _PlanningScreenState extends State<PlanningScreen> {
               ? 'Steer the planner…'
               : 'Describe the work to plan…',
           running: model.running,
-          mode: _modeWords(model),
+          mode: model.modeWords,
           onSend: model.running ? null : _send,
           onStop: model.running ? () => unawaited(model.cancel()) : null,
         ),
       ],
     );
   }
+
+  /// The session's own facts, in a strip directly above the conversation:
+  /// whether it is connected, the mode and whether the bridge confirmed it,
+  /// and the workspace it runs in.
+  ///
+  /// Every fact is words first — a chip's colour is never the only thing it
+  /// says (design-system.md §2) — and the tooltip says what the fact means for
+  /// the person rather than repeating the words beside it (§9). Nothing here
+  /// is guessed: each chip is one field of the record, or says that the record
+  /// has not been read.
+  Widget _contextStrip(PlanningModel model) {
+    final connection = model.connection;
+    final waiting = model.waiting;
+    return Wrap(
+      spacing: Space.s8,
+      runSpacing: Space.s6,
+      children: [
+        Pill(connection.label, tooltip: connection.note),
+        Pill.icon(
+          model.modeWords,
+          icon: Glyphs.shield,
+          tooltip: _modeNote(model),
+        ),
+        Pill(
+          model.workspaceWords,
+          mono: model.workspace != null,
+          tooltip: _workspaceNote(model),
+        ),
+        if (waiting > 0)
+          Pill(
+            '$waiting ${waiting == 1 ? 'request' : 'requests'} waiting on you',
+          ),
+      ],
+    );
+  }
+
+  /// What the mode chip means: the mode in force, or why the one asked for is
+  /// not in force yet.
+  static String _modeNote(PlanningModel model) => switch ((
+    model.confirmedMode,
+    model.requestedMode,
+  )) {
+    (_?, _) =>
+      'The bridge confirmed it: this is the mode the session runs '
+          'under.',
+    (null, _?) =>
+      'Only asked for: the bridge has not confirmed it, so it is not in force.',
+    _ => 'No planner record has been read, so no mode is stated as in force.',
+  };
+
+  /// What the workspace chip means.
+  static String _workspaceNote(PlanningModel model) =>
+      switch ((model.workspace, model.view)) {
+        (_?, _) => 'Where this planner’s edits land.',
+        (null, null) =>
+          'No planner record has been read, so the workspace is not known.',
+        _ => 'The planner’s record names no workspace, so none is stated here.',
+      };
 
   /// The conversation: one row per journaled thing that happened.
   Widget _conversation(PlanningModel model) {
@@ -195,9 +260,18 @@ class _PlanningScreenState extends State<PlanningScreen> {
     final e = Ember.of(context);
     final latest = model.latest;
     if (latest == null) {
-      return Text(
-        'No snapshot yet. Handing off freezes the plan and the spec.',
-        style: e.body.tint(e.muted),
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'No snapshot yet. Handing off freezes the plan and the spec.',
+            style: e.body.tint(e.muted),
+          ),
+          if (widget.onHandToFactory != null) ...[
+            const SizedBox(height: Space.s6),
+            Text(_handoffNote(latest), style: e.small.tint(e.muted)),
+          ],
+        ],
       );
     }
     final plan = latest.plan.trim();
@@ -234,8 +308,31 @@ class _PlanningScreenState extends State<PlanningScreen> {
               ),
             ),
         ],
+        if (widget.onHandToFactory != null) ...[
+          const SizedBox(height: Space.s6),
+          Text(_handoffNote(latest), style: e.small.tint(e.muted)),
+        ],
       ],
     );
+  }
+
+  /// What the handoff action does, in plain words, and where it leaves this
+  /// conversation: the review opens over this screen and closing the review
+  /// returns to it, with everything the screen holds still here.
+  ///
+  /// The action itself belongs to the place that owns the sheet, and its
+  /// wording belongs to the review; this is only the sentence that says what
+  /// it is for, so the person does not have to guess where it leads.
+  String _handoffNote(PlannerSnapshot? latest) {
+    // With no snapshot the line above already says what handing off freezes;
+    // this adds only where it leaves the person.
+    final opened = latest == null
+        ? ''
+        : 'Handing off opens the factory review with snapshot '
+              '${_short(latest.sha256)}. ';
+    return '$opened'
+        'Closing the review brings you back here: this conversation, its '
+        'requests and your draft stay.';
   }
 
   /// One request as the kit's ask card: a permission takes allow or deny, a
@@ -324,14 +421,6 @@ class _PlanningScreenState extends State<PlanningScreen> {
     }
     return _now;
   }
-
-  /// The planner's access mode in the design system's words.
-  String _modeWords(PlanningModel model) => switch (model.view?.requestedMode) {
-    'bypassPermissions' => 'Permissive',
-    'default' => 'Restricted',
-    final mode? => mode,
-    null => 'Permissive',
-  };
 
   /// A digest short enough for a line: the first eight characters.
   static String _short(String hash) =>

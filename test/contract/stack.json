@@ -1,0 +1,310 @@
+{
+  "StackSnapshot": {
+    "sessionId": "s-1",
+    "rev": 1,
+    "roots": [
+      "turn:1"
+    ],
+    "nodes": [
+      {
+        "id": "turn:1",
+        "kind": "turn",
+        "children": [
+          "step:1",
+          "tool:1:call_0"
+        ]
+      },
+      {
+        "id": "step:1",
+        "kind": "step",
+        "parent": "turn:1",
+        "step": {
+          "headline": "Reading the parser.",
+          "stepIds": [
+            1
+          ],
+          "owner": "assistant",
+          "roleWord": "assistant",
+          "role": "assistant",
+          "model": "qwen3-coder",
+          "provider": "local",
+          "startedAt": 1700000000000,
+          "endedAt": 1700000009000,
+          "narration": [
+            "Reading the parser."
+          ]
+        }
+      },
+      {
+        "id": "tool:1:call_0",
+        "kind": "tool",
+        "parent": "turn:1",
+        "tool": {
+          "name": "file.read",
+          "display": "Read file",
+          "verb": "read",
+          "calls": [
+            {
+              "callId": "call_0",
+              "output": "package parser\n",
+              "approval": "allow",
+              "durationMs": 40,
+              "at": 1700000002000
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "StackPatch": {
+    "kind": "stack_patch",
+    "rev": 2,
+    "baseRev": 1,
+    "roots": [
+      "turn:1"
+    ],
+    "upsert": [
+      {
+        "id": "turn:1",
+        "kind": "turn",
+        "children": [
+          "step:1",
+          "tool:1:call_0",
+          "tool:1:call_1"
+        ]
+      },
+      {
+        "id": "tool:1:call_1",
+        "kind": "tool",
+        "parent": "turn:1",
+        "tool": {
+          "name": "shell.run",
+          "display": "Run command",
+          "verb": "shell",
+          "calls": [
+            {
+              "callId": "call_1",
+              "output": "ok\n",
+              "exitCode": 0,
+              "approval": "allow",
+              "durationMs": 1200,
+              "at": 1700000004000,
+              "subject": "run"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "WireNode": {
+    "id": "turn:1",
+    "kind": "turn",
+    "children": [
+      "step:1",
+      "tool:1:call_0"
+    ],
+    "live": true,
+    "version": "9f2c1ab4"
+  },
+  "WireStep": {
+    "headline": "Reading the parser.",
+    "rest": "then the lexer",
+    "stepIds": [
+      1
+    ],
+    "owner": "assistant",
+    "roleWord": "assistant",
+    "role": "assistant",
+    "model": "qwen3-coder",
+    "provider": "local",
+    "todoId": "t1",
+    "todo": {
+      "id": "t1",
+      "index": 1,
+      "total": 3,
+      "content": "Write the rows"
+    },
+    "startedAt": 1700000000000,
+    "endedAt": 1700000009000,
+    "thoughts": [
+      {
+        "text": "The parser is the first stop.",
+        "durationMs": 2200
+      }
+    ],
+    "narration": [
+      "Reading the parser."
+    ]
+  },
+  "WireTodoLabel": {
+    "id": "t1",
+    "index": 1,
+    "total": 3,
+    "content": "Write the rows"
+  },
+  "WireThought": {
+    "text": "The parser is the first stop.",
+    "durationMs": 2200
+  },
+  "WireTool": {
+    "name": "shell.run",
+    "display": "Run command",
+    "verb": "shell",
+    "workKey": "work-7",
+    "calls": [
+      {
+        "callId": "call_1",
+        "output": "ok\n",
+        "exitCode": 0,
+        "approval": "allow",
+        "durationMs": 1200,
+        "at": 1700000004000
+      }
+    ],
+    "running": {
+      "target": "/home/u/src/marshal/app",
+      "output": "line 1\n",
+      "startedAt": 1700000004000,
+      "subject": "/home/u/src/marshal/app",
+      "callId": "call_2",
+      "args": "{\"command\":\"go test\"}"
+    },
+    "subagentId": 3,
+    "callers": true
+  },
+  "WireCall": {
+    "callId": "call_1",
+    "target": "app/lib/src/ui/thread/transcript.dart",
+    "args": "{\"path\":\"app/lib/src/ui/thread/transcript.dart\"}",
+    "summary": "Write 412 bytes",
+    "output": "ok\n",
+    "exitCode": 0,
+    "approval": "allow",
+    "risk": "low",
+    "files": [
+      "app/lib/src/ui/thread/transcript.dart"
+    ],
+    "role": "implementer",
+    "notice": "the file was created",
+    "durationMs": 1200,
+    "at": 1700000004000,
+    "truncated": true,
+    "subject": "transcript.dart",
+    "summaryLine": "Write 412 bytes",
+    "diffStat": "+24 −0",
+    "hookHint": "hooks: allow",
+    "jobId": "job-3",
+    "tail": [
+      "ok"
+    ]
+  },
+  "WireRunning": {
+    "target": "/home/u/src/marshal/app",
+    "output": "line 1\n",
+    "startedAt": 1700000004000,
+    "subject": "/home/u/src/marshal/app",
+    "callId": "call_2",
+    "args": "{\"command\":\"go test\"}"
+  },
+  "WireCompletion": {
+    "source": "job",
+    "id": "job-3",
+    "label": "shell.run",
+    "outcome": "done",
+    "exitCode": 0,
+    "startedAt": 1700000004000,
+    "endedAt": 1700000005000,
+    "durationMs": 1000,
+    "measure": "3/3 tasks",
+    "summary": "the suite passed",
+    "command": "go vet ./...",
+    "cwd": "/home/u/src/marshal",
+    "output": "ok\n",
+    "workKey": "work-7",
+    "executionId": "exec-2"
+  },
+  "WirePlan": {
+    "status": [
+      "completed",
+      "in_progress",
+      "pending"
+    ],
+    "done": 1,
+    "total": 3,
+    "active": 2,
+    "activeText": "Write the rows"
+  },
+  "WireMessage": {
+    "role": "assistant",
+    "content": "Reading the parser.",
+    "final": true,
+    "usage": "12.4k in, 1.1k out",
+    "thinkMs": 2200,
+    "at": 1700000000000
+  },
+  "WireThinking": {
+    "text": "The parser is the first stop.",
+    "durationMs": 2200,
+    "startedAt": 1700000000000
+  },
+  "WireRunEvent": {
+    "kind": "verifyFailed",
+    "taskN": 2,
+    "title": "go vet ./...",
+    "detail": "one package does not compile",
+    "severity": "error",
+    "at": 1700000009000,
+    "bodyLines": 12
+  },
+  "WireBand": {
+    "done": 1,
+    "total": 3,
+    "active": "Write the rows",
+    "stale": true,
+    "staleAgeMs": 65000,
+    "staleSince": 1700000000000,
+    "next": [
+      "Run the tests"
+    ],
+    "tasks": [
+      {
+        "id": "t1",
+        "content": "Write the rows",
+        "status": "in_progress",
+        "startedAt": 1700000000000,
+        "steps": 2,
+        "ref": "step:1"
+      }
+    ],
+    "entities": [
+      {
+        "ref": "job:3",
+        "label": "shell.run",
+        "detail": "go vet ./...",
+        "startedAt": 1700000004000
+      }
+    ]
+  },
+  "WireTask": {
+    "id": "t1",
+    "content": "Write the rows",
+    "status": "in_progress",
+    "startedAt": 1700000000000,
+    "steps": 2,
+    "ref": "step:1"
+  },
+  "WireBandEntity": {
+    "ref": "job:3",
+    "label": "shell.run",
+    "detail": "go vet ./...",
+    "startedAt": 1700000004000
+  },
+  "WireReceipt": {
+    "durationMs": 95000,
+    "tasks": 2,
+    "steps": 4,
+    "tools": 3,
+    "files": 2,
+    "usage": "12.4k in, 1.1k out"
+  }
+}

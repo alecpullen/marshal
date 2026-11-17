@@ -12,9 +12,10 @@
   import ReviewView from '../lib/factory/ReviewView.svelte'
   import Button from '../lib/ui/Button.svelte'
   import AgentConversation from '../lib/session/AgentConversation.svelte'
+  import MarshalAccessPanel from '../lib/marshal/MarshalAccessPanel.svelte'
   import FactoryRevision from '../lib/FactoryRevision.svelte'
   import { APIError, commandFactoryItem, errMessage, factoryRevisionCommand, getProjectSettings, listClients } from '../lib/api'
-  import { effectiveAutoAssess, provenanceLine } from '../lib/factory'
+  import { delegatedState, effectiveAutoAssess, provenanceLine, workerChildren, workerDelegated, workerIsReviewer, workerRoleLabel } from '../lib/factory'
   import { formatChatRoute, formatFactoryRoute, parseFactoryRoute } from '../lib/routes'
   import type { DockTabParam } from '../lib/routes'
   import { defaultFactoryItemView } from '../lib/studio/model'
@@ -32,6 +33,8 @@
     implementerRouting?: Record<string, unknown>
     reviewerRouting?: Record<string, unknown>
     confirmPreviousWorkerStopped?: boolean
+    /** The settings version the reviewer displayed; an approval echoes it back. */
+    settingsVersion?: string
     /** A revision lifecycle command's own half, sent beside the envelope. */
     revision?: FactoryRevisionCommand
     /** A completion command's own half, sent beside the envelope. */
@@ -210,6 +213,12 @@
   */
   let pending = $state<FactoryCommand | null>(null)
   let alive = true
+  /**
+   * A settings-version refusal the bridge reported on an approval: the version
+   * this page displayed, which the review names back. It is cleared by the
+   * review's own reload, so the card cannot outlive the settings it describes.
+   */
+  let approvalConflict = $state<{ reviewed: string } | null>(null)
   /*
     Client names decorate provenance: a failed read leaves the stable IDs,
     which are still accurate, so this never becomes a page error.
@@ -271,15 +280,28 @@
       // carries what the bridge just wrote.
       return applied
     } catch (e) {
-      error = errMessage(e)
+      const message = errMessage(e)
+      error = message
       if (e instanceof APIError && e.status === 409) {
+        // A settings-version refusal names the version it compared, so the
+        // review that displayed that version shows the conflict card naming
+        // both — not a bare error line. A stale item version has no such name
+        // and keeps the refresh receipt below.
+        const settingsMoved = kind === 'approve' && !!input.settingsVersion && message.includes('settings changed since review')
+        if (settingsMoved) { approvalConflict = { reviewed: input.settingsVersion ?? '' }; error = '' }
         // Only the obsolete command is dropped: the panel that submitted it
         // stays mounted, so the person keeps their input and retries it
         // against the version the refresh just showed them.
         pending = null
         // Awaited, and its own failure reported: a stale command must say so
         // rather than leave the person on a version that cannot succeed.
-        try { await onRefresh(); notice = 'Item changed. Review the refreshed version before trying again.' } catch (refreshError) { error += `; refresh failed: ${errMessage(refreshError)}` }
+        try {
+          await onRefresh()
+          if (!settingsMoved) notice = 'Item changed. Review the refreshed version before trying again.'
+        } catch (refreshError) {
+          const failed = `refresh failed: ${errMessage(refreshError)}`
+          error = error ? `${error}; ${failed}` : failed
+        }
       }
       return null
     } finally { busy = false }
@@ -344,7 +366,21 @@
     {#if selectedView === 'approval'}
       {#if item.state === 'draft'}
         <div data-testid="draft-approval">
-          <DraftApproval item={item} busy={busy} onApprove={() => void command('approve')} />
+          <!--
+            The approval hands back the settings version this review displayed,
+            which the bridge checks against the one now in force; a refusal
+            arrives as the 409 the `command` path above turns into `conflict`.
+            No capability is passed here: this page has no read of a session's
+            status, so an override the backend cannot enforce is refused
+            server-side at approval and reported from that command's error.
+          -->
+          <DraftApproval
+            item={item}
+            busy={busy}
+            conflict={approvalConflict}
+            onApprove={(version) => void command('approve', { settingsVersion: version })}
+            onReload={() => { approvalConflict = null; void onRefresh() }}
+          />
         </div>
       {:else}
         <Card class="text-sm">This item is no longer a draft, so there is nothing to approve. <a class="text-accent underline" href={activityRoute} onclick={(e) => { e.preventDefault(); onNavigate(activityRoute) }}>Go to activity</a></Card>
@@ -404,16 +440,75 @@
           {#if item.workers?.length}
             <Card data-testid="worker-links">
               <h2 class="font-semibold">Agents</h2>
-              {#each item.workers as worker}
-                <!-- A worker is opened in this item, not on the chat page: the
-                     same route, with the agent it names. Parked says so, but
-                     the retained conversation stays openable. -->
-                <a
-                  class="block text-sm text-accent underline"
-                  href={formatFactoryRoute({ itemId, view: 'activity', agent: worker.agentId })}
-                  onclick={(e) => { e.preventDefault(); onNavigate(formatFactoryRoute({ itemId, view: 'activity', agent: worker.agentId })) }}
-                >{worker.role}: {worker.agentId}{worker.parked ? ' (parked)' : ''}</a>
-              {/each}
+              <p class="text-xs text-muted">
+                A worker opens its own conversation. The children a worker delegated sit under it; the
+                factory reviewer is its own worker, never one of the implementer's children.
+              </p>
+              <ul class="grid min-w-0 gap-2 text-sm">
+                {#each item.workers as worker (worker.agentId)}
+                  {@const turn = workerDelegated(item, worker)}
+                  {@const state = delegatedState(turn)}
+                  {@const children = workerChildren(item, worker)}
+                  {@const href = formatFactoryRoute({ itemId, view: 'activity', agent: worker.agentId })}
+                  <li class="grid min-w-0 gap-1" data-testid="worker-row" data-role={worker.role}>
+                    <p class="flex min-w-0 flex-wrap items-center gap-2">
+                      <!-- A worker is opened in this item, not on the chat page:
+                           the same route, with the agent it names. Parked says
+                           so, but the retained conversation stays openable. -->
+                      <a
+                        class="break-words text-accent underline"
+                        href={href}
+                        onclick={(e) => { e.preventDefault(); onNavigate(href) }}
+                      >{workerRoleLabel(worker.role)}: {worker.agentId}</a>
+                      {#if worker.parked}<span class="text-xs text-muted">(parked)</span>{/if}
+                      {#if state}
+                        <span
+                          class="rounded bg-warn/15 px-1.5 py-px text-xs text-warn"
+                          data-testid="worker-waiting"
+                          data-state={state.state}
+                          title={state.meaning}
+                        >{state.headline}</span>
+                      {/if}
+                    </p>
+                    {#if workerIsReviewer(worker)}
+                      <!-- The factory's own reviewer: a worker of its own, so it
+                           is never nested under the implementer's children. -->
+                      <p class="text-xs text-muted" data-testid="worker-role-note">
+                        Independent of the implementer — not one of its children.
+                      </p>
+                    {:else if children.length}
+                      <ul
+                        class="ml-3 grid min-w-0 gap-1 border-l border-border pl-2"
+                        data-testid="worker-children"
+                        aria-label={`Children of ${workerRoleLabel(worker.role)}`}
+                      >
+                        {#each children as child (child.id)}
+                          <li
+                            class="flex min-w-0 flex-wrap items-center gap-2"
+                            data-testid="worker-child"
+                            data-child={child.id}
+                            data-session={child.sessionId}
+                          >
+                            <!-- A child has no route of its own: it lives in
+                                 the conversation of the session that owns it,
+                                 and child ids are session-local. -->
+                            <a
+                              class="break-words text-accent underline"
+                              href={href}
+                              aria-label={`${child.label} in ${workerRoleLabel(worker.role)}'s conversation`}
+                              onclick={(e) => { e.preventDefault(); onNavigate(href) }}
+                            >{child.label}</a>
+                            <span class="text-xs text-muted">{child.status || 'status not reported here'}</span>
+                          </li>
+                        {/each}
+                      </ul>
+                      <p class="text-xs text-muted" data-testid="worker-children-note">
+                        Delegated children of the implementer — part of this worker's run, not the factory reviewer.
+                      </p>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
             </Card>
           {/if}
           <ActivityTimeline {item} {clientNames} hidden={activityHidden} />
@@ -438,6 +533,35 @@
                 />
               {/key}
             </div>
+            <!--
+              This worker's own Studio access. It is the same control set the
+              session screen and the project settings use — only the identities
+              differ — and the bridge treats a factory worker's override as the
+              worker's, not as its session's.
+
+              Like the conversation above it, it is keyed by the worker it
+              describes. The panel loads its view and versions on mount, so a
+              switch of worker without a remount would leave the previous
+              worker's draft and override version in place while the props name
+              the new worker — and a save would then carry one worker's version
+              with another worker's identity. Layer versions are content hashes,
+              so the bridge would accept that write when the two records happen
+              to hold equal values.
+            -->
+            {#key conversationWorker.agentId}
+              <details class="mt-3" data-testid="worker-studio-access">
+                <summary class="cursor-pointer text-xs text-muted">Worker access</summary>
+                <div class="mt-2">
+                  <MarshalAccessPanel
+                    sessionId={conversationWorker.agentId}
+                    workerId={conversationWorker.agentId}
+                    levels={['session']}
+                    heading="This worker"
+                    testId="worker-marshal-access"
+                  />
+                </div>
+              </details>
+            {/key}
           {:else}
             <!-- An id the item does not carry is not quietly swapped for
                  another worker: the pane says so and offers the way back. -->

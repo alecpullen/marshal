@@ -72,3 +72,38 @@ RUN apt-get update \
 
 When a project declares an image, the agent runs inside that image and the
 verify gate can use the toolchains it provides.
+
+## The fast dev image
+
+`build/Dockerfile` is the right thing to publish and the wrong thing to run on
+every dev commit: a rebuild pulls a `golang` builder and recompiles the whole
+module. `build/Dockerfile.dev` trades that portability for speed — it `COPY`s a
+host-built binary into an image that adds only `git` and `ca-certificates`, so
+refreshing it is a copy:
+
+```bash
+scripts/dev-studio.sh --dev-image
+```
+
+Two things about it are load-bearing:
+
+- **The base must match the host's libc.** marshal links tree-sitter through
+  cgo, so the copied binary is dynamically linked against the machine that
+  built it. `debian:bookworm-slim` (glibc 2.36) cannot run a binary linked
+  against a newer host; the failure reads as `GLIBC_2.43 not found` at agent
+  start. The script derives the base from `/etc/os-release` (fedora, debian,
+  ubuntu) and accepts `--build-arg BASE_IMAGE=` when that guess is wrong.
+- **It is dev-only.** Do not publish it, and do not expect it to run on a
+  machine other than one like the machine that built it. Releases keep using
+  `build/Dockerfile`.
+
+Both images tag `ghcr.io/marshal/agent:latest`, because a source build has no
+published tag to pin to (`defaultAgentImageFor`); that is what makes the
+studio's default project settings resolve to the image built here. The dev
+image also carries a `marshal.dev.bin-mtime` label so `--status` can report
+when it was built from an older `./marshal`.
+
+The agent's `marshal` comes from the image, not from the bridge's
+`--marshal-bin`, which reaches only host-process agents. This is why the image
+is a third artifact to refresh on the dev loop, alongside the SPA and the two
+binaries.

@@ -16,7 +16,10 @@ import (
 // existing patch engine's ValidatePatch to check uniqueness, then ApplyPatch
 // to perform the replacement.
 func applyPatchOp(dir string, op *PatchOp) error {
-	path := filepath.Join(dir, op.File)
+	path, err := resolvePlanPath(dir, op.File)
+	if err != nil {
+		return fmt.Errorf("ops patch: %w", err)
+	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("ops patch: read %s: %w", op.File, err)
@@ -49,7 +52,10 @@ func applyPatchOp(dir string, op *PatchOp) error {
 // applyFileOp writes a complete new file. It refuses to overwrite an existing
 // file unless Replace is true.
 func applyFileOp(dir string, op *FileOp) error {
-	path := filepath.Join(dir, op.Path)
+	path, err := resolvePlanPath(dir, op.Path)
+	if err != nil {
+		return fmt.Errorf("ops file: %w", err)
+	}
 	if !op.Replace {
 		if _, err := os.Stat(path); err == nil {
 			return fmt.Errorf("ops file: %s already exists and replace is not set", op.Path)
@@ -185,7 +191,15 @@ func preflightOps(dir string, ops []Operation) []Diagnostic {
 	for _, op := range ops {
 		switch o := op.(type) {
 		case *PatchOp:
-			path := filepath.Join(dir, o.File)
+			path, err := resolvePlanPath(dir, o.File)
+			if err != nil {
+				o.Status = OpBlocked
+				diags = append(diags, Diagnostic{
+					Severity: DiagError,
+					Message:  fmt.Sprintf("patch: %v", err),
+				})
+				continue
+			}
 			content, err := os.ReadFile(path)
 			if err != nil {
 				o.Status = OpBlocked
@@ -215,7 +229,15 @@ func preflightOps(dir string, ops []Operation) []Diagnostic {
 			o.Status = OpExecutable
 
 		case *FileOp:
-			path := filepath.Join(dir, o.Path)
+			path, err := resolvePlanPath(dir, o.Path)
+			if err != nil {
+				o.Status = OpBlocked
+				diags = append(diags, Diagnostic{
+					Severity: DiagError,
+					Message:  fmt.Sprintf("file: %v", err),
+				})
+				continue
+			}
 			if !o.Replace {
 				if _, err := os.Stat(path); err == nil {
 					o.Status = OpBlocked

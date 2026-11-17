@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+
+	"marshal/web/bridge/contract"
 )
 
 // Worker backends are the seam under the fleet's planner: a process, a
@@ -32,15 +34,10 @@ var ErrWorkerUncertain = errors.New("worker: uncertain outcome")
 
 // WorkerCapabilities is what a running worker session can actually do. It is
 // per session rather than per backend: the same backend can offer workspace
-// edits in one session and merely prompt in another.
-type WorkerCapabilities struct {
-	Prompt             bool     `json:"prompt"`
-	Cancel             bool     `json:"cancel"`
-	PermissionRequests bool     `json:"permissionRequests"`
-	SessionLoad        bool     `json:"sessionLoad"`
-	WorkspaceEdits     bool     `json:"workspaceEdits"`
-	Modes              []string `json:"modes"`
-}
+// edits in one session and merely prompt in another. It is
+// contract.WorkerCapabilities, declared there so the planner's view of it is
+// generated for both clients.
+type WorkerCapabilities = contract.WorkerCapabilities
 
 // WorkerSessionSpec is what the planner asks a backend to start. CWD is the
 // resolved working directory on this host and is never part of the wire form.

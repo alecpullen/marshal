@@ -7,12 +7,13 @@ import (
 )
 
 // Prompt runs one turn with params.Text as the user's message. The text
-// travels as one text block, with queued and watch resume alongside it.
+// travels as one text block, with queued, images and watch resume alongside it.
 func (s *Session) Prompt(ctx context.Context, params acpwire.PromptParams) (acpwire.PromptResult, error) {
 	call := acpwire.PromptCallParams{
 		SessionID:   s.id,
 		Prompt:      []acpwire.TextBlock{{Type: "text", Text: params.Text}},
 		Queued:      params.Queued,
+		Images:      params.Images,
 		WatchResume: params.WatchResume,
 	}
 	var result acpwire.PromptResult
@@ -155,6 +156,19 @@ func (s *Session) CancelSubagent(ctx context.Context, subagentID int64) bool {
 		return false
 	}
 	return result.Cancelled
+}
+
+// SteerSubagent delivers the user's instruction to the live subagent with that
+// ID, at most once per request ID. The result's status is accepted, not
+// delivered: a replay of the same request returns the same accepted answer and
+// the child's queue is written once.
+func (s *Session) SteerSubagent(ctx context.Context, request acpwire.SubagentSteerParams) (acpwire.SubagentSteerResult, error) {
+	request.SessionID = s.id
+	var result acpwire.SubagentSteerResult
+	if err := s.conn.Call(ctx, acpwire.MethodSubagentSteer, request, &result); err != nil {
+		return acpwire.SubagentSteerResult{}, err
+	}
+	return result, nil
 }
 
 // ClearFinishedRun clears a finished run's progress and its event log.

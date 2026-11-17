@@ -162,9 +162,20 @@ func match(pattern, value string) bool {
 // decision payload while bounding the worst case.
 const maxHookOutputBytes = 1 << 20
 
+// hookWaitDelay bounds how long cmd.Wait may block after the hook's process
+// group has been killed. It covers I/O that outlives the group — a
+// descendant that escaped the group with its own setpgid keeps the stderr
+// pipe open — so a surviving descendant cannot hold the hook open (AUD-05).
+const hookWaitDelay = 2 * time.Second
+
 func runHook(ctx context.Context, command string, payload any) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Env = scrubHookEnv(os.Environ())
+	setHookProcessGroup(cmd)
+	// exec's default Cancel kills only the direct child; kill the whole
+	// group so a descendant cannot outlive the hook (AUD-05).
+	cmd.Cancel = func() error { return killHookProcessGroup(cmd) }
+	cmd.WaitDelay = hookWaitDelay
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -197,7 +208,22 @@ func runHook(ctx context.Context, command string, payload any) ([]byte, error) {
 	}()
 
 	stdout := &limitedBuffer{max: maxHookOutputBytes}
-	_, _ = io.Copy(stdout, stdoutPipe)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		_, _ = io.Copy(stdout, stdoutPipe)
+	}()
+
+	select {
+	case <-drained:
+	case <-ctx.Done():
+		// The hook outlived its budget. Terminate the whole process tree and
+		// close the pipe, so the drain cannot stay blocked on a descendant
+		// that inherited stdout and thus keeps the write end open (AUD-05).
+		_ = killHookProcessGroup(cmd)
+		_ = stdoutPipe.Close()
+		<-drained
+	}
 
 	waitErr := cmd.Wait()
 	encodeErr := <-stdinErrCh

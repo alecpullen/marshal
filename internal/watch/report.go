@@ -39,7 +39,10 @@ func Format(r Report) string {
 	if r.FiredCount > 1 {
 		b = append(b, fmt.Sprintf(" (fired %d times)", r.FiredCount)...)
 	}
-	if r.Owner != "" {
+	// Only a subagent's own tag names a subagent. A tag recorded for provenance
+	// alone — the ACP layer's "studio" — is the session's own watch, so the
+	// report must not claim a subagent fired it (review A6).
+	if subagentOwned(r.Owner) {
 		b = append(b, " (from subagent "+r.Owner+")"...)
 	}
 	return string(b)

@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/interaction"
 )
 
@@ -154,8 +155,9 @@ type Evaluation struct {
 	ExactCommandApproval bool
 }
 
-// ConfigSource returns the current config, session rules and access revision.
-type ConfigSource func() (config.Config, []string, uint64)
+// ConfigSource returns the current config, session rules, session permission
+// grants and access revision.
+type ConfigSource func() (config.Config, []string, []session.PermissionGrant, uint64)
 
 // Input is one tool invocation to evaluate.
 type Input struct {

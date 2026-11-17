@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -171,6 +172,11 @@ type Model struct {
 	host  acpclient.Host
 	sess  acpclient.Session
 	input textarea.Model
+	// pendingCommandRaw is the command line dispatchCommand is running. A
+	// refusal that fires after the Enter handler already cleared the composer
+	// reads it to put the draft back, so an argument-heavy command is not
+	// retyped (AUD-12).
+	pendingCommandRaw string
 	// pendingDraft is the draft WithDraft recorded. An Option runs before
 	// the composer exists, so New seeds the textarea and m.pastes from it
 	// once they do, and drops it then (see draft.go).
@@ -192,6 +198,19 @@ type Model struct {
 	// lspCancel is called from beginShutdown.
 	lspCtx    context.Context
 	lspCancel context.CancelFunc
+	// panelCtx is the context the docked panels derive their bounded calls
+	// from (AUD-10). It is independent of m.ctx for lspCtx's reason, and
+	// cancelled on quit and detach so a panel's write in flight returns
+	// instead of outliving the program.
+	panelCtx    context.Context
+	panelCancel context.CancelFunc
+	// browseSeq numbers browse actions (AUD-10). A queued detail gather
+	// applies its result only while it is still the newest action and has not
+	// been applied yet, so a superseded answer is dropped rather than applied.
+	// browsePending is what the status line shows while one is outstanding.
+	browseSeq     uint64
+	browseApplied uint64
+	browsePending string
 	// calls is the model's call queue (P3 R6): the converted asynchronous
 	// calls and the steps that wait behind them. Update starts the head of
 	// the queue from the Update goroutine; the call itself runs off it.
@@ -585,6 +604,20 @@ type Model struct {
 	// the input is reset.
 	pastes []pasteAttachment
 
+	// images holds the image refs the current input attaches, in the order
+	// the composer appended them. Each one has a chip in the composer's text;
+	// the refs are what a prompt sends. They are cleared with the input.
+	images []acpwire.PromptImage
+
+	// visionDraft is the prompt the last submit sent. A vision refusal puts it
+	// back in the composer and, when the session has an active route, arms the
+	// send-anyway key for it. A new prompt replaces it.
+	visionDraft *visionDraft
+
+	// imageReader reads the local clipboard for Ctrl+V. Nil means the local
+	// clipboard executable (clipboard.LocalImageReader).
+	imageReader clipboard.Reader
+
 	// pendingModelOptions holds a config candidate saved while the runner
 	// or background jobs are active. It is flushed when the model becomes
 	// idle and applies via the configured reloader.
@@ -628,6 +661,12 @@ func WithHomeDir(homeDir string) Option {
 // session as it always has.
 func WithDetachOnQuit() Option {
 	return func(m *Model) { m.detachOnQuit = true }
+}
+
+// withImageReader injects the clipboard image reader, so a test can paste
+// without a clipboard.
+func withImageReader(r clipboard.Reader) Option {
+	return func(m *Model) { m.imageReader = r }
 }
 
 // WithAgentSession marks the session as fleet agent id's, called name
@@ -1018,6 +1057,7 @@ func (m *Model) openSettingsBrowser(query string) {
 		settings.WithProvenance(m.provenanceForPath),
 		settings.WithHost(m.host),
 		settings.WithSession(m.sess),
+		settings.WithContext(m.panelCtx),
 	}
 	if userConfig := m.sess.Status().UserConfigPath; userConfig != "" {
 		opts = append(opts, settings.WithUserConfigPath(userConfig))
@@ -1282,6 +1322,11 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	// provider-build failure). It is cancelled on shutdown so a lingering
 	// lookup never leaks past exit.
 	m.lspCtx, m.lspCancel = context.WithCancel(context.Background())
+
+	// The docked panels' context is the same shape: independent of m.ctx and
+	// cancelled on shutdown, so a settings write in flight on a slow daemon
+	// returns when the program leaves (AUD-10).
+	m.panelCtx, m.panelCancel = context.WithCancel(context.Background())
 
 	// bubbles maps wheel-left/right to horizontal panning; step 0 disables
 	// it at the viewport level too (the wheel events are already dropped in
@@ -3897,16 +3942,45 @@ func (m *Model) drillIntoSubagent(id int64) bool {
 // running subagent onto the view stack, so inspecting live work does not
 // require a mouse. Returns false when no subagent is running.
 func (m *Model) drillIntoLatestRunningSubagent() bool {
+	id, ok := m.latestRunningSubagent()
+	return ok && m.drillIntoSubagent(id)
+}
+
+// latestRunningSubagent is the most recently registered running subagent: the
+// target Ctrl+F falls back to when nothing is selected.
+func (m *Model) latestRunningSubagent() (int64, bool) {
 	subs := m.sess.Status().Subagents
 	for i := len(subs) - 1; i >= 0; i-- {
-		if subs[i].Status != acpwire.SubagentRunning {
-			continue
-		}
-		if m.drillIntoSubagent(subs[i].ID) {
-			return true
+		if subs[i].Status == acpwire.SubagentRunning && subs[i].Drill != nil {
+			return subs[i].ID, true
 		}
 	}
-	return false
+	return 0, false
+}
+
+// drillIntoSelectedSubagent pushes the subagent the user has selected onto the
+// view stack — the transcript row or tray card under the browse cursor, else
+// the tray card they expanded — and falls back to the most recently registered
+// running one, so inspecting live work never needs a mouse. A drill-in ends
+// browse mode the way browse f does, because the child's transcript has none of
+// the parent's rows to cursor over. It reports false when nothing is drillable,
+// and while already drilled: a child dispatches no subagents, so drill-in stays
+// one level deep.
+func (m *Model) drillIntoSelectedSubagent() bool {
+	if len(m.viewStack) > 0 {
+		return false
+	}
+	id, ok := m.selectedSubagent()
+	if !ok {
+		id, ok = m.latestRunningSubagent()
+	}
+	if !ok {
+		return false
+	}
+	if m.browsing {
+		m.leaveBrowse()
+	}
+	return m.drillIntoSubagent(id)
 }
 
 // popDrill pops one level of subagent drill-down, returning false when the
@@ -4174,11 +4248,181 @@ func sessionRunCmd(ctx context.Context, refusal string, quietBusy bool, run func
 
 // startPrompt starts a prompt turn through the session.
 func (m *Model) startPrompt(text string, queued bool) (tea.Model, tea.Cmd) {
+	return m.startPromptImages(text, queued, nil)
+}
+
+// startPromptImages starts a prompt turn that carries images alongside its
+// text. The images are refs the session already holds: their bytes travelled
+// once, on the upload that returned them.
+func (m *Model) startPromptImages(text string, queued bool, images []acpwire.PromptImage) (tea.Model, tea.Cmd) {
 	sess := m.sess
 	return m.startSessionRun("Cannot start work", false, func(ctx context.Context) error {
-		_, err := sess.Prompt(ctx, acpwire.PromptParams{Text: text, Queued: queued})
+		_, err := sess.Prompt(ctx, acpwire.PromptParams{Text: text, Queued: queued, Images: images})
 		return err
 	})
+}
+
+// imageChipPrefix starts every image chip the composer inserts.
+const imageChipPrefix = "[image #"
+
+// pasteImage starts a Ctrl+V image paste. The clipboard read and the upload
+// run off the Update goroutine; the chip lands in the draft when the ref
+// arrives. A failure is a notice, never a silent no-op.
+func (m *Model) pasteImage() {
+	reader := m.imageReader
+	if reader == nil {
+		reader = &clipboard.LocalImageReader{}
+	}
+	m.enqueueCall(func(mm *Model) callRun {
+		sess := mm.sess
+		return func(ctx context.Context) callOutcome {
+			data, err := reader.ReadImage(ctx)
+			if err == nil {
+				var ref acpwire.PromptImage
+				ref, err = sess.ImagesPut(ctx, sess.ID(), data, "")
+				return func(mm *Model) tea.Cmd {
+					if err != nil {
+						mm.note(imagePasteNotice(err))
+						mm.refreshViewport()
+						return nil
+					}
+					mm.attachImage(ref)
+					return nil
+				}
+			}
+			return func(mm *Model) tea.Cmd {
+				mm.note(imagePasteNotice(err))
+				mm.refreshViewport()
+				return nil
+			}
+		}
+	})
+}
+
+// imagePasteNotice words a failed paste. An empty clipboard and a missing
+// helper are told apart, and the missing-helper case names the packages to
+// install.
+func imagePasteNotice(err error) string {
+	switch {
+	case errors.Is(err, clipboard.ErrNoImage):
+		return "Clipboard has no image."
+	case errors.Is(err, clipboard.ErrUnavailable):
+		if runtime.GOOS == "darwin" {
+			return "Image paste is unavailable: install pngpaste."
+		}
+		return "Image paste is unavailable: install wl-clipboard or xclip."
+	default:
+		return "Could not paste the clipboard image: " + err.Error()
+	}
+}
+
+// attachImage records ref and inserts its chip in the composer. The chip is
+// never refused for a route that cannot see images: routing can change before
+// the prompt is sent, so the chip says so instead.
+func (m *Model) attachImage(img acpwire.PromptImage) {
+	chip := m.imageChip(img, len(m.images)+1)
+	if m.input.CharLimit > 0 && m.input.Length()+len([]rune(chip)) > m.input.CharLimit {
+		m.note(fmt.Sprintf("Image not attached: the input limit is %d characters", m.input.CharLimit))
+		m.refreshViewport()
+		return
+	}
+	if v := m.input.Value(); v != "" && !strings.HasSuffix(v, " ") && !strings.HasSuffix(v, "\n") {
+		chip = " " + chip
+	}
+	m.input.InsertString(chip)
+	m.images = append(m.images, img)
+	m.updateViewportHeight()
+	m.refreshViewport()
+}
+
+// imageChip renders one attached image the way the composer shows it:
+// dimensions, size and label, plus what the send will do to it.
+func (m *Model) imageChip(img acpwire.PromptImage, n int) string {
+	parts := []string{strconv.Itoa(n), fmt.Sprintf("%d×%d", img.Width, img.Height), imageSize(img.Bytes)}
+	if img.Label != "" {
+		parts = append(parts, img.Label)
+	}
+	if edge := m.sess.Config().Images.MaxEdge; edge > 0 && (img.Width > edge || img.Height > edge) {
+		parts = append(parts, "will downscale")
+	}
+	if m.routeTextOnly() {
+		parts = append(parts, "model can't see images")
+	}
+	return imageChipPrefix + strings.Join(parts, " · ") + "]"
+}
+
+// routeTextOnly reports whether the active route's preset says it takes no
+// images. The chip only warns: routing can change before the prompt is sent.
+func (m *Model) routeTextOnly() bool {
+	preset, ok := m.sess.Config().Models.Presets[m.sess.Status().ActiveRoute.Preset]
+	return ok && preset.Vision == routing.VisionOff
+}
+
+// imageSize formats a byte count the way a chip shows it.
+func imageSize(n int) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%d KB", (n+(1<<10)-1)>>10)
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
+// stripImageChips removes the composer's image chips from a submitted line.
+// The chips describe the draft as it is composed; the refs, carried separately,
+// are what the prompt attaches.
+func stripImageChips(line string) string {
+	for {
+		i := strings.Index(line, imageChipPrefix)
+		if i < 0 {
+			return strings.TrimSpace(line)
+		}
+		j := strings.IndexByte(line[i:], ']')
+		if j < 0 {
+			return strings.TrimSpace(line)
+		}
+		line = line[:i] + line[i+j+1:]
+	}
+}
+
+// attachImagePath is the /image effect: it reads the named file, uploads it,
+// and attaches the ref the session returns. A missing argument reports the
+// usage line rather than an error, and a failed read or upload is a notice.
+func (m *Model) attachImagePath(args []string) (tea.Model, tea.Cmd) {
+	path := strings.TrimSpace(strings.Join(args, " "))
+	if path == "" {
+		m.note("Usage: /image <path>")
+		m.refreshViewport()
+		return m, nil
+	}
+	m.enqueueCall(func(mm *Model) callRun {
+		sess := mm.sess
+		return func(ctx context.Context) callOutcome {
+			data, err := os.ReadFile(path)
+			if err == nil {
+				var ref acpwire.PromptImage
+				ref, err = sess.ImagesPut(ctx, sess.ID(), data, filepath.Base(path))
+				return func(mm *Model) tea.Cmd {
+					if err != nil {
+						mm.note(fmt.Sprintf("Cannot attach %s: %v", path, err))
+						mm.refreshViewport()
+						return nil
+					}
+					mm.attachImage(ref)
+					mm.note(fmt.Sprintf("Attached image #%d from %s.", len(mm.images), path))
+					return nil
+				}
+			}
+			return func(mm *Model) tea.Cmd {
+				mm.note(fmt.Sprintf("Cannot attach %s: %v", path, err))
+				mm.refreshViewport()
+				return nil
+			}
+		}
+	})
+	return m, nil
 }
 
 // refusedStart reports whether err says the run never started: CodeBusy,
@@ -4280,6 +4524,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.busy {
+		m.refuseBusyCommand("/sdd new", "plan authoring")
 		return m, nil
 	}
 	goal := parsed.Goal
@@ -5009,6 +5254,12 @@ func (m *Model) finishQuit() tea.Cmd {
 		m.lspCancel()
 		m.lspCancel = nil
 	}
+	// A panel's write or fetch in flight is bounded by this context (AUD-10):
+	// cancel it so the call returns rather than outliving the program.
+	if m.panelCancel != nil {
+		m.panelCancel()
+		m.panelCancel = nil
+	}
 	// Closing the session settles every pending request and shuts it down; the
 	// accepted end's settlement already stopped the work, so nothing is stopped
 	// again here.
@@ -5047,6 +5298,10 @@ func (m *Model) detach() tea.Cmd {
 	if m.lspCancel != nil {
 		m.lspCancel()
 		m.lspCancel = nil
+	}
+	if m.panelCancel != nil {
+		m.panelCancel()
+		m.panelCancel = nil
 	}
 	// Release the dock's surfaces exactly as finishQuit does: they are
 	// permanently gone once the program stops.
@@ -5189,6 +5444,19 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// suggestionCmd is the Phase 2 LLM fallback returned by computeSuggestion
 	// on the success path; nil otherwise.
 	var suggestionCmd tea.Cmd
+	// A prompt refused because the route cannot see images is the user's draft,
+	// not a failed run: the composer gets its text and chips back and the
+	// notice names the cause and the fix. The active route arms send-anyway.
+	if acpclient.IsCode(msg.err, acpwire.CodeVisionUnsupported) {
+		m.busy = false
+		m.turnStartedAt = time.Time{}
+		m.agentCancel = nil
+		m.cancelling = false
+		m.restoreVisionDraft(msg.err)
+		m.updateViewportHeight()
+		m.refreshViewport()
+		return m.afterRun(msg.err, msg.followed, nil)
+	}
 	// A run the session refused never started: no work is registered, no turn
 	// ran, and the model goes idle exactly as a finished turn does. The note
 	// names what refused it.
@@ -5593,6 +5861,7 @@ func (m *Model) submitSendNow(request acpwire.SendNowRequest, clear func()) bool
 // an accepted Enter would.
 func (m *Model) clearChatDraft() {
 	m.resetInput()
+	m.images = nil
 	m.completionSuppressed = false
 	m.lastInputForPopups = ""
 	m.cmdArgMode = false
@@ -6465,6 +6734,9 @@ func (m Model) handleSuggestionMsg(msg suggestionMsg) (Model, tea.Cmd) {
 
 func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	m.leaveBrowse() // running a command ends browsing
+	// Stashed for a refusal that has to hand the line back: the Enter handler
+	// clears the composer before dispatch, so this is the only copy left.
+	m.pendingCommandRaw = raw
 	// /send-now is recognized from the raw line before shlex.Split can
 	// reinterpret its payload: the argument is literal steering text, so
 	// quotes, newlines and interior whitespace must survive verbatim. The
@@ -6567,6 +6839,11 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	}
 
 	if info.TUIOnly {
+		// /image fills the same draft Ctrl+V does, so it lives beside the
+		// draft rather than in commands_dispatch.go's effects table.
+		if info.Name == "image" {
+			return m.attachImagePath(args)
+		}
 		effect, ok := tuiCommandEffects[info.Name]
 		if !ok {
 			m.note("Command /" + info.Name + " is not available in this build.")

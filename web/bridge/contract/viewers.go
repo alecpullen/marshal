@@ -13,10 +13,10 @@ package contract
 //     running, and cancel a request it started. Without these there is no
 //     connection to serve the rest on;
 //   - turns (session/prompt and the stop, steer, review, agent-run, suggest,
-//     verify, swarm, subagent-cancel, rollback and plan-run calls): the screen
-//     starts and shapes the work it watches. All of them act on the session's
-//     runtime and workspace, which is the part of the machine the container
-//     holds;
+//     verify, swarm, subagent-cancel, subagent-steer, rollback and plan-run
+//     calls): the screen starts and shapes the work it watches. All of them act
+//     on the session's runtime and workspace, which is the part of the machine
+//     the container holds;
 //   - controls (session/set_mode, session/set_effort): the two knobs the
 //     screen turns for the next turn, on the session and no wider;
 //   - answers (session/pending, session/answer_approval,
@@ -33,7 +33,12 @@ package contract
 //     state and workspace, and none writes user config;
 //   - notes (session/note, session/notice_set, session/notice_clear,
 //     session/notice_dismiss): a session's transcript keeps what the screen
-//     writes into it.
+//     writes into it;
+//   - images (session/images_put, session/vision_force): the screen pastes or
+//     uploads a picture into the session it is watching, and answers a refusal
+//     with "send anyway". The bytes land in the agent's own store, which the
+//     container holds, and the override is the session's own memory; nothing
+//     about either reaches the host.
 //
 // A method that is not here is refused: every Host method and with it every
 // config/ and trust/ method, the lifecycle and the ending, credentials and
@@ -58,6 +63,7 @@ var ContainerViewerMethods = []string{
 	"session/diff",
 	"session/file",
 	"session/file_index",
+	"session/images_put",
 	"session/intelligence",
 	"session/memory_delete",
 	"session/memory_list",
@@ -98,12 +104,66 @@ var ContainerViewerMethods = []string{
 	"session/steering_pop",
 	"session/stop",
 	"session/subagent_cancel",
+	"session/subagent_steer",
 	"session/suggest",
 	"session/swarm_start",
 	"session/sync",
 	"session/verify_proposal",
+	"session/vision_force",
 	"session/watch_resume_take",
 	"session/work_inspect",
 	"session/work_list",
 	"session/work_stop",
+}
+
+// The child-control wire types, mirroring internal/acpwire's: the bridge is
+// standard library only, so it carries its own copies and the JSON property
+// names are the contract. A session's status reports SubagentCapabilities
+// under "subagentControls"; absent there means unsupported.
+
+// SubagentCapabilities is which child controls a session registers. A false
+// (or absent) bit is unavailable: a client offers no control and never infers
+// one from another session.
+type SubagentCapabilities struct {
+	// Settings is per-session child settings, which Marshal does not enforce
+	// yet.
+	Settings bool `json:"settings"`
+	// Steer delivers one user instruction to a live child.
+	Steer bool `json:"steer"`
+	// Stop asks a live child to stop.
+	Stop bool `json:"stop"`
+	// Observe is the child's own transcript and lifecycle.
+	Observe bool `json:"observe"`
+}
+
+// SubagentSteerParams is session/subagent_steer's params: one user instruction
+// for a live child, named by the request ID that makes it a single delivery.
+// The bridge never forwards its own ID: a retry must carry the caller's.
+type SubagentSteerParams struct {
+	SessionID  string `json:"sessionId"`
+	SubagentID int64  `json:"subagentId"`
+	RequestID  string `json:"requestId"`
+	Message    string `json:"message"`
+}
+
+// SubagentSteerResult is session/subagent_steer's result. The status is
+// accepted, never consumed: the child's queue took the instruction, and a
+// child that settles first may never read it.
+type SubagentSteerResult struct {
+	RequestID string `json:"requestId"`
+	Status    string `json:"status"`
+}
+
+// SubagentCancelParams is session/subagent_cancel's params. It is the existing
+// ACP control: the bridge's cancel route is a second route, not a second
+// mechanism.
+type SubagentCancelParams struct {
+	SessionID  string `json:"sessionId"`
+	SubagentID int64  `json:"subagentId"`
+}
+
+// SubagentCancelResult is session/subagent_cancel's result: the cancellation
+// was asked for, which is not the same as the child having stopped.
+type SubagentCancelResult struct {
+	Cancelled bool `json:"cancelled"`
 }

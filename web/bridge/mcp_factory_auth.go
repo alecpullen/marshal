@@ -1,11 +1,15 @@
 package bridge
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Factory capabilities. Four are the grant's own booleans, and the fifth is
@@ -74,10 +78,17 @@ var (
 type factoryMCPAuthorizer struct {
 	mu sync.Mutex
 	ws *Workspace
+	// userDirection holds the receipts this bridge minted for built-in
+	// operations that act on a person's instruction and that no attempt has
+	// consumed yet, in mint order. now is the clock their expiry is read
+	// against; a test injects a deterministic one. Both are guarded by mu,
+	// exactly like the policy they are consulted with.
+	userDirection []marshalUserDirectionReceipt
+	now           func() time.Time
 }
 
 func newFactoryMCPAuthorizer(ws *Workspace) *factoryMCPAuthorizer {
-	return &factoryMCPAuthorizer{ws: ws}
+	return &factoryMCPAuthorizer{ws: ws, now: time.Now}
 }
 
 // WithAuthorizedMutation authorizes one capability and, only when it holds,
@@ -311,6 +322,489 @@ func (a *factoryMCPAuthorizer) routineRevisionLocked(clientID, projectID string)
 	}
 	ps := a.ws.ProjectSettingsFor(root)
 	return ps.PlannerDelegationEnabled && ps.DesignatedMCPClientID == clientID
+}
+
+// Built-in sessions.
+//
+// A built-in session is not an MCP client: it holds no client record and no
+// MCPFactoryProjectGrant. Its authority is a project's defaults plus, at most,
+// one override for the session (or for one worker of it). The binding that
+// names it is established by the control plane's trusted session association —
+// never by a tool argument or a request body — so no caller can mint one.
+//
+// The lock order and the linearization point are unchanged: policy ->
+// workspace -> factory store. An access write takes this same policy lock, so
+// a revocation lands entirely before a mutation was admitted or entirely after
+// that mutation's journal append committed, and every admission re-reads the
+// store instead of trusting a cache.
+//
+// Nothing here widens an external client's authority, and no built-in default
+// ever reaches one: AuthorizeCapability and WithAuthorizedMutation still read
+// the stored grant and nothing else.
+
+// AuthorizeMarshalRead checks the read capability for one verified built-in
+// binding, the way the read-only factory views check it.
+func (a *factoryMCPAuthorizer) AuthorizeMarshalRead(binding MarshalSessionBinding, repoID string) error {
+	return a.AuthorizeMarshalCapability(binding, repoID, factoryCapabilityRead)
+}
+
+// AuthorizeMarshalCapability checks one capability for a verified built-in
+// binding under the policy lock, so an access change that arrives first is
+// respected and one that arrives second waits.
+func (a *factoryMCPAuthorizer) AuthorizeMarshalCapability(binding MarshalSessionBinding, repoID, capability string) error {
+	if a == nil {
+		return fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.authorizeMarshalLocked(binding, capability)
+}
+
+// WithAuthorizedMarshalMutation authorizes one capability for a verified
+// built-in binding and, only when it holds, runs fn while still holding the
+// policy lock. fn is the local validation and the journal append — the durable
+// commit is the linearization point — so an access change either lands
+// entirely before this operation was admitted or entirely after it committed.
+//
+// fn receives the principal to journal under: the scope its request identity is
+// namespaced by and the attribution the entry carries.
+//
+// repoID is the repository the mutation acts on. It is accepted for symmetry
+// with the client path and is deliberately not a gate: a built-in principal is
+// scoped by the project its binding names, which is checked here, and its
+// ceiling is the effective access — the project defaults, then the session or
+// worker override. A worker's role and item name what it is working on; neither
+// grants anything.
+func (a *factoryMCPAuthorizer) WithAuthorizedMarshalMutation(binding MarshalSessionBinding, repoID, capability string, fn func(factoryPrincipal) (FactoryItem, error)) (FactoryItem, error) {
+	if fn == nil {
+		return FactoryItem{}, fmt.Errorf("%w: no mutation to authorize", errFactoryDenied)
+	}
+	if a == nil {
+		return FactoryItem{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	principal, err := a.admitMarshalLocked(binding, capability)
+	if err != nil {
+		return FactoryItem{}, err
+	}
+	return fn(principal)
+}
+
+// marshalStatus reports one verified binding's effective access under the
+// policy lock, with every pointer resolved: the answer a status surface shows.
+func (a *factoryMCPAuthorizer) marshalStatus(binding MarshalSessionBinding) (MarshalConnectionStatus, error) {
+	if a == nil {
+		return MarshalConnectionStatus{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.marshalStatusLocked(binding)
+}
+
+// authorizeMarshalLocked is the admission for one built-in capability. The
+// caller holds the policy lock, so the access it reads is the access the
+// following journal append runs under.
+func (a *factoryMCPAuthorizer) authorizeMarshalLocked(binding MarshalSessionBinding, capability string) error {
+	_, err := a.admitMarshalLocked(binding, capability)
+	return err
+}
+
+// admitMarshalLocked resolves one binding's effective access, checks the
+// capability against it, and renders the principal the operation is journalled
+// under. Resolution and check are one step on purpose: a second read would be a
+// second answer. The caller holds the policy lock.
+func (a *factoryMCPAuthorizer) admitMarshalLocked(binding MarshalSessionBinding, capability string) (factoryPrincipal, error) {
+	// A capability this bridge does not define is a caller bug, not an
+	// authority question, so it is reported apart from a denial exactly as it
+	// is for an MCP client.
+	if err := a.validCapability(capability); err != nil {
+		return factoryPrincipal{}, err
+	}
+	status, err := a.marshalStatusLocked(binding)
+	if err != nil {
+		return factoryPrincipal{}, err
+	}
+	if !marshalAccessAllows(status.Access, capability) {
+		return factoryPrincipal{}, errFactoryDenied
+	}
+	return binding.principal(capability, status.Access), nil
+}
+
+// marshalStatusLocked resolves the effective access one verified binding holds
+// and reports it. The caller holds the policy lock.
+//
+// The default is read-only, and each layer replaces only the fields it carries:
+// an override reset to unset inherits the layer beneath it again, while an
+// explicit false keeps denying.
+func (a *factoryMCPAuthorizer) marshalStatusLocked(binding MarshalSessionBinding) (MarshalConnectionStatus, error) {
+	if a == nil || a.ws == nil {
+		return MarshalConnectionStatus{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	if err := a.validMarshalBindingLocked(binding); err != nil {
+		return MarshalConnectionStatus{}, err
+	}
+	project, stored := a.ws.marshalAccessDefault(binding.ProjectID)
+	effective := resolveMarshalFactoryAccess(project.Access)
+	source := map[string]string{"project": "default"}
+	if stored {
+		source["project"] = "override"
+	}
+	if override, ok := a.ws.marshalAccessOverride(binding.ProjectID, binding.SessionID, binding.WorkerID); ok && marshalOverrideApplies(override, binding) {
+		effective = resolveMarshalFactoryAccess(project.Access, override.Access)
+		source["session"] = "override"
+	}
+	return MarshalConnectionStatus{
+		State:      marshalStateConnected,
+		InstanceID: binding.InstanceID,
+		ProjectID:  binding.ProjectID,
+		SessionID:  binding.SessionID,
+		VerifiedAt: time.Now().UTC().Format(time.RFC3339),
+		Access:     effective,
+		Source:     source,
+	}, nil
+}
+
+// validMarshalBindingLocked refuses a binding the server has not established.
+// Every identity the association is made of must be present: a partly verified
+// binding is a denial, not a default, and it says nothing about which field was
+// missing.
+func (a *factoryMCPAuthorizer) validMarshalBindingLocked(binding MarshalSessionBinding) error {
+	if a == nil || a.ws == nil {
+		return fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	for _, field := range []string{binding.InstanceID, binding.ProjectID, binding.SessionID, binding.Generation} {
+		if strings.TrimSpace(field) == "" {
+			return errFactoryDenied
+		}
+	}
+	// The project ID mapping is the only way in, exactly as it is for a client:
+	// an ID this store did not mint names no project.
+	if _, ok := a.ws.ProjectRootByID(binding.ProjectID); !ok {
+		return errFactoryDenied
+	}
+	return nil
+}
+
+// marshalOverrideApplies reports whether a stored session override applies to
+// this binding. A record that names no worker is the session's own; one that
+// names a worker is that worker's, and a sibling worker inherits the project
+// default instead.
+func marshalOverrideApplies(override marshalFactoryAccessState, binding MarshalSessionBinding) bool {
+	return override.WorkerID == "" || override.WorkerID == binding.WorkerID
+}
+
+// marshalAccessAllows reports whether one effective access value carries a
+// capability. Every check is positive, and the planner capabilities a
+// designated MCP client carries are denied rather than derived: a built-in
+// session has no designation, so nothing here can be claimed by a role.
+func marshalAccessAllows(access MarshalFactoryAccess, capability string) bool {
+	switch capability {
+	case factoryCapabilityRead:
+		return access.Read != nil && *access.Read
+	case factoryCapabilityCreateDraft:
+		return access.CreateDraft != nil && *access.CreateDraft
+	case factoryCapabilityEditDraft:
+		return access.EditDraft != nil && *access.EditDraft
+	case factoryCapabilityAnswerQuestion:
+		return access.AnswerQuestion != nil && *access.AnswerQuestion
+	case factoryCapabilityApproveAndQueue:
+		// Approval additionally needs a configured authority, exactly as a
+		// grant does: an authority this bridge does not know (a hand-edited
+		// file) fails closed rather than being trusted.
+		return access.ApproveAndQueue != nil && *access.ApproveAndQueue &&
+			access.ApprovalAuthority != nil &&
+			(*access.ApprovalAuthority == factoryAuthorityUserDirected || *access.ApprovalAuthority == factoryAuthorityStanding)
+	}
+	return false
+}
+
+// User direction receipts.
+//
+// An approval or an answer that acts on a person's instruction needs evidence
+// that a person gave it, and the evidence has to be the bridge's, not the
+// caller's: a model's "authority: user_directed" argument proves nothing, and a
+// built-in session carries a credential its model can reach. So the bridge mints
+// an opaque, expiring, single-use receipt for one exact operation, answers the
+// attempt that has none with that receipt, and treats a later attempt that
+// presents it as the person's direction. The receipt travels in a header, beside
+// the tool arguments, so no argument and no model content can mint one.
+const (
+	// MarshalUserDirectionHeader carries a user-direction receipt beside the
+	// MCP request. No tool decodes a receipt from its JSON arguments, so a
+	// model cannot supply one by writing one; the trusted transport sets this
+	// header from the session's own confirmed receipt.
+	MarshalUserDirectionHeader = "X-Marshal-User-Direction"
+	// marshalUserDirectionTTL bounds how long a minted receipt stays
+	// presentable. It is short on purpose: a receipt is a confirmation of one
+	// operation happening now.
+	marshalUserDirectionTTL = 5 * time.Minute
+)
+
+// errMarshalUserDirectionRequired is what a built-in operation that acts on a
+// person's instruction reports when it has none to show: the bridge minted a
+// receipt and the caller must present it after a trusted confirmation.
+var errMarshalUserDirectionRequired = errors.New("user direction required")
+
+// marshalUserDirectionChallenge is that answer: the opaque receipt id and when
+// it lapses. It is a value the caller is told and never one it can choose.
+type marshalUserDirectionChallenge struct {
+	Receipt   string
+	ExpiresAt time.Time
+}
+
+func (c *marshalUserDirectionChallenge) Error() string {
+	return errMarshalUserDirectionRequired.Error() + ": the user must confirm this operation and present the receipt"
+}
+
+// Is makes errors.Is(err, errMarshalUserDirectionRequired) hold for the value
+// the authorizer returns, so a caller classifies the failure by its sentinel
+// while still reading the receipt from it.
+func (c *marshalUserDirectionChallenge) Is(target error) bool {
+	return target == errMarshalUserDirectionRequired
+}
+
+// marshalUserDirectionReceipt is one minted receipt: the exact operation it
+// covers and when it lapses. Every field is bound when it is minted, from the
+// authenticated binding and the validated arguments, so presenting it for any
+// other instance, project, session, worker, action, target or request matches
+// nothing.
+type marshalUserDirectionReceipt struct {
+	id         string
+	expiresAt  time.Time
+	instanceID string
+	projectID  string
+	sessionID  string
+	workerID   string
+	action     string
+	target     string
+	requestID  string
+}
+
+// covers reports whether this receipt was minted for exactly this operation.
+func (r marshalUserDirectionReceipt) covers(binding MarshalSessionBinding, action, target, requestID string) bool {
+	return r.instanceID == binding.InstanceID &&
+		r.projectID == binding.ProjectID &&
+		r.sessionID == binding.SessionID &&
+		r.workerID == binding.WorkerID &&
+		r.action == action &&
+		r.target == target &&
+		r.requestID == requestID
+}
+
+// marshalUserDirectionTarget is the exact operation a receipt covers, built
+// from the arguments the tool already validated: the item, the version the
+// request was made against, and — for an answer — the decision it resolves. A
+// receipt minted for one operation is not evidence for another.
+func marshalUserDirectionTarget(itemID string, expectedVersion uint64, decisionID string) string {
+	return strings.Join([]string{itemID, strconv.FormatUint(expectedVersion, 10), decisionID}, "\x00")
+}
+
+// WithAuthorizedMarshalUserDirection authorizes one built-in operation that
+// acts on a person's instruction and, only when it holds, runs fn while still
+// holding the policy lock.
+//
+// What admits the operation is the store's effective approval authority, read
+// under the lock — never the caller's claim. Standing authority is the
+// project's own configured policy and owes no confirmation. User-directed
+// authority needs a person: a receipt this bridge minted for exactly this
+// (instance, project, session, worker, action, target, request) that no other
+// attempt consumed. Without one nothing is admitted, and the answer is a
+// challenge carrying the receipt to present after the trusted confirmation; a
+// receipt already minted for the same exact operation is handed back rather than
+// asking the person a second time.
+//
+// A presented receipt is consumed by the attempt that presents it, so it can
+// never be replayed: a consumed, expired, mismatched or generation-stale receipt
+// is a denial like every other, and nothing is journalled for it.
+func (a *factoryMCPAuthorizer) WithAuthorizedMarshalUserDirection(binding MarshalSessionBinding, repoID, capability, receiptID, target, requestID string, fn func(factoryPrincipal) (FactoryItem, error)) (FactoryItem, error) {
+	if fn == nil {
+		return FactoryItem{}, fmt.Errorf("%w: no mutation to authorize", errFactoryDenied)
+	}
+	if a == nil {
+		return FactoryItem{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	principal, err := a.admitMarshalLocked(binding, capability)
+	if err != nil {
+		return FactoryItem{}, err
+	}
+	switch principal.Authority {
+	case factoryAuthorityStanding:
+		// The store's own policy, configured separately: the standing
+		// authority a person set up in advance owes no confirmation per
+		// operation, and it is journalled as standing.
+		return fn(principal)
+	case factoryAuthorityUserDirected:
+	default:
+		// Nothing configured admits an operation that acts on a person's
+		// instruction, so no receipt exists that could.
+		return FactoryItem{}, errFactoryDenied
+	}
+	if strings.TrimSpace(receiptID) != "" {
+		if !a.consumeUserDirectionLocked(receiptID, binding, capability, target, requestID) {
+			return FactoryItem{}, errFactoryDenied
+		}
+		principal.AuthorityOrigin = factoryAuthorityOriginVerifiedUserDirected
+		return fn(principal)
+	}
+	return FactoryItem{}, a.challengeUserDirectionsLocked(binding, capability, target, requestID)
+}
+
+// consumeUserDirectionLocked verifies one presented receipt against exactly
+// this operation and, when it covers it, consumes it. An expired receipt is
+// dropped rather than kept, so a stale one cannot linger; a receipt minted for
+// anything else is left in place and matches nothing. The caller holds the
+// policy lock.
+func (a *factoryMCPAuthorizer) consumeUserDirectionLocked(id string, binding MarshalSessionBinding, action, target, requestID string) bool {
+	for n := range a.userDirection {
+		receipt := a.userDirection[n]
+		if receipt.id != id {
+			continue
+		}
+		if !a.timestamp().Before(receipt.expiresAt) {
+			a.userDirection = append(a.userDirection[:n], a.userDirection[n+1:]...)
+			return false
+		}
+		if !receipt.covers(binding, action, target, requestID) {
+			return false
+		}
+		a.userDirection = append(a.userDirection[:n], a.userDirection[n+1:]...)
+		return true
+	}
+	return false
+}
+
+// challengeUserDirectionsLocked returns the receipt for exactly this operation,
+// minting one only when no unspent receipt already covers it: two attempts at
+// one operation must not ask a person twice, and only one confirmation is owed.
+// The caller holds the policy lock.
+func (a *factoryMCPAuthorizer) challengeUserDirectionsLocked(binding MarshalSessionBinding, action, target, requestID string) error {
+	now := a.timestamp()
+	kept := a.userDirection[:0]
+	for _, receipt := range a.userDirection {
+		if !now.Before(receipt.expiresAt) {
+			// An expired receipt is not evidence and is not kept.
+			continue
+		}
+		kept = append(kept, receipt)
+	}
+	a.userDirection = kept
+	for _, receipt := range a.userDirection {
+		if receipt.covers(binding, action, target, requestID) {
+			return &marshalUserDirectionChallenge{Receipt: receipt.id, ExpiresAt: receipt.expiresAt}
+		}
+	}
+	id, err := newMarshalUserDirectionID()
+	if err != nil {
+		// Nothing can be presented that this bridge would recognize, so the
+		// operation is refused rather than admitted unverified.
+		return fmt.Errorf("%w: no receipt could be minted", errFactoryDenied)
+	}
+	receipt := marshalUserDirectionReceipt{
+		id:         id,
+		expiresAt:  now.Add(marshalUserDirectionTTL),
+		instanceID: binding.InstanceID,
+		projectID:  binding.ProjectID,
+		sessionID:  binding.SessionID,
+		workerID:   binding.WorkerID,
+		action:     action,
+		target:     target,
+		requestID:  requestID,
+	}
+	a.userDirection = append(a.userDirection, receipt)
+	return &marshalUserDirectionChallenge{Receipt: receipt.id, ExpiresAt: receipt.expiresAt}
+}
+
+// pendingUserDirections reports how many unspent receipts this bridge holds. It
+// is the observable a test asserts "one confirmation, one receipt" with.
+func (a *factoryMCPAuthorizer) pendingUserDirections() int {
+	if a == nil {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.userDirection)
+}
+
+// timestamp is the clock the receipt ledger reads. A zero authorizer built in a
+// test falls back to the wall clock rather than expiring everything at once.
+func (a *factoryMCPAuthorizer) timestamp() time.Time {
+	if a.now != nil {
+		return a.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// newMarshalUserDirectionID mints one opaque receipt id. It is random and
+// carries no identity: reading one tells a caller nothing about the operation it
+// covers.
+func newMarshalUserDirectionID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf[:]), nil
+}
+
+// marshalUserDirectionReceiptID is the receipt presented with this request. It
+// is read from the header the trusted transport sets and from nowhere else: no
+// tool argument carries a receipt, so no tool argument can supply one.
+func marshalUserDirectionReceiptID(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Header.Get(MarshalUserDirectionHeader))
+}
+
+// putMarshalAccessDefault stores one project's built-in defaults under the
+// policy lock, so an access change and an authorized mutation cannot
+// interleave. An unknown project is refused without saying which ID was wrong.
+func (a *factoryMCPAuthorizer) putMarshalAccessDefault(projectID string, access MarshalFactoryAccess, expected string) (bool, marshalFactoryAccessState, error) {
+	if a == nil || a.ws == nil {
+		return false, marshalFactoryAccessState{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	var (
+		wrote bool
+		state marshalFactoryAccessState
+	)
+	err := a.withPolicy(func() error {
+		if _, ok := a.ws.ProjectRootByID(projectID); !ok {
+			return errFactoryUnknownPair
+		}
+		next, current, err := a.ws.putMarshalAccessDefaultIfMatch(projectID, access, expected)
+		wrote, state = next, current
+		return err
+	})
+	if err != nil {
+		return false, state, err
+	}
+	return wrote, state, nil
+}
+
+// putMarshalAccessOverride stores one session's override under the same policy
+// lock, so a revocation of it cannot land inside an admitted mutation.
+func (a *factoryMCPAuthorizer) putMarshalAccessOverride(projectID, sessionID, workerID string, access MarshalFactoryAccess, expected string) (bool, marshalFactoryAccessState, error) {
+	if a == nil || a.ws == nil {
+		return false, marshalFactoryAccessState{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	var (
+		wrote bool
+		state marshalFactoryAccessState
+	)
+	err := a.withPolicy(func() error {
+		if _, ok := a.ws.ProjectRootByID(projectID); !ok {
+			return errFactoryUnknownPair
+		}
+		next, current, err := a.ws.putMarshalAccessOverrideIfMatch(projectID, sessionID, workerID, access, expected)
+		wrote, state = next, current
+		return err
+	})
+	if err != nil {
+		return false, state, err
+	}
+	return wrote, state, nil
 }
 
 // withPolicy runs one durable policy mutation under the authorizer's mutex, on

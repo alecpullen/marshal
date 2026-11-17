@@ -1,0 +1,22 @@
+{
+  "ReviewComment": {
+    "agentId": "a-1",
+    "body": "This drops the fixture the fold test loads.",
+    "createdAt": "2026-11-17T04:10:00Z",
+    "id": "rc-1",
+    "line": 4,
+    "ownerId": "u-1",
+    "path": "internal/viewmodel/testdata/index.json",
+    "quote": "     \"turn_legacy_v1.json\",",
+    "resolvedAt": "2026-11-17T04:22:00Z",
+    "sentAt": "2026-11-17T04:10:01Z",
+    "side": "old"
+  },
+  "ReviewCommentRequest": {
+    "body": "This drops the fixture the fold test loads.",
+    "line": 4,
+    "path": "internal/viewmodel/testdata/index.json",
+    "quote": "     \"turn_legacy_v1.json\",",
+    "side": "old"
+  }
+}

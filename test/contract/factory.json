@@ -1,0 +1,1386 @@
+{
+  "EditSnapshot": {
+    "baseCommit": "base412",
+    "files": [
+      {
+        "path": "app/lib/src/ui/factory/work_item_screen.dart",
+        "operation": "modify",
+        "baseSha256": "aa11",
+        "contentSha256": "bb22",
+        "executable": false
+      }
+    ],
+    "sha256": "cc33"
+  },
+  "FactoryApproval": {
+    "revision": 1,
+    "plan": "## Task 1\nRead the item.\n## Task 2\nApprove it.\n",
+    "spec": "Ship the work item thread and its asks.",
+    "planHash": "9f2c0d",
+    "config": {
+      "repoId": "repo-1",
+      "projectRoot": "/home/alec/marshal",
+      "hostId": "local",
+      "targetBranch": "main",
+      "workspace": "",
+      "native": true,
+      "implementerRouting": {
+        "profile": "implementer"
+      },
+      "reviewerRouting": null,
+      "reviewerInstructions": "Read the whole diff before answering.",
+      "implementerAuto": true,
+      "expectedChecks": [
+        {
+          "kind": "check",
+          "name": "test",
+          "appId": 7
+        }
+      ],
+      "noRequiredCiAcknowledged": false,
+      "maxRounds": 3,
+      "ciPollSeconds": 30,
+      "ciWaitSeconds": 900
+    },
+    "implementerSubagents": {
+      "enabled": true,
+      "model": "small",
+      "concurrency": 2
+    },
+    "reviewerSubagents": {
+      "enabled": false,
+      "concurrency": 1
+    },
+    "approvedAt": "2026-11-17T09:00:00Z"
+  },
+  "FactoryAssessment": {
+    "status": "available",
+    "summary": "The goal is met and the checks pass.",
+    "source": "planner",
+    "inputDigest": "digest-1",
+    "observedAt": "2026-11-17T10:31:00Z",
+    "fresh": true
+  },
+  "FactoryCI": {
+    "headSha": "head412",
+    "checks": [
+      {
+        "key": {
+          "kind": "check",
+          "name": "test",
+          "appId": 7
+        },
+        "id": "check-test",
+        "sha": "head412",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/alec/marshal/runs/1",
+        "logTail": "",
+        "observedAt": "2026-11-17T10:05:00Z"
+      }
+    ],
+    "complete": true,
+    "observedAt": "2026-11-17T10:05:00Z"
+  },
+  "FactoryCheck": {
+    "key": {
+      "kind": "check",
+      "name": "test",
+      "appId": 7
+    },
+    "id": "check-test",
+    "sha": "head412",
+    "status": "completed",
+    "conclusion": "success",
+    "url": "https://github.com/alec/marshal/runs/1",
+    "logTail": "",
+    "observedAt": "2026-11-17T10:05:00Z"
+  },
+  "FactoryCheckKey": {
+    "kind": "check",
+    "name": "test",
+    "appId": 7
+  },
+  "FactoryCommand": {
+    "requestId": "req-answer-1",
+    "kind": "answer",
+    "decisionId": "decision-1",
+    "answer": "the rounds",
+    "reason": "",
+    "expectedVersion": 4,
+    "additionalRounds": 0,
+    "replacement": null,
+    "implementerRouting": null,
+    "reviewerRouting": null,
+    "confirmPreviousWorkerStopped": false,
+    "completion": {
+      "link": "412",
+      "strategy": "squash",
+      "runChoice": "continue"
+    },
+    "settingsVersion": "etag-1"
+  },
+  "FactoryCompletion": {
+    "status": "complete",
+    "links": [
+      {
+        "repoId": "repo-1",
+        "pr": {
+          "number": 412,
+          "url": "https://github.com/alec/marshal/pull/412",
+          "nodeId": "PR_node412",
+          "headRef": "factory/item-8",
+          "baseRef": "main",
+          "headSha": "head412",
+          "baseSha": "base412",
+          "state": "OPEN",
+          "draft": false
+        },
+        "origin": "factory",
+        "observedAt": "2026-11-17T10:30:00Z",
+        "fresh": true
+      }
+    ],
+    "assessment": {
+      "status": "available",
+      "summary": "The goal is met and the checks pass.",
+      "source": "planner",
+      "inputDigest": "digest-1",
+      "observedAt": "2026-11-17T10:31:00Z",
+      "fresh": true
+    },
+    "records": [
+      {
+        "id": "completion-1",
+        "at": "2026-11-17T10:32:00Z",
+        "actor": "user",
+        "goal": "A work item is driven from draft to ready.",
+        "criteria": "One decision and one repair, no other page.",
+        "links": [
+          {
+            "repoId": "repo-1",
+            "pr": {
+              "number": 412,
+              "url": "https://github.com/alec/marshal/pull/412",
+              "nodeId": "PR_node412",
+              "headRef": "factory/item-8",
+              "baseRef": "main",
+              "headSha": "head412",
+              "baseSha": "base412",
+              "state": "OPEN",
+              "draft": false
+            },
+            "origin": "factory",
+            "observedAt": "2026-11-17T10:30:00Z",
+            "fresh": true
+          }
+        ],
+        "runChoice": "continue"
+      }
+    ],
+    "batch": {
+      "id": "batch-1",
+      "requestId": "req-merge-1",
+      "state": "complete",
+      "completeAfter": true,
+      "runChoice": "continue",
+      "steps": [
+        {
+          "repoId": "repo-1",
+          "number": 412,
+          "nodeId": "PR_node412",
+          "headSha": "head412",
+          "baseRef": "main",
+          "strategy": "squash",
+          "state": "confirmed",
+          "result": "merged"
+        }
+      ]
+    },
+    "stopState": "stopped"
+  },
+  "FactoryCompletionCommand": {
+    "link": "412",
+    "prs": [
+      {
+        "repoId": "repo-1",
+        "number": 412,
+        "nodeId": "PR_node412",
+        "headSha": "head412",
+        "baseRef": "main"
+      }
+    ],
+    "strategy": "squash",
+    "completeAfter": true,
+    "runChoice": "continue"
+  },
+  "FactoryCompletionPR": {
+    "repoId": "repo-1",
+    "number": 412,
+    "nodeId": "PR_node412",
+    "headSha": "head412",
+    "baseRef": "main"
+  },
+  "FactoryCompletionRecord": {
+    "id": "completion-1",
+    "at": "2026-11-17T10:32:00Z",
+    "actor": "user",
+    "goal": "A work item is driven from draft to ready.",
+    "criteria": "One decision and one repair, no other page.",
+    "links": [
+      {
+        "repoId": "repo-1",
+        "pr": {
+          "number": 412,
+          "url": "https://github.com/alec/marshal/pull/412",
+          "nodeId": "PR_node412",
+          "headRef": "factory/item-8",
+          "baseRef": "main",
+          "headSha": "head412",
+          "baseSha": "base412",
+          "state": "OPEN",
+          "draft": false
+        },
+        "origin": "factory",
+        "observedAt": "2026-11-17T10:30:00Z",
+        "fresh": true
+      }
+    ],
+    "runChoice": "continue"
+  },
+  "FactoryConfig": {
+    "repoId": "repo-1",
+    "projectRoot": "/home/alec/marshal",
+    "hostId": "local",
+    "targetBranch": "main",
+    "workspace": "",
+    "native": true,
+    "implementerRouting": {
+      "profile": "implementer"
+    },
+    "reviewerRouting": null,
+    "reviewerInstructions": "Read the whole diff before answering.",
+    "implementerAuto": true,
+    "expectedChecks": [
+      {
+        "kind": "check",
+        "name": "test",
+        "appId": 7
+      }
+    ],
+    "noRequiredCiAcknowledged": false,
+    "maxRounds": 3,
+    "ciPollSeconds": 30,
+    "ciWaitSeconds": 900
+  },
+  "FactoryCreate": {
+    "requestId": "req-1",
+    "title": "Work item thread",
+    "plan": "## Task 1\nRead the item.\n",
+    "spec": "Ship the work item thread and its asks.",
+    "config": {
+      "repoId": "repo-1",
+      "projectRoot": "/home/alec/marshal",
+      "hostId": "local",
+      "targetBranch": "main",
+      "workspace": "",
+      "native": true,
+      "implementerRouting": {
+        "profile": "implementer"
+      },
+      "reviewerRouting": null,
+      "reviewerInstructions": "Read the whole diff before answering.",
+      "implementerAuto": true,
+      "expectedChecks": [
+        {
+          "kind": "check",
+          "name": "test",
+          "appId": 7
+        }
+      ],
+      "noRequiredCiAcknowledged": false,
+      "maxRounds": 3,
+      "ciPollSeconds": 30,
+      "ciWaitSeconds": 900
+    }
+  },
+  "FactoryDecision": {
+    "id": "decision-1",
+    "kind": "scope",
+    "question": "Should the inspector show the rounds or the review?",
+    "reason": "the plan names both",
+    "effectId": "effect-implementer",
+    "createdAt": "2026-11-17T09:40:00Z"
+  },
+  "FactoryEvent": {
+    "sequence": 1,
+    "at": "2026-11-17T09:30:00Z",
+    "kind": "created",
+    "message": "the draft was created",
+    "effectId": ""
+  },
+  "FactoryGrant": {
+    "id": "grant-1",
+    "reason": "initial approval",
+    "additionalRounds": 3,
+    "at": "2026-11-17T09:00:00Z"
+  },
+  "FactoryItemClosed": {
+    "id": "item-8",
+    "title": "Work item thread",
+    "state": "closed",
+    "stage": "ready",
+    "repoId": "repo-1",
+    "projectRoot": "/home/alec/marshal",
+    "hostId": "local",
+    "branch": "factory/item-8",
+    "baseSha": "base412",
+    "version": 9,
+    "draft": {
+      "requestId": "req-1",
+      "title": "Work item thread",
+      "plan": "## Task 1\nRead the item.\n## Task 2\nApprove it.\n",
+      "spec": "Ship the work item thread and its asks.",
+      "config": {
+        "repoId": "repo-1",
+        "projectRoot": "/home/alec/marshal",
+        "hostId": "local",
+        "targetBranch": "main",
+        "workspace": "",
+        "native": true,
+        "implementerRouting": {
+          "profile": "implementer"
+        },
+        "reviewerRouting": null,
+        "reviewerInstructions": "Read the whole diff before answering.",
+        "implementerAuto": true,
+        "expectedChecks": [
+          {
+            "kind": "check",
+            "name": "test",
+            "appId": 7
+          }
+        ],
+        "noRequiredCiAcknowledged": false,
+        "maxRounds": 3,
+        "ciPollSeconds": 30,
+        "ciWaitSeconds": 900
+      }
+    },
+    "approvals": [
+      {
+        "revision": 1,
+        "plan": "## Task 1\nRead the item.\n## Task 2\nApprove it.\n",
+        "spec": "Ship the work item thread and its asks.",
+        "planHash": "9f2c0d",
+        "config": {
+          "repoId": "repo-1",
+          "projectRoot": "/home/alec/marshal",
+          "hostId": "local",
+          "targetBranch": "main",
+          "workspace": "",
+          "native": true,
+          "implementerRouting": {
+            "profile": "implementer"
+          },
+          "reviewerRouting": null,
+          "reviewerInstructions": "Read the whole diff before answering.",
+          "implementerAuto": true,
+          "expectedChecks": [
+            {
+              "kind": "check",
+              "name": "test",
+              "appId": 7
+            }
+          ],
+          "noRequiredCiAcknowledged": false,
+          "maxRounds": 3,
+          "ciPollSeconds": 30,
+          "ciWaitSeconds": 900
+        },
+        "implementerSubagents": {
+          "enabled": true,
+          "model": "small",
+          "concurrency": 2
+        },
+        "reviewerSubagents": {
+          "enabled": false,
+          "concurrency": 1
+        },
+        "approvedAt": "2026-11-17T09:00:00Z"
+      }
+    ],
+    "grants": [
+      {
+        "id": "grant-1",
+        "reason": "initial approval",
+        "additionalRounds": 3,
+        "at": "2026-11-17T09:00:00Z"
+      }
+    ],
+    "rounds": [
+      {
+        "number": 1,
+        "approvalRevision": 1,
+        "implementEffectId": "effect-implementer",
+        "baseSha": "base412",
+        "headSha": "head412",
+        "treeSha": "tree412",
+        "ci": {
+          "headSha": "head412",
+          "checks": [
+            {
+              "key": {
+                "kind": "check",
+                "name": "test",
+                "appId": 7
+              },
+              "id": "check-test",
+              "sha": "head412",
+              "status": "completed",
+              "conclusion": "success",
+              "url": "https://github.com/alec/marshal/runs/1",
+              "logTail": "",
+              "observedAt": "2026-11-17T10:05:00Z"
+            },
+            {
+              "key": {
+                "kind": "check",
+                "name": "build",
+                "appId": 7
+              },
+              "id": "check-build",
+              "sha": "head412",
+              "status": "completed",
+              "conclusion": "success",
+              "url": "https://github.com/alec/marshal/runs/1",
+              "logTail": "",
+              "observedAt": "2026-11-17T10:05:00Z"
+            }
+          ],
+          "complete": true,
+          "observedAt": "2026-11-17T10:05:00Z"
+        },
+        "implementation": {
+          "operationId": "effect-implementer",
+          "outcome": "done",
+          "summary": "The thread, its tabs and its asks are drawn.",
+          "question": "",
+          "reason": "",
+          "baseSha": "base412",
+          "headSha": "head412",
+          "inputsAccessible": true,
+          "findings": []
+        },
+        "review": {
+          "operationId": "effect-reviewer",
+          "outcome": "approved",
+          "summary": "No findings.",
+          "question": "",
+          "reason": "",
+          "baseSha": "base412",
+          "headSha": "head412",
+          "inputsAccessible": true,
+          "findings": [
+            {
+              "severity": "minor",
+              "path": "app/lib/src/ui/factory/work_item_screen.dart",
+              "line": 42,
+              "title": "Name the stage in words as well as the strip"
+            }
+          ]
+        },
+        "startedAt": "2026-11-17T09:10:00Z",
+        "finishedAt": "2026-11-17T10:05:00Z"
+      }
+    ],
+    "workers": [
+      {
+        "agentId": "agent-imp",
+        "sessionId": "sess-imp",
+        "role": "implementer",
+        "spawnEffectId": "effect-implementer",
+        "parked": false,
+        "approvalRevision": 1,
+        "subagents": {
+          "enabled": true,
+          "model": "small",
+          "concurrency": 2
+        }
+      },
+      {
+        "agentId": "agent-rev",
+        "sessionId": "sess-rev",
+        "role": "reviewer",
+        "spawnEffectId": "effect-reviewer",
+        "parked": false,
+        "approvalRevision": 1,
+        "subagents": {
+          "enabled": true,
+          "model": "small",
+          "concurrency": 2
+        }
+      }
+    ],
+    "prs": [
+      {
+        "number": 412,
+        "url": "https://github.com/alec/marshal/pull/412",
+        "nodeId": "PR_node412",
+        "headRef": "factory/item-8",
+        "baseRef": "main",
+        "headSha": "head412",
+        "baseSha": "base412",
+        "state": "OPEN",
+        "draft": false
+      }
+    ],
+    "effects": [
+      {
+        "outcome": {
+          "effectId": "effect-implementer",
+          "stopReason": "done",
+          "error": "",
+          "headSha": "head412",
+          "treeSha": "tree412",
+          "baseSha": "base412",
+          "worker": null,
+          "pr": null,
+          "report": null,
+          "confirmed": true
+        },
+        "id": "effect-implementer",
+        "kind": "implement",
+        "status": "done",
+        "workerRole": "implementer",
+        "round": 1,
+        "approvalRevision": 1,
+        "worker": null,
+        "expectedHead": "head412",
+        "expectedBase": "base412",
+        "createdAt": "2026-11-17T09:10:00Z"
+      }
+    ],
+    "decision": null,
+    "history": [
+      {
+        "sequence": 1,
+        "at": "2026-11-17T09:30:00Z",
+        "kind": "created",
+        "message": "the draft was created",
+        "effectId": ""
+      },
+      {
+        "sequence": 2,
+        "at": "2026-11-17T09:30:00Z",
+        "kind": "approved",
+        "message": "revision 1 was approved",
+        "effectId": ""
+      }
+    ],
+    "completion": {
+      "status": "complete",
+      "links": [
+        {
+          "repoId": "repo-1",
+          "pr": {
+            "number": 412,
+            "url": "https://github.com/alec/marshal/pull/412",
+            "nodeId": "PR_node412",
+            "headRef": "factory/item-8",
+            "baseRef": "main",
+            "headSha": "head412",
+            "baseSha": "base412",
+            "state": "OPEN",
+            "draft": false
+          },
+          "origin": "factory",
+          "observedAt": "2026-11-17T10:30:00Z",
+          "fresh": true
+        }
+      ],
+      "assessment": {
+        "status": "available",
+        "summary": "The goal is met and the checks pass.",
+        "source": "planner",
+        "inputDigest": "digest-1",
+        "observedAt": "2026-11-17T10:31:00Z",
+        "fresh": true
+      },
+      "records": [
+        {
+          "id": "completion-1",
+          "at": "2026-11-17T10:32:00Z",
+          "actor": "user",
+          "goal": "A work item is driven from draft to ready.",
+          "criteria": "One decision and one repair, no other page.",
+          "links": [
+            {
+              "repoId": "repo-1",
+              "pr": {
+                "number": 412,
+                "url": "https://github.com/alec/marshal/pull/412",
+                "nodeId": "PR_node412",
+                "headRef": "factory/item-8",
+                "baseRef": "main",
+                "headSha": "head412",
+                "baseSha": "base412",
+                "state": "OPEN",
+                "draft": false
+              },
+              "origin": "factory",
+              "observedAt": "2026-11-17T10:30:00Z",
+              "fresh": true
+            }
+          ],
+          "runChoice": "continue"
+        }
+      ],
+      "batch": {
+        "id": "batch-1",
+        "requestId": "req-merge-1",
+        "state": "complete",
+        "completeAfter": true,
+        "runChoice": "continue",
+        "steps": [
+          {
+            "repoId": "repo-1",
+            "number": 412,
+            "nodeId": "PR_node412",
+            "headSha": "head412",
+            "baseRef": "main",
+            "strategy": "squash",
+            "state": "confirmed",
+            "result": "merged"
+          }
+        ]
+      },
+      "stopState": "stopped"
+    },
+    "createdAt": "2026-11-17T09:00:00Z",
+    "approvedAt": "2026-11-17T09:00:00Z",
+    "updatedAt": "2026-11-17T09:40:00Z"
+  },
+  "FactoryItemDraft": {
+    "id": "item-8",
+    "title": "Work item thread",
+    "state": "draft",
+    "stage": "",
+    "repoId": "repo-1",
+    "projectRoot": "/home/alec/marshal",
+    "hostId": "local",
+    "branch": "",
+    "baseSha": "base412",
+    "version": 1,
+    "draft": {
+      "requestId": "req-1",
+      "title": "Work item thread",
+      "plan": "## Task 1\nRead the item.\n## Task 2\nApprove it.\n",
+      "spec": "Ship the work item thread and its asks.",
+      "config": {
+        "repoId": "repo-1",
+        "projectRoot": "/home/alec/marshal",
+        "hostId": "local",
+        "targetBranch": "main",
+        "workspace": "",
+        "native": true,
+        "implementerRouting": {
+          "profile": "implementer"
+        },
+        "reviewerRouting": null,
+        "reviewerInstructions": "Read the whole diff before answering.",
+        "implementerAuto": true,
+        "expectedChecks": [
+          {
+            "kind": "check",
+            "name": "test",
+            "appId": 7
+          }
+        ],
+        "noRequiredCiAcknowledged": false,
+        "maxRounds": 3,
+        "ciPollSeconds": 30,
+        "ciWaitSeconds": 900
+      }
+    },
+    "approvals": [],
+    "grants": [],
+    "rounds": [],
+    "workers": [],
+    "prs": [],
+    "effects": [],
+    "decision": null,
+    "history": [
+      {
+        "sequence": 1,
+        "at": "2026-11-17T09:30:00Z",
+        "kind": "created",
+        "message": "the draft was created",
+        "effectId": ""
+      }
+    ],
+    "createdAt": "2026-11-17T09:00:00Z",
+    "approvedAt": "0001-01-01T00:00:00Z",
+    "updatedAt": "2026-11-17T09:00:00Z"
+  },
+  "FactoryItemNeedsInput": {
+    "id": "item-8",
+    "title": "Work item thread",
+    "state": "needs_input",
+    "stage": "implement",
+    "repoId": "repo-1",
+    "projectRoot": "/home/alec/marshal",
+    "hostId": "local",
+    "branch": "factory/item-8",
+    "baseSha": "base412",
+    "version": 4,
+    "draft": {
+      "requestId": "req-1",
+      "title": "Work item thread",
+      "plan": "## Task 1\nRead the item.\n## Task 2\nApprove it.\n",
+      "spec": "Ship the work item thread and its asks.",
+      "config": {
+        "repoId": "repo-1",
+        "projectRoot": "/home/alec/marshal",
+        "hostId": "local",
+        "targetBranch": "main",
+        "workspace": "",
+        "native": true,
+        "implementerRouting": {
+          "profile": "implementer"
+        },
+        "reviewerRouting": null,
+        "reviewerInstructions": "Read the whole diff before answering.",
+        "implementerAuto": true,
+        "expectedChecks": [
+          {
+            "kind": "check",
+            "name": "test",
+            "appId": 7
+          }
+        ],
+        "noRequiredCiAcknowledged": false,
+        "maxRounds": 3,
+        "ciPollSeconds": 30,
+        "ciWaitSeconds": 900
+      }
+    },
+    "approvals": [
+      {
+        "revision": 1,
+        "plan": "## Task 1\nRead the item.\n## Task 2\nApprove it.\n",
+        "spec": "Ship the work item thread and its asks.",
+        "planHash": "9f2c0d",
+        "config": {
+          "repoId": "repo-1",
+          "projectRoot": "/home/alec/marshal",
+          "hostId": "local",
+          "targetBranch": "main",
+          "workspace": "",
+          "native": true,
+          "implementerRouting": {
+            "profile": "implementer"
+          },
+          "reviewerRouting": null,
+          "reviewerInstructions": "Read the whole diff before answering.",
+          "implementerAuto": true,
+          "expectedChecks": [
+            {
+              "kind": "check",
+              "name": "test",
+              "appId": 7
+            }
+          ],
+          "noRequiredCiAcknowledged": false,
+          "maxRounds": 3,
+          "ciPollSeconds": 30,
+          "ciWaitSeconds": 900
+        },
+        "implementerSubagents": {
+          "enabled": true,
+          "model": "small",
+          "concurrency": 2
+        },
+        "reviewerSubagents": {
+          "enabled": false,
+          "concurrency": 1
+        },
+        "approvedAt": "2026-11-17T09:00:00Z"
+      }
+    ],
+    "grants": [
+      {
+        "id": "grant-1",
+        "reason": "initial approval",
+        "additionalRounds": 3,
+        "at": "2026-11-17T09:00:00Z"
+      }
+    ],
+    "rounds": [
+      {
+        "number": 1,
+        "approvalRevision": 1,
+        "implementEffectId": "effect-implementer",
+        "baseSha": "base412",
+        "headSha": "head412",
+        "treeSha": "tree412",
+        "ci": null,
+        "implementation": null,
+        "review": null,
+        "startedAt": "2026-11-17T09:10:00Z",
+        "finishedAt": "0001-01-01T00:00:00Z"
+      }
+    ],
+    "workers": [
+      {
+        "agentId": "agent-imp",
+        "sessionId": "sess-imp",
+        "role": "implementer",
+        "spawnEffectId": "effect-implementer",
+        "parked": false,
+        "approvalRevision": 1,
+        "subagents": {
+          "enabled": true,
+          "model": "small",
+          "concurrency": 2
+        }
+      }
+    ],
+    "prs": [],
+    "effects": [
+      {
+        "outcome": null,
+        "id": "effect-implementer",
+        "kind": "implement",
+        "status": "running",
+        "workerRole": "implementer",
+        "round": 1,
+        "approvalRevision": 1,
+        "worker": null,
+        "expectedHead": "head412",
+        "expectedBase": "base412",
+        "createdAt": "2026-11-17T09:10:00Z"
+      }
+    ],
+    "decision": {
+      "id": "decision-1",
+      "kind": "scope",
+      "question": "Should the inspector show the rounds or the review?",
+      "reason": "the plan names both",
+      "effectId": "effect-implementer",
+      "createdAt": "2026-11-17T09:40:00Z"
+    },
+    "history": [
+      {
+        "sequence": 1,
+        "at": "2026-11-17T09:30:00Z",
+        "kind": "created",
+        "message": "the draft was created",
+        "effectId": ""
+      },
+      {
+        "sequence": 2,
+        "at": "2026-11-17T09:30:00Z",
+        "kind": "approved",
+        "message": "revision 1 was approved",
+        "effectId": ""
+      }
+    ],
+    "createdAt": "2026-11-17T09:00:00Z",
+    "approvedAt": "2026-11-17T09:00:00Z",
+    "updatedAt": "2026-11-17T09:40:00Z"
+  },
+  "FactoryItemReady": {
+    "id": "item-8",
+    "title": "Work item thread",
+    "state": "ready",
+    "stage": "ready",
+    "repoId": "repo-1",
+    "projectRoot": "/home/alec/marshal",
+    "hostId": "local",
+    "branch": "factory/item-8",
+    "baseSha": "base412",
+    "version": 7,
+    "draft": {
+      "requestId": "req-1",
+      "title": "Work item thread",
+      "plan": "## Task 1\nRead the item.\n## Task 2\nApprove it.\n",
+      "spec": "Ship the work item thread and its asks.",
+      "config": {
+        "repoId": "repo-1",
+        "projectRoot": "/home/alec/marshal",
+        "hostId": "local",
+        "targetBranch": "main",
+        "workspace": "",
+        "native": true,
+        "implementerRouting": {
+          "profile": "implementer"
+        },
+        "reviewerRouting": null,
+        "reviewerInstructions": "Read the whole diff before answering.",
+        "implementerAuto": true,
+        "expectedChecks": [
+          {
+            "kind": "check",
+            "name": "test",
+            "appId": 7
+          }
+        ],
+        "noRequiredCiAcknowledged": false,
+        "maxRounds": 3,
+        "ciPollSeconds": 30,
+        "ciWaitSeconds": 900
+      }
+    },
+    "approvals": [
+      {
+        "revision": 1,
+        "plan": "## Task 1\nRead the item.\n## Task 2\nApprove it.\n",
+        "spec": "Ship the work item thread and its asks.",
+        "planHash": "9f2c0d",
+        "config": {
+          "repoId": "repo-1",
+          "projectRoot": "/home/alec/marshal",
+          "hostId": "local",
+          "targetBranch": "main",
+          "workspace": "",
+          "native": true,
+          "implementerRouting": {
+            "profile": "implementer"
+          },
+          "reviewerRouting": null,
+          "reviewerInstructions": "Read the whole diff before answering.",
+          "implementerAuto": true,
+          "expectedChecks": [
+            {
+              "kind": "check",
+              "name": "test",
+              "appId": 7
+            }
+          ],
+          "noRequiredCiAcknowledged": false,
+          "maxRounds": 3,
+          "ciPollSeconds": 30,
+          "ciWaitSeconds": 900
+        },
+        "implementerSubagents": {
+          "enabled": true,
+          "model": "small",
+          "concurrency": 2
+        },
+        "reviewerSubagents": {
+          "enabled": false,
+          "concurrency": 1
+        },
+        "approvedAt": "2026-11-17T09:00:00Z"
+      }
+    ],
+    "grants": [
+      {
+        "id": "grant-1",
+        "reason": "initial approval",
+        "additionalRounds": 3,
+        "at": "2026-11-17T09:00:00Z"
+      }
+    ],
+    "rounds": [
+      {
+        "number": 1,
+        "approvalRevision": 1,
+        "implementEffectId": "effect-implementer",
+        "baseSha": "base412",
+        "headSha": "head412",
+        "treeSha": "tree412",
+        "ci": {
+          "headSha": "head412",
+          "checks": [
+            {
+              "key": {
+                "kind": "check",
+                "name": "test",
+                "appId": 7
+              },
+              "id": "check-test",
+              "sha": "head412",
+              "status": "completed",
+              "conclusion": "success",
+              "url": "https://github.com/alec/marshal/runs/1",
+              "logTail": "",
+              "observedAt": "2026-11-17T10:05:00Z"
+            },
+            {
+              "key": {
+                "kind": "check",
+                "name": "build",
+                "appId": 7
+              },
+              "id": "check-build",
+              "sha": "head412",
+              "status": "completed",
+              "conclusion": "success",
+              "url": "https://github.com/alec/marshal/runs/1",
+              "logTail": "",
+              "observedAt": "2026-11-17T10:05:00Z"
+            }
+          ],
+          "complete": true,
+          "observedAt": "2026-11-17T10:05:00Z"
+        },
+        "implementation": {
+          "operationId": "effect-implementer",
+          "outcome": "done",
+          "summary": "The thread, its tabs and its asks are drawn.",
+          "question": "",
+          "reason": "",
+          "baseSha": "base412",
+          "headSha": "head412",
+          "inputsAccessible": true,
+          "findings": []
+        },
+        "review": {
+          "operationId": "effect-reviewer",
+          "outcome": "approved",
+          "summary": "No findings.",
+          "question": "",
+          "reason": "",
+          "baseSha": "base412",
+          "headSha": "head412",
+          "inputsAccessible": true,
+          "findings": [
+            {
+              "severity": "minor",
+              "path": "app/lib/src/ui/factory/work_item_screen.dart",
+              "line": 42,
+              "title": "Name the stage in words as well as the strip"
+            }
+          ]
+        },
+        "startedAt": "2026-11-17T09:10:00Z",
+        "finishedAt": "2026-11-17T10:05:00Z"
+      }
+    ],
+    "workers": [
+      {
+        "agentId": "agent-imp",
+        "sessionId": "sess-imp",
+        "role": "implementer",
+        "spawnEffectId": "effect-implementer",
+        "parked": false,
+        "approvalRevision": 1,
+        "subagents": {
+          "enabled": true,
+          "model": "small",
+          "concurrency": 2
+        }
+      },
+      {
+        "agentId": "agent-rev",
+        "sessionId": "sess-rev",
+        "role": "reviewer",
+        "spawnEffectId": "effect-reviewer",
+        "parked": false,
+        "approvalRevision": 1,
+        "subagents": {
+          "enabled": true,
+          "model": "small",
+          "concurrency": 2
+        }
+      }
+    ],
+    "prs": [
+      {
+        "number": 412,
+        "url": "https://github.com/alec/marshal/pull/412",
+        "nodeId": "PR_node412",
+        "headRef": "factory/item-8",
+        "baseRef": "main",
+        "headSha": "head412",
+        "baseSha": "base412",
+        "state": "OPEN",
+        "draft": false
+      }
+    ],
+    "effects": [
+      {
+        "outcome": {
+          "effectId": "effect-implementer",
+          "stopReason": "done",
+          "error": "",
+          "headSha": "head412",
+          "treeSha": "tree412",
+          "baseSha": "base412",
+          "worker": null,
+          "pr": null,
+          "report": null,
+          "confirmed": true
+        },
+        "id": "effect-implementer",
+        "kind": "implement",
+        "status": "done",
+        "workerRole": "implementer",
+        "round": 1,
+        "approvalRevision": 1,
+        "worker": null,
+        "expectedHead": "head412",
+        "expectedBase": "base412",
+        "createdAt": "2026-11-17T09:10:00Z"
+      }
+    ],
+    "decision": null,
+    "history": [
+      {
+        "sequence": 1,
+        "at": "2026-11-17T09:30:00Z",
+        "kind": "created",
+        "message": "the draft was created",
+        "effectId": ""
+      },
+      {
+        "sequence": 2,
+        "at": "2026-11-17T09:30:00Z",
+        "kind": "approved",
+        "message": "revision 1 was approved",
+        "effectId": ""
+      }
+    ],
+    "createdAt": "2026-11-17T09:00:00Z",
+    "approvedAt": "2026-11-17T09:00:00Z",
+    "updatedAt": "2026-11-17T09:40:00Z"
+  },
+  "FactoryMergeBatch": {
+    "id": "batch-1",
+    "requestId": "req-merge-1",
+    "state": "complete",
+    "completeAfter": true,
+    "runChoice": "continue",
+    "steps": [
+      {
+        "repoId": "repo-1",
+        "number": 412,
+        "nodeId": "PR_node412",
+        "headSha": "head412",
+        "baseRef": "main",
+        "strategy": "squash",
+        "state": "confirmed",
+        "result": "merged"
+      }
+    ]
+  },
+  "FactoryMergeStep": {
+    "repoId": "repo-1",
+    "number": 412,
+    "nodeId": "PR_node412",
+    "headSha": "head412",
+    "baseRef": "main",
+    "strategy": "squash",
+    "state": "confirmed",
+    "result": "merged"
+  },
+  "FactoryPR": {
+    "number": 412,
+    "url": "https://github.com/alec/marshal/pull/412",
+    "nodeId": "PR_node412",
+    "headRef": "factory/item-8",
+    "baseRef": "main",
+    "headSha": "head412",
+    "baseSha": "base412",
+    "state": "OPEN",
+    "draft": false
+  },
+  "FactoryPRLink": {
+    "repoId": "repo-1",
+    "pr": {
+      "number": 412,
+      "url": "https://github.com/alec/marshal/pull/412",
+      "nodeId": "PR_node412",
+      "headRef": "factory/item-8",
+      "baseRef": "main",
+      "headSha": "head412",
+      "baseSha": "base412",
+      "state": "OPEN",
+      "draft": false
+    },
+    "origin": "factory",
+    "observedAt": "2026-11-17T10:30:00Z",
+    "fresh": true
+  },
+  "FactoryReport": {
+    "operationId": "effect-reviewer",
+    "outcome": "approved",
+    "summary": "No findings.",
+    "question": "",
+    "reason": "",
+    "baseSha": "base412",
+    "headSha": "head412",
+    "inputsAccessible": true,
+    "findings": [
+      {
+        "severity": "minor",
+        "path": "app/lib/src/ui/factory/work_item_screen.dart",
+        "line": 42,
+        "title": "Name the stage in words as well as the strip"
+      }
+    ]
+  },
+  "FactoryRevisionAssessment": {
+    "classification": "routine_clarification",
+    "reason": "the inspector's order is not stated",
+    "affectedEffectId": "effect-implementer",
+    "affectedWorkerId": "agent-imp",
+    "recommendation": "amend",
+    "strategy": "wait_safe",
+    "assessorId": "planner-1",
+    "candidateHash": "dd44",
+    "baseRevision": 1
+  },
+  "FactoryRevisionCommand": {
+    "proposalId": "rev-1",
+    "proposalVersion": 2,
+    "baseRevision": 1,
+    "baseHash": "9f2c0d",
+    "plan": "## Task 1\nRead the item.\n## Task 2\nApprove it first.\n",
+    "spec": "Ship the work item thread and its asks.",
+    "candidateHash": "dd44",
+    "routing": "amend",
+    "strategy": "wait_safe"
+  },
+  "FactoryRevisionProposal": {
+    "id": "rev-1",
+    "version": 2,
+    "baseRevision": 1,
+    "baseHash": "9f2c0d",
+    "plan": "## Task 1\nRead the item.\n## Task 2\nApprove it first.\n",
+    "spec": "Ship the work item thread and its asks.",
+    "candidateHash": "dd44",
+    "createdBy": "user",
+    "autoAssess": true,
+    "status": "proposed",
+    "assessmentState": "assessed",
+    "assessmentAttemptId": "rev-1:assessment:1",
+    "assessment": {
+      "classification": "routine_clarification",
+      "reason": "the inspector's order is not stated",
+      "recommendation": "amend",
+      "strategy": "wait_safe",
+      "assessorId": "planner-1",
+      "candidateHash": "dd44",
+      "baseRevision": 1
+    },
+    "routing": "amend",
+    "createdAt": "2026-11-17T10:00:00Z",
+    "updatedAt": "2026-11-17T10:01:00Z"
+  },
+  "FactoryRound": {
+    "number": 1,
+    "approvalRevision": 1,
+    "implementEffectId": "effect-implementer",
+    "baseSha": "base412",
+    "headSha": "head412",
+    "treeSha": "tree412",
+    "ci": {
+      "headSha": "head412",
+      "checks": [
+        {
+          "key": {
+            "kind": "check",
+            "name": "test",
+            "appId": 7
+          },
+          "id": "check-test",
+          "sha": "head412",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/alec/marshal/runs/1",
+          "logTail": "",
+          "observedAt": "2026-11-17T10:05:00Z"
+        },
+        {
+          "key": {
+            "kind": "check",
+            "name": "build",
+            "appId": 7
+          },
+          "id": "check-build",
+          "sha": "head412",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/alec/marshal/runs/1",
+          "logTail": "",
+          "observedAt": "2026-11-17T10:05:00Z"
+        }
+      ],
+      "complete": true,
+      "observedAt": "2026-11-17T10:05:00Z"
+    },
+    "implementation": {
+      "operationId": "effect-implementer",
+      "outcome": "done",
+      "summary": "The thread, its tabs and its asks are drawn.",
+      "question": "",
+      "reason": "",
+      "baseSha": "base412",
+      "headSha": "head412",
+      "inputsAccessible": true,
+      "findings": []
+    },
+    "review": {
+      "operationId": "effect-reviewer",
+      "outcome": "approved",
+      "summary": "No findings.",
+      "question": "",
+      "reason": "",
+      "baseSha": "base412",
+      "headSha": "head412",
+      "inputsAccessible": true,
+      "findings": [
+        {
+          "severity": "minor",
+          "path": "app/lib/src/ui/factory/work_item_screen.dart",
+          "line": 42,
+          "title": "Name the stage in words as well as the strip"
+        }
+      ]
+    },
+    "startedAt": "2026-11-17T09:10:00Z",
+    "finishedAt": "2026-11-17T10:05:00Z"
+  },
+  "FactorySubagentOverrides": {
+    "enabled": true,
+    "model": "small",
+    "concurrency": 2
+  },
+  "FactorySubagentSettings": {
+    "enabled": true,
+    "model": "small",
+    "concurrency": 2
+  },
+  "FactoryWorker": {
+    "agentId": "agent-imp",
+    "sessionId": "sess-imp",
+    "role": "implementer",
+    "spawnEffectId": "effect-implementer",
+    "parked": false,
+    "approvalRevision": 1,
+    "subagents": {
+      "enabled": true,
+      "model": "small",
+      "concurrency": 2
+    }
+  },
+  "ReviewFinding": {
+    "severity": "minor",
+    "path": "app/lib/src/ui/factory/work_item_screen.dart",
+    "line": 42,
+    "title": "Name the stage in words as well as the strip"
+  },
+  "SelectedFile": {
+    "path": "app/lib/src/ui/factory/work_item_screen.dart",
+    "operation": "modify",
+    "baseSha256": "aa11",
+    "contentSha256": "bb22",
+    "executable": false
+  },
+  "FactorySettingsVersion": {
+    "settingsVersion": "p1:digest-1"
+  }
+}

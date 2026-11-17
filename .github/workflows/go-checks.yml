@@ -70,6 +70,9 @@ jobs:
           cache-dependency-path: web/ui/package-lock.json
       - run: npm ci
       - run: npm test
+      # The Svelte Studio still holds `/` (F8's cutover is deferred), so its
+      # assets are built with the default base. The committed copy in
+      # web/bridge/static is checked against this build below.
       - run: npm run build
       - name: Check committed embedded assets
         working-directory: .
@@ -99,11 +102,20 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: '3.35.1'
+          flutter-version: '3.50.0'
           cache: true
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
+      # The Flutter Studio is served under /next/ while the cutover is deferred:
+      # its base href is that prefix, and `--no-web-resources-cdn` makes the
+      # build fetch the CanvasKit engine from this server instead of gstatic,
+      # so a private network that cannot reach the CDN still starts it.
+      - name: Build the Studio for /next/
+        run: flutter build web --base-href /next/ --no-web-resources-cdn --output ../web/bridge/static-next
+      - name: The Studio's build embeds
+        working-directory: .
+        run: CGO_ENABLED=1 go build -o /tmp/webbridge ./cmd/webbridge
       - name: Check formatting
         run: dart format --output=none --set-exit-if-changed lib test
 

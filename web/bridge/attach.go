@@ -11,17 +11,62 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // The attach wire contract (P4 D3). The TUI's client and the daemon are two
 // halves of one protocol, so these strings are the binding rather than a
 // shared Go type.
 const (
-	attachPath     = "/api/projects/attach"
-	attachProtocol = "marshal-acp"
-	sessionHeader  = "Marshal-Session"
-	agentHeader    = "Marshal-Agent"
+	attachPath       = "/api/projects/attach"
+	attachProtocol   = "marshal-acp"
+	sessionHeader    = "Marshal-Session"
+	agentHeader      = "Marshal-Agent"
+	envWarningHeader = "Marshal-Env-Warning"
 )
+
+// envWarningLineMax bounds the environment warning a 101 carries: a header is
+// not the place for a paragraph (decision 6).
+const envWarningLineMax = 300
+
+// headerLine is decision 6's one line: a warning's first line, with control
+// characters removed and cut at 300 bytes, because a header cannot hold a
+// newline. It is empty when nothing is left to say.
+func headerLine(s string) string {
+	line := s
+	if i := strings.IndexAny(line, "\r\n"); i >= 0 {
+		line = line[:i]
+	}
+	line = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, line)
+	if len(line) > envWarningLineMax {
+		// Cut on a rune boundary: half a rune would make the header invalid
+		// UTF-8 for no gain.
+		cut := envWarningLineMax
+		for cut > 0 && !utf8.RuneStart(line[cut]) {
+			cut--
+		}
+		line = line[:cut]
+	}
+	return strings.TrimSpace(line)
+}
+
+// envWarningOf is a project child's environment warning, read under the lock
+// that guards it. An agent on a child of its own has no project child, and so
+// no warning.
+func envWarningOf(pc *projectChild) string {
+	if pc == nil {
+		return ""
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	return pc.envWarning
+}
 
 // agentAttachPrefix and agentAttachSuffix bracket the agent id in an agent
 // attach's path: /api/agents/{id}/attach.
@@ -79,6 +124,16 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 	if s.fleet == nil {
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "this bridge has no fleet"})
 		return
+	}
+
+	// Registering the root is what makes it offerable: /api/projects is where
+	// the Studio gets the projects it can spawn into, and it reads the
+	// workspace, which until now only a spawn or an explicit POST filled. An
+	// attach is proof the daemon runs this project, so the TUI opening a
+	// session is enough to list it. Best-effort: a workspace that cannot be
+	// saved must not cost the user their session.
+	if err := s.fleet.ws.AddProject(root); err != nil {
+		slog.Default().Warn("webbridge: register attached project", "root", root, "err", err)
 	}
 
 	// The child and the session are resolved within one handshake budget, as
@@ -177,7 +232,14 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 	head := "HTTP/1.1 101 Switching Protocols\r\n" +
 		"Connection: Upgrade\r\n" +
 		"Upgrade: " + attachProtocol + "\r\n" +
-		sessionHeader + ": " + sessionID + "\r\n\r\n"
+		sessionHeader + ": " + sessionID + "\r\n"
+	// The attach carries why this child's environment fell back, so the client
+	// can say so without asking the daemon about it (P6 T3). A child that
+	// resolved its environment has nothing to say.
+	if warning := headerLine(envWarningOf(pc)); warning != "" {
+		head += envWarningHeader + ": " + warning + "\r\n"
+	}
+	head += "\r\n"
 	if _, err := io.WriteString(client, head); err != nil {
 		// The client is gone before the stream began, so a session opened for
 		// it has no viewer and must not stay open.
@@ -331,7 +393,13 @@ func (s *Server) attachAgent(w http.ResponseWriter, r *http.Request, id string) 
 		"Connection: Upgrade\r\n" +
 		"Upgrade: " + attachProtocol + "\r\n" +
 		sessionHeader + ": " + sessionID + "\r\n" +
-		agentHeader + ": " + a.ID + "\r\n\r\n"
+		agentHeader + ": " + a.ID + "\r\n"
+	// The warning belongs to the agent's project child: an agent on a child of
+	// its own has no project child, and so no warning (P6 T3).
+	if warning := headerLine(envWarningOf(pc)); warning != "" {
+		head += envWarningHeader + ": " + warning + "\r\n"
+	}
+	head += "\r\n"
 	if _, err := io.WriteString(client, head); err != nil {
 		// The client is gone before the stream began. The session is the
 		// agent's, so it stays open: only what the attach opened is closed.

@@ -30,12 +30,21 @@ scripts/test.sh full          # whole suite, uncached
 go test ./internal/app/...    # one package (prefer the narrowest scope)
 go vet ./...
 gofmt -w .
+scripts/dev-daemon.sh         # rebuild this tree, restart the local daemon, print status
+scripts/dev-studio.sh         # rebuild the SPA and binaries, restart the browser studio, print status
+                              #   --dev-image also refreshes the agent container image from ./marshal
 ```
 
 `scripts/test.sh` is the entry point for test runs; its modes, and what each one
 keeps, are documented in `docs/testing-ci-audit.md`. Everything after the mode
 that is not `--base`/`--go-only` is passed through to `go test`, so
 `scripts/test.sh quick ./internal/acp -run TestStack` works.
+
+`scripts/dev-daemon.sh` and `scripts/dev-studio.sh` keep a development box's
+daemon and browser studio running this checkout's build without cutting a
+release. Setup, the rebuild-and-restart loop, the agent image, and how to
+recreate the services from scratch are documented in
+[`docs/dev-loop.md`](docs/dev-loop.md).
 
 `marshal` also dispatches subcommands: `acp` (headless JSON-RPC server),
 `attach` (reattach to a daemon session), `daemon` (install and drive the local
@@ -46,17 +55,36 @@ daemon), `fleet` (the fleet screen on the local daemon), `history`, `plugin`,
 ### Web control plane
 
 ```bash
-cd web/ui && npm install && npm run build   # writes web/bridge/static/
-go build ./cmd/webbridge                    # embeds the built assets
+cd app && flutter build web --base-href / --output ../web/bridge/static-next
+go build ./cmd/webbridge                    # embeds the Studio
 ```
 
-The SPA is baked in with `//go:embed`, so a change under `web/ui/src` is
-**invisible until `npm run build` reruns and the binary is rebuilt**.
+The Studio is the Flutter app in `app/` (`docs/studio-flutter/`), and `/`
+serves it from F8 on. `web/bridge/static-next/` is its build; in a Go-only
+checkout it holds a placeholder index. The app job and the release build both
+run that command before building `webbridge`, because `//go:embed` bakes it in.
+
+The Svelte Studio is frozen from F2 on: bug fixes only. For the length of the
+trial release it is served beside the Studio under `/classic/`, and `/next/…`
+redirects permanently to the same place at `/`. Its build carries that prefix:
+
+```bash
+cd web/ui && npm install && npm run build -- --base=/classic/
+go build ./cmd/webbridge
+```
+
+`web/bridge/static/` is that build, and the web job checks its committed copy
+against a fresh one. The SPA is baked in with `//go:embed`, so a change under
+`web/ui/src` is **invisible until `npm run build` reruns and the binary is
+rebuilt**.
 
 `web/bridge/contract` holds the fleet loop's wire types. `web/ui/src/lib/contract.ts`
 is generated from it: regenerate with
 `go test ./web/bridge/contract/tsgen -run TestTypeScriptContractIsCurrent -update`.
-`npm run check` type-checks the web UI.
+`npm run check` type-checks the web UI. The same package generates the app's
+Dart module, `app/lib/src/client/contract.g.dart`: regenerate with
+`go test ./web/bridge/contract/dartgen -run TestDartContractIsCurrent -update`.
+Both currency tests fail on a contract change that is not regenerated.
 
 `webbridge --profile local` is the user's local daemon (P4): a unix socket,
 host processes only, and no container machinery. Each project runs its own
@@ -66,7 +94,9 @@ client onto that child's viewer socket, relaying its frames unchanged. Plain
 `marshal` starts its session on that daemon when one answers, the quit key and
 `/detach` leave it running, and `marshal attach [id]` comes back to it.
 A session screen whose connection closes reconnects to its session for up to a
-minute, keeping its draft. `marshal fleet` opens an agent's or a daemon
+minute, keeping its draft. A watch a client started that fires while no screen is attached
+resumes its session itself, and the next screen to attach sees the run.
+`marshal fleet` opens an agent's or a daemon
 session's screen with `⏎`, and `/fleet` returns to the fleet from any daemon
 session. A
 daemon session on an untrusted project asks its TUI, as embedded mode does,
@@ -202,6 +232,9 @@ Tools & safety
   internal/tools/native/sudo.go   the one privileged-execution path: password on stdin,
                            never argv or env, and no PTY
   internal/tools/{patch,policy,mcp,desktop}
+  internal/capture/         display detection and the grim/screencapture backends
+                           behind `image.capture`; the image producers are
+                           `image.view`, `image.capture` and `browser.screenshot`
   internal/permissions/     tool permission rules, approval-pattern derivation
   internal/{hooks,plugins}/ user hooks and third-party plugin loading
   internal/sandbox/         restricted, container, and passthrough execution backends
@@ -213,16 +246,26 @@ Web control plane
   web/ui/                  Svelte 5 + Vite SPA (dev-only Node toolchain)
 
 Native app
-  app/                     Flutter desktop app: the tray screen — a menu-bar
-                           item whose menu reports the daemon's state and runs
-                           its commands. Pure Dart under lib/src except
-                           lib/src/daemon/cli.dart, the only file allowed
-                           `dart:io`: it reaches Marshal only by running
+  app/                     Flutter app (3.50; Material and Cupertino from the
+                           material_ui / cupertino_ui packages): today the tray
+                           screen — a menu-bar item whose menu reports the
+                           daemon's state and runs its commands — and the
+                           Studio's foundations. lib/src has four lanes:
+                           daemon/ + menu/ (the tray), client/ (the only code
+                           that opens a socket), model/ (stores and view models) and ui/
+                           (widgets). `dart:io` only in daemon/cli.dart and
+                           client/*_io.dart; browser APIs only in
+                           client/*_web.dart; model/ imports only
+                           `package:flutter/foundation.dart` from Flutter, and
+                           no `dart:io` or browser API; ui/ never imports
+                           client/; Material and Cupertino only in ui/kit/,
+                           ui/tokens.dart and the tray's files.
+                           `app/test/boundary_test.dart` enforces it. The tray
+                           still reaches Marshal only by running
                            `marshal daemon status --json` and the commands in
                            its menu, and never opens the daemon's socket, never
                            reads `fleet.json`, the state directory or the
                            config, and embeds no agent-side Go type.
-                           `app/test/no_io_test.dart` enforces the import rule.
                            The release workflow copies `marshal` and
                            `webbridge` into the bundle; the app does not
                            contain them.
@@ -264,6 +307,34 @@ These are load-bearing; code comments and tests point back at them.
   directly before the goal. Never insert or rewrite a message ahead of
   the transcript mid-turn; `TestPromptPrefixStableAcrossSteps` fails if
   you do.
+
+## The Studio's UI (`app/lib/src/ui/`)
+
+Before changing anything under `app/lib/src/ui/`, read
+`docs/studio-flutter/design-system.md`; it is normative there. In short:
+
+- Build screens only from the kit (`app/lib/src/ui/kit/kit.dart`). A screen
+  imports nothing from Material or Cupertino.
+- Every colour, text role, spacing, radius and size comes from
+  `app/lib/src/ui/tokens.dart`. Write no other number or colour.
+- Reuse `AskCard`, `PrCard`, `ThreadRow` and `StateMessage` wherever their
+  subject appears; never draw a second version.
+- Give every unlabelled control a tooltip, and handle loading, empty,
+  stale, error and unavailable on every screen that shows data. Register a
+  new screen, with fixture data for each state, in
+  `app/test/support/screens.dart`.
+- If the kit lacks a piece, extend the design system first (its §10): the
+  document, the kit, the gallery and the goldens together. Never a one-off
+  in a screen.
+
+These tests hold the line, in `app/test/` (`cd app && flutter test`):
+`design_rules_test.dart`, `tooltips_test.dart`, `states_test.dart`,
+`overflow_test.dart`, `gallery_test.dart`, `contrast_test.dart`,
+`fonts_test.dart`, `boundary_test.dart` and one `kit/<component>_test.dart`
+per component. The gallery goldens are pinned to macOS (regenerate there
+with `flutter test --update-goldens test/gallery_test.dart`). As with
+`TestWebIsStdlibOnly`, a failure is fixed by using the kit or extending the
+system, never by an exception in the test.
 
 ## Config
 

@@ -79,6 +79,16 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Skills.BodyFullTurns, file.Skills.BodyFullTurns)
 		set(&cfg.Skills.LoadGateThresholdTokens, file.Skills.LoadGateThresholdTokens)
 	}
+	if file.Images != nil {
+		set(&cfg.Images.MaxInputBytes, file.Images.MaxInputBytes)
+		set(&cfg.Images.MaxStoredBytes, file.Images.MaxStoredBytes)
+		set(&cfg.Images.MaxEdge, file.Images.MaxEdge)
+		set(&cfg.Images.JPEGQuality, file.Images.JPEGQuality)
+		set(&cfg.Images.MaxPerMessage, file.Images.MaxPerMessage)
+		set(&cfg.Images.MaxRequestBytes, file.Images.MaxRequestBytes)
+		set(&cfg.Images.MaxStoreBytes, file.Images.MaxStoreBytes)
+		set(&cfg.Images.RetainDays, file.Images.RetainDays)
+	}
 	if file.Indexing != nil {
 		set(&cfg.Indexing.UseTreesitter, file.Indexing.UseTreesitter)
 		set(&cfg.Indexing.UseEmbeddings, file.Indexing.UseEmbeddings)
@@ -401,6 +411,9 @@ func merge(cfg *Config, file configFile) error {
 			}
 			cfg.Daemon.IdleSessionTimeout = d
 		}
+		if file.Daemon.StudioAddr != nil && *file.Daemon.StudioAddr != "" {
+			cfg.Daemon.StudioAddr = *file.Daemon.StudioAddr
+		}
 	}
 	if file.Web != nil {
 		set(&cfg.Web.Enabled, file.Web.Enabled)
@@ -434,6 +447,17 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Desktop.DefaultTimeout = d
 		}
 		set(&cfg.Desktop.ScreenshotFormat, file.Desktop.ScreenshotFormat)
+	}
+	if file.Capture != nil {
+		set(&cfg.Capture.Enabled, file.Capture.Enabled)
+		set(&cfg.Capture.Backend, file.Capture.Backend)
+		if file.Capture.Timeout != nil && *file.Capture.Timeout != "" {
+			d, err := time.ParseDuration(*file.Capture.Timeout)
+			if err != nil {
+				return fmt.Errorf("capture.timeout: %w", err)
+			}
+			cfg.Capture.Timeout = d
+		}
 	}
 	if file.Session != nil && file.Session.Rollover != nil {
 		r := file.Session.Rollover
@@ -501,6 +525,7 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Scratchpad.MaxEntryTokens, file.Scratchpad.MaxEntryTokens)
 		set(&cfg.Scratchpad.ProjectionMaxTokens, file.Scratchpad.ProjectionMaxTokens)
 	}
+	cfg.Images = cfg.Images.Normalize()
 	return nil
 }
 

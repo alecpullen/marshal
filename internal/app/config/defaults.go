@@ -44,6 +44,16 @@ func Default() Config {
 			BodyFullTurns:           3,
 			LoadGateThresholdTokens: 131072,
 		},
+		Images: ImagesConfig{
+			MaxInputBytes:   20971520,
+			MaxStoredBytes:  4194304,
+			MaxEdge:         1568,
+			JPEGQuality:     85,
+			MaxPerMessage:   10,
+			MaxRequestBytes: 12582912,
+			MaxStoreBytes:   536870912,
+			RetainDays:      14,
+		},
 		Indexing: IndexingConfig{
 			UseTreesitter:          false,
 			UseEmbeddings:          false,
@@ -129,6 +139,7 @@ func Default() Config {
 		},
 		Daemon: DaemonConfig{
 			IdleSessionTimeout: 30 * time.Minute,
+			StudioAddr:         "127.0.0.1:7788",
 		},
 		Desktop: DesktopConfig{
 			Enabled:          false,
@@ -136,6 +147,11 @@ func Default() Config {
 			Headless:         false,
 			DefaultTimeout:   30 * time.Second,
 			ScreenshotFormat: "png",
+		},
+		Capture: CaptureConfig{
+			Enabled: false,
+			Backend: "",
+			Timeout: 10 * time.Second,
 		},
 		MCP: MCPConfig{
 			Servers:                  map[string]MCPServerConfig{},
@@ -163,7 +179,11 @@ func Default() Config {
 			GlobalMaxBytes:    DefaultGlobalMaxBytes,
 		},
 		Permissions: PermissionsConfig{
-			Rules: nil,
+			// capture is a read-only tool, so risk alone cannot prompt it; the
+			// rule is what makes "switched on" different from "unattended".
+			Rules: []PermissionRule{
+				{Permission: "image.capture", Pattern: "*", Action: "ask"},
+			},
 		},
 		Session: SessionConfig{
 			Rollover: RolloverConfig{

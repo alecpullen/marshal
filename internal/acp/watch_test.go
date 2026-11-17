@@ -62,6 +62,64 @@ func newWatchTestACP(t *testing.T) (*WatchManagerACP, *watchNotices) {
 	return acpWatch, notices
 }
 
+// TestAClientStartedWatchKeepsResume pins P6 plan 6's precondition at the wire:
+// a watch registered over ACP carries the "studio" provenance tag, which is not
+// subagent ownership, so the resume its client asked for survives registration
+// and its fires carry it. Without it no client can start a resuming watch, and
+// a wake with no screen attached has nothing to fire it.
+func TestAClientStartedWatchKeepsResume(t *testing.T) {
+	broker := pubsub.NewBroker[watch.Event]()
+	wm := watch.NewManager(context.Background(), watch.Deps{
+		OnEvent: func(ev watch.Event) { broker.Publish("watch", ev) },
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = wm.Close(ctx)
+		broker.Close()
+	})
+	m := NewWatchManagerACP(func(id string) (*watch.Manager, *pubsub.Broker[watch.Event], bool) {
+		return wm, broker, id == "s1"
+	}, (&watchNotices{}).notify)
+	target := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := json.Marshal(map[string]any{
+		"sessionId": "s1",
+		"spec": map[string]any{
+			"name": "resumer", "kind": "file", "path": target,
+			"condition": "exit_code 0", "mode": "repeat", "intervalMs": 100, "resume": true,
+		},
+	})
+	v, err := m.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note, _ := v.(map[string]any)["note"].(string); strings.Contains(note, "ignored") {
+		t.Fatalf("note = %q, want the resume to stand", note)
+	}
+	events := broker.Subscribe(context.Background())
+	deadline := time.After(8 * time.Second)
+	for {
+		select {
+		case ev := <-events:
+			if ev.Payload.State != watch.StateFired {
+				continue
+			}
+			if ev.Payload.Owner != watchOwnerStudio {
+				t.Fatalf("fire owner = %q, want the studio provenance tag", ev.Payload.Owner)
+			}
+			if !ev.Payload.Resume {
+				t.Fatal("the watch a client started fired without its resume intent")
+			}
+			return
+		case <-deadline:
+			t.Fatal("the watch did not fire within 8s")
+		}
+	}
+}
+
 func TestWatchStartListStopAndUpdates(t *testing.T) {
 	m, notices := newWatchTestACP(t)
 	target := filepath.Join(t.TempDir(), "f.txt")

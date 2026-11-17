@@ -122,6 +122,7 @@ func withBeat(t *testing.T) Model {
 func TestInspectorShowsACallsStepAndPlace(t *testing.T) {
 	m := withBeat(t)
 	key := wireToolKey(t, m, "c2")
+	warmDetail(t, &m, key)
 	d, ok := m.inspectorDetail(key)
 	if !ok {
 		t.Fatal("the shell row is not inspectable")
@@ -170,7 +171,9 @@ func TestInspectorShowsABeatsToolsAndTask(t *testing.T) {
 	})
 	m.refreshViewport()
 
-	d, ok := m.inspectorDetail(wireBeatKey(t, m))
+	beat := wireBeatKey(t, m)
+	warmDetail(t, &m, m.openDetailIDs(beat)...)
+	d, ok := m.inspectorDetail(beat)
 	if !ok {
 		t.Fatal("the beat is not inspectable")
 	}
@@ -208,7 +211,9 @@ func TestInspectorShowsASandboxedHookedCall(t *testing.T) {
 	})
 	m.refreshViewport()
 
-	d, ok := m.inspectorDetail(wireToolKey(t, m, "c1"))
+	c1 := wireToolKey(t, m, "c1")
+	warmDetail(t, &m, c1)
+	d, ok := m.inspectorDetail(c1)
 	if !ok {
 		t.Fatal("the hooked row is not inspectable")
 	}
@@ -222,7 +227,9 @@ func TestInspectorShowsASandboxedHookedCall(t *testing.T) {
 		t.Fatalf("approval = %q", got)
 	}
 
-	plain, ok := m.inspectorDetail(wireToolKey(t, m, "c2"))
+	c2 := wireToolKey(t, m, "c2")
+	warmDetail(t, &m, c2)
+	plain, ok := m.inspectorDetail(c2)
 	if !ok {
 		t.Fatal("the unapproved row is not inspectable")
 	}

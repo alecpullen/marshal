@@ -66,6 +66,8 @@ type CallToolResult struct {
 }
 
 type MCPContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`     // base64, for type "image"
+	MimeType string `json:"mimeType,omitempty"` // for type "image"
 }

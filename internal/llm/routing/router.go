@@ -33,10 +33,62 @@ var (
 
 type StaticRouter struct {
 	config Config
+	// Vision is set by the composition root (internal/app). The zero value
+	// means attempt: no probe, no recorded rejection.
+	Vision VisionFacts
 }
 
 func NewStaticRouter(config Config) *StaticRouter {
 	return &StaticRouter{config: config}
+}
+
+// finalizeVision answers "may this route be sent images" for a built route.
+func (r *StaticRouter) finalizeVision(route Route) Route {
+	var probe *bool
+	if r.Vision.Probe != nil {
+		probe = r.Vision.Probe(route.Preset)
+	}
+	rejected := r.Vision.Rejected != nil && r.Vision.Rejected(route.Preset)
+	route.Vision, route.VisionForced = resolveVision(route.Preset, probe, rejected)
+	return route
+}
+
+// resolveVision answers one question: may this route be sent images. It is
+// not a claim about what the model understands.
+//
+// First match wins: an explicit preset, a learned rejection, a probe, a
+// text-only name heuristic, else attempt. Attempt is the default because a
+// loud rejection is recoverable (the runner retries without images) while a
+// wrong "off" blocks the feature at first use.
+func resolveVision(preset ModelPreset, probeVision *bool, rejected bool) (vision, forced bool) {
+	switch preset.Vision {
+	case VisionOn:
+		return true, true
+	case VisionOff:
+		return false, false
+	}
+	if rejected {
+		return false, false
+	}
+	if probeVision != nil {
+		return *probeVision, false
+	}
+	if textOnlyModelName(preset.Model) {
+		return false, false
+	}
+	return true, false
+}
+
+// textOnlyModelName names families with no vision input at all. It is a
+// heuristic, so it only ever answers "no": an unrecognised model is attempted.
+func textOnlyModelName(model string) bool {
+	m := strings.ToLower(model)
+	for _, s := range []string{"whisper", "text-embedding", "embed-", "bge-", "e5-", "rerank"} {
+		if strings.Contains(m, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *StaticRouter) Resolve(class string) (Route, error) {
@@ -199,12 +251,12 @@ func (r *StaticRouter) resolvePresetBinding(presetName string, role AgentRole, p
 	if !preset.LocalOnly && !r.config.RemoteAllowed {
 		return Route{}, fmt.Errorf("%w: preset %s", ErrRemoteProviderBlocked, presetName)
 	}
-	return Route{
+	return r.finalizeVision(Route{
 		Role:          role,
 		Profile:       profileName,
 		Preset:        preset,
 		ContextBudget: r.config.ContextBudgets[role],
-	}, nil
+	}), nil
 }
 
 // ResolveExplicitModel resolves an explicit "provider/model" pair (e.g.
@@ -228,12 +280,12 @@ func (r *StaticRouter) ResolveExplicitModel(pair string, asRole AgentRole) (Rout
 	if !preset.LocalOnly && !r.config.RemoteAllowed {
 		return Route{}, fmt.Errorf("%w: preset %s", ErrRemoteProviderBlocked, pair)
 	}
-	return Route{
+	return r.finalizeVision(Route{
 		Role:          asRole,
 		Profile:       r.config.DefaultProfile,
 		Preset:        preset,
 		ContextBudget: r.config.ContextBudgets[asRole],
-	}, nil
+	}), nil
 }
 
 // ResolveCustomAgent resolves a named custom agent. If the agent's own
@@ -327,6 +379,7 @@ func (r *StaticRouter) resolveAgentBinding(name string, role AgentRole, profileN
 	if agent.Thinking != "" {
 		route.Preset.Thinking = agent.Thinking
 	}
+	route = r.finalizeVision(route)
 	return route, nil
 }
 

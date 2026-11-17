@@ -2432,6 +2432,33 @@ func TestRunExitAnalysisIsRefusedWhileAnotherEpochIsOpen(t *testing.T) {
 	}
 }
 
+// TestStartRuntimeWiresTheExitAnalysisOperation pins that the postmortem's agent
+// pass is installed by the build every composition root shares, not by Embedded
+// alone. A session served over ACP accepts session/exit_analysis exactly as an
+// embedded one does, so a runtime built through StartRuntime must serve the pass
+// too: when only Embedded installed it, a daemon-hosted session wrote the
+// extraction report and then failed the pass with "runtime: no exit-analysis
+// operation is wired" — which reads to the user as a postmortem that never ran.
+func TestStartRuntimeWiresTheExitAnalysisOperation(t *testing.T) {
+	ctx := context.Background()
+	rt, err := StartRuntime(ctx,
+		WithWorkingDir(t.TempDir()),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(context.Background()) })
+
+	rt.endMu.Lock()
+	installed := rt.scopedAnalysis
+	rt.endMu.Unlock()
+	if installed == nil {
+		t.Fatal("StartRuntime left the exit-analysis operation unwired; a daemon-hosted exit postmortem's agent pass would fail after its report was written")
+	}
+}
+
 // TestRunExitAnalysisCleansUpOnFailure pins the failure path: an analysis that
 // fails still stops and joins its epoch, so nothing outlives the phase.
 func TestRunExitAnalysisCleansUpOnFailure(t *testing.T) {

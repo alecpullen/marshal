@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // errInvalidProjectSettings marks a settings request the bridge refuses.
@@ -69,6 +71,27 @@ func (w *Workspace) ProjectRootByRepo(repoID string) string {
 		}
 	}
 	return ""
+}
+
+// projectRepoID is the registered repo a project's issues come from: the repo
+// its settings' intake names. That link is the mapping the Studio's new-work
+// dialog needs — `GET /api/repos/{id}/issues` is keyed by a repo id, and a
+// project entry is what the dialog starts from.
+//
+// It is only reported while the repo it names is still registered. A settings
+// write validates the id against the registry, but a repo can be removed
+// afterwards (removal refuses only when an agent uses it), and a stale id
+// would send the dialog to a route that answers 404. A project that names
+// none reports none, which the dialog shows as "no registered repo".
+func (f *Fleet) projectRepoID(root string) string {
+	id := f.ws.ProjectSettingsFor(root).Intake.RepoID
+	if id == "" {
+		return ""
+	}
+	if _, ok := f.ws.Repo(id); !ok {
+		return ""
+	}
+	return id
 }
 
 // workspaceRoots is where an agent's repo template is read and whose
@@ -282,45 +305,20 @@ func sameIntake(a, b ProjectIntake) bool {
 }
 
 // MirrorHealth is one repo's mirror freshness.
-type MirrorHealth struct {
-	RepoID string `json:"repoId"`
-	// Present is false when the repo has no mirror yet.
-	Present bool `json:"present"`
-	// AgeSeconds is the time since the mirror last fetched.
-	AgeSeconds int64  `json:"ageSeconds,omitempty"`
-	Head       string `json:"head,omitempty"`
-}
+// MirrorHealth is contract.MirrorHealth.
+type MirrorHealth = contract.MirrorHealth
 
 // WorkspaceHealth is whether a project's default workspace is usable.
-type WorkspaceHealth struct {
-	Ref      string `json:"ref"`
-	Resolves bool   `json:"resolves"`
-	Built    bool   `json:"built"`
-	Error    string `json:"error,omitempty"`
-}
+// WorkspaceHealth is contract.WorkspaceHealth.
+type WorkspaceHealth = contract.WorkspaceHealth
 
 // ProjectHealth is GET /api/projects/health.
-type ProjectHealth struct {
-	// GateRunnable is "yes", "no" (the last verify was skipped: nothing
-	// to run) or "unknown" (no agent of the project has verified).
-	GateRunnable      string           `json:"gateRunnable"`
-	MirrorFresh       []MirrorHealth   `json:"mirrorFresh"`
-	OrphanWorktrees   []string         `json:"orphanWorktrees"`
-	Trust             string           `json:"trust"`
-	WorkspaceResolves *WorkspaceHealth `json:"workspaceResolves,omitempty"`
-	// Verify is the project's verify-gate commands from [sdd.verify] in
-	// .marshal/config.toml. Empty strings mean unset, in which case the
-	// gate is skipped (nothing to run) unless the engine detects a default.
-	// Only reported for a trusted project, since the engine ignores an
-	// untrusted project's config.
-	Verify VerifyCommands `json:"verify"`
-}
+// ProjectHealth is contract.ProjectHealth.
+type ProjectHealth = contract.ProjectHealth
 
 // VerifyCommands is a project's configured gate commands.
-type VerifyCommands struct {
-	Build string `json:"build"`
-	Test  string `json:"test"`
-}
+// VerifyCommands is contract.VerifyCommands.
+type VerifyCommands = contract.VerifyCommands
 
 // ProjectHealth reports a registered project's health.
 func (f *Fleet) ProjectHealth(ctx context.Context, root string) (ProjectHealth, error) {

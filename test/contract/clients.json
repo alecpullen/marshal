@@ -1,0 +1,66 @@
+{
+  "MCPClient": {
+    "id": "c-1",
+    "name": "editor",
+    "autonomous": true,
+    "maxConcurrent": 2,
+    "maxPerDay": 10,
+    "allowedRepos": [
+      "acme/widgets"
+    ],
+    "ownerId": "owner-1",
+    "createdAt": "2026-11-17T03:00:00Z"
+  },
+  "CreateClientRequest": {
+    "name": "editor",
+    "autonomous": true,
+    "maxConcurrent": 2,
+    "maxPerDay": 10,
+    "allowedRepos": [
+      "acme/widgets"
+    ]
+  },
+  "CreateClientResult": {
+    "id": "c-1",
+    "name": "editor",
+    "token": "mcp_2f9d",
+    "autonomous": true
+  },
+  "MCPFactoryProjectGrant": {
+    "projectId": "p-1",
+    "read": true,
+    "createDraft": true,
+    "editDraft": false,
+    "answerQuestion": true,
+    "approveAndQueue": false,
+    "approvalAuthority": "user_directed",
+    "assessPlanChanges": true
+  },
+  "FactoryGrantState": {
+    "clientId": "c-1",
+    "projectId": "p-1",
+    "grant": {
+      "projectId": "p-1",
+      "read": true,
+      "createDraft": true,
+      "editDraft": false,
+      "answerQuestion": true,
+      "approveAndQueue": false,
+      "approvalAuthority": "user_directed"
+    },
+    "version": "v1"
+  },
+  "PutGrantRequest": {
+    "grant": {
+      "projectId": "p-1",
+      "read": true,
+      "createDraft": true,
+      "editDraft": false,
+      "answerQuestion": true,
+      "approveAndQueue": false,
+      "approvalAuthority": "user_directed"
+    },
+    "version": "v1"
+  },
+  "ApprovalAuthority": "user_directed"
+}

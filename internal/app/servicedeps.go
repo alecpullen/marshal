@@ -58,6 +58,7 @@ func (rt *Runtime) ServiceDeps(ctx context.Context) service.Deps {
 		Steering:        steeringBroker,
 		Workspace:       workspaceBroker,
 		Subagents:       subagentBroker,
+		Images:          rt.Images,
 		ProjectID:       projectID,
 		ReferenceFinder: refFinder,
 		AccessRequest:   rt.AccessRequest,
@@ -90,6 +91,13 @@ func (rt *Runtime) ServiceDeps(ctx context.Context) service.Deps {
 		// the eager seed and the first @-keystroke share one path.
 		FileIndex: func() ([]string, error) { return loadFileIndexPaths(database, projectID) },
 	}
+	// The built-in Studio integration's access settings: the same policy the
+	// factory authorizes against, read and written through the daemon that
+	// holds it. They are a person's settings, reached only through this seam;
+	// no tool and no prompt reads them, and a daemon that is absent or does not
+	// serve them leaves ordinary agent work untouched.
+	deps.MarshalAccess, deps.SaveMarshalAccess, deps.SelectMarshalInstance =
+		marshalAccessHooks(rt.HomeDir, state.SessionID())
 	// A session whose marshal client answers the trust question carries the
 	// prompt and the in-place apply (P4 D8). Embedded mode sets TrustPrompt
 	// itself afterwards and never sees ApplyTrust, because its runtimes are

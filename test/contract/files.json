@@ -1,0 +1,30 @@
+{
+  "FileContent": {
+    "binary": false,
+    "content": "package main\n",
+    "path": "cmd/marshal/main.go",
+    "size": 14,
+    "truncated": false
+  },
+  "FileEntry": {
+    "dir": true,
+    "name": "internal",
+    "size": 0
+  },
+  "FileList": {
+    "entries": [
+      {
+        "dir": true,
+        "name": "internal",
+        "size": 0
+      },
+      {
+        "dir": false,
+        "name": "go.mod",
+        "size": 412
+      }
+    ],
+    "path": "",
+    "root": "/home/u/marshal"
+  }
+}

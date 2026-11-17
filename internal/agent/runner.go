@@ -17,6 +17,7 @@ import (
 	"marshal/internal/interaction"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
@@ -282,6 +283,16 @@ type Runner struct {
 	// persisted, so a fresh session starts counting from zero.
 	thinkingLoopCounts map[string]int
 	thinkingLoopMu     sync.Mutex
+	// lastToolImages is the image list of the most recent tool result this
+	// run produced. A parent hoists them onto the child's report, so a
+	// subagent that took a screenshot shows it to the parent without
+	// replaying the child's whole transcript.
+	lastToolImages []schema.ImageRef
+	// toolImagesMu guards lastToolImages. A run handles one turn at a time,
+	// but a single step's read-only tools execute concurrently
+	// (executeActions phase 2), so two image-bearing results can be recorded
+	// at once. The parent takes them only after the child's turn settled.
+	toolImagesMu sync.Mutex
 	// IdleTimeout bounds how long a request may go without any streamed
 	// bytes before it is treated as a stalled connection. Any delta —
 	// content, reasoning, or tool-call — resets it. Zero uses
@@ -325,6 +336,26 @@ type Runner struct {
 	// Nil means "no probe available" — resolution falls back to Marshal's
 	// documented defaults, and nothing clamps.
 	ModelProbe func(provider, model string) ModelProbe
+
+	// VisionOverrides is the shared record of which provider/model pairs
+	// refused image input. The router reads it to take images off a route;
+	// this runner writes it when a rejection is observed. Both sides hold
+	// the same registry, loaded once where the runtime is built, and its
+	// lock is what lets a background child resolve a route while this
+	// runner learns a rejection.
+	VisionOverrides *modelcache.Registry
+	// SaveVisionOverrides persists VisionOverrides after a learned
+	// rejection. Nil (tests, headless paths) means "learn without saving".
+	SaveVisionOverrides func(modelcache.CapabilityOverrides) error
+	// ProviderConfigHash fingerprints a provider's configuration for the
+	// rejection record. Nil records "": a repointed endpoint then keeps
+	// the learned rejection, which is the harmless direction.
+	ProviderConfigHash func(providerName string) string
+	// ImageSource resolves the refs this runner puts on the wire. Nil means
+	// this runner cannot carry images: encoders fail loudly on a ref rather
+	// than silently sending text only. The runtime's payload store satisfies
+	// it, and the request gate also asks it which refs still exist.
+	ImageSource schema.ImageSource
 
 	// clampNoticeKey identifies the clamp currently bannered, so a changed
 	// route or a different clamp re-notices while an unchanged clamp does not
@@ -814,6 +845,29 @@ func (r *Runner) role() AgentRole {
 	return r.Role
 }
 
+// noteToolImages keeps the images of the most recent image-bearing tool
+// result. It is called from the one place a registry.ToolResult becomes wire
+// messages, so the retained set is exactly what this run surfaced.
+func (r *Runner) noteToolImages(refs []schema.ImageRef) {
+	if len(refs) == 0 {
+		return
+	}
+	r.toolImagesMu.Lock()
+	r.lastToolImages = refs
+	r.toolImagesMu.Unlock()
+}
+
+// TakeToolImages returns and clears the images of the most recent
+// image-bearing tool result. The parent takes them once, when it turns the
+// child's completion into a report.
+func (r *Runner) TakeToolImages() []schema.ImageRef {
+	r.toolImagesMu.Lock()
+	defer r.toolImagesMu.Unlock()
+	imgs := r.lastToolImages
+	r.lastToolImages = nil
+	return imgs
+}
+
 // Run executes one full agent turn for goal. It records the user's message,
 // the assistant's plan (if any), every tool call/result, and the final
 // answer directly onto r.State, so the TUI's existing transcript/audit-log/
@@ -1047,6 +1101,20 @@ func (r *Runner) commitSteeringFinal(publish func()) bool {
 // swarm) can read a role's final summary and status without re-parsing
 // the session transcript.
 func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
+	return r.RunTaskWithImages(ctx, goal, nil)
+}
+
+// RunWithImages is Run for a goal that carries images. They ride the goal
+// message, so the turn that sends them and the turn that replays them read
+// the same way.
+func (r *Runner) RunWithImages(ctx context.Context, goal string, images []schema.ImageRef) error {
+	_, err := r.RunTaskWithImages(ctx, goal, images)
+	return err
+}
+
+// RunTaskWithImages is RunTask for a goal that carries images. A route that
+// may not take them is refused before the first model call.
+func (r *Runner) RunTaskWithImages(ctx context.Context, goal string, images []schema.ImageRef) (*Task, error) {
 	// Early return for test injection: when RunTaskFunc is set, bypass the
 	// full provider loop and return the canned result directly. Must be
 	// before the defer so a nil State on the test runner does not panic.
@@ -1140,7 +1208,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// Publish the prompt before any model-backed startup work so the TUI
 	// can show it while title generation is still running. Keep the history
 	// snapshot above this insertion to avoid replaying the goal twice.
-	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
+	r.State.AddMessageWithImages(session.RoleUser, goal, session.ContentTypePlain, images)
 	// Register this turn's stop group before ANY work that can block. Title
 	// generation, provider resolution and the classify call can each sit for a
 	// long time, and a user who stops the turn during any of them must have a
@@ -1244,6 +1312,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	phases.begin("route")
 	turnProvider, turnModel, route := r.resolveRoute(ctx, task)
 	phases.end()
+	// Images are refused here, where the route is known, not in the client:
+	// the client has no router, and the refusal must name the model.
+	if len(images) > 0 {
+		if refusal := r.visionRefusal(route); refusal != nil {
+			return nil, refusal
+		}
+	}
 	if route.MaxOutput > 0 {
 		r.turnRequestOptions.maxTokens = intPtr(route.MaxOutput)
 	} else {
@@ -1274,6 +1349,11 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	if r.TemperatureOverride != nil {
 		r.turnRequestOptions.temperature = r.TemperatureOverride
 	}
+	// An explicit vision = "on" (or this session's send-anyway answer for the
+	// same model) makes the provider's own refusal the answer: the
+	// retry-without-images path is what would hide the override. The pre-turn
+	// refusal above honours both, so the retry must too.
+	r.beginTurnVision(route)
 	defer func() {
 		r.turnRequestOptions = turnRequestOptions{}
 		r.semTracker = nil
@@ -1606,20 +1686,25 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				// file. Pruning before summarizing is cheaper, preserves the
 				// most recent copy, and often drops us back below the
 				// threshold without needing the LLM at all.
-				if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 && r.calibratedEstimate(r.withWorkingState(prunedMsgs)) <= turnThreshold {
-					messages = prunedMsgs
-					r.State.Logger().Info("context pruning recovered window", "pruned_outputs", n)
-					// Pruning drops stale tool output to stay under the
-					// budget. Say so: dropped context that leaves no trace
-					// reads to the user as the model losing track.
-					r.State.AddMessage(session.RoleSystem,
-						fmt.Sprintf("Pruned %d stale tool result(s) to stay within the context budget.", n),
-						session.ContentTypeCompaction)
+				//
+				// Images are shed in the same step and on the same terms.
+				// shedImages is a no-op under budget, so gating the pair on
+				// the prune count would skip the one overflow it is the only
+				// remedy for: an images-only wire has no stale output to
+				// prune.
+				shrunkMsgs, pruned, shed := shrinkOverflowWire(messages, turnThreshold)
+				if pruned > 0 || shed > 0 {
+					messages = shrunkMsgs
+				}
+				if r.calibratedEstimate(r.withWorkingState(messages)) <= turnThreshold {
+					r.State.Logger().Info("context pruning recovered window", "pruned_outputs", pruned, "shed_images", shed)
+					// Pruning drops context to stay under the budget. Say so:
+					// dropped context that leaves no trace reads to the user
+					// as the model losing track.
+					if notice := overflowDropNotice(pruned, shed, "to stay within the context budget"); notice != "" {
+						r.State.AddMessage(session.RoleSystem, notice, session.ContentTypeCompaction)
+					}
 					continue
-				} else if n > 0 {
-					// Pruning helped but not enough — keep the pruned wire
-					// and proceed to compaction. The freshest reads survive.
-					messages = prunedMsgs
 				}
 
 				// T13: unified intra-turn compaction — rollover when enabled,
@@ -1663,12 +1748,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				var compactErr error
 				// Prune first: compaction resends the transcript, so an
 				// oversize wire must shrink before summarisation can succeed.
-				if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 {
-					messages = prunedMsgs
-					if r.calibratedEstimate(r.withWorkingState(messages)) <= turnThreshold {
-						r.State.AddMessage(session.RoleSystem,
-							fmt.Sprintf("Pruned %d stale tool result(s) after the provider rejected the prompt as too long.", n),
-							session.ContentTypeCompaction)
+				shrunkMsgs, pruned, shed := shrinkOverflowWire(messages, turnThreshold)
+				if pruned > 0 || shed > 0 {
+					messages = shrunkMsgs
+				}
+				if r.calibratedEstimate(r.withWorkingState(messages)) <= turnThreshold {
+					// The hard prune is already past the overflow gate, so
+					// shedding applies whether or not anything was pruned: an
+					// images-only overflow has no stale output to drop.
+					if notice := overflowDropNotice(pruned, shed, "after the provider rejected the prompt as too long"); notice != "" {
+						r.State.AddMessage(session.RoleSystem, notice, session.ContentTypeCompaction)
 						continue
 					}
 				}
@@ -1710,6 +1799,20 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					msg += fmt.Sprintf("; compaction also failed: %v", compactErr)
 				}
 				return task, r.failTurn(task, fmt.Errorf("%s: %w", msg, err))
+			}
+			if errors.Is(err, errStreamInterrupted) {
+				// The provider never announced completion. The partial text is
+				// real output the user paid for, so it is preserved — but it is
+				// not an answer, and it must not continue the turn the way a
+				// salvaged mid-stream error does. Returning here also keeps it
+				// out of the parse repair and prose-tool-call salvagers below,
+				// so a truncated tool call can never be executed.
+				if strings.TrimSpace(res.Text) != "" {
+					r.State.AddMessageSalvaged(session.RoleAssistant, res.Text,
+						session.ContentTypeMarkdown, string(reasonInterrupted))
+				}
+				return task, r.failTurn(task, fmt.Errorf(
+					"the provider's response was interrupted before it finished: %w", err))
 			}
 			// A stream that failed part-way may still have delivered a usable
 			// response — a malformed SSE chunk aborts the stream without
@@ -2462,6 +2565,13 @@ func (r *Runner) Chat(ctx context.Context, messages []schema.ChatMessage) (schem
 			resp.Content += event.Delta
 		case schema.ChatEventError:
 			return schema.ChatMessage{}, event.Err
+		case schema.ChatEventInterrupted:
+			// A truncated digest request must fail loudly rather than be
+			// cached as a partial summary.
+			if event.Err != nil {
+				return schema.ChatMessage{}, event.Err
+			}
+			return schema.ChatMessage{}, errStreamInterrupted
 		case schema.ChatEventDone:
 			resp.Content += event.Delta
 		}

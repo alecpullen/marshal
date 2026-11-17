@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -225,5 +226,124 @@ func TestReindexNilEmbedderIsNoop(t *testing.T) {
 	st, err := ix.Reindex(context.Background(), pid, []repo.ScannedFile{scanned("a.go", "h", "x")}, syms("a.go"))
 	if err != nil || (st != Stats{}) {
 		t.Fatalf("nil embedder should no-op: %+v err=%v", st, err)
+	}
+}
+
+// unreadable is a path that is present in the scan but whose content could
+// not be read (a permission race, a transient I/O error).
+func unreadable(path, hash string) repo.ScannedFile {
+	return repo.ScannedFile{
+		FileIndex: db.FileIndex{Path: path, Language: "go", Hash: hash},
+		ReadErr:   errors.New("permission denied"),
+	}
+}
+
+// TestReindexTransientReadErrorKeepsExistingChunks is the AUD-11 completion
+// condition: a file that is still on disk but unreadable during a reindex
+// keeps its previously valid chunks, because only paths absent from the scan
+// entirely are purged.
+func TestReindexTransientReadErrorKeepsExistingChunks(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	pid := mustCreateProject(t, database, "/tmp/p")
+	ix := NewIndexer(database, &fakeEmbedder{model: "m"})
+	ctx := context.Background()
+
+	st, err := ix.Reindex(ctx, pid, []repo.ScannedFile{scanned("a.go", "h1", "func F(){}")}, syms("a.go"))
+	if err != nil {
+		t.Fatalf("initial Reindex: %v", err)
+	}
+	if st.FilesEmbedded != 1 {
+		t.Fatalf("initial FilesEmbedded = %d, want 1", st.FilesEmbedded)
+	}
+	before, err := database.ChunkedFiles(pid)
+	if err != nil {
+		t.Fatalf("ChunkedFiles: %v", err)
+	}
+	if _, ok := before["a.go"]; !ok {
+		t.Fatalf("a.go missing from ChunkedFiles after the initial index: %#v", before)
+	}
+
+	// Same path, same hash, content now unreadable: a transient failure,
+	// not a deletion.
+	st, err = ix.Reindex(ctx, pid, []repo.ScannedFile{unreadable("a.go", "h1")}, syms("a.go"))
+	if err != nil {
+		t.Fatalf("Reindex after read error: %v", err)
+	}
+	if st.FilesPurged != 0 {
+		t.Fatalf("FilesPurged = %d after a transient read error, want 0", st.FilesPurged)
+	}
+	after, err := database.ChunkedFiles(pid)
+	if err != nil {
+		t.Fatalf("ChunkedFiles: %v", err)
+	}
+	if _, ok := after["a.go"]; !ok {
+		t.Fatalf("a.go was purged by a transient read error: %#v", after)
+	}
+}
+
+// TestReindexDeletedFileIsPurged is the counterweight to the AUD-11 fix: a
+// path absent from the scan entirely is still purged.
+func TestReindexDeletedFileIsPurged(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	pid := mustCreateProject(t, database, "/tmp/p")
+	ix := NewIndexer(database, &fakeEmbedder{model: "m"})
+	ctx := context.Background()
+
+	if _, err := ix.Reindex(ctx, pid, []repo.ScannedFile{scanned("a.go", "h1", "func F(){}")}, syms("a.go")); err != nil {
+		t.Fatalf("initial Reindex: %v", err)
+	}
+
+	st, err := ix.Reindex(ctx, pid, nil, nil)
+	if err != nil {
+		t.Fatalf("Reindex with an empty scan: %v", err)
+	}
+	if st.FilesPurged != 1 {
+		t.Fatalf("FilesPurged = %d for a deleted file, want 1", st.FilesPurged)
+	}
+	after, err := database.ChunkedFiles(pid)
+	if err != nil {
+		t.Fatalf("ChunkedFiles: %v", err)
+	}
+	if _, ok := after["a.go"]; ok {
+		t.Fatalf("a.go still indexed after it was deleted: %#v", after)
+	}
+}
+
+// TestReindexAfterTransientReadErrorRecoversFile covers the recovery path:
+// once the file is readable again at a new hash it is re-embedded, not left
+// holding stale chunks from before the read error.
+func TestReindexAfterTransientReadErrorRecoversFile(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	pid := mustCreateProject(t, database, "/tmp/p")
+	ix := NewIndexer(database, &fakeEmbedder{model: "m"})
+	ctx := context.Background()
+
+	if _, err := ix.Reindex(ctx, pid, []repo.ScannedFile{scanned("a.go", "h1", "func F(){}")}, syms("a.go")); err != nil {
+		t.Fatalf("initial Reindex: %v", err)
+	}
+	if _, err := ix.Reindex(ctx, pid, []repo.ScannedFile{unreadable("a.go", "h1")}, syms("a.go")); err != nil {
+		t.Fatalf("Reindex after read error: %v", err)
+	}
+
+	st, err := ix.Reindex(ctx, pid, []repo.ScannedFile{scanned("a.go", "h2", "func F(){}")}, syms("a.go"))
+	if err != nil {
+		t.Fatalf("Reindex after recovery: %v", err)
+	}
+	if st.FilesEmbedded != 1 {
+		t.Fatalf("FilesEmbedded = %d after recovery, want 1", st.FilesEmbedded)
+	}
+	after, err := database.ChunkedFiles(pid)
+	if err != nil {
+		t.Fatalf("ChunkedFiles: %v", err)
+	}
+	state, ok := after["a.go"]
+	if !ok {
+		t.Fatalf("a.go missing from ChunkedFiles after recovery: %#v", after)
+	}
+	if state.FileHash != "h2" {
+		t.Fatalf("a.go file hash = %q, want h2 (the file was not re-embedded)", state.FileHash)
 	}
 }

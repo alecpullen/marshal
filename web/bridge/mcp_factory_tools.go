@@ -46,6 +46,12 @@ const (
 	factoryCodeUnsupported  = "unsupported"
 	factoryCodeUnavailable  = "unavailable"
 	factoryCodeDenied       = "denied"
+	// factoryCodeUserDirectionRequired is the one failure a caller can answer:
+	// the operation acts on a person's instruction, the bridge minted a receipt
+	// for exactly it, and the caller must present that receipt after the
+	// trusted confirmation. Without it the model's own "user_directed" claim
+	// proves nothing and nothing is journalled.
+	factoryCodeUserDirectionRequired = "user_direction_required"
 )
 
 // Bounds on the projections. The journal holds up to factoryRecordLimit per
@@ -70,9 +76,16 @@ var (
 
 // factoryToolFailure is the domain failure an MCP factory tool reports inside
 // its result. It is a value, not an error string, so a caller can branch on it.
+//
+// Receipt and ReceiptExpiresAt are present only on a user_direction_required
+// failure: the opaque receipt this bridge minted for exactly the refused
+// operation, and when it lapses. Every other failure carries neither, so those
+// results marshal exactly as they always did.
 type factoryToolFailure struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code             string `json:"code"`
+	Message          string `json:"message"`
+	Receipt          string `json:"receipt,omitempty"`
+	ReceiptExpiresAt string `json:"receiptExpiresAt,omitempty"`
 }
 
 // factoryFailureOf classifies one service error into the domain failure a
@@ -80,6 +93,17 @@ type factoryToolFailure struct {
 // answer on purpose: no failure may be used to learn which ids exist.
 func factoryFailureOf(err error) factoryToolFailure {
 	switch {
+	case errors.Is(err, errMarshalUserDirectionRequired):
+		failure := factoryToolFailure{
+			Code:    factoryCodeUserDirectionRequired,
+			Message: "the user must confirm this operation",
+		}
+		var challenge *marshalUserDirectionChallenge
+		if errors.As(err, &challenge) {
+			failure.Receipt = challenge.Receipt
+			failure.ReceiptExpiresAt = challenge.ExpiresAt.UTC().Format(time.RFC3339)
+		}
+		return failure
 	case errors.Is(err, errFactoryDenied), errors.Is(err, ErrFactoryNotFound):
 		return factoryToolFailure{Code: factoryCodeNotFound, Message: "not found"}
 	case errors.Is(err, errFactoryToolAuthority):
@@ -142,6 +166,12 @@ func (s *Server) factoryToolCall(w http.ResponseWriter, r *http.Request, c MCPCl
 // factoryToolProjects lists this client's project ids and the capabilities it
 // holds on each. Nothing here is fleet policy: a grant is the only authority.
 func (s *Server) factoryToolProjects(w http.ResponseWriter, c MCPClient, id json.RawMessage) {
+	if principal := s.toolPrincipal(c); principal.Builtin {
+		// A built-in session holds no client grant: its authority is the
+		// access the store holds for the project its binding names.
+		s.factoryToolProjectsBuiltin(w, principal, id)
+		return
+	}
 	client, ok := s.fleet.ws.Client(c.ID)
 	if !ok {
 		writeFactoryToolFailure(w, id, factoryFailureOf(errFactoryDenied))
@@ -187,7 +217,7 @@ func (s *Server) factoryToolList(w http.ResponseWriter, c MCPClient, id json.Raw
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
 	}
-	root, err := s.factoryToolRoot(c.ID, a.ProjectID)
+	root, err := s.authorizeToolRoot(c.ID, a.ProjectID)
 	if err != nil {
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
@@ -199,7 +229,7 @@ func (s *Server) factoryToolList(w http.ResponseWriter, c MCPClient, id json.Raw
 		}
 		// The grant scopes the project; the client's repository allowlist
 		// scopes the items inside it, exactly as the authorizer checks it.
-		if err := s.factoryAuth.AuthorizeRead(c.ID, a.ProjectID, item.RepoID); err != nil {
+		if err := s.authorizeToolRead(c.ID, a.ProjectID, item.RepoID); err != nil {
 			continue
 		}
 		items = append(items, s.factoryToolSummary(item))
@@ -231,7 +261,7 @@ func (s *Server) factoryToolGet(w http.ResponseWriter, c MCPClient, id json.RawM
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
 	}
-	root, err := s.factoryToolRoot(c.ID, a.ProjectID)
+	root, err := s.authorizeToolRoot(c.ID, a.ProjectID)
 	if err != nil {
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
@@ -267,10 +297,11 @@ func (s *Server) factoryToolCreateDraft(w http.ResponseWriter, c MCPClient, id j
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
 	}
-	item, err := s.factoryAuth.WithAuthorizedMutation(c.ID, a.ProjectID, req.Config.RepoID, factoryCapabilityCreateDraft, func() (FactoryItem, error) {
-		return s.factory.CreateDraftAuthorized(req, resolved,
-			factoryToolPrincipal(c.ID, a.ProjectID, factoryCapabilityCreateDraft, a.RequestID, ""))
-	})
+	item, err := s.withAuthorizedToolMutation(c, a.ProjectID, req.Config.RepoID, factoryCapabilityCreateDraft, a.RequestID, "",
+		func(p factoryPrincipal) (FactoryItem, error) {
+			p.RequestID = a.RequestID
+			return s.factory.CreateDraftAuthorized(req, resolved, p)
+		})
 	if err != nil {
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
@@ -306,15 +337,16 @@ func (s *Server) factoryToolUpdateDraft(w http.ResponseWriter, c MCPClient, id j
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
 	}
-	item, err := s.factoryAuth.WithAuthorizedMutation(c.ID, a.ProjectID, req.Config.RepoID, factoryCapabilityEditDraft, func() (FactoryItem, error) {
-		// Only this project's items are reachable: the store refuses a moved
-		// identity, and this refuses to look across projects at all.
-		if err := s.factoryToolOwned(a.ItemID, req.Config.ProjectRoot); err != nil {
-			return FactoryItem{}, err
-		}
-		return s.factory.ReplaceDraftAuthorized(a.ItemID, resolved, a.ExpectedVersion,
-			factoryToolPrincipal(c.ID, a.ProjectID, factoryCapabilityEditDraft, a.RequestID, ""))
-	})
+	item, err := s.withAuthorizedToolMutation(c, a.ProjectID, req.Config.RepoID, factoryCapabilityEditDraft, a.RequestID, "",
+		func(p factoryPrincipal) (FactoryItem, error) {
+			// Only this project's items are reachable: the store refuses a
+			// moved identity, and this refuses to look across projects at all.
+			if err := s.factoryToolOwned(a.ItemID, req.Config.ProjectRoot); err != nil {
+				return FactoryItem{}, err
+			}
+			p.RequestID = a.RequestID
+			return s.factory.ReplaceDraftAuthorized(a.ItemID, resolved, a.ExpectedVersion, p)
+		})
 	if err != nil {
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
@@ -357,6 +389,32 @@ func (s *Server) factoryToolApproveAndQueue(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	cmd := FactoryCommand{RequestID: a.RequestID, Kind: "approve", ExpectedVersion: a.ExpectedVersion}
+	// A built-in session acts on a person's direction only when the store's own
+	// effective authority says so and, for a user-directed one, a receipt this
+	// bridge minted for exactly this operation is presented. The authority
+	// argument above is a claim in both cases: it selects nothing and is never
+	// the evidence.
+	if principal, ok := mcpPrincipalFrom(r); ok && principal.Builtin {
+		if a.ProjectID != principal.Binding.ProjectID {
+			// A session is scoped by the project its binding names; an
+			// argument may not move it to another one.
+			writeFactoryToolFailure(w, id, factoryFailureOf(errFactoryDenied))
+			return
+		}
+		saved, err := s.factoryAuth.WithAuthorizedMarshalUserDirection(principal.Binding, item.RepoID,
+			factoryCapabilityApproveAndQueue, marshalUserDirectionReceiptID(r),
+			marshalUserDirectionTarget(a.ItemID, a.ExpectedVersion, ""), a.RequestID,
+			func(p factoryPrincipal) (FactoryItem, error) {
+				p.RequestID = a.RequestID
+				return s.factory.CommandAuthorized(r.Context(), a.ItemID, cmd, p)
+			})
+		if err != nil {
+			writeFactoryToolFailure(w, id, factoryFailureOf(err))
+			return
+		}
+		writeFactoryToolResult(w, id, factoryToolStored(a.ProjectID, s.factoryToolLink(saved.ID), saved))
+		return
+	}
 	saved, err := s.factoryAuth.WithAuthorizedMutationAuthority(c.ID, a.ProjectID, item.RepoID, factoryCapabilityApproveAndQueue,
 		func(stored string) (FactoryItem, error) {
 			// An approval is journalled under the authority that admitted it,
@@ -429,9 +487,33 @@ func (s *Server) factoryToolAnswerQuestion(w http.ResponseWriter, r *http.Reques
 		Answer:          a.Answer,
 		ExpectedVersion: a.ExpectedVersion,
 	}
+	// A built-in session is scoped by its verified binding, and it carries no
+	// planner designation, so a delegated answer is never its to give: only the
+	// user-directed answer is, and only with the store's authority and, for a
+	// user-directed one, a receipt this bridge minted for exactly this
+	// decision and answer request.
+	if principal, ok := mcpPrincipalFrom(r); ok && principal.Builtin {
+		if a.ProjectID != principal.Binding.ProjectID || capability != factoryCapabilityAnswerQuestion {
+			writeFactoryToolFailure(w, id, factoryFailureOf(errFactoryDenied))
+			return
+		}
+		saved, err := s.factoryAuth.WithAuthorizedMarshalUserDirection(principal.Binding, item.RepoID, capability,
+			marshalUserDirectionReceiptID(r),
+			marshalUserDirectionTarget(a.ItemID, a.ExpectedVersion, a.DecisionID), a.RequestID,
+			func(p factoryPrincipal) (FactoryItem, error) {
+				p.RequestID = a.RequestID
+				return s.factory.CommandAuthorized(r.Context(), a.ItemID, cmd, p)
+			})
+		if err != nil {
+			writeFactoryToolFailure(w, id, factoryFailureOf(err))
+			return
+		}
+		writeFactoryToolResult(w, id, factoryToolStored(a.ProjectID, s.factoryToolLink(saved.ID), saved))
+		return
+	}
 	saved, err := s.factoryAuth.WithAuthorizedMutation(c.ID, a.ProjectID, item.RepoID, capability, func() (FactoryItem, error) {
-		return s.factory.CommandAuthorized(r.Context(), a.ItemID, cmd,
-			factoryToolPrincipal(c.ID, a.ProjectID, capability, a.RequestID, authority))
+		p := factoryToolPrincipal(c.ID, a.ProjectID, capability, a.RequestID, authority)
+		return s.factory.CommandAuthorized(r.Context(), a.ItemID, cmd, p)
 	})
 	if err != nil {
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
@@ -732,7 +814,7 @@ func (s *Server) factoryToolRead(clientID, projectID, root, itemID string) (Fact
 	if item.ProjectRoot != root {
 		return FactoryItem{}, ErrFactoryNotFound
 	}
-	if err := s.factoryAuth.AuthorizeRead(clientID, projectID, item.RepoID); err != nil {
+	if err := s.authorizeToolRead(clientID, projectID, item.RepoID); err != nil {
 		return FactoryItem{}, err
 	}
 	return item, nil
@@ -1021,10 +1103,26 @@ func factoryToolHistory(events []FactoryEvent) []FactoryEvent {
 		out = append(out, FactoryEvent{
 			Sequence: e.Sequence, At: e.At, Kind: e.Kind,
 			Message:  factoryToolClip(e.Message, factoryToolTextLimit),
-			EffectID: e.EffectID, Provenance: e.Provenance,
+			EffectID: e.EffectID, Provenance: factoryToolProvenance(e.Provenance),
 		})
 	}
 	return out
+}
+
+// factoryToolProvenance is the attribution one client is shown for a journal
+// entry. InstanceID names the daemon instance a mutation came through — a
+// socket path locally, an origin remotely — which is a host detail and not the
+// client's to see, so it is dropped here exactly as factoryToolConfigView drops
+// ProjectRoot. The session, worker and role stay: they are the attribution a
+// client is meant to read. The journal itself keeps the instance, so the
+// operator surfaces still attribute an entry fully.
+func factoryToolProvenance(p *FactoryProvenance) *FactoryProvenance {
+	if p == nil {
+		return nil
+	}
+	view := *p
+	view.InstanceID = ""
+	return &view
 }
 
 // factoryToolClip bounds one string without splitting a rune.

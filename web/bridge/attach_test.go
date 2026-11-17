@@ -18,6 +18,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 )
 
 // attachHarness is a local-profile bridge serving SocketHandler over a unix
@@ -1456,4 +1457,113 @@ func TestTheDaemonReportsItsChildren(t *testing.T) {
 		}
 		return now.Children[0].Sessions[0].Viewers == 1
 	})
+}
+
+// warningFleet is a harness whose project children resolve their environment
+// through a login shell that fails, so every child it starts carries the
+// fallback's warning (P4 plan 6's seam).
+func warningFleet(t *testing.T) *attachHarness {
+	t.Helper()
+	h := newAttachHarness(t)
+	env, _ := projectEnvFixture(t, "#!/bin/sh\nexit 2\n")
+	h.fleet.SetProjectEnv(env)
+	return h
+}
+
+// TestTheProjectAttachCarriesTheEnvWarning: a project child whose environment
+// resolution fell back says why in the 101's Marshal-Env-Warning header, with
+// the sentence the daemon reports for it, reduced to one line (P6 T3).
+func TestTheProjectAttachCarriesTheEnvWarning(t *testing.T) {
+	root := t.TempDir()
+	h := warningFleet(t)
+
+	att := h.attach(http.MethodPost, root, "", true)
+	if att.status != http.StatusSwitchingProtocols {
+		t.Fatalf("attach = %d, want 101: %s", att.status, att.refusal(t))
+	}
+	warning := att.header.Get(envWarningHeader)
+	if !strings.Contains(warning, "the login shell exited with status 2") {
+		t.Fatalf("%s = %q, want why the environment fell back", envWarningHeader, warning)
+	}
+
+	children := h.fleet.projectChildren()
+	if len(children) != 1 {
+		t.Fatalf("projectChildren() = %+v, want one child", children)
+	}
+	if want := headerLine(children[0].EnvWarning); warning != want {
+		t.Fatalf("%s = %q, want the child's own warning %q", envWarningHeader, warning, want)
+	}
+}
+
+// TestAnAgentAttachOnTheProjectChildCarriesIt: an agent running on the
+// project's child carries that child's warning in its own attach (P6 T3).
+func TestAnAgentAttachOnTheProjectChildCarriesIt(t *testing.T) {
+	root := t.TempDir()
+	h := warningFleet(t)
+	h.fleetAgent(t, root, "agent-a", "reviewer")
+
+	att := h.attachAgent(http.MethodPost, "agent-a", true)
+	if att.status != http.StatusSwitchingProtocols {
+		t.Fatalf("agent attach = %d, want 101: %s", att.status, att.refusal(t))
+	}
+	warning := att.header.Get(envWarningHeader)
+	if !strings.Contains(warning, "the login shell exited with status 2") {
+		t.Fatalf("%s = %q, want the project child's warning", envWarningHeader, warning)
+	}
+}
+
+// TestNoWarningSendsNoHeader: a child that resolved its environment sends no
+// header at all, and neither does an agent on a child of its own, which has no
+// project child to take a warning from (P6 T3).
+func TestNoWarningSendsNoHeader(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+
+	att := h.attach(http.MethodPost, root, "", true)
+	if att.status != http.StatusSwitchingProtocols {
+		t.Fatalf("attach = %d, want 101: %s", att.status, att.refusal(t))
+	}
+	if got := att.header.Values(envWarningHeader); len(got) != 0 {
+		t.Fatalf("%s = %q, want none for a resolved environment", envWarningHeader, got)
+	}
+
+	h.ownChildAgent(t, t.TempDir(), "agent-own", "reviewer")
+	own := h.attachAgent(http.MethodPost, "agent-own", true)
+	if own.status != http.StatusSwitchingProtocols {
+		t.Fatalf("agent attach = %d, want 101: %s", own.status, own.refusal(t))
+	}
+	if got := own.header.Values(envWarningHeader); len(got) != 0 {
+		t.Fatalf("%s = %q, want none for an agent on its own child", envWarningHeader, got)
+	}
+}
+
+// TestHeaderLineIsOneLine: a header cannot hold a newline, so what a warning
+// puts there is its first line, stripped of control characters and cut at 300
+// bytes (decision 6).
+func TestHeaderLineIsOneLine(t *testing.T) {
+	// 400 bytes on the first line with a tab in the middle of it, and a second
+	// line that must not reach the header.
+	first := strings.Repeat("x", 200) + "\t" + strings.Repeat("y", 200)
+	warning := first + "\nsecond line of the warning\n"
+
+	want := strings.Repeat("x", 200) + strings.Repeat("y", 100)
+	got := headerLine(warning)
+	if got != want {
+		t.Fatalf("headerLine(%d bytes) = %q, want %q", len(warning), got, want)
+	}
+	if len(got) > 300 {
+		t.Fatalf("headerLine is %d bytes, want at most 300", len(got))
+	}
+	if strings.ContainsFunc(got, unicode.IsControl) {
+		t.Fatalf("headerLine = %q, want no control characters", got)
+	}
+
+	// Nothing left to say: the attaches write no header at all, so an empty
+	// line must not read as one.
+	if got := headerLine(""); got != "" {
+		t.Fatalf("headerLine(\"\") = %q, want empty", got)
+	}
+	if got := headerLine("\n\r\n"); got != "" {
+		t.Fatalf("headerLine of newlines = %q, want empty", got)
+	}
 }

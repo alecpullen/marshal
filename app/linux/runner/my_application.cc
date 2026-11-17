@@ -10,14 +10,68 @@
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+  // The one window. It is created once, hidden at launch, hidden again when
+  // it is closed, and shown by "Open Studio" (F2 decision 1).
+  GtkWindow* window;
+  FlMethodChannel* window_channel;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 
-// Called when first Flutter frame received.
-static void first_frame_cb(MyApplication* self, FlView *view)
-{
-  gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+// Answers the `marshal/window` channel that window_host.dart speaks: show
+// presents and focuses the window (one call for both), hide hides it, and quit
+// is the only call that ends the process.
+static void window_method_call_cb(FlMethodChannel* channel,
+                                  FlMethodCall* method_call,
+                                  gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  const gchar* method = fl_method_call_get_name(method_call);
+
+  if (g_strcmp0(method, "show") == 0) {
+    if (self->window != nullptr) {
+      // Present opens a hidden window and focuses a visible one; on Wayland
+      // the compositor may refuse the focus and only mark the window as
+      // needing attention, which is the platform's call, not the app's.
+      gtk_window_present(self->window);
+    }
+    g_autoptr(FlMethodResponse) response =
+        FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+    fl_method_call_respond(method_call, response, nullptr);
+  } else if (g_strcmp0(method, "hide") == 0) {
+    if (self->window != nullptr) {
+      gtk_widget_hide(GTK_WIDGET(self->window));
+    }
+    g_autoptr(FlMethodResponse) response =
+        FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+    fl_method_call_respond(method_call, response, nullptr);
+  } else if (g_strcmp0(method, "quit") == 0) {
+    g_autoptr(FlMethodResponse) response =
+        FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+    fl_method_call_respond(method_call, response, nullptr);
+    g_application_quit(G_APPLICATION(self));
+  } else {
+    g_autoptr(FlMethodResponse) response =
+        FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
+    fl_method_call_respond(method_call, response, nullptr);
+  }
+}
+
+// Closing the window hides it. Returning TRUE keeps GTK from destroying the
+// window, which would take the Flutter view with it; the app is a menu-bar
+// item and outlives every window it opens.
+//
+// Dart is told too, so its window state follows the close button instead of
+// thinking a window is still in front of the person.
+static gboolean window_delete_event_cb(GtkWidget* widget,
+                                       GdkEvent* event,
+                                       gpointer user_data) {
+  gtk_widget_hide(widget);
+  MyApplication* self = MY_APPLICATION(user_data);
+  if (self->window_channel != nullptr) {
+    fl_method_channel_invoke_method(self->window_channel, "closed", nullptr,
+                                    nullptr, nullptr, nullptr);
+  }
+  return TRUE;
 }
 
 // Implements GApplication::activate.
@@ -66,12 +120,27 @@ static void my_application_activate(GApplication* application) {
   gtk_widget_show(GTK_WIDGET(view));
   gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(view));
 
-  // Show the window when Flutter renders.
-  // Requires the view to be realized so we can start rendering.
-  g_signal_connect_swapped(view, "first-frame", G_CALLBACK(first_frame_cb), self);
+  // There is no window at launch (the finding's Linux step 1): showing it on
+  // the first frame is exactly what the template does and what the menu-bar
+  // item must not do. The view is still realized, so the engine runs and
+  // renders while the window is hidden.
   gtk_widget_realize(GTK_WIDGET(view));
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
+
+  // Closing hides, never destroys (step 2), and the application is held so
+  // the process survives with no window mapped (step 3).
+  g_signal_connect(window, "delete-event", G_CALLBACK(window_delete_event_cb), self);
+  self->window = window;
+  g_application_hold(application);
+
+  // The window channel, answered on this window's own engine.
+  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
+  self->window_channel = fl_method_channel_new(
+      fl_engine_get_binary_messenger(fl_view_get_engine(view)), "marshal/window",
+      FL_METHOD_CODEC(codec));
+  fl_method_channel_set_method_call_handler(self->window_channel,
+                                            window_method_call_cb, self, nullptr);
 
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }
@@ -116,6 +185,7 @@ static void my_application_shutdown(GApplication* application) {
 // Implements GObject::dispose.
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
+  g_clear_object(&self->window_channel);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }

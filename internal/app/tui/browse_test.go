@@ -228,11 +228,9 @@ func TestCopyEmitsTheFailedTestOutputOverOSC52(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc", "j") // the failing test row
 	cmd := m.copyCursorNode()
-	if cmd == nil {
-		t.Fatal("no copy command")
-	}
+	m, seen := runBrowseAction(t, m, cmd)
 	var sawClipboard bool
-	for _, msg := range flattenCmd(cmd) {
+	for _, msg := range seen {
 		if strings.Contains(fmt.Sprintf("%v", msg), "FAIL pkg/foo main.go:12: boom") {
 			sawClipboard = true
 		}
@@ -343,6 +341,7 @@ func TestOpenResolvesAPathFromArgsAndFromShellOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	m = pressKeys(m, "esc", "j")
+	warmDetail(t, &m, m.openDetailIDs(m.cursor)...)
 	path, line := m.nodeFile(m.cursor)
 	if path != root+"/main.go" || line != 12 {
 		t.Fatalf("shell output path:line = %q:%d", path, line)
@@ -355,7 +354,12 @@ func TestOpenWithoutEditorSaysSo(t *testing.T) {
 	t.Setenv("EDITOR", "")
 	m := browseFixture(t)
 	m = pressKeys(m, "esc", "j")
-	if cmd := m.openCursorFile(); cmd == nil || !m.flashActive() {
+	cmd := m.openCursorFile()
+	if cmd == nil {
+		t.Fatal("expected an open command")
+	}
+	m, _ = runBrowseAction(t, m, cmd)
+	if !m.flashActive() {
 		t.Fatal("expected a notice when $EDITOR is unset")
 	}
 }
@@ -489,6 +493,7 @@ func TestCursorStaysNearWhereItWasWhenItsNodeVanishes(t *testing.T) {
 func TestCopyingAStepDoesNotRepeatItsHeadline(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc") // newest step
+	warmDetail(t, &m, m.cursor)
 	text := m.nodeCopyText(m.cursor)
 	if strings.Count(text, "Running the tests.") != 1 {
 		t.Fatalf("headline repeated in the copied text:\n%s", text)
@@ -520,6 +525,7 @@ func TestCopyOfAMergedRowJoinsEveryResult(t *testing.T) {
 	if w := m.wireNode(key); w == nil || w.Tool == nil || len(w.Tool.Calls) != 2 {
 		t.Fatalf("the two reads did not merge into one row: %+v", w)
 	}
+	warmDetail(t, &m, key)
 	if got, want := m.nodeCopyText(key), "one\n\ntwo"; got != want {
 		t.Fatalf("copy = %q, want %q", got, want)
 	}
@@ -528,7 +534,9 @@ func TestCopyOfAMergedRowJoinsEveryResult(t *testing.T) {
 func TestCopyOfAnEmptyEditTakesItsSummary(t *testing.T) {
 	m := copyFixture(t, registry.AuditEvent{ToolName: "file.edit", ToolCallID: "c1",
 		Args: []byte(`{"path":"a.go"}`), Error: "boom", ResultSummary: "edit failed"})
-	if got, want := m.nodeCopyText(wireToolKey(t, m, "c1")), "edit failed"; got != want {
+	key := wireToolKey(t, m, "c1")
+	warmDetail(t, &m, key)
+	if got, want := m.nodeCopyText(key), "edit failed"; got != want {
 		t.Fatalf("copy = %q, want %q", got, want)
 	}
 }
@@ -547,7 +555,9 @@ func TestOpenFindsAFileInABeatsSecondRow(t *testing.T) {
 		Args: []byte(`{"path":"a.go"}`), ResultContent: "package a"})
 	m.refreshViewport()
 
-	path, _ := m.nodeFile(wireBeatKey(t, m))
+	bt := wireBeatKey(t, m)
+	warmDetail(t, &m, m.openDetailIDs(bt)...)
+	path, _ := m.nodeFile(bt)
 	if path != root+"/a.go" {
 		t.Fatalf("open resolved %q, want %q", path, root+"/a.go")
 	}
@@ -686,6 +696,66 @@ func TestBrowseFDrillsFromTheDispatchRow(t *testing.T) {
 	}
 	if m.viewStack[0].ID != view.ID {
 		t.Fatal("the drilled view is not the subagent's child")
+	}
+}
+
+// TestCtrlFDrillsTheSelectedSubagent pins that Ctrl+F honours the selection:
+// with two subagents running, the row under the browse cursor is the one that
+// opens, not the one registered last.
+func TestCtrlFDrillsTheSelectedSubagent(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 50)
+	stateOf(m).AddMessage(session.RoleUser, "ship it", session.ContentTypePlain)
+	views := make([]session.SubagentView, 0, 2)
+	for i, label := range []string{"first", "second"} {
+		child := newChildState(t)
+		child.AddMessage(session.RoleAssistant, label+" child says hi", session.ContentTypePlain)
+		views = append(views, stateOf(m).RegisterSubagent(label, child))
+		a := stateOf(m).BeginStep(session.Actor{})
+		stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "agent.run", StepID: a,
+			ToolCallID: fmt.Sprintf("ar-%d", i), Args: []byte(`{"task":"explore"}`),
+			ResultSummary: fmt.Sprintf("started as subagent %d", views[i].ID)})
+		stateOf(m).EndStep(a)
+	}
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	m = pressKeys(m, "esc")
+	it, ok := browseItemForDispatch(&m, views[0].ID)
+	if !ok {
+		t.Fatalf("no agent.run row for subagent %d in %v", views[0].ID, m.browseItems)
+	}
+	m.cursor = it.id
+
+	m = sendKey(m, tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	if len(m.viewStack) != 1 {
+		t.Fatalf("Ctrl+F on a selected subagent should drill in, viewStack = %v", m.viewStack)
+	}
+	if got := m.viewStack[0].ID; got != views[0].ID {
+		t.Fatalf("Ctrl+F drilled into subagent %d, want the selected %d", got, views[0].ID)
+	}
+}
+
+// TestCtrlFDrillsTheExpandedTrayCard pins the other selection: with no cursor,
+// the tray card the user opened is the subagent Ctrl+F reaches, not the newest
+// running one.
+func TestCtrlFDrillsTheExpandedTrayCard(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 50)
+	first := stateOf(m).RegisterSubagent("first", newChildState(t))
+	second := stateOf(m).RegisterSubagent("second", newChildState(t))
+	m.workSnapshot = acpwire.WorkSnapshot{Items: []acpwire.WorkItem{
+		{TaskKey: "work:first", Kind: "agent", SourceID: strconv.FormatInt(first.ID, 10)},
+		{TaskKey: "work:second", Kind: "agent", SourceID: strconv.FormatInt(second.ID, 10)},
+	}}
+	m.workExpanded = "work:first"
+
+	m = sendKey(m, tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	if len(m.viewStack) != 1 {
+		t.Fatalf("Ctrl+F with an expanded agent card should drill in, viewStack = %v", m.viewStack)
+	}
+	if got := m.viewStack[0].ID; got != first.ID {
+		t.Fatalf("Ctrl+F drilled into subagent %d, want the expanded card's %d", got, first.ID)
 	}
 }
 

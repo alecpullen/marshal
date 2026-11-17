@@ -590,6 +590,10 @@ type FactoryController struct {
 	// is contacted, nothing is retried, and the intent waits for an explicit
 	// request.
 	planner revisionPlanner
+	// pulls, when set, is told about a pull request the controller first
+	// stored on an item, so the fleet's one index of pull requests knows it.
+	// A controller built without a fleet records nothing.
+	pulls func(item FactoryItem, pr FactoryPR)
 }
 
 func NewFactoryController(store *FactoryStore, effects FactoryEffects, now func() time.Time) *FactoryController {
@@ -597,6 +601,85 @@ func NewFactoryController(store *FactoryStore, effects FactoryEffects, now func(
 		now = time.Now
 	}
 	return &FactoryController{store: store, effects: effects, now: now, execCancels: map[string]context.CancelFunc{}, wake: make(chan struct{}, 1), readyWake: make(chan struct{}, 1), after: time.After}
+}
+
+// SetPullRecorder installs the recorder the controller calls when it first
+// stores a pull request on an item. A nil recorder records nothing.
+func (c *FactoryController) SetPullRecorder(fn func(item FactoryItem, pr FactoryPR)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pulls = fn
+}
+
+// Item returns one item from the journal, and whether it is there.
+func (c *FactoryController) Item(id string) (FactoryItem, bool) {
+	if c == nil || c.store == nil {
+		return FactoryItem{}, false
+	}
+	i, err := c.store.Get(id)
+	return i, err == nil
+}
+
+// Items returns every item in the journal.
+func (c *FactoryController) Items() []FactoryItem {
+	if c == nil || c.store == nil {
+		return nil
+	}
+	return c.store.List()
+}
+
+// noteNewPulls tells the recorder about each pull request the update added, so
+// the fleet's index gains a record the moment the factory journals one.
+func (c *FactoryController) noteNewPulls(before, after FactoryItem) {
+	if c.pulls == nil || len(after.PRs) <= len(before.PRs) {
+		return
+	}
+	for _, pr := range after.PRs[len(before.PRs):] {
+		c.pulls(after, pr)
+	}
+}
+
+// RequestRepair issues the item's existing repair for a person who asked for
+// it: the controller's own scheduler then dispatches the round, with its usual
+// guards. A decision that blocks dispatch is cleared, and when the round
+// allowance is already spent the request buys exactly one more round, recorded
+// as a FactoryGrant whose reason says who asked. It reports whether it granted
+// that round.
+func (c *FactoryController) RequestRepair(itemID, requestID, reason string) (FactoryItem, bool, error) {
+	if c == nil || c.store == nil {
+		return FactoryItem{}, false, ErrFactoryConflict
+	}
+	item, err := c.store.Get(itemID)
+	if err != nil {
+		return FactoryItem{}, false, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closing {
+		return FactoryItem{}, false, ErrFactoryUnavailable
+	}
+	granted := false
+	saved, err := c.internalUpdate(item, "requested_repair", func(dst *FactoryItem) error {
+		switch dst.State {
+		case "draft", "closed", "stopped":
+			return fmt.Errorf("%w: item %s is %s", ErrFactoryConflict, dst.ID, dst.State)
+		}
+		if len(dst.Rounds) >= factoryAllowance(*dst) {
+			dst.Grants = append(dst.Grants, FactoryGrant{
+				ID: requestID, Reason: reason, AdditionalRounds: 1, At: c.now(),
+			})
+			granted = true
+		}
+		dst.Decision = nil
+		dst.State = "repairing"
+		dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "requested_repair", Message: reason})
+		return nil
+	})
+	if err != nil {
+		return saved, false, err
+	}
+	c.Wake()
+	return saved, granted, nil
 }
 
 // autoAssess reports whether a proposal saved for projectRoot records an
@@ -654,8 +737,27 @@ func (c *FactoryController) Quiesce() error {
 			if len(item.Effects) == 0 || item.Effects[len(item.Effects)-1].Status != "dispatched" {
 				break
 			}
+			if d := item.Effects[len(item.Effects)-1].Delegated; d != nil && (d.State == factoryDelegatedWaiting || d.State == factoryDelegatedPrepared) {
+				// A waiting turn has nothing in flight: its report is early, not
+				// lost, so a restarted bridge resumes the same cycle instead of
+				// being handed an ambiguity the operator would have to clear. A
+				// prepared continuation is the same case one step earlier: the
+				// journal records it, but no prompt has been sent, so a restart
+				// re-dispatches it rather than trading auto-continuity for a
+				// decision.
+				break
+			}
 			_, err = c.internalUpdate(item, "shutdown_uncertain", func(dst *FactoryItem) error {
-				dst.Effects[len(dst.Effects)-1].Status = "uncertain"
+				last := &dst.Effects[len(dst.Effects)-1]
+				last.Status = "uncertain"
+				if last.Delegated != nil {
+					// A continuation in flight is exactly what a shutdown makes
+					// unprovable: the journal says it was sent and the session's
+					// own transcript is what a restart reads to accept it.
+					next := *last.Delegated
+					next.State = factoryDelegatedUncertain
+					last.Delegated = &next
+				}
 				factoryDecision(dst, "recovery", "bridge shut down before effect outcome was confirmed", c.now())
 				return nil
 			})
@@ -852,6 +954,13 @@ func (c *FactoryController) tick(ctx context.Context) error {
 		}
 		return nil
 	}
+	// A delegated turn whose children settled takes its one continuation. The
+	// journal is written first — prepared, then dispatched — and the prompt is
+	// last, so a crash between the two writes is visible to the recovery path
+	// instead of leaving a prompt that ran unrecorded.
+	if dispatched, err := c.advanceDelegated(ctx, items); err != nil || dispatched {
+		return err
+	}
 	for _, item := range items {
 		for _, effect := range item.Effects {
 			if effect.Status == "dispatched" || effect.Status == "uncertain" {
@@ -893,6 +1002,18 @@ func (c *FactoryController) tick(ctx context.Context) error {
 		}
 	}
 	if i.State == "stopping" {
+		// The children a turn launched are part of what a stop stops. A
+		// cancellation acknowledgement is not a terminal outcome, so the item
+		// stays stopping until the projection reports each child finished.
+		if settled, err := c.delegatedChildrenSettled(ctx, i); err != nil || !settled {
+			if cerr := c.cancelDelegatedChildren(ctx, i); cerr != nil {
+				_, _ = c.internalUpdate(i, "stop_cancel_children", func(dst *FactoryItem) error {
+					dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "stop_cancel_children_uncertain", Message: cerr.Error()})
+					return nil
+				})
+			}
+			return nil
+		}
 		for _, w := range i.Workers {
 			if !w.Parked {
 				workerItem := factoryCopy(i)
@@ -1003,8 +1124,280 @@ func (c *FactoryController) dispatch(ctx context.Context, i FactoryItem, e Facto
 	}
 	return <-done
 }
+
+// advanceDelegated runs the one continuation a settled delegated turn takes.
+// The journal is written first and the prompt last: prepared says a
+// continuation exists, dispatched says it was sent, and only then does the
+// second turn run. A crash before the second write leaves a continuation the
+// recovery path may dispatch; a crash after it leaves one it refuses to send
+// twice.
+func (c *FactoryController) advanceDelegated(ctx context.Context, items []FactoryItem) (bool, error) {
+	for _, item := range items {
+		if !factoryOwnsState(item.State) {
+			continue
+		}
+		e, ok := factoryDelegatedEffect(item)
+		if !ok {
+			continue
+		}
+		if item.State == "stopping" {
+			// A stop owns this turn's children: cancel them here and let the
+			// stop path above confirm their terminal outcomes.
+			if err := c.cancelDelegatedChildren(ctx, item); err != nil {
+				return false, err
+			}
+			continue
+		}
+		switch e.Delegated.State {
+		case factoryDelegatedWaiting:
+			settled, err := c.delegatedSettled(ctx, item, e)
+			if err != nil || !settled {
+				continue
+			}
+			prepared, preparedEffect, err := c.prepareContinuation(item, e)
+			if errors.Is(err, ErrFactoryConflict) {
+				continue
+			}
+			if err != nil {
+				return false, err
+			}
+			return c.startContinuation(ctx, prepared, preparedEffect)
+		case factoryDelegatedPrepared:
+			return c.startContinuation(ctx, item, e)
+		}
+	}
+	return false, nil
+}
+
+// prepareContinuation journals a continuation identity as prepared, bound to
+// the effect, the worker session and the parent turn it continues. A second
+// continuation for one iteration is a conflict, never a second prompt.
+//
+// A turn that went back to waiting with its identity intact was dispatched but
+// never reached the prompt: Continue re-reads the child projection before it
+// sends anything and returns the turn to waiting when it cannot prove the
+// children settled. That identity resumes here rather than a second one being
+// minted — factoryContinuationID hashes the identity it derives from, so a
+// fresh derivation is only correct when the turn carries none, and minting one
+// from a turn that already has an ID would leave it waiting on an identity
+// nothing re-dispatches.
+func (c *FactoryController) prepareContinuation(item FactoryItem, e FactoryEffect) (FactoryItem, FactoryEffect, error) {
+	resume := e.Delegated != nil && e.Delegated.ContinuationID != ""
+	continuationID := ""
+	if resume {
+		continuationID = e.Delegated.ContinuationID
+	} else {
+		continuationID = factoryContinuationID(e)
+	}
+	if continuationID == "" {
+		return item, e, ErrFactoryConflict
+	}
+	prepared, err := c.internalUpdate(item, "continuation_prepared", func(dst *FactoryItem) error {
+		last := &dst.Effects[len(dst.Effects)-1]
+		if last.ID != e.ID || last.Delegated == nil || last.Delegated.State != factoryDelegatedWaiting {
+			return ErrFactoryConflict
+		}
+		next := *last.Delegated
+		if resume {
+			if next.ContinuationID != continuationID {
+				return ErrFactoryConflict
+			}
+		} else if next.ContinuationID != "" {
+			return ErrFactoryConflict
+		}
+		next.ContinuationID = continuationID
+		next.State = factoryDelegatedPrepared
+		last.Delegated = &next
+		dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "continuation_prepared", EffectID: e.ID, Message: continuationID})
+		return nil
+	})
+	if err != nil {
+		return item, e, err
+	}
+	last := prepared.Effects[len(prepared.Effects)-1]
+	return prepared, last, nil
+}
+
+// startContinuation journals the prepared continuation as dispatched and only
+// then sends the prompt, on the same session the effect was dispatched to.
+func (c *FactoryController) startContinuation(ctx context.Context, item FactoryItem, e FactoryEffect) (bool, error) {
+	dispatched, err := c.dispatchContinuation(ctx, item, e)
+	if errors.Is(err, ErrFactoryConflict) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return dispatched, nil
+}
+
+// dispatchPreparedContinuation re-dispatches a continuation the journal already
+// holds as prepared: the same write order applies, and no prompt is sent before
+// the dispatched record exists.
+func (c *FactoryController) dispatchPreparedContinuation(ctx context.Context, item FactoryItem, e FactoryEffect) (FactoryItem, error) {
+	_, err := c.dispatchContinuation(ctx, item, e)
+	if errors.Is(err, ErrFactoryConflict) {
+		return item, nil
+	}
+	if err != nil {
+		return item, err
+	}
+	return c.store.Get(item.ID)
+}
+
+// dispatchContinuation performs the dispatch of one prepared continuation and
+// reports whether it started. A continuation for this effect is one operation:
+// the write refuses a turn that is no longer prepared exactly as it was.
+func (c *FactoryController) dispatchContinuation(ctx context.Context, item FactoryItem, e FactoryEffect) (bool, error) {
+	d := e.Delegated
+	if d == nil || d.ContinuationID == "" {
+		return false, ErrFactoryConflict
+	}
+	c.mu.Lock()
+	if c.closing {
+		c.mu.Unlock()
+		return false, nil
+	}
+	dispatchID := fmt.Sprintf("%s@%s", e.ID, d.ContinuationID)
+	dispatched, err := c.internalUpdate(item, "continuation_dispatch", func(dst *FactoryItem) error {
+		last := &dst.Effects[len(dst.Effects)-1]
+		if last.ID != e.ID || last.Delegated == nil || last.Delegated.ContinuationID != d.ContinuationID || last.Delegated.State != factoryDelegatedPrepared {
+			return ErrFactoryConflict
+		}
+		next := *last.Delegated
+		next.State = factoryDelegatedDispatched
+		last.Delegated = &next
+		dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "continuation_dispatched", EffectID: e.ID, Message: d.ContinuationID})
+		return nil
+	})
+	c.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	if c.beforeExecute != nil {
+		c.beforeExecute()
+	}
+	c.mu.Lock()
+	if c.closing {
+		c.mu.Unlock()
+		return false, nil
+	}
+	execCtx, cancel := context.WithCancel(ctx)
+	c.execCancels[dispatchID] = cancel
+	c.active.Add(1)
+	go func() {
+		defer c.active.Done()
+		defer func() { c.mu.Lock(); delete(c.execCancels, dispatchID); c.mu.Unlock(); cancel() }()
+		if c.afterAdmission != nil {
+			c.afterAdmission(execCtx)
+		}
+		if execCtx.Err() != nil {
+			return
+		}
+		_ = c.finishContinuation(execCtx, dispatched, e)
+	}()
+	c.mu.Unlock()
+	return true, nil
+}
+
+// delegatedSettled asks the worker session's own projection whether every child
+// the turn waited on is terminal. An unread projection is unknown work, never a
+// settled empty set.
+func (c *FactoryController) delegatedSettled(ctx context.Context, item FactoryItem, e FactoryEffect) (bool, error) {
+	if e.Delegated == nil {
+		return true, nil
+	}
+	observer, ok := c.effects.(interface {
+		ObserveChildren(context.Context, FactoryItem, FactoryDelegatedTurn) (FactoryChildSession, error)
+	})
+	if !ok {
+		return false, fmt.Errorf("%w: child observation unsupported", ErrFactoryUncertain)
+	}
+	projection, err := observer.ObserveChildren(ctx, item, *e.Delegated)
+	if err != nil {
+		return false, err
+	}
+	return factoryDelegatedSettled(*e.Delegated, FactoryObservation{Children: []FactoryChildSession{projection}}), nil
+}
+
+// delegatedChildrenSettled reports whether the children a turn launched are
+// proven terminal. An item with no delegated turn has none to settle, which is
+// the ordinary item whose stop needs no child evidence.
+func (c *FactoryController) delegatedChildrenSettled(ctx context.Context, item FactoryItem) (bool, error) {
+	e, ok := factoryDelegatedEffect(item)
+	if !ok || len(e.Delegated.ChildIDs) == 0 {
+		return true, nil
+	}
+	return c.delegatedSettled(ctx, item, e)
+}
+
+// cancelDelegatedChildren stops the children the turn owns through the existing
+// session/subagent_cancel control. It is the request, not the outcome: the stop
+// is confirmed only by the observation that each child finished.
+func (c *FactoryController) cancelDelegatedChildren(ctx context.Context, item FactoryItem) error {
+	e, ok := factoryDelegatedEffect(item)
+	if !ok || len(e.Delegated.ChildIDs) == 0 {
+		return nil
+	}
+	canceler, ok := c.effects.(interface {
+		CancelChildren(context.Context, FactoryItem) error
+	})
+	if !ok {
+		return fmt.Errorf("%w: child cancellation unsupported", ErrFactoryUncertain)
+	}
+	return canceler.CancelChildren(ctx, item)
+}
+
+// factoryContinuationOutcome binds a finished turn's result to the continuation
+// that asked for it: the same worker and session, the same candidate, and the
+// fresh continuation identity the prompt named. The earlier final message can
+// never satisfy it.
+func factoryContinuationOutcome(e FactoryEffect, out FactoryOutcome) bool {
+	d := e.Delegated
+	if d == nil || d.ContinuationID == "" || out.Continuation != d.ContinuationID {
+		return false
+	}
+	if !out.Confirmed || out.EffectID != e.ID || out.Report == nil || out.Report.OperationID != e.ID {
+		return false
+	}
+	if e.Worker == nil || out.Worker == nil || out.Worker.AgentID != d.WorkerID || out.Worker.SessionID != d.SessionID || out.Worker.Role != e.Worker.Role {
+		return false
+	}
+	if r := out.Report; r != nil {
+		if e.ExpectedBase != "" && r.BaseSHA != "" && r.BaseSHA != e.ExpectedBase {
+			return false
+		}
+		if e.ExpectedHead != "" && r.HeadSHA != "" && r.HeadSHA != e.ExpectedHead {
+			return false
+		}
+	}
+	if e.Kind == "review" && e.ExpectedHead != "" && out.HeadSHA != "" && out.HeadSHA != e.ExpectedHead {
+		return false
+	}
+	return true
+}
+
 func (c *FactoryController) finishDispatch(ctx context.Context, dispatched FactoryItem, e FactoryEffect) error {
-	out, runErr := c.effects.Execute(ctx, dispatched, e)
+	return c.finishEffect(ctx, dispatched, e, func(ctx context.Context, item FactoryItem, e FactoryEffect) (FactoryOutcome, error) {
+		return c.effects.Execute(ctx, item, e)
+	})
+}
+
+// finishContinuation finishes the second turn a delegated effect takes. It runs
+// through the continuation seam, never FactoryEffects.Execute: a continuation is
+// another turn of one effect, not a new effect.
+func (c *FactoryController) finishContinuation(ctx context.Context, dispatched FactoryItem, e FactoryEffect) error {
+	return c.finishEffect(ctx, dispatched, e, func(ctx context.Context, item FactoryItem, e FactoryEffect) (FactoryOutcome, error) {
+		seams, ok := c.continuationSeams()
+		if !ok {
+			return FactoryOutcome{EffectID: e.ID}, fmt.Errorf("%w: continuation unsupported", ErrFactoryRefused)
+		}
+		return seams.Continue(ctx, item, e)
+	})
+}
+
+func (c *FactoryController) finishEffect(ctx context.Context, dispatched FactoryItem, e FactoryEffect, execute func(context.Context, FactoryItem, FactoryEffect) (FactoryOutcome, error)) error {
+	out, runErr := execute(ctx, dispatched, e)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
@@ -1018,6 +1411,9 @@ func (c *FactoryController) finishDispatch(ctx context.Context, dispatched Facto
 		return ErrFactoryConflict
 	}
 	dispatched = latest
+	// The binding is against the turn the journal holds, not the one this
+	// goroutine was started with: a restart may have reconciled it.
+	e.Delegated = latest.Effects[len(latest.Effects)-1].Delegated
 	if runErr != nil {
 		out.Error = runErr.Error()
 		out.EffectID = e.ID
@@ -1036,6 +1432,49 @@ func (c *FactoryController) finishDispatch(ctx context.Context, dispatched Facto
 	if out.EffectID == "" {
 		out.EffectID = e.ID
 	}
+	// A turn that launched children it did not prove settled is not finished: the
+	// report it wrote is early, so it is never passed to CompleteFactoryEffect.
+	// The effect keeps its dispatch and the candidate identity it was dispatched
+	// with, and the delegated turn beside it is what a continuation resolves.
+	if out.Delegated != nil {
+		delegated := *out.Delegated
+		previous := ""
+		if e.Delegated != nil {
+			previous = e.Delegated.ContinuationID
+		}
+		_, err := c.internalUpdate(dispatched, "delegated", func(dst *FactoryItem) error {
+			last := &dst.Effects[len(dst.Effects)-1]
+			last.Delegated = &delegated
+			message := fmt.Sprintf("waiting on %d child(ren) the turn launched", len(delegated.ChildIDs))
+			if previous != "" && delegated.ContinuationID != previous {
+				// The continuation that launched them is spent: the new cycle
+				// carries a new identity, and this report is not its result. A
+				// turn that kept its identity was never sent, so it reports
+				// nothing spent.
+				message += "; continuation " + previous + " launched new child work"
+			}
+			dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "delegated_waiting", EffectID: e.ID, Message: message})
+			return nil
+		})
+		return err
+	}
+	// A continuation's result is accepted only when it names the iteration that
+	// asked for it, the same worker and session, and the same candidate. The
+	// earlier final message can never stand in for it.
+	if d := e.Delegated; d != nil && d.ContinuationID != "" && !factoryContinuationOutcome(e, out) {
+		next := *d
+		next.State = factoryDelegatedUncertain
+		_, err := c.internalUpdate(dispatched, "continuation_rejected", func(dst *FactoryItem) error {
+			last := &dst.Effects[len(dst.Effects)-1]
+			last.Delegated = &next
+			last.Status = "uncertain"
+			reason := "continuation report does not name continuation " + d.ContinuationID + " for this worker and candidate"
+			dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "continuation_rejected", EffectID: e.ID, Message: reason})
+			factoryDecision(dst, "recovery", reason, c.now())
+			return nil
+		})
+		return err
+	}
 	next, err := CompleteFactoryEffect(dispatched, e.ID, out, c.now())
 	if dispatched.State == "stopping" {
 		next.State = "stopping"
@@ -1051,6 +1490,7 @@ func (c *FactoryController) finishDispatch(ctx context.Context, dispatched Facto
 	}
 	_, err = c.internalUpdate(dispatched, "complete", func(dst *FactoryItem) error { *dst = next; dst.Version = dispatched.Version; return nil })
 	if err == nil {
+		c.noteNewPulls(dispatched, next)
 		c.Wake()
 	}
 	return err
@@ -1059,17 +1499,25 @@ func (c *FactoryController) Command(ctx context.Context, itemID string, cmd Fact
 	return c.command(ctx, itemID, cmd, nil)
 }
 
-// CommandAuthorized is Command for a mutation an authenticated MCP client
+// CommandAuthorized is Command for a mutation an authenticated principal
 // proposed. The caller holds the policy lock and has authorized the capability;
-// the journal records the client's provenance in the same append that applies
-// the command, and the request identity is namespaced so two clients naming one
-// ID remain two operations.
+// the journal records the principal's provenance in the same append that
+// applies the command, and the request identity is namespaced so two principals
+// naming one ID remain two operations.
+//
+// A principal is either an MCP client or a verified built-in session: a client
+// names its registered client id, and a built-in session names its instance,
+// project and session instead. Both are authenticated by the transport before
+// this runs — neither identity is ever taken from a command or a tool argument
+// — so requiring a client id here would refuse every built-in session while
+// saying nothing about whether the caller was authenticated.
 //
 // Nothing external runs here: the caller has already preflighted the candidate
 // (including an approval's draft configuration) outside the policy lock.
 func (c *FactoryController) CommandAuthorized(ctx context.Context, itemID string, cmd FactoryCommand, p factoryPrincipal) (FactoryItem, error) {
-	if strings.TrimSpace(p.ClientID) == "" || strings.TrimSpace(p.Action) == "" {
-		return FactoryItem{}, fmt.Errorf("%w: authenticated client and action required", errFactoryInput)
+	if strings.TrimSpace(p.Action) == "" ||
+		(strings.TrimSpace(p.ClientID) == "" && strings.TrimSpace(p.SessionID) == "") {
+		return FactoryItem{}, fmt.Errorf("%w: authenticated principal and action required", errFactoryInput)
 	}
 	if c.store == nil {
 		return FactoryItem{}, ErrFactoryUnavailable
@@ -1245,6 +1693,11 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 			return ErrFactoryConflict
 		}
 		a := FactoryApproval{Revision: uint64(len(i.Approvals) + 1), Plan: i.Draft.Plan, Spec: i.Draft.Spec, PlanHash: factoryApprovalHash(i.Draft.Plan, i.Draft.Spec, i.Draft.EditSnapshot), Config: i.Draft.Config, EditSnapshot: factoryCloneSnapshot(i.Draft.EditSnapshot), ApprovedAt: now}
+		if c.ImplementerFreeze != nil && c.ReviewerFreeze != nil {
+			// The resolved pair this revision freezes rides the same append as
+			// the approval, so a later default change cannot reach it.
+			a.ImplementerSubagents, a.ReviewerSubagents = *c.ImplementerFreeze, *c.ReviewerFreeze
+		}
 		i.Approvals = append(i.Approvals, a)
 		i.Grants = append(i.Grants, FactoryGrant{ID: c.RequestID, Reason: "initial approval", AdditionalRounds: a.Config.MaxRounds, At: now})
 		i.State = "queued"
@@ -1305,6 +1758,9 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 			// omits the snapshot drops the selection, because the caller said
 			// what this draft is now made of.
 			a := FactoryApproval{Revision: uint64(len(i.Approvals) + 1), Plan: r.Plan, Spec: r.Spec, PlanHash: factoryApprovalHash(r.Plan, r.Spec, r.EditSnapshot), Config: r.Config, EditSnapshot: factoryCloneSnapshot(r.EditSnapshot), ApprovedAt: now}
+			if c.ImplementerFreeze != nil && c.ReviewerFreeze != nil {
+				a.ImplementerSubagents, a.ReviewerSubagents = *c.ImplementerFreeze, *c.ReviewerFreeze
+			}
 			i.Approvals = append(i.Approvals, a)
 		} else {
 			// A route-only retry: the plan and the specification are carried
@@ -1321,6 +1777,12 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 				// selection rides along with the plan, the specification and the
 				// digest that already binds it, and is never re-derived here.
 				approval.EditSnapshot = factoryCloneSnapshot(previous.EditSnapshot)
+				// The frozen subagent settings are carried over for the same
+				// reason: moving a route does not re-open what the previous
+				// revision froze, and re-deriving them would let a default
+				// change reach an approval that was already made.
+				approval.ImplementerSubagents = previous.ImplementerSubagents
+				approval.ReviewerSubagents = previous.ReviewerSubagents
 				i.Approvals = append(i.Approvals, approval)
 				i.History = append(i.History, FactoryEvent{At: now, Kind: "route_changed", Message: factoryRouteChangeMessage(previous.Config, approval.Config)})
 			}

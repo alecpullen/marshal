@@ -376,6 +376,71 @@ func TestTheFleetScreenMatchesItsGoldens(t *testing.T) {
 	}
 }
 
+// hasLabel reports whether an Info tab line carries label: kv pads every label
+// to labelWidth, so a value that starts with the label's text cannot match.
+func hasLabel(line, label string) bool {
+	if len(label) >= labelWidth {
+		label = label[:labelWidth-1]
+	}
+	return strings.HasPrefix(ansi.Strip(line), label+strings.Repeat(" ", labelWidth-len(label)))
+}
+
+// TestTheInfoTabShowsAVersionWarning pins decision 5: an agent whose marshal
+// differs from the daemon's carries the daemon's sentence on a version line
+// right after branch, in the warning colour, unreworded.
+func TestTheInfoTabShowsAVersionWarning(t *testing.T) {
+	const warning = "agent runs marshal dev+1234abcd; the daemon is 0.1.0"
+	sc := fleetGolden{name: "fleet-100x30-info", width: 100, height: 30, tab: 3, colour: true}
+	m := fleetModel(t, sc)
+	a, ok := m.agentByID("a-needs-you")
+	if !ok {
+		t.Fatal("the scene has no a-needs-you agent")
+	}
+	a.VersionWarning = warning
+
+	lines := m.infoLines(a)
+	branch := -1
+	for i, ln := range lines {
+		if hasLabel(ln, "branch") {
+			branch = i
+		}
+	}
+	if branch < 0 {
+		t.Fatalf("the Info tab has no branch line:\n%s", ansi.Strip(strings.Join(lines, "\n")))
+	}
+	if branch+1 >= len(lines) {
+		t.Fatalf("the Info tab ends at branch, with no version line:\n%s", ansi.Strip(strings.Join(lines, "\n")))
+	}
+	want := "version" + strings.Repeat(" ", labelWidth-len("version")) +
+		lipgloss.NewStyle().Foreground(theme.Current().StatusWarning).Render(warning)
+	if lines[branch+1] != want {
+		t.Errorf("the line after branch =\n%q\nwant\n%q", lines[branch+1], want)
+	}
+	if strings.Contains(ansi.Strip(lines[branch+1]), "…") {
+		t.Errorf("the warning is truncated: %q", ansi.Strip(lines[branch+1]))
+	}
+}
+
+// TestTheInfoTabHasNoVersionLineWithoutOne pins the other half: an agent the
+// daemon did not warn about gets no version line, so the tab's goldens stand.
+func TestTheInfoTabHasNoVersionLineWithoutOne(t *testing.T) {
+	sc := fleetGolden{name: "fleet-100x30-info", width: 100, height: 30, tab: 3}
+	m := fleetModel(t, sc)
+	for _, a := range m.state.Agents {
+		if a.VersionWarning != "" {
+			t.Fatalf("the scene's agent %s carries a warning it should not", a.ID)
+		}
+		for _, ln := range m.infoLines(a) {
+			if hasLabel(ln, "version") {
+				t.Errorf("agent %s has a version line with no warning: %q", a.ID, ansi.Strip(ln))
+			}
+		}
+	}
+	if got := ansi.Strip(renderFleet(t, sc)); strings.Contains(got, "version") {
+		t.Errorf("the Info tab's frame has a version line with no warning:\n%s", got)
+	}
+}
+
 // TestTheScreenNamesTheBridgeBeforeTheFirstRead is the regression for a model
 // that did not seed itself from the client: until the first read landed the
 // server's name was missing, so every panel said "Connecting to …" with

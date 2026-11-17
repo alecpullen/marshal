@@ -1,0 +1,54 @@
+{
+  "BudgetDelta": {
+    "action": "pause",
+    "agentId": "a-1",
+    "capUsd": 5.0,
+    "kind": "budget",
+    "scope": "agent",
+    "sessionId": "s-1",
+    "spentUsd": 1.25
+  },
+  "BudgetScope": "daily",
+  "DeltaKind": "activity",
+  "FleetDelta": {
+    "access": {
+      "access_revision": 4,
+      "auto": true,
+      "mode": "act",
+      "system_access": false
+    },
+    "activity": "running go test ./internal/app/...",
+    "agentId": "a-1",
+    "at": 1763300000000,
+    "by": "u-1",
+    "changedFiles": 2,
+    "contextPct": 42,
+    "event": {
+      "path": "app/lib/main.dart"
+    },
+    "gate": {
+      "at": "2026-11-17T04:50:00Z",
+      "result": {
+        "ok": true,
+        "skipped": false
+      }
+    },
+    "held": true,
+    "kind": "handshake",
+    "pendingKind": "approval",
+    "rules": [
+      "no secrets"
+    ],
+    "run": {
+      "step": 1
+    },
+    "sessionId": "s-1",
+    "toolStats": {
+      "calls": 12
+    }
+  },
+  "ProjectRemovedDelta": {
+    "kind": "project_removed",
+    "project": "/home/u/src/marshal"
+  }
+}

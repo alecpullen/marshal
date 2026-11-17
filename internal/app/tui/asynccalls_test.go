@@ -68,6 +68,15 @@ var blockingCalls = []string{
 	"ReloadConfig", "ReconnectMCP", "CanProbeModel", "Postmortem",
 }
 
+// AUD-10 follow-up: "StackNode", "SaveUserValue", "SaveUserProviders",
+// "SaveUserPresets" and "SaveProjectConfig" belong in blockingCalls too. Adding
+// them today also flags eight pre-existing synchronous writes on the Update
+// goroutine (model.go:832, :945, :7307, :7311, :7318, :7407 and
+// model_options.go:110, :134), which are outside this PR's surfaces; the guard
+// is extended once those are converted. Until then the browse and settings
+// conversions are pinned by the "does not block the update loop" tests in
+// browse_async_test.go and settings/browser_async_test.go.
+
 // TestBlockingCallsLeaveTheUpdateGoroutine fails when a non-test file under
 // internal/app/tui calls one of blockingCalls on a receiver ending in sess or
 // host outside a func() tea.Msg literal, a function literal returning

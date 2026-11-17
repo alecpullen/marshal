@@ -229,3 +229,102 @@ func TestShellParseInvalidSyntaxAndControls(t *testing.T) {
 		t.Fatal("unreachable")
 	}
 }
+
+// hasOperationEffect reports whether an operation with the given executable
+// carries the given effect.
+func hasOperationEffect(a ShellAnalysis, exe string, want ShellEffect) bool {
+	for _, op := range a.Operations {
+		if op.Executable.Value == exe && op.Effects&want != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// TestShellParseWrappedCompoundPayloadsBecomeSeparateOperations covers AUD-01:
+// a payload handed to a shell (`sh -c`, `eval`, and every wrapper that reaches
+// one) is a shell script, not one argv. Every statement the shell will run must
+// reach the analyzer as its own operation, so a read-only first statement
+// cannot hide what follows it.
+func TestShellParseWrappedCompoundPayloadsBecomeSeparateOperations(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		exe  string
+		want ShellEffect
+	}{
+		{"sh -c 'echo ok; touch x'", "touch", ShellWrite},
+		{"sh -c 'echo ok; rm -rf x'", "rm", ShellDestructive},
+		{"sh -c 'echo ok; sudo rm x'", "sudo", ShellPrivilege},
+		{"sh -c 'echo ok > out.txt'", "echo", ShellWrite},
+		{"sh -c 'echo ok; cat a > b'", "cat", ShellWrite},
+		{"sh -c 'echo ok; if true; then rm -rf x; fi'", "rm", ShellDestructive},
+		{"sh -c 'echo ok; echo b | tee out'", "tee", ShellWrite},
+		// `npm publish` is not classified as publishing, but it is certainly
+		// not a read: the hidden statement must keep it out of the read tier.
+		{`sh -c 'echo ok; npm publish'`, "npm", ShellUnknown},
+		{"bash -c 'echo ok; touch x'", "touch", ShellWrite},
+		{"bash -lc 'echo ok; touch x'", "touch", ShellWrite},
+		{"eval 'echo ok; touch x'", "touch", ShellWrite},
+		{`eval "echo ok; touch x"`, "touch", ShellWrite},
+		{`sh -c 'echo ok; sh -c "touch x"'`, "touch", ShellWrite},
+		{`eval 'echo ok; eval "touch x"'`, "touch", ShellWrite},
+		{"env sh -c 'echo ok; touch x'", "touch", ShellWrite},
+		{"xargs sh -c 'echo ok; touch x'", "touch", ShellWrite},
+		{`find . -exec sh -c 'echo ok; touch x' \;`, "touch", ShellWrite},
+	}
+	for _, tc := range cases {
+		a := analyze(t, tc.cmd)
+		if !hasOperationEffect(a, tc.exe, tc.want) {
+			t.Fatalf("%q: no %q operation with effect %b in %+v", tc.cmd, tc.exe, tc.want, a.Operations)
+		}
+		// The fix adds operations; it never replaces the read statement.
+		if !hasOperationEffect(a, "echo", ShellRead) {
+			t.Fatalf("%q: the leading read statement was lost in %+v", tc.cmd, a.Operations)
+		}
+	}
+
+	// A payload whose only statement is compound must decompose as well.
+	decomposed := []struct {
+		cmd  string
+		exe  string
+		want ShellEffect
+	}{
+		{"sh -c 'echo ok | tee out'", "tee", ShellWrite},
+		{"sh -c 'if true; then rm -rf x; fi'", "rm", ShellDestructive},
+		{"sh -c 'cd /tmp && rm -rf x'", "rm", ShellDestructive},
+	}
+	for _, tc := range decomposed {
+		a := analyze(t, tc.cmd)
+		if !hasOperationEffect(a, tc.exe, tc.want) {
+			t.Fatalf("%q: no %q operation with effect %b in %+v", tc.cmd, tc.exe, tc.want, a.Operations)
+		}
+	}
+}
+
+// TestShellParseWrappedPayloadKeepsSingleStatementForms is the compatibility
+// guard for the wrapper forms that already produced their inner operation
+// before AUD-01: the script path must keep them exactly as they were.
+func TestShellParseWrappedPayloadKeepsSingleStatementForms(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		exe  string
+		want ShellEffect
+	}{
+		{"sh -c 'rm -rf x'", "rm", ShellDestructive},
+		{"bash -lc 'rm -rf x'", "rm", ShellDestructive},
+		{"eval 'rm -rf x'", "rm", ShellDestructive},
+		{"sh -c 'git push'", "git", ShellPublish},
+		{"bash -lc 'git push'", "git", ShellPublish},
+		{"sh -c 'sudo id'", "sudo", ShellPrivilege},
+		{`find . -exec sh -c 'rm -rf x' \;`, "rm", ShellDestructive},
+		{"xargs rm", "rm", ShellWrite},
+		{"find . -exec rm {} \\;", "rm", ShellWrite},
+		{"echo $(rm -rf x)", "rm", ShellDestructive},
+	}
+	for _, tc := range cases {
+		a := analyze(t, tc.cmd)
+		if !hasOperationEffect(a, tc.exe, tc.want) {
+			t.Fatalf("%q: no %q operation with effect %b in %+v", tc.cmd, tc.exe, tc.want, a.Operations)
+		}
+	}
+}

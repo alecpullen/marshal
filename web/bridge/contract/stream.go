@@ -18,6 +18,9 @@ const (
 	DeltaBudget         DeltaKind = "budget"
 	DeltaProjectRemoved DeltaKind = "project_removed"
 	DeltaInbox          DeltaKind = "inbox"
+	// DeltaPull announces a pull request record added or changed, or one
+	// removed. Its payload is PullDelta.
+	DeltaPull DeltaKind = "pull"
 )
 
 // FleetDelta is one entry on the fleet stream.

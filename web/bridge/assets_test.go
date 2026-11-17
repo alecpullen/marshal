@@ -8,20 +8,154 @@ import (
 	"testing"
 )
 
-func TestStaticHandlerServesIndex(t *testing.T) {
+// TestRootServesSvelte pins the deferred cutover (F8 decision 1, revised
+// 2026-11-17): `/` is still the Svelte Studio's index, never cached, so a
+// reload of the root opens it.
+func TestRootServesSvelte(t *testing.T) {
+	for _, p := range []string{"/", "/index.html"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		svelteHandler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200", p, rec.Code)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "Marshal Web UI") {
+			t.Errorf("GET %s: body is not the Svelte index; got %q", p, body)
+		}
+		if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
+			t.Errorf("GET %s: cache-control = %q, want no-cache", p, cc)
+		}
+	}
+}
+
+// TestRootFallsBackToIndex pins the Svelte Studio's fallback: a path that is
+// not a file on disk answers with its index, which reads the hash route.
+func TestRootFallsBackToIndex(t *testing.T) {
+	for _, p := range []string{"/inbox", "/thread/local/a-1", "/settings/secrets"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		svelteHandler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200", p, rec.Code)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "Marshal Web UI") {
+			t.Errorf("GET %s: body missing the Svelte index; got %q", p, body)
+		}
+	}
+}
+
+// TestNextServesFlutter pins the Flutter Studio's prefix (F8 decision 1,
+// revised 2026-11-17): the trial build lives at /next/, never cached, so a
+// reload opens it.
+func TestNextServesFlutter(t *testing.T) {
+	for _, p := range []string{"/next/", "/next/index.html"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		flutterHandler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200", p, rec.Code)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "Marshal Studio") {
+			t.Errorf("GET %s: body missing the Flutter index; got %q", p, body)
+		}
+		if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
+			t.Errorf("GET %s: cache-control = %q, want no-cache", p, cc)
+		}
+	}
+}
+
+// TestNextFallsBackToIndex pins the Flutter Studio's own routing: a place in
+// the URL is not an asset on disk, so the index answers and the Studio renders
+// the place.
+func TestNextFallsBackToIndex(t *testing.T) {
+	for _, p := range []string{"/next/inbox", "/next/thread/local/a-1", "/next/settings/secrets"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		flutterHandler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200", p, rec.Code)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "Marshal Studio") {
+			t.Errorf("GET %s: body missing the Flutter index; got %q", p, body)
+		}
+	}
+}
+
+// TestNextBarePrefixRedirects pins the trailing slash: the Flutter build's
+// base href is /next/, so serving its index at /next would resolve every
+// relative asset URL a level too high.
+func TestNextBarePrefixRedirects(t *testing.T) {
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	staticHandler().ServeHTTP(rec, req)
+	req := httptest.NewRequest(http.MethodGet, nextPrefix, nil)
+	flutterHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Errorf("GET %s: status = %d, want 308", nextPrefix, rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != nextPrefix+"/" {
+		t.Errorf("GET %s: Location = %q, want %q", nextPrefix, got, nextPrefix+"/")
+	}
+}
+
+// TestRootServesItsAssets pins the un-prefixed asset path: the Svelte build is
+// made with the default base, so its asset URLs are rooted at `/`.
+func TestRootServesItsAssets(t *testing.T) {
+	name := hashedAssetName(t, svelteRoot)
+	if name == "" {
+		t.Skip("no hashed asset in the embedded Svelte tree")
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/"+name, nil)
+	svelteHandler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /: status = %d, want 200", rec.Code)
+		t.Fatalf("GET /%s: status = %d, want 200", name, rec.Code)
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "Marshal Web UI") {
-		t.Errorf("index.html body missing title; got %q", body)
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "immutable") {
+		t.Errorf("cache-control for %s = %q, want immutable", name, cc)
 	}
-	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
-		t.Errorf("index.html cache-control = %q, want no-cache", cc)
+}
+
+// TestNoAPIRouteIsShadowed pins the boundary: the bridge's API is the mux's,
+// and neither Studio's handler answers for a path under /api/.
+func TestNoAPIRouteIsShadowed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		h    http.Handler
+		path string
+	}{
+		{"svelte", svelteHandler(), "/api/agents"},
+		{"flutter", flutterHandler(), "/next/api/agents"},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		tc.h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: GET %s: status = %d, want 404", tc.name, tc.path, rec.Code)
+		}
+		if body := rec.Body.String(); strings.Contains(body, "Marshal Studio") ||
+			strings.Contains(body, "Marshal Web UI") {
+			t.Errorf("%s: an API path was answered with a Studio page", tc.name)
+		}
+	}
+}
+
+// TestIsNextPath pins the prefix the router matches on.
+func TestIsNextPath(t *testing.T) {
+	for _, p := range []string{"/next", "/next/", "/next/inbox", "/next/thread/local/a-1"} {
+		if !isNextPath(p) {
+			t.Errorf("isNextPath(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"/", "/nextdoor", "/api/agents", "/classic/next"} {
+		if isNextPath(p) {
+			t.Errorf("isNextPath(%q) = true, want false", p)
+		}
 	}
 }
 
@@ -54,28 +188,11 @@ func TestLooksHashed(t *testing.T) {
 	}
 }
 
-// TestStaticHandlerHashedAssetIsImmutable pins the cache policy a browser
-// actually sees for a content-hashed asset.
-func TestStaticHandlerHashedAssetIsImmutable(t *testing.T) {
-	name := hashedAssetName(t)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/"+name, nil)
-	staticHandler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Skipf("no hashed asset %q in the embedded tree", name)
-	}
-	cc := rec.Header().Get("Cache-Control")
-	if !strings.Contains(cc, "immutable") {
-		t.Errorf("cache-control for %s = %q, want immutable", name, cc)
-	}
-}
-
 // hashedAssetName returns a real embedded asset whose name looks hashed.
-func hashedAssetName(t *testing.T) string {
+func hashedAssetName(t *testing.T, root fs.FS) string {
 	t.Helper()
 	var found string
-	err := fs.WalkDir(staticRoot, ".", func(p string, _ fs.DirEntry, err error) error {
+	err := fs.WalkDir(root, ".", func(p string, _ fs.DirEntry, err error) error {
 		if err != nil || found != "" {
 			return err
 		}
@@ -88,27 +205,4 @@ func hashedAssetName(t *testing.T) string {
 		t.Fatalf("walk: %v", err)
 	}
 	return found
-}
-
-func TestStaticHandlerApiNotFound(t *testing.T) {
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
-	staticHandler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("GET /api/sessions on static handler: status = %d, want 404", rec.Code)
-	}
-}
-
-func TestStaticHandlerFallbackToIndex(t *testing.T) {
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/sessions/s-1", nil)
-	staticHandler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /sessions/s-1: status = %d, want 200 (index fallback)", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "Marshal Web UI") {
-		t.Errorf("fallback did not serve index.html")
-	}
 }

@@ -2,9 +2,23 @@ package watch
 
 import (
 	"context"
+	"strings"
 
 	"marshal/internal/watch/watchctx"
 )
+
+// subagentOwnerPrefix starts the tag a subagent's own watches carry:
+// internal/agent/subagent.go tags a child's context "subagent-<id>", and
+// watchctx.WithOwner passes that tag to the manager.
+const subagentOwnerPrefix = "subagent-"
+
+// subagentOwned reports whether owner is a subagent's tag. Only such a tag
+// makes the watch a subagent's; an owner recorded for provenance alone — the
+// ACP layer's "studio" tag — is not one, so it keeps the resume intent it
+// asked for.
+func subagentOwned(owner string) bool {
+	return strings.HasPrefix(owner, subagentOwnerPrefix)
+}
 
 // WithOwner returns a context carrying the subagent owner tag. Set by the
 // agent.run handler on the child's context so watch.start calls made by a

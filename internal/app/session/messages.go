@@ -1,11 +1,13 @@
 package session
 
 import (
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
 
 	"marshal/internal/db"
+	"marshal/internal/llm/schema"
 )
 
 // Role identifies the sender of a message.
@@ -139,6 +141,8 @@ type Message struct {
 	// StepID is the step that produced the message. Set only for narration
 	// (ContentTypeNarration); 0 for everything else.
 	StepID StepID
+	// Images are the images this message carried, replayed like its text.
+	Images []schema.ImageRef
 }
 
 // loadFromDB reconstructs the in-memory message tree for the current
@@ -208,6 +212,14 @@ func (s *State) loadFromDB() {
 					CreatedAt:     dm.CreatedAt,
 					Final:         dm.Final,
 					StepID:        dm.StepSeq,
+				}
+				if dm.ImagesJSON != "" {
+					var images []schema.ImageRef
+					if err := json.Unmarshal([]byte(dm.ImagesJSON), &images); err != nil {
+						s.logger.Error("loadFromDB: parse message images", "error", err, "session_id", s.sessionID, "message_id", dm.ID)
+					} else {
+						msg.Images = images
+					}
 				}
 				s.parentOf[imID] = imParent
 				if imParent != 0 {
@@ -318,13 +330,13 @@ func (s *State) persistenceEnabled() bool {
 // s.mu is held across the DB write: appends are per-session serialized
 // anyway, and holding it closes the race where a concurrent Rewind /
 // SwitchBranch could orphan a stashed pointer mid-promotion.
-func (s *State) appendMessage(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int, usage string) {
-	s.appendMessageStepped(role, content, contentType, final, salvaged, salvageReason, toolCallCount, usage, 0)
+func (s *State) appendMessage(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int, usage string, images []schema.ImageRef) {
+	s.appendMessageStepped(role, content, contentType, final, salvaged, salvageReason, toolCallCount, usage, 0, images)
 }
 
 // appendMessageStepped is appendMessage plus the step the message belongs to
 // (0 = none).
-func (s *State) appendMessageStepped(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int, usage string, stepID StepID) {
+func (s *State) appendMessageStepped(role Role, content string, contentType ContentType, final bool, salvaged bool, salvageReason string, toolCallCount int, usage string, stepID StepID, images []schema.ImageRef) {
 	s.mu.Lock()
 	reasoning := s.inProgress.Reasoning
 	var thinkDuration time.Duration
@@ -343,8 +355,17 @@ func (s *State) appendMessageStepped(role Role, content string, contentType Cont
 	var dbID int64
 	persisted := false
 	if s.persistenceEnabled() {
+		imagesJSON := ""
+		if len(images) > 0 {
+			encoded, err := json.Marshal(images)
+			if err != nil {
+				s.logger.Error("marshal message images failed", "error", err, "session_id", s.sessionID, "role", role)
+			} else {
+				imagesJSON = string(encoded)
+			}
+		}
 		var err error
-		dbID, err = s.db.SaveMessageStep(s.sessionID, string(role), content, string(contentType), createdAt, reasoning, thinkDuration, final, s.leafDBID, stepID)
+		dbID, err = s.db.SaveMessageWithImages(s.sessionID, string(role), content, string(contentType), createdAt, reasoning, thinkDuration, final, s.leafDBID, stepID, imagesJSON)
 		if err != nil {
 			s.logger.Error("save message failed", "error", err, "session_id", s.sessionID, "role", role)
 		} else {
@@ -400,6 +421,7 @@ func (s *State) appendMessageStepped(role Role, content string, contentType Cont
 		ToolCallCount: toolCallCount,
 		Usage:         usage,
 		StepID:        stepID,
+		Images:        images,
 	}
 	s.messages = append(s.messages, msg)
 	s.parentOf[id] = parent
@@ -415,28 +437,34 @@ func (s *State) appendMessageStepped(role Role, content string, contentType Cont
 }
 
 func (s *State) AddMessage(role Role, content string, contentType ContentType) {
-	s.appendMessage(role, content, contentType, false, false, "", 0, "")
+	s.appendMessage(role, content, contentType, false, false, "", 0, "", nil)
+}
+
+// AddMessageWithImages is AddMessage plus the message's images. Every other
+// AddMessage* keeps its signature and passes no images.
+func (s *State) AddMessageWithImages(role Role, content string, contentType ContentType, images []schema.ImageRef) {
+	s.appendMessageStepped(role, content, contentType, false, false, "", 0, "", 0, images)
 }
 
 func (s *State) AddMessageFinal(role Role, content string, contentType ContentType) {
-	s.appendMessage(role, content, contentType, true, false, "", 0, "")
+	s.appendMessage(role, content, contentType, true, false, "", 0, "", nil)
 }
 
 // AddMessageFinalWithToolCount is AddMessageFinal plus a record of how many
 // real tool calls the runner executed during the turn, so a later turn's
 // history replay can distinguish a verified completion from a prose-only one.
 func (s *State) AddMessageFinalWithToolCount(role Role, content string, contentType ContentType, toolCallCount int) {
-	s.appendMessage(role, content, contentType, true, false, "", toolCallCount, "")
+	s.appendMessage(role, content, contentType, true, false, "", toolCallCount, "", nil)
 }
 
 // AddMessageFinalWithUsage is AddMessageFinalWithToolCount plus a
 // human-readable per-turn token-usage line for the session export.
 func (s *State) AddMessageFinalWithUsage(role Role, content string, contentType ContentType, toolCallCount int, usage string) {
-	s.appendMessage(role, content, contentType, true, false, "", toolCallCount, usage)
+	s.appendMessage(role, content, contentType, true, false, "", toolCallCount, usage, nil)
 }
 
 func (s *State) AddMessageSalvaged(role Role, content string, contentType ContentType, reason string) {
-	s.appendMessage(role, content, contentType, true, true, reason, 0, "")
+	s.appendMessage(role, content, contentType, true, true, reason, 0, "", nil)
 }
 
 func (s *State) Messages() []Message {
@@ -495,6 +523,10 @@ func (s *State) rebuildActiveBranch() {
 // turnMsgID (i.e. just before that turn), so the next AddMessage starts a
 // new branch. Returns the new leaf id. Does NOT restore files — the caller
 // (/rewind) does that via Snapshotter.
+//
+// A rewind to before the first turn sets the leaf to 0, which SetBranchLeaf
+// persists as an explicitly emptied root rather than as "never recorded"
+// (AUD-09), so the rewind survives a reload.
 func (s *State) Rewind(turnMsgID int64) int64 {
 	s.mu.Lock()
 	parent, ok := s.parentOf[turnMsgID]

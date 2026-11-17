@@ -352,6 +352,7 @@ func TestControlConformance(t *testing.T) {
 		{name: "set effort reports when it applies", run: setEffortReportsWhenItApplies},
 		{name: "set sudo unlock reaches the status", run: setSudoUnlockReachesStatus},
 		{name: "cancel subagent stops only a running child", run: cancelSubagentStopsOnlyARunningChild},
+		{name: "steer subagent delivers once per request", run: steerSubagentDeliversOncePerRequest},
 		{name: "clear finished run clears progress and events", run: clearFinishedRunClearsProgressAndEvents},
 		{name: "take watch resume takes the latch once", run: takeWatchResumeTakesTheLatchOnce},
 
@@ -1005,6 +1006,48 @@ func cancelSubagentStopsOnlyARunningChild(t *testing.T, open func(t *testing.T, 
 	}
 	if sess.CancelSubagent(ctx, 999) {
 		t.Error("CancelSubagent reported true for an unknown ID")
+	}
+}
+
+// steerSubagentDeliversOncePerRequest pins the steer by request ID over both
+// arms: one instruction reaches the child's queue, the parent transcript shows
+// the notice, a retry of the same request is answered accepted without a second
+// delivery, and a reused request ID with a different instruction is refused.
+func steerSubagentDeliversOncePerRequest(t *testing.T, open func(t *testing.T, d service.Deps) seam) {
+	ctx := context.Background()
+	state := seamState(t, "s1")
+	child := seamState(t, "child")
+	view := state.RegisterSubagent("task 1", child)
+
+	sess := open(t, service.Deps{State: state})
+	req := acpwire.SubagentSteerParams{SubagentID: view.ID, RequestID: "req-1", Message: "wrap up and report"}
+	res, err := sess.SteerSubagent(ctx, req)
+	if err != nil {
+		t.Fatalf("SteerSubagent: %v", err)
+	}
+	if res.Status != acpwire.SubagentSteerStatusAccepted || res.RequestID != "req-1" {
+		t.Fatalf("result = %+v, want request req-1 accepted", res)
+	}
+	if got := child.SteeringQueue(); len(got) != 1 || got[0] != "wrap up and report" {
+		t.Fatalf("child steering queue = %v, want the one instruction", got)
+	}
+	// A retry after a lost response is the same request: the same accepted
+	// answer, and no second delivery.
+	replay, err := sess.SteerSubagent(ctx, req)
+	if err != nil {
+		t.Fatalf("replayed SteerSubagent: %v", err)
+	}
+	if replay != res {
+		t.Fatalf("replayed result = %+v, want %+v", replay, res)
+	}
+	if got := child.SteeringQueue(); len(got) != 1 {
+		t.Fatalf("child steering queue after replay = %v, want one instruction", got)
+	}
+	// A reused request ID naming another instruction is a conflict.
+	conflict := req
+	conflict.Message = "a different instruction"
+	if _, err := sess.SteerSubagent(ctx, conflict); err == nil {
+		t.Fatal("SteerSubagent accepted a reused request ID with a different message")
 	}
 }
 

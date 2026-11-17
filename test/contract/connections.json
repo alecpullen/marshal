@@ -1,0 +1,27 @@
+{
+  "Credential": {
+    "id": "deploy",
+    "kind": "ssh",
+    "keyPath": "/home/u/.ssh/id_ed25519",
+    "user": "git",
+    "set": true
+  },
+  "CredentialInput": {
+    "id": "deploy",
+    "kind": "ssh",
+    "keyPath": "/home/u/.ssh/id_ed25519",
+    "user": "git"
+  },
+  "Repo": {
+    "id": "acme-widgets",
+    "url": "github.com/acme/widgets",
+    "branch": "main",
+    "credRef": "deploy",
+    "ownerId": "owner-1",
+    "forge": "github",
+    "apiBase": "https://api.github.com",
+    "watch": true,
+    "watchLabel": "marshal",
+    "lastPolled": "2026-11-17T03:00:00Z"
+  }
+}

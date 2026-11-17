@@ -14,8 +14,10 @@ import (
 	"marshal/internal/watch"
 )
 
-// watchOwnerStudio tags watches registered through ACP so they are never
-// confused with the parent agent's own or a subagent's.
+// watchOwnerStudio tags watches registered through ACP with where they came
+// from, so they are never confused with the parent agent's own or a
+// subagent's. It is provenance, not ownership: it does not suppress the
+// watch's resume intent, which only a subagent tag does.
 const watchOwnerStudio = "studio"
 
 // watchLiveCheck is how often a forwarder checks that its session still exists.

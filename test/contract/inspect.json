@@ -1,0 +1,238 @@
+{
+  "CallDetail": {
+    "args": "{\n  \"path\": \"internal/viewmodel/testdata/index.json\"\n}",
+    "callId": "call_8f21c0",
+    "execution": {
+      "actor": "agent",
+      "cwd": "/home/u/marshal",
+      "displayId": "4",
+      "state": "completed",
+      "toolCallId": "call_8f21c0"
+    },
+    "exitCode": 0,
+    "sandbox": {
+      "Backend": "restricted",
+      "Enabled": true,
+      "NetworkIsolated": false
+    },
+    "stepId": 2,
+    "symbols": [
+      {
+        "file": "internal/viewmodel/detail.go",
+        "kind": "func",
+        "name": "callDetail"
+      }
+    ],
+    "toolName": "file.edit"
+  },
+  "CompletionDetail": {
+    "output": "412 passed",
+    "report": "The suite is green."
+  },
+  "ExecutionDetail": {
+    "actor": "agent",
+    "attachment": "foreground",
+    "cwd": "/home/u/marshal",
+    "displayId": "4",
+    "endedAt": 1763352660000,
+    "executionId": "ex-7",
+    "exit": 0,
+    "generation": 1,
+    "outcome": "completed",
+    "pid": 4212,
+    "startedAt": 1763352656000,
+    "state": "completed",
+    "toolCallId": "call_8f21c0",
+    "version": 1,
+    "wait": "30s"
+  },
+  "LastRequest": {
+    "request": {
+      "attemptId": 7,
+      "at": 1763352660000,
+      "messages": [
+        {
+          "content": "Clean up the test fixtures nobody uses any more.",
+          "role": "user"
+        }
+      ],
+      "model": "claude-sonnet-4",
+      "options": {
+        "maxTokens": 8192,
+        "streaming": true,
+        "temperature": 0.2,
+        "thinking": "medium"
+      },
+      "outcome": {
+        "at": 1763352664000,
+        "status": "ok"
+      },
+      "provider": "anthropic",
+      "tools": [
+        {
+          "name": "file.read",
+          "parameters": "{\"type\":\"object\"}"
+        }
+      ]
+    }
+  },
+  "ModelRequest": {
+    "attemptId": 7,
+    "at": 1763352660000,
+    "messages": [
+      {
+        "content": "",
+        "role": "assistant",
+        "toolCalls": [
+          {
+            "args": "{\"path\":\"go.mod\"}",
+            "id": "call_1",
+            "name": "file.read"
+          }
+        ]
+      }
+    ],
+    "options": {
+      "streaming": true
+    },
+    "outcome": {
+      "status": "ok"
+    },
+    "tools": []
+  },
+  "NodeDetail": {
+    "calls": [
+      {
+        "callId": "call_8f21c0",
+        "stepId": 2,
+        "toolName": "file.edit"
+      }
+    ],
+    "narration": [
+      "Removing the fixtures nobody reads."
+    ],
+    "relations": {
+      "causedBy": [
+        "step:1"
+      ]
+    },
+    "step": {
+      "id": 2,
+      "model": "claude-sonnet-4",
+      "owner": "agent",
+      "why": "Drop three index entries whose files no test loads"
+    },
+    "thinking": [
+      {
+        "durationMs": 1800,
+        "text": "The fold test loads stack_fold.json."
+      }
+    ],
+    "todo": {
+      "content": "Clean up the fixtures",
+      "id": "td-1",
+      "status": "completed"
+    }
+  },
+  "NodeDetailResponse": {
+    "detail": {
+      "step": {
+        "owner": "agent"
+      }
+    },
+    "node": {
+      "id": "tool:1",
+      "kind": "tool"
+    }
+  },
+  "NoticeDetail": {
+    "kind": "coaching",
+    "text": "Read the file before editing it."
+  },
+  "RelationDetail": {
+    "causedBy": [
+      "step:1"
+    ],
+    "fixedBy": [
+      "step:3"
+    ]
+  },
+  "RequestMessage": {
+    "content": "Run the suite.",
+    "role": "user",
+    "toolCallId": "call_1",
+    "toolCalls": [
+      {
+        "args": "{\"command\":\"scripts/test.sh\"}",
+        "id": "call_2",
+        "name": "shell.run"
+      }
+    ]
+  },
+  "RequestOptions": {
+    "maxTokens": 8192,
+    "streaming": true,
+    "temperature": 0.2,
+    "thinking": "medium",
+    "toolChoice": "auto"
+  },
+  "RequestOutcome": {
+    "at": 1763352664000,
+    "status": "ok"
+  },
+  "RequestTool": {
+    "description": "Read a file",
+    "name": "file.read",
+    "parameters": "{\"type\":\"object\"}"
+  },
+  "RequestToolCall": {
+    "args": "{\"path\":\"go.mod\"}",
+    "id": "call_1",
+    "name": "file.read"
+  },
+  "StepDetail": {
+    "id": 2,
+    "model": "claude-sonnet-4",
+    "owner": "agent",
+    "provider": "anthropic",
+    "todoId": "td-1",
+    "why": "Drop three index entries whose files no test loads"
+  },
+  "StepDiff": {
+    "at": 1763352658000,
+    "diff": "@@ -4,3 +4,1 @@\n-    \"turn_legacy_v1.json\",\n-    \"turn_legacy_v2.json\",\n     \"turn_tools.json\",",
+    "files": [
+      "internal/viewmodel/testdata/index.json"
+    ],
+    "headline": "Removed the fixtures that are plainly dead",
+    "stepNode": "step:2",
+    "turnNode": "turn:1"
+  },
+  "StepDiffs": {
+    "steps": [
+      {
+        "diff": "@@ -1 +1 @@\n-old\n+new",
+        "files": [
+          "app/lib/main.dart"
+        ],
+        "headline": "Removed the fixtures that are plainly dead",
+        "stepNode": "step:2",
+        "turnNode": "turn:1"
+      }
+    ]
+  },
+  "SymbolDetail": {
+    "file": "internal/viewmodel/detail.go",
+    "kind": "func",
+    "name": "callDetail"
+  },
+  "ThoughtDetail": {
+    "durationMs": 1800,
+    "text": "The fold test loads stack_fold.json."
+  },
+  "TodoDetail": {
+    "content": "Clean up the fixtures",
+    "id": "td-1",
+    "status": "completed"
+  }
+}

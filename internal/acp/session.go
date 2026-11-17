@@ -103,6 +103,11 @@ type SessionManager struct {
 	configWritten  func(path string)
 	pendingRestart func() *acpwire.PendingRestart
 
+	// detachedResume binds a session's watch resume to the service built for
+	// it (decision 2). The host that serves viewers sets it; it is nil
+	// elsewhere, and a host without it binds nothing here, exactly as before.
+	detachedResume func(rt *app.Runtime, sessionID string, sess *service.Session)
+
 	mu          sync.RWMutex
 	sessions    map[string]*app.Runtime
 	lifecycleMu sync.Mutex
@@ -179,6 +184,12 @@ type sessionParams struct {
 	// Policy, when present, sets the new session's approval mode and
 	// pre-approved commands. Honored by session/new only.
 	Policy *PolicyParams `json:"policy,omitempty"`
+	// SubagentSettings, when present, is a resolved child-settings snapshot
+	// bound to this session only: whether agent.run is offered, the model
+	// children run on (empty: normal child routing) and the cap on children
+	// in flight. Absent means the ordinary defaults, so a legacy client keeps
+	// Marshal's normal behaviour. Honored by session/new only.
+	SubagentSettings *acpwire.SubagentSettings `json:"subagentSettings,omitempty"`
 	// ClientTrust starts the runtime with app.WithClientTrust, so the session's
 	// marshal client answers the trust question (P4 D8). Honoured by
 	// session/new, session/load and session/resume.
@@ -462,9 +473,23 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 		}
 		extra = append(extra, app.WithSessionRouting(p.Routing.Profile, overrides))
 	}
+	if p.SubagentSettings != nil {
+		// A resolved snapshot is enforced, not clamped: reject an unusable
+		// limit before any runtime starts, so no approved worker is ever
+		// launched under settings this session cannot honour.
+		settings := session.SubagentSettings{
+			Enabled:     p.SubagentSettings.Enabled,
+			Model:       p.SubagentSettings.Model,
+			Concurrency: p.SubagentSettings.Concurrency,
+		}
+		if verr := session.ValidateSubagentSettings(settings); verr != nil {
+			return nil, invalidParamsError("%v", verr)
+		}
+		extra = append(extra, app.WithSubagentSettings(settings))
+	}
 	rt, err := m.startRuntime(ctx, p, extra...)
 	if err != nil {
-		if errors.Is(err, app.ErrInvalidSessionRouting) {
+		if errors.Is(err, app.ErrInvalidSessionRouting) || errors.Is(err, app.ErrInvalidSubagentSettings) {
 			return nil, invalidParamsError("%v", err)
 		}
 		return nil, err
@@ -904,8 +929,52 @@ func (m *SessionManager) servicePair(id string) (*service.Host, *service.Session
 		return nil, nil, false
 	}
 	host, sess := service.New(m.serviceDeps(rt))
+	// The binding is the host's, made once per session and only where a wake
+	// may find no connection of its own (decision 2).
+	if m.detachedResume != nil {
+		m.detachedResume(rt, id, sess)
+	}
 	m.services[rt] = &servicePair{host: host, sess: sess}
 	return host, sess, true
+}
+
+// RebindDetachedResume puts each session's own wake binding back after the
+// connection that replaced it ends (P6 plan 6 review, A1). A connection's
+// binding is gated on that connection's liveness flag, so the hook it
+// installed goes inert when the connection dies. On a host that serves viewers
+// nothing else restores the session's own binding, and every later wake with
+// no screen up would do nothing for the rest of the runtime's life: the
+// bridge's driver connection cycling — a webbridge re-exec, a relay reset — is
+// enough to get there, which is the case P6 exists for.
+//
+// Only sessions whose service this manager already built are rebound. A wake
+// resumes a session through that service, so a session without one has no wake
+// to restore, and building one here would put service construction on the
+// teardown path of every connection. The hook is replace-on-write, so
+// installing the session's own binding again is safe.
+func (m *SessionManager) RebindDetachedResume() {
+	if m.detachedResume == nil {
+		return
+	}
+	type bound struct {
+		rt   *app.Runtime
+		id   string
+		sess *service.Session
+	}
+	m.servicesMu.Lock()
+	rebind := make([]bound, 0, len(m.services))
+	for rt, pair := range m.services {
+		if rt == nil || rt.State == nil || pair == nil || pair.sess == nil {
+			continue
+		}
+		rebind = append(rebind, bound{rt: rt, id: rt.State.SessionID(), sess: pair.sess})
+	}
+	m.servicesMu.Unlock()
+	// Bind outside the lock: the binder reads the session's own state and the
+	// host's viewer count, and a close holding servicesMu must not wait on it.
+	for _, b := range rebind {
+		m.detachedResume(b.rt, b.id, b.sess)
+	}
 }
 
 // serviceDeps is the runtime's service dependencies with the child's record

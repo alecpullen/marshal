@@ -1,100 +1,21 @@
 package bridge
 
-import "time"
+import (
+	"marshal/web/bridge/contract"
+)
 
-// FactoryRevisionAssessment is a planner's recorded judgement about one
-// proposed revision. It is advisory: it names the classification it asserts,
-// the work it believes is affected, the routing it recommends and whether the
-// proposal can wait for a safe boundary or needs the running turn interrupted.
-//
-// Classification and strategy are assertions by a trusted planner, not proofs:
-// the journal records what was claimed, and authorization rechecks who may act
-// on it.
-type FactoryRevisionAssessment struct {
-	Classification   string `json:"classification"` // routine_clarification | scope_change | needs_user
-	Reason           string `json:"reason"`
-	AffectedEffectID string `json:"affectedEffectId,omitempty"`
-	AffectedWorkerID string `json:"affectedWorkerId,omitempty"`
-	Recommendation   string `json:"recommendation"` // amend | follow_up
-	Strategy         string `json:"strategy"`       // wait_safe | interrupt | hold
-	AssessorID       string `json:"assessorId"`
-	CandidateHash    string `json:"candidateHash"`
-	BaseRevision     uint64 `json:"baseRevision"`
-}
-
-// FactoryRevisionDelivery is the recorded intent and evidence for handing an
-// authorized revision to the worker that is running, or will run, the item.
-//
-// It is evidence, not a request log: a state here was observed, or the outcome
-// of the attempt is explicitly unknown. "delivered" means the runtime accepted
-// the input, never that the agent followed it.
-type FactoryRevisionDelivery struct {
-	Strategy      string `json:"strategy"` // wait_safe | interrupt | hold
-	State         string `json:"state"`    // pending | dispatching | accepted | interrupting | waiting_safe_boundary | waiting_for_resume | delivered | undelivered | uncertain
-	SessionID     string `json:"sessionId,omitempty"`
-	TurnID        string `json:"turnId,omitempty"`
-	RequestID     string `json:"requestId,omitempty"`
-	CandidateHash string `json:"candidateHash"`
-}
-
-// FactoryRevisionProposal is one immutable plan/specification revision
-// proposed against an approved factory revision.
-//
-// The candidate bytes, the base it was proposed against, its hash and its
-// creator are journal history: an edit is a new proposal, and replacing an
-// unresolved one explicitly supersedes it rather than rewriting it. Only
-// state, assessment, authority and delivery move afterwards, and every one of
-// those moves bumps Version so a caller writing from a stale read is refused.
-//
-// While an amendment is authorized but not yet activated, the item's active
-// approval stays the last entry of FactoryItem.Approvals: an in-flight worker
-// keeps the revision it was started under.
-type FactoryRevisionProposal struct {
-	ID                  string                     `json:"id"`
-	Version             uint64                     `json:"version"`
-	BaseRevision        uint64                     `json:"baseRevision"`
-	BaseHash            string                     `json:"baseHash"`
-	Plan                string                     `json:"plan"`
-	Spec                string                     `json:"spec"`
-	CandidateHash       string                     `json:"candidateHash"`
-	CreatedBy           string                     `json:"createdBy"`
-	AutoAssess          bool                       `json:"autoAssess"`
-	Status              string                     `json:"status"`          // proposed | awaiting_authorization | authorized | activated | rejected | superseded | follow_up_pending | followed_up
-	AssessmentState     string                     `json:"assessmentState"` // not_requested | pending | assessing | assessed | unavailable | uncertain | failed
-	AssessmentAttemptID string                     `json:"assessmentAttemptId,omitempty"`
-	Assessment          *FactoryRevisionAssessment `json:"assessment,omitempty"`
-	AuthorizedBy        string                     `json:"authorizedBy,omitempty"`
-	Authority           string                     `json:"authority,omitempty"`
-	Routing             string                     `json:"routing,omitempty"`    // amend | follow_up
-	PauseState          string                     `json:"pauseState,omitempty"` // requested | stopping | paused | uncertain
-	PauseRequestID      string                     `json:"pauseRequestId,omitempty"`
-	Delivery            *FactoryRevisionDelivery   `json:"delivery,omitempty"`
-	FollowUpRequestID   string                     `json:"followUpRequestId,omitempty"`
-	FollowUpItemID      string                     `json:"followUpItemId,omitempty"`
-	CreatedAt           time.Time                  `json:"createdAt"`
-	UpdatedAt           time.Time                  `json:"updatedAt"`
-}
-
-// FactoryRevisionCommand is one plan-revision command's structured payload.
-//
-// A candidate is named by its exact bytes and the hash that binds them, and
-// every mutation names the proposal and the version the caller read, so a
-// stale command conflicts instead of silently rebasing. BaseRevision and
-// BaseHash name the approved revision the candidate was written against.
-type FactoryRevisionCommand struct {
-	ProposalID      string                     `json:"proposalId,omitempty"`
-	ProposalVersion uint64                     `json:"proposalVersion,omitempty"`
-	BaseRevision    uint64                     `json:"baseRevision,omitempty"`
-	BaseHash        string                     `json:"baseHash,omitempty"`
-	Plan            string                     `json:"plan,omitempty"`
-	Spec            string                     `json:"spec,omitempty"`
-	CandidateHash   string                     `json:"candidateHash,omitempty"`
-	AttemptID       string                     `json:"attemptId,omitempty"`
-	Assessment      *FactoryRevisionAssessment `json:"assessment,omitempty"`
-	Routing         string                     `json:"routing,omitempty"`
-	Strategy        string                     `json:"strategy,omitempty"`
-	FollowUp        *FactoryCreate             `json:"followUp,omitempty"`
-}
+// The plan-revision types are contract types (F6 decision 1); the bridge
+// aliases them here so its code and the journal's bytes are unchanged.
+type (
+	// FactoryRevisionAssessment is contract.FactoryRevisionAssessment.
+	FactoryRevisionAssessment = contract.FactoryRevisionAssessment
+	// FactoryRevisionDelivery is contract.FactoryRevisionDelivery.
+	FactoryRevisionDelivery = contract.FactoryRevisionDelivery
+	// FactoryRevisionProposal is contract.FactoryRevisionProposal.
+	FactoryRevisionProposal = contract.FactoryRevisionProposal
+	// FactoryRevisionCommand is contract.FactoryRevisionCommand.
+	FactoryRevisionCommand = contract.FactoryRevisionCommand
+)
 
 // factoryRevisionProposalStates are the proposal lifecycle states.
 var factoryRevisionProposalStates = map[string]bool{

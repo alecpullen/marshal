@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     ended_at TEXT,
     summary TEXT,
     leaf_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    branch_emptied INTEGER NOT NULL DEFAULT 0,
     active_root TEXT,
     worktree_branch TEXT,
     worktree_target_branch TEXT,
@@ -312,6 +313,7 @@ func init() {
 	migrations = append(migrations, migrateScratchpadEntries)
 	migrations = append(migrations, migrateMemoryContentHash)
 	migrations = append(migrations, migrateMemoryScopes)
+	migrations = append(migrations, migrateMessageImages)
 }
 
 // migrateMemoryScopes (version 3) adds scope, owner and provenance columns
@@ -338,6 +340,21 @@ func migrateMemoryScopes(tx *sql.Tx) error {
 		}
 	}
 	_, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope, scope_key)`)
+	return err
+}
+
+// migrateMessageImages (version 4) adds images_json to messages: the JSON
+// array of image refs a message carried. The default ” parses to no images,
+// which is what every existing row holds.
+func migrateMessageImages(tx *sql.Tx) error {
+	var has int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'images_json'`).Scan(&has); err != nil {
+		return err
+	}
+	if has > 0 {
+		return nil
+	}
+	_, err := tx.Exec(`ALTER TABLE messages ADD COLUMN images_json TEXT NOT NULL DEFAULT ''`)
 	return err
 }
 

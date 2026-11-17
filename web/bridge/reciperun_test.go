@@ -461,7 +461,7 @@ func TestWorkspaceLoadsV10AndSavesV11(t *testing.T) {
 	if err := json.Unmarshal(data, &disk); err != nil {
 		t.Fatal(err)
 	}
-	if disk.Version != 11 || len(disk.Schedules) != 1 || disk.Agents[0].Recipe != "review-pr" {
+	if disk.Version != workspaceVersion || len(disk.Schedules) != 1 || disk.Agents[0].Recipe != "review-pr" {
 		t.Fatalf("saved = %s", data)
 	}
 	// And it reloads.

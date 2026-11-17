@@ -67,6 +67,11 @@ type config struct {
 	// Empty means the --addr host on an automatic port; "off" disables.
 	previewAddr string
 	token       string
+	// tokenFile is where the bearer token is read from, and written to
+	// when the file does not exist yet. It is how a local daemon hands
+	// the Studio its token without putting the secret on a command line
+	// or asking the user to paste it.
+	tokenFile   string
 	marshalBin  string
 	cwdRoot     string
 	projects    []string
@@ -123,6 +128,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	addr := fs.String("addr", envOr("WEBBRIDGE_ADDR", "127.0.0.1:7700"), "listen address")
 	previewAddr := fs.String("preview-addr", envOr("WEBBRIDGE_PREVIEW_ADDR", ""), "listen address for previews, served from a separate origin (default: the --addr host on a free port; \"off\" disables)")
 	token := fs.String("token", envOr("WEBBRIDGE_TOKEN", ""), "bearer token for /api routes (generated when empty)")
+	tokenFile := fs.String("token-file", envOr("WEBBRIDGE_TOKEN_FILE", ""), "file to read the bearer token from, and create it 0600 when absent (--profile local)")
 	marshalBin := fs.String("marshal-bin", envOr("WEBBRIDGE_MARSHAL_BIN", "marshal"), "marshal binary to supervise")
 	cwdRoot := fs.String("cwd-root", envOr("WEBBRIDGE_CWD_ROOT", ""), "default cwd for session list/load (defaults to the working directory)")
 	var projects stringList
@@ -170,7 +176,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{profile: *profile, socket: *socket, addr: *addr, previewAddr: *previewAddr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
+	cfg := config{profile: *profile, socket: *socket, addr: *addr, previewAddr: *previewAddr, token: *token, tokenFile: *tokenFile, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
 		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL,
 		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh}
@@ -298,6 +304,9 @@ func applyProfile(cfg *config, given givenSettings) error {
 	// the rule the rest of this function follows.
 	if cfg.addr == "off" && given.set("token", "WEBBRIDGE_TOKEN", cfg.token) {
 		return fmt.Errorf("--token is for the TCP listener, and --addr off opens none")
+	}
+	if cfg.addr == "off" && given.set("token-file", "WEBBRIDGE_TOKEN_FILE", cfg.tokenFile) {
+		return fmt.Errorf("--token-file is for the TCP listener, and --addr off opens none")
 	}
 	if cfg.idleSessionTimeout < 0 {
 		return fmt.Errorf("--idle-session-timeout %s: the local profile waits a negative time for an idle session", cfg.idleSessionTimeout)
@@ -443,6 +452,36 @@ func genToken() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+// readOrCreateToken returns the token held in path, creating the file with a
+// fresh token when it is missing or empty.
+//
+// This is how the local profile hands the Studio its token: the daemon reads
+// or mints the file once at startup and the browser is pointed at a URL
+// carrying the same value, so the secret is never typed, never on a command
+// line a process list would show, and never in the log. The file is written
+// 0600 because it is a credential: anything that can read it can drive the
+// daemon.
+func readOrCreateToken(path string) (string, error) {
+	if data, err := os.ReadFile(path); err == nil {
+		if tok := strings.TrimSpace(string(data)); tok != "" {
+			return tok, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	tok, err := genToken()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(tok+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("write %s: %w", path, err)
+	}
+	return tok, nil
+}
+
 func main() {
 	// Drop libmalloc's debugging knobs before any child is spawned. The
 	// bridge hands os.Environ() to every `marshal acp` child it supervises
@@ -496,6 +535,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// --addr off means the local socket is the only listener, and the
 	// socket is peer-checked rather than token-checked: there is no
 	// bearer token to generate.
+	//
+	// --token-file is how the local profile hands the Studio its token.
+	// It is read when present and minted when absent, so a restarted
+	// daemon keeps one token and an open Studio tab keeps working. The
+	// token stays out of the log either way.
+	if cfg.token == "" && cfg.tokenFile != "" && cfg.addr != "off" {
+		cfg.token, err = readOrCreateToken(cfg.tokenFile)
+		if err != nil {
+			return err
+		}
+	}
 	if cfg.token == "" && cfg.addr != "off" {
 		cfg.token, err = genToken()
 		if err != nil {
@@ -644,6 +694,55 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// parks its answer here rather than dropping it.
 	serveErr := make(chan error, 2)
 
+	// The Studio listener is bound before the socket starts serving, so
+	// GET /api/daemon can report what the bind did. A port that cannot be
+	// bound is a failure the launcher can name, not a page that silently
+	// fails to load.
+	//
+	// --addr off leaves the socket as the only listener: no TCP, no
+	// previews, no token. The scheme and the TCP listener exist only
+	// when one is opened.
+	var srv *http.Server
+	var ln net.Listener
+	scheme := "http"
+	if cfg.tlsCert != "" {
+		scheme = "https"
+	}
+	var studioAddr, studioErr string
+	if cfg.addr != "off" {
+		ln, err = net.Listen("tcp", cfg.addr)
+		if err != nil {
+			if cfg.profile == "local" {
+				// The socket is the local daemon's real interface: the
+				// TUI, `marshal fleet` and every session live there. A
+				// busy Studio port costs the browser tab, not the
+				// daemon, so the socket carries on — but the failure is
+				// logged at error level and recorded for /api/daemon, so
+				// `marshal studio` repeats the real cause instead of
+				// "nothing is serving".
+				studioErr = err.Error()
+				slog.Default().Error("webbridge: studio listener unavailable", "addr", cfg.addr, "err", err)
+				ln = nil
+			} else {
+				// Stop escalates SIGTERM→SIGKILL over stopGrace, so a stubborn
+				// child delays the error return slightly; correct cleanup beats
+				// a faster failure here.
+				shutdownFactory()
+				fleet.Close()
+				return fmt.Errorf("listen %s: %w", cfg.addr, err)
+			}
+		}
+		if ln != nil {
+			studioAddr = ln.Addr().String()
+			srv = &http.Server{
+				Addr:              cfg.addr,
+				Handler:           api,
+				ReadHeaderTimeout: 10 * time.Second,
+			}
+			fmt.Fprintf(stderr, "webbridge: listening on %s://%s (%d project(s))\n", scheme, studioAddr, len(ws.Projects()))
+		}
+	}
+
 	// The local profile listens on a unix socket of the user's own: the
 	// same routes as ServeHTTP without the bearer check, peer-checked
 	// instead, so a client on the same account drives it without a
@@ -651,11 +750,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var socketSrv *http.Server
 	if cfg.profile == "local" {
 		api.SetDaemonInfo(bridge.DaemonInfo{
-			Version:   daemonVersion(),
-			Profile:   "local",
-			PID:       os.Getpid(),
-			StartedAt: startedAt.UnixMilli(),
-			Socket:    cfg.socket,
+			Version:     daemonVersion(),
+			Profile:     "local",
+			PID:         os.Getpid(),
+			StartedAt:   startedAt.UnixMilli(),
+			Socket:      cfg.socket,
+			StudioAddr:  studioAddr,
+			StudioError: studioErr,
 		})
 		if cfg.oauthRefresh {
 			// The refresh helper (P4 D12): `<marshal-bin> daemon refresh`
@@ -703,40 +804,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stderr, "webbridge: listening on unix://%s\n", cfg.socket)
 	}
 
-	// --addr off leaves the socket as the only listener: no TCP, no
-	// previews, no token. The scheme and the TCP listener exist only
-	// when one is opened.
-	var srv *http.Server
-	var ln net.Listener
-	scheme := "http"
-	if cfg.tlsCert != "" {
-		scheme = "https"
-	}
-	if cfg.addr != "off" {
-		srv = &http.Server{
-			Addr:              cfg.addr,
-			Handler:           api,
-			ReadHeaderTimeout: 10 * time.Second,
-		}
-		ln, err = net.Listen("tcp", cfg.addr)
-		if err != nil {
-			// Stop escalates SIGTERM→SIGKILL over stopGrace, so a stubborn
-			// child delays the error return slightly; correct cleanup beats
-			// a faster failure here.
-			if socketSrv != nil {
-				_ = socketSrv.Close()
-			}
-			shutdownFactory()
-			fleet.Close()
-			return fmt.Errorf("listen %s: %w", cfg.addr, err)
-		}
-		fmt.Fprintf(stderr, "webbridge: listening on %s://%s (%d project(s))\n", scheme, ln.Addr(), len(ws.Projects()))
-	}
-
 	// Previews get a listener, and so an origin, of their own: a page the
 	// agent serves must not share storage with the UI that holds the token.
+	// They ride with the Studio listener: without it there is no page to
+	// show them in, so a failed bind above opens none.
 	var previewSrv *http.Server
-	if cfg.addr != "off" && cfg.previewAddr != "off" {
+	if srv != nil && cfg.previewAddr != "off" {
 		pln, perr := listenPreview(cfg.addr, cfg.previewAddr)
 		if perr != nil {
 			slog.Default().Warn("webbridge: previews unavailable", "err", perr)

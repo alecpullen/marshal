@@ -1,0 +1,20 @@
+{
+  "NotifyWebhook": {
+    "id": "wh-1",
+    "url": "https://hooks.example.com/marshal",
+    "secretRef": "vault:notify/signing",
+    "events": ["needs_you", "run_finished"]
+  },
+  "NotifyConfig": {
+    "webhooks": [
+      {
+        "id": "wh-1",
+        "url": "https://hooks.example.com/marshal",
+        "events": ["needs_you"]
+      }
+    ]
+  },
+  "NotifyTestResult": {
+    "sent": 1
+  }
+}

@@ -199,7 +199,7 @@ func (t *toolSet) runManagedCommand(ctx context.Context, toolName, callID, comma
 // value captured at construction.
 func (t *toolSet) configuredTestCommand() string {
 	if state := t.sessionState; state != nil {
-		cfg, _, _ := state.PolicySnapshot()
+		cfg, _, _, _ := state.PolicySnapshot()
 		if command := strings.TrimSpace(cfg.Commands.Test); command != "" {
 			return command
 		}

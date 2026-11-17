@@ -149,6 +149,14 @@ func TestSSEHeartbeat(t *testing.T) {
 	_, rd, cancel := startSSE(t, l, "/api/events?sessionId=s1")
 	defer cancel()
 
+	// The connect line comes first, then the heartbeat's own comment.
+	if line, err := rd.ReadString('\n'); err != nil || line != ": connected\n" {
+		t.Fatalf("first line = %q (err %v), want the connect line", line, err)
+	}
+	if line, err := rd.ReadString('\n'); err != nil || line != "\n" {
+		t.Fatalf("second line = %q (err %v), want the connect frame's blank line", line, err)
+	}
+
 	deadline := time.After(2 * time.Second)
 	got := make(chan string, 1)
 	go func() {
@@ -166,6 +174,25 @@ func TestSSEHeartbeat(t *testing.T) {
 		}
 	case <-deadline:
 		t.Fatal("no heartbeat within 2s")
+	}
+}
+
+// TestSSEAnnouncesItselfOnConnect pins the comment line a client reads as
+// contact. Without it a fresh stream is silent until its first heartbeat
+// (25s), and a client that counts lines as contact calls the host unreachable
+// meanwhile (app/lib/src/client/event_stream.dart).
+func TestSSEAnnouncesItselfOnConnect(t *testing.T) {
+	l := NewEventLog()
+	l.HeartbeatInterval = time.Hour
+	_, rd, cancel := startSSE(t, l, "/api/events?sessionId=s1")
+	defer cancel()
+
+	line, err := rd.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read connect line: %v", err)
+	}
+	if line != ": connected\n" {
+		t.Fatalf("first line = %q, want %q", line, ": connected\n")
 	}
 }
 

@@ -1616,13 +1616,23 @@ func (m *TurnManager) buildTelemetry(sessionID string, state *session.State, usa
 	if rules == nil {
 		rules = []string{}
 	}
+	perms := state.SessionPermissionRules()
+	permissionRules := make([]map[string]any, 0, len(perms))
+	for _, g := range perms {
+		permissionRules = append(permissionRules, map[string]any{
+			"permission": g.Permission,
+			"pattern":    g.Pattern,
+			"scope":      "session",
+		})
+	}
 	out := map[string]any{
-		"kind":          "session_telemetry",
-		"context":       buildTelemetryContext(state),
-		"changedFiles":  m.buildChangedFiles(sessionID, state),
-		"toolStats":     buildToolStats(state.AuditLog()),
-		"rules":         rules,
-		"sessionFooter": buildSessionFooter(state),
+		"kind":            "session_telemetry",
+		"context":         buildTelemetryContext(state),
+		"changedFiles":    m.buildChangedFiles(sessionID, state),
+		"toolStats":       buildToolStats(state.AuditLog()),
+		"rules":           rules,
+		"permissionRules": permissionRules,
+		"sessionFooter":   buildSessionFooter(state),
 	}
 	if usage := m.newUsageRows(sessionID, usageDB, projectID); usage != nil {
 		out["usage"] = usage

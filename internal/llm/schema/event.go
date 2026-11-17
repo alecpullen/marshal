@@ -10,6 +10,17 @@ const (
 	ChatEventDelta ChatEventType = "delta"
 	ChatEventDone  ChatEventType = "done"
 	ChatEventError ChatEventType = "error"
+
+	// ChatEventInterrupted marks a stream that ended before the provider's
+	// protocol announced completion: the adapter saw EOF without its
+	// terminal marker ([DONE] / finish_reason, message_stop / stop_reason,
+	// response.completed, response.incomplete, done:true). The partial text
+	// that arrived before the cut is real output and is kept, but the
+	// stream is not a completed answer: the event carries Err and never
+	// carries ToolCalls, so a truncated tool call cannot be repaired into
+	// apparent completeness. A read error mid-body is still ChatEventError,
+	// not this.
+	ChatEventInterrupted ChatEventType = "interrupted"
 )
 
 // DeltaKind distinguishes the model's free-form reasoning/thinking narration

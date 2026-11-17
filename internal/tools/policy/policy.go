@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/permissions"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/patch"
@@ -25,6 +26,10 @@ const (
 type PolicyEngine struct {
 	config       *config.Config
 	sessionRules []string
+	// sessionPerms are session-scoped permission grants: an approval answer of
+	// "session" adds one. They can only lift a confirm to an allow, never
+	// override a configured deny.
+	sessionPerms []session.PermissionGrant
 	rules        []permissions.Rule
 	mu           sync.RWMutex
 	logger       *slog.Logger
@@ -66,6 +71,17 @@ func (pe *PolicyEngine) SetSessionRules(rules []string) {
 	pe.sessionRules = rules
 }
 
+// SetSessionPermissions seeds grants for an engine with no config source.
+// With a source installed, the source wins.
+func (pe *PolicyEngine) SetSessionPermissions(grants []session.PermissionGrant) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	// Copy, as Clone does: a caller that keeps mutating its own slice must not
+	// be able to change the engine's grants behind an evaluation.
+	pe.sessionPerms = make([]session.PermissionGrant, len(grants))
+	copy(pe.sessionPerms, grants)
+}
+
 // SetRules replaces the engine's F4 permission rules. Safe for concurrent use.
 func (pe *PolicyEngine) SetRules(rules []permissions.Rule) {
 	pe.mu.Lock()
@@ -89,8 +105,9 @@ func (pe *PolicyEngine) SetLogger(l *slog.Logger) {
 }
 
 // Clone returns an independent copy of the engine: same config, rules,
-// session rules, registry and logger, but with its own lock, so later
-// mutations (SetRules, …) on either engine do not leak into the other.
+// session rules and session permission grants, registry and logger, but with
+// its own lock, so later mutations (SetRules, …) on either engine do not leak
+// into the other.
 func (pe *PolicyEngine) Clone() *PolicyEngine {
 	pe.mu.RLock()
 	defer pe.mu.RUnlock()
@@ -98,9 +115,12 @@ func (pe *PolicyEngine) Clone() *PolicyEngine {
 	copy(rules, pe.rules)
 	sessionRules := make([]string, len(pe.sessionRules))
 	copy(sessionRules, pe.sessionRules)
+	sessionPerms := make([]session.PermissionGrant, len(pe.sessionPerms))
+	copy(sessionPerms, pe.sessionPerms)
 	return &PolicyEngine{
 		config:       pe.config,
 		sessionRules: sessionRules,
+		sessionPerms: sessionPerms,
 		rules:        rules,
 		logger:       pe.logger,
 		registry:     pe.registry,
@@ -200,10 +220,12 @@ func evaluateMCP(cfg *config.Config, rules []permissions.Rule, toolName string, 
 		}
 	}
 
-	// 3. F4 rules — can override allow/confirm from MCP policies.
+	// 3. F4 rules — can override allow/confirm from MCP policies. Session
+	// grants do not reach MCP tools: an MCP tool's subject is its own name,
+	// which a capture-style grant never covers.
 	subjects := subjectsForTool(toolName, args, "")
 	if len(subjects) > 0 {
-		decision, matched := evaluateSubjects(rules, permissions.PermissionForTool(toolName), subjects)
+		decision, matched := evaluateSubjects(rules, nil, permissions.PermissionForTool(toolName), subjects)
 		if matched {
 			return decision, "resolved by permission rule", true
 		}
@@ -336,36 +358,53 @@ func subjectsForTool(toolName string, args map[string]interface{}, normCmd strin
 			return []string{path}
 		}
 		return nil
+	case "image.capture":
+		target := "active_window"
+		if m, ok := args["target"].(string); ok && m != "" {
+			target = m
+		}
+		return []string{target}
 	default:
 		return []string{toolName}
 	}
 }
 
-func evaluateSubjects(rules []permissions.Rule, permissionName string, subjects []string) (Decision, bool) {
-	var matched bool
-	var result Decision
-
+func evaluateSubjects(rules []permissions.Rule, grants []session.PermissionGrant, permissionName string, subjects []string) (Decision, bool) {
+	var matched, confirm bool
 	for _, subject := range subjects {
 		action, found := permissions.Evaluate(rules, permissionName, subject)
-		if !found {
-			continue
-		}
-		matched = true
-		// Most restrictive wins: deny > confirm/ask > allow
-		if action == permissions.ActionDeny {
+		granted := grantAllows(grants, permissionName, subject)
+		switch {
+		case found && action == permissions.ActionDeny:
 			return DecisionDeny, true
-		}
-		if action == permissions.ActionAsk && result != DecisionDeny {
-			result = DecisionConfirm
-		} else if action == permissions.ActionAllow && result == "" {
-			result = DecisionAllow
+		case found && action == permissions.ActionAllow:
+			matched = true
+		case found && action == permissions.ActionAsk && granted:
+			matched = true
+		case found && action == permissions.ActionAsk:
+			matched, confirm = true, true
+		case granted:
+			matched = true
 		}
 	}
 	if !matched {
 		return "", false
 	}
-	if result == "" {
-		result = DecisionConfirm
+	// Most restrictive wins: deny > ask > allow, so a subject that still needs
+	// a prompt is not outvoted by a sibling that does not.
+	if confirm {
+		return DecisionConfirm, true
 	}
-	return result, true
+	return DecisionAllow, true
+}
+
+// grantAllows reports whether a session grant covers this permission and
+// subject. A grant only ever lifts an ask, so it never overrides a deny.
+func grantAllows(grants []session.PermissionGrant, permissionName, subject string) bool {
+	for _, g := range grants {
+		if permissions.PermissionMatches(g.Permission, permissionName) && permissions.Matches(g.Pattern, subject) {
+			return true
+		}
+	}
+	return false
 }

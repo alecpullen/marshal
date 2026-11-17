@@ -1107,3 +1107,54 @@ func TestRemoteRefusesANonHTTPScheme(t *testing.T) {
 		}
 	}
 }
+
+// TestTheAttachmentReadsTheEnvWarning: the 101 carries the project child's
+// environment warning in a header of its own, and an answer without one leaves
+// the attachment's field empty (P6 T3).
+func TestTheAttachmentReadsTheEnvWarning(t *testing.T) {
+	const warning = "the login shell exited with status 2"
+
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{
+			name:   "carries it",
+			header: envWarningHeader + ": " + warning + "\r\n",
+			want:   warning,
+		},
+		{
+			name:   "none",
+			header: "",
+			want:   "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			socket := attachStub(t, func(conn net.Conn, req *http.Request) {
+				_ = req.Body.Close()
+				head := "HTTP/1.1 101 Switching Protocols\r\n" +
+					"Connection: Upgrade\r\n" +
+					"Upgrade: " + attachProtocol + "\r\n" +
+					sessionHeader + ": sess-1\r\n" +
+					tc.header + "\r\n"
+				if _, err := io.WriteString(conn, head); err != nil {
+					t.Errorf("stub write: %v", err)
+				}
+			})
+
+			att, err := NewClient(socket).Attach(context.Background(), "/work/root", "sess-1")
+			if err != nil {
+				t.Fatalf("Attach(): %v", err)
+			}
+			defer att.Conn.Close()
+
+			if att.SessionID != "sess-1" {
+				t.Errorf("SessionID = %q, want sess-1", att.SessionID)
+			}
+			if att.EnvWarning != tc.want {
+				t.Fatalf("EnvWarning = %q, want %q", att.EnvWarning, tc.want)
+			}
+		})
+	}
+}

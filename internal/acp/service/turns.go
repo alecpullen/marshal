@@ -9,12 +9,20 @@ import (
 	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/schema"
 	"marshal/internal/watch"
 )
 
 // Runner runs one turn of the agent loop. *agent.Runner satisfies it.
 type Runner interface {
 	Run(ctx context.Context, goal string) error
+}
+
+// imageRunner is the optional image-carrying run. A runner that does not
+// implement it refuses a prompt carrying images, rather than silently
+// dropping them.
+type imageRunner interface {
+	RunWithImages(ctx context.Context, goal string, images []schema.ImageRef) error
 }
 
 // turnSlot is the run a session has in flight. Its fields are guarded by
@@ -77,16 +85,31 @@ func (s *Session) Prompt(ctx context.Context, params acpwire.PromptParams) (acpw
 		s.requeue(params)
 		return acpwire.PromptResult{}, errNoRunner
 	}
+	// A prompt's images are resolved before the turn starts: a ref the store
+	// does not hold, or a session with no store, fails here rather than
+	// mid-turn.
+	images, err := s.promptImages(ctx, params.Images)
+	if err != nil {
+		return acpwire.PromptResult{}, err
+	}
 	text := params.Text
 	if params.WatchResume != nil {
 		text = watch.ResumeGoal(params.WatchResume.Name, s.lastAssistantText(), params.WatchResume.Repeat)
 	}
+	work := func(ctx context.Context) error { return runner.Run(ctx, text) }
+	if len(images) > 0 {
+		// The runner must be able to carry them: a run that cannot would drop
+		// the images and answer about text the user did not send alone.
+		ir, ok := runner.(imageRunner)
+		if !ok {
+			return acpwire.PromptResult{}, errImageRunner
+		}
+		work = func(ctx context.Context) error { return ir.RunWithImages(ctx, text, images) }
+	}
 	stopped, _, err := s.runTurn(ctx, runSpec{
 		kind:   acpwire.RunTurn,
 		detach: true,
-		work: func(ctx context.Context) error {
-			return runner.Run(ctx, text)
-		},
+		work:   work,
 		// The queue is the caller's, not the run's: a turn a stop skipped
 		// before its work began never consumed the text, so it goes back even
 		// when the caller is no longer there to ask for it.
@@ -97,6 +120,13 @@ func (s *Session) Prompt(ctx context.Context, params acpwire.PromptParams) (acpw
 		},
 	})
 	if err != nil {
+		// A vision refusal is the route's answer, not a turn that could not
+		// start: the text is still the user's, and resending it would fail
+		// identically, so it stays off the steering queue.
+		var ve *schema.VisionError
+		if errors.As(err, &ve) {
+			return acpwire.PromptResult{}, &acpwire.Error{Code: acpwire.CodeVisionUnsupported, Message: ve.Detail}
+		}
 		// A refusal never reached the run, so its put-back stays here.
 		if code, ok := acpclient.CodeOf(err); ok && (code == acpwire.CodeBusy || code == acpwire.CodeQuiescing) {
 			s.requeue(params)
@@ -532,4 +562,28 @@ func (s *Session) requeue(params acpwire.PromptParams) {
 	if params.Queued {
 		s.state.PushSteering(params.Text)
 	}
+}
+
+// SteerSubagent delivers a user's instruction to one of this session's live
+// children, at most once per request ID. The child is resolved through the
+// session's own subagent registry, so a request that names another session's
+// child cannot reach it.
+//
+// The status is accepted, not delivered: the child's queue took the
+// instruction, and the model reads it at the child's next step. A child that
+// settles first never does, and the receipt says so honestly.
+func (s *Session) SteerSubagent(ctx context.Context, params acpwire.SubagentSteerParams) (acpwire.SubagentSteerResult, error) {
+	if s.closed.Load() {
+		return acpwire.SubagentSteerResult{}, errSessionClosed
+	}
+	if params.SessionID != "" && params.SessionID != s.state.SessionID() {
+		return acpwire.SubagentSteerResult{}, fmt.Errorf("inproc: request names session %s, not this session %s", params.SessionID, s.state.SessionID())
+	}
+	if err := s.state.SteerSubagent(params.RequestID, params.SubagentID, params.Message); err != nil {
+		return acpwire.SubagentSteerResult{}, err
+	}
+	return acpwire.SubagentSteerResult{
+		RequestID: strings.TrimSpace(params.RequestID),
+		Status:    acpwire.SubagentSteerStatusAccepted,
+	}, nil
 }

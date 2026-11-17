@@ -60,10 +60,13 @@ func (ix *Indexer) Reindex(ctx context.Context, projectID int64, scanned []repo.
 	seen := map[string]bool{}
 	var items []workItem
 	for _, sf := range scanned {
+		// The path was present in the scan even if its content could not be
+		// read: mark it seen before skipping, so a transient read error does
+		// not make the purge pass below treat the file as deleted (AUD-11).
+		seen[sf.Path] = true
 		if sf.ReadErr != nil {
 			continue
 		}
-		seen[sf.Path] = true
 		prev, ok := state[sf.Path]
 		if ok && prev.FileHash == sf.Hash && prev.Model == model {
 			st.FilesSkipped++

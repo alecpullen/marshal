@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"marshal/internal/imagepayload"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/trust"
@@ -24,6 +25,7 @@ type Config struct {
 	Tools         ToolsConfig                           `toml:"tools"`
 	Web           WebConfig                             `toml:"web"`
 	Desktop       DesktopConfig                         `toml:"desktop"`
+	Capture       CaptureConfig                         `toml:"capture"`
 	Daemon        DaemonConfig                          `toml:"daemon"`
 	Swarm         SwarmConfig                           `toml:"swarm"`
 	SDD           SDDConfig                             `toml:"sdd"`
@@ -43,6 +45,7 @@ type Config struct {
 	LSP           LSPConfig                             `toml:"lsp"`
 	Scratchpad    ScratchpadConfig                      `toml:"scratchpad"`
 	Budgets       BudgetsConfig                         `toml:"budgets"`
+	Images        ImagesConfig                          `toml:"images"`
 	// SessionRouting is a per-session routing choice supplied by the host
 	// (ACP session/new). It is never read from or written to a config file.
 	SessionRouting SessionRouting `toml:"-"`
@@ -436,6 +439,11 @@ type DaemonConfig struct {
 	// IdleSessionTimeout ends a daemon session with no viewer and no run
 	// after this long; zero never ends one. Default 30m.
 	IdleSessionTimeout time.Duration `toml:"idle_session_timeout"`
+	// StudioAddr is the loopback address the daemon serves the web Studio
+	// on, so the browser drives this daemon's own agents instead of a
+	// separate container fleet. Empty or "off" serves none. Default
+	// 127.0.0.1:7788.
+	StudioAddr string `toml:"studio_addr"`
 }
 
 type DesktopConfig struct {
@@ -447,6 +455,14 @@ type DesktopConfig struct {
 	URLDenylist      []string      `toml:"url_denylist"`
 	DefaultTimeout   time.Duration `toml:"default_timeout"`
 	ScreenshotFormat string        `toml:"screenshot_format"`
+}
+
+// CaptureConfig is the desktop-capture surface. Off by default: a process that
+// can photograph the screen is opt-in, never assumed.
+type CaptureConfig struct {
+	Enabled bool          `toml:"enabled"`
+	Backend string        `toml:"backend"` // "" = detect; "sway" | "hyprland" | "darwin"
+	Timeout time.Duration `toml:"timeout"`
 }
 
 type ShellToolConfig struct {
@@ -577,7 +593,7 @@ type AgentConfig struct {
 	SubtaskIterations int `toml:"subtask_iterations"`
 	// MaxConcurrentSubagents caps parallel agent.run children per session.
 	// 0 (or negative) = built-in default (3, aligned with the default swarm
-	// scout count); values above 8 clamp to 8 at the session seam.
+	// scout count); values above 10 clamp to 10 at the session seam.
 	MaxConcurrentSubagents int `toml:"max_concurrent_subagents"`
 	// Mode is the canonical interaction mode: "ask" or "act".
 	Mode interaction.Mode `toml:"mode"`
@@ -670,6 +686,67 @@ type SkillsConfig struct {
 	// their window loading skills they do not need; raise it or set 0 to
 	// opt out.
 	LoadGateThresholdTokens int `toml:"load_gate_threshold_tokens"`
+}
+
+// ImagesConfig bounds what the image store accepts and keeps. It mirrors
+// imagepayload.Config field for field.
+type ImagesConfig struct {
+	MaxInputBytes   int64 `toml:"max_input_bytes"`
+	MaxStoredBytes  int   `toml:"max_stored_bytes"`
+	MaxEdge         int   `toml:"max_edge"`
+	JPEGQuality     int   `toml:"jpeg_quality"`
+	MaxPerMessage   int   `toml:"max_per_message"`
+	MaxRequestBytes int64 `toml:"max_request_bytes"`
+	MaxStoreBytes   int64 `toml:"max_store_bytes"`
+	RetainDays      int   `toml:"retain_days"`
+}
+
+// Normalize replaces zero or negative values with the defaults, so a config
+// that sets nothing (or a nonsense value) degrades to the default rather than
+// disabling a limit. Written back to the receiving Config by Default/merge.
+func (c ImagesConfig) Normalize() ImagesConfig {
+	def := Default().Images
+	if c.MaxInputBytes <= 0 {
+		c.MaxInputBytes = def.MaxInputBytes
+	}
+	if c.MaxStoredBytes <= 0 {
+		c.MaxStoredBytes = def.MaxStoredBytes
+	}
+	if c.MaxEdge <= 0 {
+		c.MaxEdge = def.MaxEdge
+	}
+	if c.JPEGQuality <= 0 {
+		c.JPEGQuality = def.JPEGQuality
+	}
+	if c.MaxPerMessage <= 0 {
+		c.MaxPerMessage = def.MaxPerMessage
+	}
+	if c.MaxRequestBytes <= 0 {
+		c.MaxRequestBytes = def.MaxRequestBytes
+	}
+	if c.MaxStoreBytes <= 0 {
+		c.MaxStoreBytes = def.MaxStoreBytes
+	}
+	if c.RetainDays <= 0 {
+		c.RetainDays = def.RetainDays
+	}
+	return c
+}
+
+// PayloadConfig converts to the store's own config type. config importing
+// imagepayload is safe: imagepayload imports only internal/llm/schema and the
+// standard library.
+func (c ImagesConfig) PayloadConfig() imagepayload.Config {
+	return imagepayload.Config{
+		MaxInputBytes:   c.MaxInputBytes,
+		MaxStoredBytes:  c.MaxStoredBytes,
+		MaxEdge:         c.MaxEdge,
+		JPEGQuality:     c.JPEGQuality,
+		MaxPerMessage:   c.MaxPerMessage,
+		MaxRequestBytes: c.MaxRequestBytes,
+		MaxStoreBytes:   c.MaxStoreBytes,
+		RetainDays:      c.RetainDays,
+	}
 }
 
 type IndexingConfig struct {

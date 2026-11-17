@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app"
 	"marshal/internal/app/session"
@@ -93,6 +94,12 @@ type agentHost struct {
 
 	holds *projectHolds // nil when runConfig.hold is nil
 
+	// viewers counts each session's marshal viewers (decision 1): a connection
+	// that subscribes to the session's status adds one, and its cleanup takes
+	// it back. A session with one is on someone's screen, so a wake resumes
+	// nothing by itself.
+	viewers *marshalViewers
+
 	// restrictViewers puts the container allowlist on every viewer this host
 	// serves (decision 4): set from runConfig for a listener beside a
 	// container's --listen.
@@ -138,8 +145,18 @@ func newAgentHost(cfg runConfig) (*agentHost, error) {
 		log:      log,
 		shutdown: cfg.shutdown,
 
+		viewers:         newMarshalViewers(),
 		restrictViewers: cfg.restrictViewers,
 		record:          cfg.record,
+	}
+	if cfg.resumeDetached {
+		// A host that serves viewers has no connection bound to a session's
+		// turns, so each session's service binds its own wake (decision 2):
+		// the binding is made where the service is built, so it follows every
+		// session this host builds.
+		manager.detachedResume = func(rt *app.Runtime, sessionID string, sess *service.Session) {
+			bindDetachedResume(rt, sess, sessionID, h.viewers)
+		}
 	}
 	if cfg.hold != nil {
 		h.holds = &projectHolds{hold: cfg.hold, held: map[string]func(){}}
@@ -635,6 +652,10 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 		Lookup:  manager.Service,
 		Notify:  notify,
 		Marshal: srv.marshalClient,
+		// A marshal connection subscribing to a session's status is one of its
+		// viewers (decision 1): the wake a viewers host holds back for the
+		// screen knows when that screen is there.
+		Viewers: h.viewers,
 	})
 	registerStatus(srv, statuses)
 
@@ -932,6 +953,12 @@ func (h *agentHost) serveConnWith(ctx context.Context, stdin io.Reader, stdout i
 	defer cleanup()
 	h.sink.Set(srv.Notify)
 	defer h.sink.Clear()
+	// A connection's watch-resume binding is gated on this connection's
+	// liveness, so its death leaves the hook inert. On a host that serves
+	// viewers the session's own binding goes back (review A1), or a driver
+	// connection cycle would silence every later detached wake. Declared
+	// before the liveness defer, so it runs after it.
+	defer h.manager.RebindDetachedResume()
 	defer alive.Store(false)
 	return srv.Serve(ctx)
 }

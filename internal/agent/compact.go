@@ -3,6 +3,7 @@ package agent
 import (
 	"unicode/utf8"
 
+	"marshal/internal/imagepayload"
 	"marshal/internal/llm/schema"
 )
 
@@ -26,6 +27,9 @@ func estimateTokens(messages []schema.ChatMessage) int {
 			for _, it := range m.Reasoning.Items {
 				runes += len(it.Data)
 			}
+		}
+		for _, img := range m.Images {
+			runes += imagepayload.EstimateTokens(img.Width, img.Height) * 4
 		}
 	}
 	return runes / 4

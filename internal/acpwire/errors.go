@@ -33,6 +33,9 @@ const (
 	CodeNoRunner ErrorCode = "no_runner"
 	// CodeNoDatabase means the session has no project database.
 	CodeNoDatabase ErrorCode = "no_database"
+	// CodeVisionUnsupported is the refusal for a prompt that carries images on a
+	// route that cannot take them.
+	CodeVisionUnsupported ErrorCode = "vision_unsupported"
 )
 
 // Error is an agent-side error with a code.

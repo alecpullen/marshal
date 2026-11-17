@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/interaction"
 	"marshal/internal/permissions"
 )
@@ -75,7 +76,7 @@ func TestAdmissionRechecksSymlinkFactsAndConfig(t *testing.T) {
 	cfg := config.Default()
 	pe := NewEngine(&cfg, nil)
 	rev := uint64(1)
-	pe.SetConfigSource(func() (config.Config, []string, uint64) { return cfg, nil, rev })
+	pe.SetConfigSource(func() (config.Config, []string, []session.PermissionGrant, uint64) { return cfg, nil, nil, rev })
 	auth := &fakeAuthority{
 		snap:  interaction.Snapshot{Access: interaction.State{Mode: interaction.ModeAct, Revision: 1}},
 		lease: &fakeLease{},

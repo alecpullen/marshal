@@ -59,9 +59,10 @@ func (s *State) InteractionAuthority() interaction.Authority {
 	return &stateAuthority{actor: s}
 }
 
-// PolicySnapshot returns deep copies of the owner's configuration and session
-// rules together with the access revision, all under one owner transaction.
-func (s *State) PolicySnapshot() (config.Config, []string, uint64) {
+// PolicySnapshot returns deep copies of the owner's configuration, session
+// rules and session permission grants together with the access revision, all
+// under one owner transaction.
+func (s *State) PolicySnapshot() (config.Config, []string, []PermissionGrant, uint64) {
 	owner := s.ownerState()
 	owner.accessMu.Lock()
 	defer owner.accessMu.Unlock()
@@ -69,7 +70,8 @@ func (s *State) PolicySnapshot() (config.Config, []string, uint64) {
 	defer owner.mu.Unlock()
 	cfg := config.Clone(owner.Config)
 	rules := append([]string(nil), owner.sessionRules...)
-	return cfg, rules, owner.access.Revision
+	grants := append([]PermissionGrant(nil), owner.sessionPermissionRules...)
+	return cfg, rules, grants, owner.access.Revision
 }
 
 type stateAuthority struct {

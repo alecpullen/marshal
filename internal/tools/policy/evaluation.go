@@ -5,43 +5,46 @@ import (
 	"strings"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/interaction"
 	"marshal/internal/pathutil"
 	"marshal/internal/permissions"
 )
 
-// snapshot returns the live config, session rules and revision. A configured
-// source wins; otherwise the engine's own fields are used.
-func (pe *PolicyEngine) snapshot() (config.Config, []string, uint64) {
+// snapshot returns the live config, session rules, session permission grants
+// and revision. A configured source wins; otherwise the engine's own fields
+// are used.
+func (pe *PolicyEngine) snapshot() (config.Config, []string, []session.PermissionGrant, uint64) {
 	pe.mu.RLock()
 	src := pe.configSource
 	cfg := pe.config
 	rules := pe.sessionRules
+	grants := pe.sessionPerms
 	pe.mu.RUnlock()
 	if src != nil {
 		return src()
 	}
 	if cfg != nil {
-		return *cfg, rules, 0
+		return *cfg, rules, grants, 0
 	}
-	return config.Config{}, rules, 0
+	return config.Config{}, rules, grants, 0
 }
 
 // EvaluateInput evaluates one tool invocation against the live policy. The
 // actor's revision must match the configuration source revision; a mismatch
 // is a stale evaluation, never an old config under a new grant.
 func (pe *PolicyEngine) EvaluateInput(in Input) (Evaluation, error) {
-	cfg, sessionRules, rev := pe.snapshot()
+	cfg, sessionRules, grants, rev := pe.snapshot()
 	if in.ActorState.Revision != 0 && rev != 0 && in.ActorState.Revision != rev {
 		return Evaluation{}, ErrStalePolicy
 	}
 	if in.Shell == nil {
-		return applyExecutionMode(in.ActorState, pe.evaluateNonShell(in, cfg)), nil
+		return applyExecutionMode(in.ActorState, pe.evaluateNonShell(in, cfg, grants)), nil
 	}
 	pe.mu.RLock()
 	rules := pe.rules
 	pe.mu.RUnlock()
-	return applyExecutionMode(in.ActorState, pe.evaluateShellInput(in, cfg, sessionRules, rules)), nil
+	return applyExecutionMode(in.ActorState, pe.evaluateShellInput(in, cfg, sessionRules, grants, rules)), nil
 }
 
 // Act authorizes the requested work. Only an explicit confirmation rule or a
@@ -76,7 +79,7 @@ func applyExecutionMode(state interaction.State, ev Evaluation) Evaluation {
 // fallback so an explicit ask/deny rule still prompts (or refuses) a tool the
 // registry would otherwise allow, and an explicit allow rule can preauthorize
 // a write the registry would otherwise confirm.
-func (pe *PolicyEngine) evaluateNonShell(in Input, cfg config.Config) Evaluation {
+func (pe *PolicyEngine) evaluateNonShell(in Input, cfg config.Config, grants []session.PermissionGrant) Evaluation {
 	pe.mu.RLock()
 	rules := pe.rules
 	pe.mu.RUnlock()
@@ -122,7 +125,7 @@ func (pe *PolicyEngine) evaluateNonShell(in Input, cfg config.Config) Evaluation
 	// allow cannot mask them.
 	subjects := subjectsForTool(in.ToolName, in.Args, "")
 	if len(subjects) > 0 {
-		if decision, matched := evaluateSubjects(rules, permissions.PermissionForTool(in.ToolName), subjects); matched {
+		if decision, matched := evaluateSubjects(rules, grants, permissions.PermissionForTool(in.ToolName), subjects); matched {
 			code := ReasonExplicitConfirm
 			if decision == DecisionDeny {
 				code = ReasonExplicitDeny
@@ -211,7 +214,7 @@ func (pe *PolicyEngine) toolRisk(name string) string {
 }
 
 // evaluateShell applies the decision matrix to a parsed command.
-func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionRules []string, rules []permissions.Rule) Evaluation {
+func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionRules []string, grants []session.PermissionGrant, rules []permissions.Rule) Evaluation {
 	// A command with statements but no analyzed operations is not a proven
 	// read: it means the walker missed something. Fail closed instead of
 	// allowing it. A command with nothing to run (empty, comments only) stays a
@@ -266,7 +269,7 @@ func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionR
 	var f4Decision Decision
 	var f4Matched bool
 	if len(subjects) > 0 {
-		if decision, matched := evaluateSubjects(rules, permissions.PermissionForTool(in.ToolName), subjects); matched {
+		if decision, matched := evaluateSubjects(rules, grants, permissions.PermissionForTool(in.ToolName), subjects); matched {
 			if decision == DecisionDeny {
 				return Evaluation{Decision: DecisionDeny, Reasons: append(reasons, PolicyReason{Code: ReasonExplicitDeny, Message: "resolved by permission rule"})}
 			}

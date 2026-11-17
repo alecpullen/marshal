@@ -12,11 +12,17 @@ type FakePage struct {
 	FilledInputs     map[string]string
 	SubmittedSel     string
 	ScreenshotCalls  int
+	SettleCalls      int
 	TitleVal         string
 	URLVal           string
 	ReadableTextVal  string
 	Closed           bool
 	NavigateErr      error
+	// LastScreenshotOpts is the most recent ScreenshotOpts the page was asked
+	// for; SetViewportCalls records every in-place resize.
+	LastScreenshotOpts ScreenshotOpts
+	SetViewportCalls   []Viewport
+	SetViewportErr     error
 }
 
 func (p *FakePage) Navigate(ctx context.Context, url string) error {
@@ -76,8 +82,21 @@ func (p *FakePage) Submit(ctx context.Context, selector string) error {
 func (p *FakePage) Screenshot(ctx context.Context, opts ScreenshotOpts) ([]byte, error) {
 	p.mu.Lock()
 	p.ScreenshotCalls++
+	p.SettleCalls++
+	p.LastScreenshotOpts = opts
 	p.mu.Unlock()
 	return []byte("fake-screenshot-metadata"), nil
+}
+
+func (p *FakePage) SetViewport(ctx context.Context, v Viewport) error {
+	p.mu.Lock()
+	p.SetViewportCalls = append(p.SetViewportCalls, v)
+	err := p.SetViewportErr
+	p.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p *FakePage) Close() error {
@@ -91,9 +110,15 @@ type FakeBackend struct {
 	Page     *FakePage
 	ModeVal  string
 	CloseErr error
+	// NewPageCalls counts page creations — how a test sees a recreation — and
+	// NewPageOpts records the options each one was asked for.
+	NewPageCalls int
+	NewPageOpts  []PageOptions
 }
 
-func (b *FakeBackend) NewPage(ctx context.Context) (PageHandle, error) {
+func (b *FakeBackend) NewPage(ctx context.Context, opts PageOptions) (PageHandle, error) {
+	b.NewPageCalls++
+	b.NewPageOpts = append(b.NewPageOpts, opts)
 	if b.Page == nil {
 		b.Page = &FakePage{TitleVal: "Fake Title", URLVal: "https://example.com", ReadableTextVal: "fake page text"}
 	}

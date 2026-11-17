@@ -1,14 +1,18 @@
 package desktop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/png"
 	"strings"
 	"testing"
 	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/imagepayload"
 	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/registry"
 )
@@ -190,6 +194,8 @@ func TestBrowserSubmitExecutes(t *testing.T) {
 	}
 }
 
+// TestBrowserScreenshotReturnsMetadata is the store-absent case: with no
+// image store the capture still happens and the result is metadata only.
 func TestBrowserScreenshotReturnsMetadata(t *testing.T) {
 	reg, _, _ := newTestToolSet(t)
 	tool := toolByName(t, reg, "browser.screenshot")
@@ -200,6 +206,156 @@ func TestBrowserScreenshotReturnsMetadata(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(res.Summary), "screenshot") {
 		t.Errorf("summary = %q", res.Summary)
+	}
+	if !strings.Contains(res.Summary, "(images disabled)") {
+		t.Errorf("summary = %q, want it to say (images disabled)", res.Summary)
+	}
+	if len(res.Images) != 0 {
+		t.Errorf("images = %v, want none without a store", res.Images)
+	}
+}
+
+// realImagePage serves bytes the image store can actually decode; FakePage's
+// fixed payload is not an image. It still records what the tool asked for.
+type realImagePage struct {
+	*browser.FakePage
+	data []byte
+}
+
+func (p *realImagePage) Screenshot(ctx context.Context, opts browser.ScreenshotOpts) ([]byte, error) {
+	p.FakePage.LastScreenshotOpts = opts
+	p.FakePage.ScreenshotCalls++
+	p.FakePage.SettleCalls++
+	return p.data, nil
+}
+
+// imageBackend hands back one preset page, whatever options it is created
+// with, and records them.
+type imageBackend struct {
+	page browser.PageHandle
+	opts []browser.PageOptions
+}
+
+func (b *imageBackend) NewPage(ctx context.Context, opts browser.PageOptions) (browser.PageHandle, error) {
+	b.opts = append(b.opts, opts)
+	return b.page, nil
+}
+
+func (b *imageBackend) Close() error { return nil }
+func (b *imageBackend) Mode() string { return "standalone" }
+
+// tinyPNG encodes a w×h PNG the image store can normalize.
+func tinyPNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// newImageTestToolSet wires a tool set with a real image store and a page
+// whose screenshot is a decodable PNG.
+func newImageTestToolSet(t *testing.T, w, h int) (*registry.Registry, *imageBackend, *realImagePage) {
+	t.Helper()
+	store, err := imagepayload.Open(t.TempDir(), imagepayload.Config{})
+	if err != nil {
+		t.Fatalf("open image store: %v", err)
+	}
+	page := &realImagePage{
+		FakePage: &browser.FakePage{TitleVal: "Test", URLVal: "https://example.com"},
+		data:     tinyPNG(t, w, h),
+	}
+	backend := &imageBackend{page: page}
+	reg := registry.New()
+	opts := Options{
+		Config: config.DesktopConfig{
+			Enabled:          true,
+			Mode:             "standalone",
+			ScreenshotFormat: "png",
+		},
+		BackendFactory: func() (browser.BrowserBackend, error) {
+			return backend, nil
+		},
+		ImageStore: store,
+	}
+	if closer, err := RegisterAll(reg, opts); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	} else {
+		_ = closer
+	}
+	return reg, backend, page
+}
+
+func TestBrowserScreenshotReturnsImages(t *testing.T) {
+	reg, _, _ := newImageTestToolSet(t, 4, 3)
+	tool := toolByName(t, reg, "browser.screenshot")
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{}`)})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(res.Images) != 1 {
+		t.Fatalf("images = %v, want exactly one ref", res.Images)
+	}
+	ref := res.Images[0]
+	if ref.Hash == "" {
+		t.Error("ref has no hash")
+	}
+	if ref.MIME != "image/png" {
+		t.Errorf("ref MIME = %q, want image/png", ref.MIME)
+	}
+	if ref.Width != 4 || ref.Height != 3 {
+		t.Errorf("ref = %d×%d, want 4×3", ref.Width, ref.Height)
+	}
+	if ref.Label != "screenshot of https://example.com" {
+		t.Errorf("ref label = %q, want the default label naming the current url", ref.Label)
+	}
+	if !strings.Contains(res.Summary, ref.Label) {
+		t.Errorf("summary = %q, want it to name the label %q", res.Summary, ref.Label)
+	}
+	if !strings.Contains(res.Summary, "4×3") {
+		t.Errorf("summary = %q, want it to name the dimensions", res.Summary)
+	}
+}
+
+func TestBrowserScreenshotClipsSelectorAndSettles(t *testing.T) {
+	reg, _, page := newImageTestToolSet(t, 4, 3)
+	tool := toolByName(t, reg, "browser.screenshot")
+	args, _ := json.Marshal(map[string]any{"selector": "#hero", "settle_ms": 250})
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{Args: args}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if page.LastScreenshotOpts.Selector != "#hero" {
+		t.Errorf("page selector = %q, want #hero", page.LastScreenshotOpts.Selector)
+	}
+	if page.LastScreenshotOpts.SettleMS != 250 {
+		t.Errorf("page settle = %d, want 250", page.LastScreenshotOpts.SettleMS)
+	}
+}
+
+func TestBrowserScreenshotViewportReachesPage(t *testing.T) {
+	reg, backend, page := newTestToolSet(t)
+	tool := toolByName(t, reg, "browser.screenshot")
+	args, _ := json.Marshal(map[string]any{
+		"viewport": map[string]any{"width": 390, "height": 844},
+	})
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{Args: args}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	applied := false
+	for _, opts := range backend.NewPageOpts {
+		if opts.Viewport != nil && opts.Viewport.Width == 390 && opts.Viewport.Height == 844 {
+			applied = true
+		}
+	}
+	for _, v := range page.SetViewportCalls {
+		if v.Width == 390 && v.Height == 844 {
+			applied = true
+		}
+	}
+	if !applied {
+		t.Fatalf("viewport 390×844 never reached the page: NewPageOpts=%v SetViewportCalls=%v", backend.NewPageOpts, page.SetViewportCalls)
 	}
 }
 

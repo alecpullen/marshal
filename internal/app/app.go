@@ -1588,7 +1588,9 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 			BackendFactory: func() (browser.BrowserBackend, error) {
 				return newDesktopBackend(cfg.Desktop)
 			},
-			SessionState: state,
+			SessionState:  state,
+			WorkspaceRoot: state.WorkingDir,
+			ImageStore:    images,
 		}
 		closer, err := desktop.RegisterAll(reg, desktopOpts)
 		if err != nil {

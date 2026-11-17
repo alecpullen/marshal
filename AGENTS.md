@@ -232,6 +232,9 @@ Tools & safety
   internal/tools/native/sudo.go   the one privileged-execution path: password on stdin,
                            never argv or env, and no PTY
   internal/tools/{patch,policy,mcp,desktop}
+  internal/capture/         display detection and the grim/screencapture backends
+                           behind `image.capture`; the image producers are
+                           `image.view`, `image.capture` and `browser.screenshot`
   internal/permissions/     tool permission rules, approval-pattern derivation
   internal/{hooks,plugins}/ user hooks and third-party plugin loading
   internal/sandbox/         restricted, container, and passthrough execution backends

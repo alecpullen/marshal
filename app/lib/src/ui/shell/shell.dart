@@ -5,6 +5,7 @@ import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
 import '../../model/inbox_model.dart' as inbox;
 import '../../model/nav_model.dart';
+import '../../model/overview_model.dart' show buildOverview;
 import '../../model/place.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
@@ -12,7 +13,7 @@ import '../../model/thread_view_state.dart';
 import '../inbox/inbox.dart' show Inbox;
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
-import '../../model/overview_model.dart' show buildOverview;
+import '../sections/unsaved_guard.dart';
 import '../new_work/new_work_dialog.dart';
 import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
@@ -36,6 +37,7 @@ class Shell extends StatefulWidget {
     this.state,
     this.now,
     this.onRetry,
+    this.unsaved,
   });
 
   final NavModel nav;
@@ -43,7 +45,12 @@ class Shell extends StatefulWidget {
   final Place place;
 
   /// What the place draws: the Overview, the Inbox, or a place's promise.
-  final Widget content;
+  ///
+  /// It is a builder rather than a widget because a place's own controls
+  /// leave it too — the Overview's rows, the Inbox's asks — and they must
+  /// ask the one guard through the same consultation the sidebar and the
+  /// app bar use (design-system.md §9).
+  final Widget Function(PlaceNavigation navigation) content;
 
   /// Opens a place.
   final void Function(Place place) onSelect;
@@ -57,6 +64,10 @@ class Shell extends StatefulWidget {
 
   /// Reads the fleet again, for the one action a state offers.
   final VoidCallback? onRetry;
+
+  /// The guard that asks before the shell leaves a place holding unsaved
+  /// edits (design-system.md §9, F7 decision 3).
+  final UnsavedGuard? unsaved;
 
   @override
   State<Shell> createState() => _ShellState();
@@ -102,13 +113,34 @@ class _ShellState extends State<Shell> {
       _host = host;
       _panel = false;
     }),
-    onSelect: (place) {
-      widget.onSelect(place);
-      setState(() => _panel = false);
-    },
+    onSelect: (place) => _leave(() => widget.onSelect(place)),
     now: widget.now,
     inPanel: inPanel,
   );
+
+  /// The place's content, handed the shell's one way of leaving: the sidebar,
+  /// the app bar and whatever the place itself draws all come through
+  /// [_leave], so no path can leave a dirty place without asking.
+  Widget _place() => widget.content(
+    PlaceNavigation(
+      go: (place) => _leave(() => widget.onSelect(place)),
+      unsaved: widget.unsaved,
+    ),
+  );
+
+  /// Opens [place], after asking about an unsaved edit when there is one:
+  /// the shell is where "leaving" happens, so it is where the one guard is
+  /// consulted (design-system.md §9).
+  Future<void> _leave(VoidCallback go) async {
+    final guard = widget.unsaved;
+    if (guard != null && guard.hasUnsavedEdits) {
+      final leave = await guard.confirm(context);
+      if (!leave || !mounted) return;
+    }
+    if (!mounted) return;
+    setState(() => _panel = false);
+    go();
+  }
 
   /// The bar the narrow layout needs: the way into the navigation, the place
   /// it is showing, and the Inbox one tap away.
@@ -141,7 +173,9 @@ class _ShellState extends State<Shell> {
                 IconBtn(
                   Glyphs.tray,
                   tooltip: 'Inbox',
-                  onTap: () => widget.onSelect(const Place(PlaceKind.inbox)),
+                  onTap: () => _leave(
+                    () => widget.onSelect(const Place(PlaceKind.inbox)),
+                  ),
                 ),
               ],
             ),
@@ -154,8 +188,9 @@ class _ShellState extends State<Shell> {
 
   /// The place's content, or the state that stands in for it (§7).
   Widget _content() {
+    final content = _place();
     final state = widget.state;
-    if (state == null) return widget.content;
+    if (state == null) return content;
     if (state == StateKind.stale) {
       // Stale keeps the last data and marks it: never present old data as
       // current, and never infer failure from a lost connection.
@@ -174,7 +209,7 @@ class _ShellState extends State<Shell> {
               detail: 'The fleet has not answered; this is what it last said.',
             ),
           ),
-          Expanded(child: widget.content),
+          Expanded(child: content),
         ],
       );
     }
@@ -275,10 +310,20 @@ class _StudioState extends State<Studio> {
   bool _read = false;
   String? _failure;
 
+  /// The one guard every place leaving this screen consults: the shell asks
+  /// it, and a place that edits watches the models it holds (F7 decision 3).
+  final _unsaved = UnsavedGuard();
+
   @override
   void initState() {
     super.initState();
     _reread();
+  }
+
+  @override
+  void dispose() {
+    _unsaved.dispose();
+    super.dispose();
   }
 
   Future<void> _reread() async {
@@ -307,10 +352,11 @@ class _StudioState extends State<Studio> {
           hosts: store.hosts,
           place: place,
           state: _state(store),
-          content: _content(place, nav),
+          content: (navigation) => _content(place, nav, navigation),
           onSelect: (next) => setState(() => _place = next),
           onRetry: _reread,
           now: store.now,
+          unsaved: _unsaved,
         );
       },
     );
@@ -329,18 +375,19 @@ class _StudioState extends State<Studio> {
     return null;
   }
 
-  /// Opens a place, from the content as well as from the sidebar.
-  void _go(Place place) => setState(() => _place = place);
-
   /// What the place draws. A place whose screen a later step of F2 brings
   /// says so (design-system.md §7).
-  Widget _content(Place place, NavModel nav) {
+  ///
+  /// The Overview and the Inbox leave through the shell's guarded navigation,
+  /// never by setting the place here: a row or an ask can no more leave a
+  /// dirty place without asking than the sidebar can.
+  Widget _content(Place place, NavModel nav, PlaceNavigation navigation) {
     if (place.kind == PlaceKind.overview) {
       return Overview(
         overview: buildOverview(widget.store, widget.inbox),
         now: widget.store.now,
         hosts: widget.store.hosts,
-        onSelect: _go,
+        onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
       );
@@ -349,7 +396,7 @@ class _StudioState extends State<Studio> {
       return Inbox(
         asks: widget.inbox.asks,
         now: widget.store.now,
-        onSelect: _go,
+        onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
       );
@@ -365,7 +412,7 @@ class _StudioState extends State<Studio> {
           composerFor: widget.composerFor,
           newWorkFor: widget.newWorkFor,
           onThreadStarted: (id) =>
-              _go(Place(PlaceKind.thread, host: thread.host, id: id)),
+              navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
           asks: [
             for (final ask in widget.inbox.asks)
               if (ask.thread?.host == thread.host &&
@@ -482,4 +529,18 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
           : ThreadComposer(model: composer, view: _view),
     );
   }
+}
+
+/// What the shell hands the place it draws: its one way of leaving, which
+/// asks the unsaved-edit guard first, and the guard itself, so a place that
+/// edits watches the models it holds while it is mounted.
+class PlaceNavigation {
+  const PlaceNavigation({required this.go, required this.unsaved});
+
+  /// Opens a place, after asking about an unsaved edit when there is one.
+  final void Function(Place place) go;
+
+  /// The shell's one guard. A place watches the models it is editing when it
+  /// mounts and drops them when it goes.
+  final UnsavedGuard? unsaved;
 }

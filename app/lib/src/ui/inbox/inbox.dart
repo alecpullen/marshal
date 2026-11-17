@@ -430,5 +430,6 @@ class _InboxState extends State<Inbox> {
     model.AskKind.approval => AskKind.approval,
     model.AskKind.question => AskKind.question,
     model.AskKind.intake => AskKind.intake,
+    model.AskKind.reviewDraft => AskKind.review,
   };
 }

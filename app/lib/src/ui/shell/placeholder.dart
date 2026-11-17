@@ -31,9 +31,17 @@ String placeTitle(Place place, NavModel nav) => _about(place, nav).$1;
     case PlaceKind.pulls:
       return ('Pull requests', 'Pull requests arrive in a later phase');
     case PlaceKind.automations:
-      return ('Automations', 'Automations arrive in a later phase');
+      return (
+        'Automations',
+        'The Automations screen is built; it opens once the shell wires the '
+            'per-host bridge',
+      );
     case PlaceKind.library:
-      return ('Library', 'Library arrives in a later phase');
+      return (
+        'Library',
+        'The Library screen is built; it opens once the shell wires the '
+            'per-host bridge',
+      );
     case PlaceKind.settings:
       return ('Settings', 'Settings arrive in a later phase');
     case PlaceKind.project:

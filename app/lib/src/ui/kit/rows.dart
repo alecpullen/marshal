@@ -4,8 +4,21 @@ import '../tokens.dart';
 import 'box.dart';
 import 'hairline.dart';
 import 'press.dart';
+import 'spark.dart';
 import 'state_message.dart';
 import 'vocabulary.dart';
+
+/// A row's one-day spark: the values, and what they are of for assistive
+/// technology (design-system.md §5, `Spark`).
+@immutable
+class RowSpark {
+  const RowSpark(this.values, {required this.label});
+
+  final List<double> values;
+
+  /// What the shape is of, for a reader who cannot see it.
+  final String label;
+}
 
 /// One row of a [Rows] list: a name, what it is, and its current value.
 @immutable
@@ -15,6 +28,7 @@ class RowItem {
     required this.name,
     required this.description,
     this.value,
+    this.spark,
     this.onTap,
     this.mono = false,
     this.selected = false,
@@ -24,6 +38,7 @@ class RowItem {
   /// [description] saying so (design-system.md §7).
   const RowItem.planned({required this.name, required this.description})
     : value = null,
+      spark = null,
       onTap = null,
       mono = false,
       selected = false,
@@ -32,6 +47,10 @@ class RowItem {
   final String name;
   final String description;
   final String? value;
+
+  /// A day's readings, drawn beside the value: a watch's samples.
+  final RowSpark? spark;
+
   final VoidCallback? onTap;
 
   /// Set the name in mono: for a row that names a path or another
@@ -105,6 +124,13 @@ class _Row extends StatelessWidget {
                 ],
               ),
             ),
+            if (row.spark case final spark?) ...[
+              const SizedBox(width: Space.s12),
+              SizedBox(
+                width: Sizes.touch * 2,
+                child: Spark(spark.values, semanticLabel: spark.label),
+              ),
+            ],
             if (value != null) ...[
               const SizedBox(width: Space.s12),
               // At the right edge, and never wider than the sidebar, so a

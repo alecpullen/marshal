@@ -3,6 +3,8 @@ import 'package:marshal_app/src/client/contract.g.dart'
         DiffFile,
         FileEntry,
         GateResult,
+        Recipe,
+        Schedule,
         StackSnapshot,
         StepDiff,
         WireCall,
@@ -12,22 +14,38 @@ import 'package:marshal_app/src/client/contract.g.dart'
         WireStep,
         WireTool;
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
+import 'package:marshal_app/src/model/bots_model.dart';
+import 'package:marshal_app/src/model/clients_model.dart';
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/model/library_model.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/changes_model.dart';
 import 'package:marshal_app/src/model/files_model.dart';
 import 'package:marshal_app/src/model/inspect_model.dart';
+import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/preview_model.dart';
 import 'package:marshal_app/src/model/terminal_session.dart';
-import 'package:marshal_app/src/model/inspector_state.dart';
-import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
+import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/place.dart';
+import 'package:marshal_app/src/model/recipes_model.dart';
+import 'package:marshal_app/src/model/schedules_model.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/model/thread_view_state.dart';
+import 'package:marshal_app/src/model/watches_model.dart';
+import 'package:marshal_app/src/ui/automations/automations_place.dart';
+import 'package:marshal_app/src/ui/automations/bots_tab.dart';
+import 'package:marshal_app/src/ui/automations/recipes_tab.dart';
+import 'package:marshal_app/src/ui/automations/schedules_tab.dart';
+import 'package:marshal_app/src/ui/automations/watches_tab.dart';
 import 'package:marshal_app/src/ui/debug/connection_check.dart';
 import 'package:marshal_app/src/ui/gallery/gallery.dart';
+import 'package:marshal_app/src/ui/library/library_place.dart';
+import 'package:marshal_app/src/ui/library/mcp_tab.dart';
+import 'package:marshal_app/src/ui/library/memory_tab.dart';
+import 'package:marshal_app/src/ui/library/plugins_tab.dart';
+import 'package:marshal_app/src/ui/library/skills_tab.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
 import 'package:marshal_app/src/ui/inspector/files_tab.dart';
@@ -182,7 +200,7 @@ Widget _shell({StateKind? state, Place place = const Place.overview()}) {
     now: shellNow,
     onRetry: () {},
     onSelect: (_) {},
-    content: plannedPlace(place, nav),
+    content: (_) => plannedPlace(place, nav),
   );
 }
 
@@ -295,11 +313,264 @@ Widget _overview({StateKind? state}) => Overview(
   overview: _overviewModel(),
   now: shellNow,
   hosts: shellHosts,
+  automations: [
+    TrippedWatch(
+      name: 'the gate',
+      agent: 'Agent a-1',
+      action: 'Reroutes implementer to local',
+      age: '4m',
+    ),
+  ],
   state: state,
   onRetry: () {},
   onSelect: (_) {},
   onAnswer: (_, _, {reply, answers}) {},
 );
+
+/// The schedules the Automations fixture lists: one that ran, one paused.
+SchedulesModel _schedulesFixture() => SchedulesModel.fixture(const [
+  Schedule(
+    id: 's-1',
+    name: 'nightly gate',
+    recipe: 'gate',
+    project: '/home/u/marshal',
+    cron: '0 3 * * *',
+    enabled: true,
+    lastRun: '2026-11-17T03:00:00Z',
+    lastResult: 'passed',
+    ownerID: 'owner-1',
+  ),
+  Schedule(
+    id: 's-2',
+    name: 'weekly review',
+    recipe: 'review',
+    cron: '0 9 * * 1',
+    enabled: false,
+    ownerID: 'owner-1',
+  ),
+]);
+
+/// The recipes the Automations fixture lists: one of the bridge's, one of the
+/// user's.
+RecipesModel _recipesFixture() => RecipesModel.fixture(const [
+  Recipe(
+    name: 'gate',
+    title: 'The gate',
+    kind: 'prompt',
+    prompt: 'Run the gate on {{ branch }}',
+    builtin: true,
+  ),
+  Recipe(
+    name: 'nightly-gate',
+    title: 'Nightly gate',
+    kind: 'prompt',
+    prompt: 'Run the gate',
+    builtin: false,
+  ),
+]);
+
+/// The watches the Automations fixture lists: one that tripped with a
+/// reroute, and one watching quietly from the bridge's own session.
+WatchesModel _watchesFixture() => WatchesModel.fixture([
+  WatchInfo(
+    agentID: 'a-1',
+    id: 'w-1',
+    name: 'the gate',
+    kind: 'command',
+    state: 'fired',
+    condition: 'exit != 0',
+    mode: 'interval',
+    intervalMs: 5000,
+    owner: 'a-1',
+    fireCount: 2,
+    lastSample: 'exit 1',
+    createdAt: 1763352000000,
+    lastFiredAt: shellNow.millisecondsSinceEpoch - 4 * 60 * 1000,
+    samples: const [
+      WatchSample(at: 1763352300000, value: 0, tripped: false),
+      WatchSample(at: 1763352600000, value: 1, tripped: true),
+    ],
+    onTrip: const OnTrip(
+      notify: true,
+      resume: false,
+      reroute: RerouteRule(role: 'implementer', preset: 'local'),
+    ),
+    notify: true,
+    resume: false,
+  ),
+  WatchInfo(
+    agentID: 'studio',
+    id: 'w-2',
+    name: 'the queue',
+    kind: 'file',
+    state: 'watching',
+    condition: 'the file appears',
+    mode: 'interval',
+    intervalMs: 60000,
+    fireCount: 0,
+    createdAt: 1763352000000,
+    samples: const [
+      WatchSample(at: 1763352300000, value: 0, tripped: false),
+      WatchSample(at: 1763352600000, value: 0, tripped: false),
+    ],
+  ),
+], now: shellNow);
+
+/// The bots the Automations fixture lists: the review bot with one held
+/// review, and the CI fixer with one recent run.
+BotsModel _botsFixture() => BotsModel.fixture(
+  [
+    Bot(
+      kind: BotKind.review,
+      enabled: true,
+      repoID: 'acme/widgets',
+      summary: '1 review waits for you',
+      facts: const [
+        ('State', 'On'),
+        ('Repository', 'acme/widgets'),
+        ('Reviews', 'labelled ready · drafts too'),
+        ('Posts on its own', 'No: every review waits for you'),
+      ],
+      drafts: const [
+        ReviewDraft(
+          id: 'd-1',
+          repoID: 'acme/widgets',
+          number: 42,
+          title: 'Make the scan report a file it cannot read',
+          headSHA: '9f1ad475',
+          findings: [
+            Finding(
+              id: 'f-1',
+              severity: 'blocking',
+              path: 'internal/repo/scan.go',
+              line: 42,
+              title: 'The scan drops a file it cannot read',
+              body:
+                  'A permission error ends the walk instead of being reported.',
+            ),
+          ],
+          summary: 'One blocking finding.',
+          status: 'draft',
+          createdAt: '2026-11-17T03:00:00Z',
+        ),
+      ],
+    ),
+    Bot(
+      kind: BotKind.fixer,
+      enabled: true,
+      repoID: 'acme/widgets',
+      summary: '1 run lately',
+      facts: const [
+        ('State', 'On'),
+        ('Repository', 'acme/widgets'),
+        ('Watches', 'main, release/*'),
+        ('Sends a fix', 'As a pull request'),
+      ],
+      history: const [
+        CIHistory(
+          id: 'c-1',
+          repoID: 'acme/widgets',
+          branch: 'main',
+          sha: '9f1ad475',
+          check: 'go',
+          status: 'fixed',
+          reason: 'a nil dereference in the parser',
+          costUSD: 0.42,
+          createdAt: '2026-11-17T03:10:00Z',
+        ),
+      ],
+    ),
+  ],
+  project: '/home/u/marshal',
+  now: shellNow,
+);
+
+/// The Automations place, on [tab] (0 is Bots, 1 Schedules, 2 Watches,
+/// 3 Recipes).
+Widget _automations({StateKind? state, int tab = 1}) {
+  final bots = _botsFixture();
+  final schedules = _schedulesFixture();
+  final watches = _watchesFixture();
+  final recipes = _recipesFixture();
+  return AutomationsPlace(
+    bots: (tabs, state) => BotsTab(model: bots, tabs: tabs, state: state),
+    schedules: (tabs, state) =>
+        SchedulesTab(model: schedules, tabs: tabs, state: state),
+    watches: (tabs, state) =>
+        WatchesTab(model: watches, tabs: tabs, state: state),
+    recipes: (tabs, state) =>
+        RecipesTab(model: recipes, tabs: tabs, state: state),
+    tab: tab,
+    state: state,
+  );
+}
+
+/// The Library fixture: one skill, one plugin, one client and one memory, with
+/// the memory a promotion is suggested for.
+Widget _library({StateKind? state, int tab = 0}) {
+  final skills = SkillsModel.fixture(const [
+    SkillEntry(
+      name: 'recovery',
+      description: 'How this project recovers a lost session',
+      risk: 'low',
+      scope: 'global',
+    ),
+  ], scope: 'global');
+  final plugins = PluginsModel.fixture(const [
+    PluginEntry(
+      name: 'acme-tools',
+      source: 'github.com/acme/tools',
+      commit: '9f1ad475',
+      contentHash: 'sha256:ab',
+      installedAt: '2026-11-17T03:00:00Z',
+      scope: 'global',
+    ),
+  ], scope: 'global');
+  final clients = ClientsModel.fixture(
+    const [
+      MCPClient(
+        id: 'c-1',
+        name: 'editor',
+        allowedRepos: ['acme/widgets'],
+        ownerID: 'owner-1',
+        createdAt: '2026-11-17T03:00:00Z',
+      ),
+    ],
+    projects: const ['/home/u/marshal'],
+  );
+  final memory = MemoryModel.fixture(
+    const [
+      MemoryEntry(
+        id: 7,
+        kind: 'fact',
+        content: 'The gate runs on Go 1.24',
+        confidence: 'confirmed',
+        createdAt: '2026-11-17T03:00:00Z',
+        updatedAt: '2026-11-17T03:05:00Z',
+        scope: 'project',
+        learnedAgent: 'a-1',
+        learnedProjectRoot: '/home/u/marshal',
+      ),
+    ],
+    project: '/home/u/marshal',
+    suggestions: const [
+      MemorySuggestion(
+        memoryID: 7,
+        matchProjectRoot: '/home/u/other',
+        suggestedScope: 'global',
+      ),
+    ],
+  );
+  return LibraryPlace(
+    skills: (tabs, state) => SkillsTab(model: skills, tabs: tabs, state: state),
+    plugins: (tabs, state) =>
+        PluginsTab(model: plugins, tabs: tabs, state: state),
+    mcp: (tabs, state) => McpTab(model: clients, tabs: tabs, state: state),
+    memory: (tabs, state) => MemoryTab(model: memory, tabs: tabs, state: state),
+    tab: tab,
+    state: state,
+  );
+}
 
 /// The registry of screens. F0 has one, the gallery; each later phase adds
 /// its screens here with fixture data, and `tooltips_test.dart`,
@@ -349,6 +620,69 @@ final screens = <ScreenCase>[
     ready: () => _shell(),
     states: {
       for (final kind in requiredStates) kind: () => _shell(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'library · skills',
+    ready: () => _library(tab: 0),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _library(tab: 0, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'library · plugins',
+    ready: () => _library(tab: 1),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _library(tab: 1, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'library · mcp',
+    ready: () => _library(tab: 2),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _library(tab: 2, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'library · memory',
+    ready: () => _library(tab: 3),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _library(tab: 3, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'automations · bots',
+    ready: () => _automations(tab: 0),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _automations(tab: 0, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'automations · schedules',
+    ready: () => _automations(),
+    states: {
+      for (final kind in requiredStates) kind: () => _automations(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'automations · watches',
+    ready: () => _automations(tab: 2),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _automations(tab: 2, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'automations · recipes',
+    ready: () => _automations(tab: 3),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _automations(tab: 3, state: kind),
     },
   ),
   ScreenCase(

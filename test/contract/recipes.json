@@ -1,23 +1,33 @@
 {
   "Recipe": {
-    "name": "fix-a-bug",
-    "title": "Fix a bug",
-    "description": "Find the bug, fix it, and add a test.",
+    "name": "gate",
+    "title": "The gate",
+    "description": "Runs the gate on a branch",
     "kind": "prompt",
-    "mode": "act",
-    "auto": false,
-    "workspace": "default",
-    "routing": { "role": "implementer" },
-    "inputs": [{ "name": "file", "label": "The file", "required": true }],
-    "prompt": "Fix the bug in {{file}} and add a test that would have caught it.",
-    "limits": { "maxMinutes": 30, "maxUsd": 2.5 },
+    "mode": "auto",
+    "auto": true,
+    "workspace": "go",
+    "routing": {
+      "profile": "local"
+    },
+    "inputs": [
+      {
+        "name": "branch",
+        "label": "Branch",
+        "required": true
+      }
+    ],
+    "prompt": "Run the gate on {{ branch }}",
+    "limits": {
+      "maxMinutes": 30,
+      "maxUsd": 2.5
+    },
     "output": "review-findings",
-    "builtin": true,
-    "diagnostic": "a stored recipe of the same name overrides this one"
+    "builtin": true
   },
   "RecipeInput": {
-    "name": "file",
-    "label": "The file",
+    "name": "branch",
+    "label": "Branch",
     "required": true
   },
   "RecipeLimits": {
@@ -25,12 +35,14 @@
     "maxUsd": 2.5
   },
   "RecipeRun": {
-    "project": "/home/u/src/marshal",
-    "repoId": "owner/name",
+    "project": "/home/u/marshal",
+    "repoId": "repo-1",
     "ref": "main",
-    "inputs": { "file": "internal/app/app.go" }
+    "inputs": {
+      "branch": "main"
+    }
   },
   "RecipeCopy": {
-    "name": "fix-a-bug-copy"
+    "name": "gate-copy"
   }
 }

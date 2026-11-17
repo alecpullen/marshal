@@ -4,6 +4,7 @@ import '../../model/inbox_model.dart' as model;
 import '../../model/overview_model.dart';
 import '../../model/place.dart';
 import '../../model/thread_ref.dart' as model;
+import '../../model/watches_model.dart' show TrippedWatch;
 import '../kit/kit.dart';
 
 /// The Overview (F2 decision 8): what needs you, what is running, every
@@ -19,6 +20,7 @@ class Overview extends StatelessWidget {
     required this.overview,
     required this.now,
     this.hosts = const [],
+    this.automations = const [],
     this.state,
     this.onSelect,
     this.onAnswer,
@@ -32,6 +34,10 @@ class Overview extends StatelessWidget {
 
   /// The hosts as the shell knows them: a row's reach comes from here.
   final List<HostView> hosts;
+
+  /// The watches that tripped, newest first: the Automations card, and
+  /// nothing when none has (F7 plan 1, Task 3).
+  final List<TrippedWatch> automations;
 
   /// The fleet's data state, when it is not ready (§7).
   final StateKind? state;
@@ -81,6 +87,10 @@ class Overview extends StatelessWidget {
                 ..._running(context),
                 const SizedBox(height: Space.s24),
                 ..._projects(context),
+                if (automations.isNotEmpty) ...[
+                  const SizedBox(height: Space.s24),
+                  ..._automations(context),
+                ],
               ],
             );
             final rail = _rail(context);
@@ -106,6 +116,26 @@ class Overview extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  /// The watches that tripped, newest first, and what each did when it did
+  /// (F7 plan 1, Task 3). It opens the Automations place.
+  List<Widget> _automations(BuildContext context) {
+    return [
+      Label('Automations', count: automations.length),
+      const SizedBox(height: Space.s8),
+      Rows([
+        for (final watch in automations)
+          RowItem(
+            name: watch.name,
+            description: '${watch.agent} · ${watch.action}',
+            value: watch.age,
+            onTap: onSelect == null
+                ? null
+                : () => onSelect!(const Place(PlaceKind.automations)),
+          ),
+      ]),
+    ];
   }
 
   /// What is waiting, oldest first: at most three, and the Inbox one link
@@ -415,5 +445,6 @@ class Overview extends StatelessWidget {
     model.AskKind.approval => AskKind.approval,
     model.AskKind.question => AskKind.question,
     model.AskKind.intake => AskKind.intake,
+    model.AskKind.reviewDraft => AskKind.review,
   };
 }

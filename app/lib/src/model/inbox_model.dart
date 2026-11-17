@@ -6,11 +6,11 @@ import '../client/transport.dart';
 import 'fleet_store.dart';
 import 'thread_ref.dart';
 
-/// What an ask is (F2 decision 7). The fleet contract carries exactly these
-/// three in this phase: an agent's approval, an agent's question, and an
-/// intake submission. Factory asks join in F6 and review drafts in F7, which
-/// is an addition here, not a rewrite.
-enum AskKind { approval, question, intake }
+/// What an ask is (F2 decision 7). The fleet contract carries an agent's
+/// approval, an agent's question and an intake submission; F7 adds the review
+/// bot's held draft, which a person posts, sends to the author's agent or
+/// discards.
+enum AskKind { approval, question, intake, reviewDraft }
 
 /// Where an answer has got to. A posted answer stays sending until the
 /// stream stops reporting the ask: a sent message is not shown as done work
@@ -196,10 +196,25 @@ class InboxModel extends ChangeNotifier {
   /// The client that reaches a host, for the answer an ask posts.
   final BridgeClient Function(String host) client;
   final _overlays = <String, ({AskState state, String? error})>{};
+
+  /// The review bot's held drafts, by host, as `showHeldDrafts` last reported
+  /// them.
+  final _drafts = <String, List<ReviewDraft>>{};
   List<Ask> _asks = const [];
 
   /// Every ask, oldest first.
   List<Ask> get asks => _asks;
+
+  /// The review bot's held drafts, per host, as the Bots section reports
+  /// them: each is an ask of kind [AskKind.reviewDraft] until it is posted,
+  /// sent to the author's agent or discarded (F7 decision 4).
+  ///
+  /// A draft is not fleet state — it lives in the bridge's own store — so the
+  /// caller hands it over rather than the store reporting it.
+  void showHeldDrafts(String host, List<ReviewDraft> drafts) {
+    _drafts[host] = List.unmodifiable(drafts);
+    _rebuild();
+  }
 
   /// Posts [action] for [ask], with [reply] when the answer is free text and
   /// [answers] when a multi-question ask collected one per question.
@@ -306,6 +321,15 @@ class InboxModel extends ChangeNotifier {
         } else {
           await client.approveIntake(ask.id);
         }
+      case AskKind.reviewDraft:
+        switch (action.label) {
+          case _postLabel:
+            await client.postReviewDraft(ask.id);
+          case _sendLabel:
+            await client.sendDraftToAuthor(ask.id);
+          case _discardLabel:
+            await client.discardReviewDraft(ask.id);
+        }
     }
   }
 
@@ -375,6 +399,10 @@ class InboxModel extends ChangeNotifier {
         final pending = agent.pending;
         if (pending == null) continue;
         final ask = _askForPending(host.name, agent, pending, null);
+        if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
+      }
+      for (final draft in _drafts[host.name] ?? const <ReviewDraft>[]) {
+        final ask = _askForDraft(host.name, draft);
         if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
       }
     }
@@ -568,6 +596,38 @@ class InboxModel extends ChangeNotifier {
   static const _deny = 'Deny';
   static const _reply = 'Reply';
   static const _decline = 'Decline';
+  static const _postLabel = 'Post';
+  static const _sendLabel = 'Send to the author’s agent';
+  static const _discardLabel = 'Discard';
+
+  /// A held review offers the three things a person does with it: post it,
+  /// hand its findings to the agent that owns the pull request, or discard it
+  /// (F7 decision 4). Editing it is the Bots section's, where its findings
+  /// are.
+  static const _draftActions = [
+    AskAction(_postLabel, primary: true),
+    AskAction(_sendLabel),
+    AskAction(_discardLabel),
+  ];
+
+  /// One held review as an ask: its title, the pull request it belongs to,
+  /// and how many findings it holds.
+  Ask _askForDraft(String host, ReviewDraft draft) {
+    final findings = draft.findings.length;
+    return Ask(
+      host: host,
+      id: draft.id,
+      kind: AskKind.reviewDraft,
+      thread: null,
+      title: draft.title ?? 'Pull request #${draft.number}',
+      body:
+          '${draft.repoID} #${draft.number} · $findings '
+          '${findings == 1 ? 'finding' : 'findings'}',
+      actions: _draftActions,
+      since: _time(draft.createdAt),
+    );
+  }
+
   static const _answer = 'Answer';
 
   /// A question with one answer offers its own options, then a free reply:

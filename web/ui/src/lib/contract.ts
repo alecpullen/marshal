@@ -200,6 +200,128 @@ export interface RecentPrompts {
 }
 
 /**
+ * Automations is a project's forge automation settings
+ * (web/bridge/automation.go).
+ */
+export interface Automations {
+  reviewBot?: ReviewBotSettings;
+  ciFixer?: CIFixerSettings;
+}
+
+/**
+ * ReviewBotSettings configures the pull-request review bot.
+ */
+export interface ReviewBotSettings {
+  enabled: boolean;
+  repoId: string;
+  /**
+   * Labels, Authors and SkipDrafts filter which pull requests are
+   * reviewed. Empty lists match everything.
+   */
+  labels?: string[];
+  skipDrafts: boolean;
+  authors?: string[];
+  /**
+   * Routing overrides the review recipe's model routing.
+   */
+  routing?: unknown;
+  /**
+   * AutoPost posts a finished review without waiting, unless a finding has
+   * a severity in HoldSeverities.
+   */
+  autoPost: boolean;
+  holdSeverities?: string[];
+}
+
+/**
+ * CIFixerSettings configures the CI fixer.
+ */
+export interface CIFixerSettings {
+  enabled: boolean;
+  repoId: string;
+  /**
+   * Branches are the watched branches, as path.Match patterns.
+   */
+  branches: string[];
+  maxMinutes?: number;
+  maxUsd?: number;
+  /**
+   * Push pushes a fix straight to a branch matching PushBranches; every
+   * other fix opens a pull request.
+   */
+  push: boolean;
+  pushBranches?: string[];
+}
+
+/**
+ * ProjectAutomations is the part of a project's settings document the
+ * Automations screens read: GET and PUT /api/projects/settings carry the
+ * whole document, of which this is the one key these screens change.
+ */
+export interface ProjectAutomations {
+  automations?: Automations;
+}
+
+/**
+ * Finding is one finding of a review draft. The bridge's DraftFinding embeds
+ * its review finding, so the wire is flat and this is too.
+ */
+export interface Finding {
+  id: string;
+  severity: string;
+  path?: string;
+  line?: number;
+  title: string;
+  body?: string;
+  stepNode?: string;
+}
+
+/**
+ * ReviewDraft is one review awaiting a person: GET
+ * /api/automations/review/drafts' answer, and what post and edit answer
+ * (web/bridge/reviewbot.go).
+ */
+export interface ReviewDraft {
+  id: string;
+  repoId: string;
+  number: number;
+  title?: string;
+  prUrl?: string;
+  headRef?: string;
+  headSha: string;
+  project?: string;
+  agentId?: string;
+  findings: Finding[];
+  summary: string;
+  status: string;
+  error?: string;
+  reviewUrl?: string;
+  createdAt: string;
+}
+
+/**
+ * CIHistory is one CI fixer run: GET /api/automations/ci/history's answer
+ * (web/bridge/cifixer.go).
+ */
+export interface CIHistory {
+  id: string;
+  repoId: string;
+  branch?: string;
+  sha: string;
+  check: string;
+  status: string;
+  reason?: string;
+  prUrl?: string;
+  agentId?: string;
+  costUsd: number;
+  createdAt: string;
+  /**
+   * Pushed marks a fix pushed straight to the branch.
+   */
+  pushed?: boolean;
+}
+
+/**
  * Budgets mirrors the engine's [budgets] section on the wire.
  */
 export interface Budgets {
@@ -240,6 +362,96 @@ export interface BudgetReport {
    * clients know Budgets is the zero value rather than the real caps.
    */
   loaded: boolean;
+}
+
+/**
+ * ApprovalAuthority is how much approval power a factory grant carries.
+ */
+export type ApprovalAuthority = 'none' | 'user_directed' | 'standing';
+
+/**
+ * MCPClient is one registered MCP client: GET /api/clients' answer
+ * (web/bridge/client.go). Its token is never here; it is shown once, when the
+ * client is created.
+ */
+export interface MCPClient {
+  id: string;
+  name: string;
+  autonomous?: boolean;
+  maxConcurrent?: number;
+  maxPerDay?: number;
+  /**
+   * AllowedRepos restricts which registered repos the client may target.
+   * Empty means every one.
+   */
+  allowedRepos?: string[];
+  ownerId: string;
+  createdAt: string;
+}
+
+/**
+ * CreateClientRequest is the body POST /api/clients takes.
+ */
+export interface CreateClientRequest {
+  name: string;
+  autonomous?: boolean;
+  maxConcurrent?: number;
+  maxPerDay?: number;
+  allowedRepos?: string[];
+}
+
+/**
+ * CreateClientResult is what creating a client answers. It is the one place
+ * the token appears.
+ */
+export interface CreateClientResult {
+  id: string;
+  name: string;
+  token: string;
+  autonomous: boolean;
+}
+
+/**
+ * MCPFactoryProjectGrant is one client's factory authority over one project.
+ * Every capability is independent of the others, and the approval authority
+ * is independent of them all.
+ */
+export interface MCPFactoryProjectGrant {
+  projectId: string;
+  read: boolean;
+  createDraft: boolean;
+  editDraft: boolean;
+  answerQuestion: boolean;
+  approveAndQueue: boolean;
+  approvalAuthority: ApprovalAuthority;
+  /**
+   * AssessPlanChanges and ApproveRoutineRevision are optional so a grant
+   * written before they existed round trips unchanged: absent grants
+   * nothing.
+   */
+  assessPlanChanges?: boolean;
+  approveRoutineRevision?: boolean;
+}
+
+/**
+ * FactoryGrantState is one (client, project) pair's stored grant and the
+ * opaque version a write must name.
+ */
+export interface FactoryGrantState {
+  clientId: string;
+  projectId: string;
+  grant: MCPFactoryProjectGrant;
+  version: string;
+}
+
+/**
+ * PutGrantRequest is the body PUT
+ * /api/clients/{clientId}/factory-grants/{projectId} takes: the whole grant
+ * and the version it was edited from.
+ */
+export interface PutGrantRequest {
+  grant: MCPFactoryProjectGrant;
+  version: string;
 }
 
 /**
@@ -873,6 +1085,184 @@ export interface RepoIssue {
 }
 
 /**
+ * SkillEntry is one installed skill: GET /api/library/skills' answer, one
+ * entry per scope (web/bridge/library.go).
+ */
+export interface SkillEntry {
+  name: string;
+  description: string;
+  risk: string;
+  scope: string;
+}
+
+/**
+ * SkillPreview is what staging a skill answers: what it would install, and
+ * the token that confirms or discards it.
+ */
+export interface SkillPreview {
+  stagingToken: string;
+  name: string;
+  description: string;
+  risk: string;
+  source: string;
+}
+
+/**
+ * SkillList is GET /api/library/skills' body.
+ */
+export interface SkillList {
+  skills: SkillEntry[];
+}
+
+/**
+ * SkillStage and SkillConfirm are the bodies the skills routes take. The
+ * confirm must name the same scope and project the preview was staged on.
+ */
+export interface SkillStage {
+  source: string;
+  scope?: string;
+  project?: string;
+}
+
+export interface SkillConfirm {
+  stagingToken: string;
+  scope?: string;
+  project?: string;
+}
+
+export interface SkillDiscard {
+  stagingToken: string;
+}
+
+/**
+ * PluginEntry is one installed plugin: GET /api/library/plugins' answer.
+ */
+export interface PluginEntry {
+  name: string;
+  source: string;
+  ref?: string;
+  commit: string;
+  contentHash: string;
+  installedAt: string;
+  scope: string;
+}
+
+/**
+ * PluginContents is what a scanned plugin ships.
+ */
+export interface PluginContents {
+  hasManifest: boolean;
+  skillCount: number;
+  commandCount: number;
+  hookCount: number;
+  mcpServerCount: number;
+  mcpPolicyCount: number;
+}
+
+/**
+ * PluginScan is what scanning a plugin answers: what it ships, and the token
+ * that confirms or discards it.
+ */
+export interface PluginScan {
+  scanToken: string;
+  name: string;
+  source: string;
+  ref?: string;
+  commit: string;
+  contents: PluginContents;
+}
+
+/**
+ * PluginList is GET /api/library/plugins' body.
+ */
+export interface PluginList {
+  plugins: PluginEntry[];
+}
+
+/**
+ * PluginStage, PluginConfirm and PluginDiscard are the bodies the plugin
+ * routes take.
+ */
+export interface PluginStage {
+  source: string;
+  ref?: string;
+  scope?: string;
+  project?: string;
+}
+
+export interface PluginConfirm {
+  scanToken: string;
+  scope?: string;
+  project?: string;
+}
+
+export interface PluginDiscard {
+  scanToken: string;
+}
+
+/**
+ * MemoryEntry is one memory: GET /api/library/memory's answer, one entry per
+ * project's memory store.
+ */
+export interface MemoryEntry {
+  id: number;
+  kind: string;
+  content: string;
+  confidence: string;
+  /**
+   * SourceSessionID is the session that learned it, when the store kept it.
+   */
+  sourceSessionId?: string;
+  createdAt: string;
+  updatedAt: string;
+  scope?: string;
+  scopeKey?: string;
+  /**
+   * LearnedProjectRoot, LearnedAgent and LearnedStep are its provenance.
+   */
+  learnedProjectRoot?: string;
+  learnedAgent?: string;
+  learnedStep?: number;
+  confirmedBy?: string[];
+}
+
+/**
+ * MemoryList is GET /api/library/memory's body.
+ */
+export interface MemoryList {
+  entries: MemoryEntry[];
+}
+
+/**
+ * MemorySuggestion is a project memory another project holds too, with the
+ * scope it could be promoted to. Promoting it is the person's decision.
+ */
+export interface MemorySuggestion {
+  memoryId: number;
+  matchProjectRoot: string;
+  suggestedScope: string;
+}
+
+/**
+ * MemorySuggestions is GET /api/library/memory/suggestions' body.
+ */
+export interface MemorySuggestions {
+  suggestions: MemorySuggestion[];
+}
+
+/**
+ * MemoryPromote and MemoryConfidence are the bodies the memory routes take.
+ */
+export interface MemoryPromote {
+  scope: string;
+  scopeKey?: string;
+}
+
+export interface MemoryConfidence {
+  confidence: string;
+}
+
+/**
  * TrustState is a project's trust decision.
  */
 export type TrustState = 'na' | 'untrusted' | 'trusted';
@@ -1034,6 +1424,35 @@ export interface ReviewCommentRequest {
   side: string;
   quote: string;
   body: string;
+}
+
+/**
+ * Schedule is one cron entry that runs a recipe: GET /api/schedules' answer,
+ * and the body POST /api/schedules and PUT /api/schedules/{id} take
+ * (web/bridge/schedules.go). `lastRun` is omitted until the schedule has
+ * run, so a client reading it must allow for its absence.
+ */
+export interface Schedule {
+  id: string;
+  name: string;
+  recipe: string;
+  project?: string;
+  /**
+   * RepoID and Ref run the recipe on a fresh checkout of a registered repo
+   * instead of a local project.
+   */
+  repoId?: string;
+  ref?: string;
+  inputs?: Record<string, string>;
+  cron: string;
+  enabled: boolean;
+  lastRun?: string;
+  lastRunAgent?: string;
+  lastResult?: string;
+  /**
+   * OwnerID is the owner the bridge stored the schedule under.
+   */
+  ownerId: string;
 }
 
 /**
@@ -1675,4 +2094,80 @@ export interface SubagentCancelParams {
  */
 export interface SubagentCancelResult {
   cancelled: boolean;
+}
+
+/**
+ * WatchSample is one reading of a watch's condition.
+ */
+export interface WatchSample {
+  at: number;
+  value: number;
+  tripped: boolean;
+}
+
+/**
+ * RerouteRule names the role a tripped watch rebinds and the preset it binds
+ * it to.
+ */
+export interface RerouteRule {
+  role: string;
+  preset: string;
+}
+
+/**
+ * OnTrip is what a watch does when it trips. On a row it is what the bridge
+ * started it with; on a create request only `reroute` is sent.
+ */
+export interface OnTrip {
+  notify?: boolean;
+  resume?: boolean;
+  reroute?: RerouteRule;
+}
+
+/**
+ * LastReroute names the reroute a watch's most recent trip made, so a client
+ * can undo it (POST /api/reroutes/{id}/undo). The bridge holds reroutes in
+ * memory only, so a watch whose trip predates a bridge restart carries none.
+ */
+export interface LastReroute {
+  id: string;
+  at: number;
+}
+
+/**
+ * WatchInfo is one watch as GET /api/watches answers it: what the engine
+ * reports about it, the agent that started it, and what it does on trip
+ * (web/bridge/watches.go, internal/acp/watch.go). Times are Unix
+ * milliseconds.
+ */
+export interface WatchInfo {
+  /**
+   * AgentID is the agent whose session started the watch, or `studio` for
+   * the bridge's own control session.
+   */
+  agentId: string;
+  id: string;
+  name: string;
+  kind: string;
+  state: string;
+  condition?: string;
+  mode: string;
+  intervalMs: number;
+  owner?: string;
+  fireCount: number;
+  lastSample?: string;
+  lastError?: string;
+  createdAt: number;
+  lastFiredAt?: number;
+  samples: WatchSample[];
+  /**
+   * OnTrip, Notify and Resume are held by the bridge, so they appear only
+   * on watches it started. LastReroute is also the bridge's: it is the
+   * record of the watch's last trip that a reroute can still be undone
+   * from, and absent when that trip made no reroute or it was undone.
+   */
+  onTrip?: OnTrip;
+  notify?: boolean;
+  resume?: boolean;
+  lastReroute?: LastReroute;
 }

@@ -13,17 +13,22 @@ typedef _Codec = Object? Function(Object? json);
 const _fixtures = [
   'agents',
   'answers',
+  'automations',
   'budgets',
+  'clients',
   'finish',
   'inbox',
   'intake',
   'issues',
+  'library',
   'projects',
   'recipes',
+  'schedules',
   'session',
   'spawn',
   'stack',
   'stream',
+  'watches',
 ];
 
 /// The codec for every type a fixture names. An enum type is held to its wire
@@ -79,10 +84,64 @@ final _codecs = <String, _Codec>{
   'RepoIssue': (json) => RepoIssue.fromJson(_object(json)).toJson(),
   // recipes.json
   'Recipe': (json) => Recipe.fromJson(_object(json)).toJson(),
+  'RecipeCopy': (json) => RecipeCopy.fromJson(_object(json)).toJson(),
   'RecipeInput': (json) => RecipeInput.fromJson(_object(json)).toJson(),
   'RecipeLimits': (json) => RecipeLimits.fromJson(_object(json)).toJson(),
   'RecipeRun': (json) => RecipeRun.fromJson(_object(json)).toJson(),
-  'RecipeCopy': (json) => RecipeCopy.fromJson(_object(json)).toJson(),
+  // clients.json
+  'ApprovalAuthority': (json) =>
+      ApprovalAuthority.fromWire(json! as String).wire,
+  'MCPClient': (json) => MCPClient.fromJson(_object(json)).toJson(),
+  'CreateClientRequest': (json) =>
+      CreateClientRequest.fromJson(_object(json)).toJson(),
+  'CreateClientResult': (json) =>
+      CreateClientResult.fromJson(_object(json)).toJson(),
+  'MCPFactoryProjectGrant': (json) =>
+      MCPFactoryProjectGrant.fromJson(_object(json)).toJson(),
+  'FactoryGrantState': (json) =>
+      FactoryGrantState.fromJson(_object(json)).toJson(),
+  'PutGrantRequest': (json) => PutGrantRequest.fromJson(_object(json)).toJson(),
+  // library.json
+  'SkillEntry': (json) => SkillEntry.fromJson(_object(json)).toJson(),
+  'SkillPreview': (json) => SkillPreview.fromJson(_object(json)).toJson(),
+  'SkillList': (json) => SkillList.fromJson(_object(json)).toJson(),
+  'SkillStage': (json) => SkillStage.fromJson(_object(json)).toJson(),
+  'SkillConfirm': (json) => SkillConfirm.fromJson(_object(json)).toJson(),
+  'SkillDiscard': (json) => SkillDiscard.fromJson(_object(json)).toJson(),
+  'PluginEntry': (json) => PluginEntry.fromJson(_object(json)).toJson(),
+  'PluginContents': (json) => PluginContents.fromJson(_object(json)).toJson(),
+  'PluginScan': (json) => PluginScan.fromJson(_object(json)).toJson(),
+  'PluginList': (json) => PluginList.fromJson(_object(json)).toJson(),
+  'PluginStage': (json) => PluginStage.fromJson(_object(json)).toJson(),
+  'PluginConfirm': (json) => PluginConfirm.fromJson(_object(json)).toJson(),
+  'PluginDiscard': (json) => PluginDiscard.fromJson(_object(json)).toJson(),
+  'MemoryEntry': (json) => MemoryEntry.fromJson(_object(json)).toJson(),
+  'MemoryList': (json) => MemoryList.fromJson(_object(json)).toJson(),
+  'MemorySuggestion': (json) =>
+      MemorySuggestion.fromJson(_object(json)).toJson(),
+  'MemorySuggestions': (json) =>
+      MemorySuggestions.fromJson(_object(json)).toJson(),
+  'MemoryPromote': (json) => MemoryPromote.fromJson(_object(json)).toJson(),
+  'MemoryConfidence': (json) =>
+      MemoryConfidence.fromJson(_object(json)).toJson(),
+  // schedules.json
+  'Schedule': (json) => Schedule.fromJson(_object(json)).toJson(),
+  // automations.json
+  'Automations': (json) => Automations.fromJson(_object(json)).toJson(),
+  'CIFixerSettings': (json) => CIFixerSettings.fromJson(_object(json)).toJson(),
+  'CIHistory': (json) => CIHistory.fromJson(_object(json)).toJson(),
+  'Finding': (json) => Finding.fromJson(_object(json)).toJson(),
+  'ProjectAutomations': (json) =>
+      ProjectAutomations.fromJson(_object(json)).toJson(),
+  'ReviewBotSettings': (json) =>
+      ReviewBotSettings.fromJson(_object(json)).toJson(),
+  'ReviewDraft': (json) => ReviewDraft.fromJson(_object(json)).toJson(),
+  // watches.json
+  'LastReroute': (json) => LastReroute.fromJson(_object(json)).toJson(),
+  'OnTrip': (json) => OnTrip.fromJson(_object(json)).toJson(),
+  'RerouteRule': (json) => RerouteRule.fromJson(_object(json)).toJson(),
+  'WatchInfo': (json) => WatchInfo.fromJson(_object(json)).toJson(),
+  'WatchSample': (json) => WatchSample.fromJson(_object(json)).toJson(),
   // session.json
   'SessionSummary': (json) => SessionSummary.fromJson(_object(json)).toJson(),
   'SessionList': (json) => SessionList.fromJson(_object(json)).toJson(),

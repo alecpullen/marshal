@@ -24,7 +24,7 @@ void main() {
         now: shellNow,
         onRetry: () {},
         onSelect: opened.add,
-        content: plannedPlace(place, nav),
+        content: (_) => plannedPlace(place, nav),
       ),
       opened,
     );
@@ -90,6 +90,23 @@ void main() {
     expect(planned, isNotEmpty);
     expect(find.text('Pull requests'), findsWidgets);
     expect(find.textContaining('later phase'), findsOneWidget);
+  });
+
+  testWidgets('places this phase builds say they are built', (tester) async {
+    // Automations and Library are real screens registered with the gallery;
+    // the shell simply has no per-host bridge to wire them yet, and a promise
+    // of a later phase would be untrue.
+    for (final kind in [PlaceKind.automations, PlaceKind.library]) {
+      final (shell, _) = shellAt(Place(kind));
+      await tester.pumpWidget(
+        EmberApp(brightness: Brightness.light, home: shell),
+      );
+      await tester.pump();
+
+      expect(find.textContaining('is built'), findsOneWidget);
+      expect(find.textContaining('per-host bridge'), findsOneWidget);
+      expect(find.textContaining('later phase'), findsNothing);
+    }
   });
 
   testWidgets('an unreachable host is listed with its age', (tester) async {

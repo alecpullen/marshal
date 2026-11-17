@@ -186,7 +186,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `CheckStrip` | One block per CI check | Order is the forge's order; tooltip names each check |
 | `DiffView` | A unified diff | One row per line, in `mono`; a removed line is filled `diffRemoved` and an added one `diffAdded`; the gutter shows the line's number and, on a removed or added line, takes a comment. Unified only: there is no split view |
 | `GateList` | The gate's checks | One row per check: the state's icon in the state's colour, the check's name, its detail in mono at the right. The order is the gate's own |
-| `Rows` | A list of name, description, value | Every settings-style list |
+| `Rows` | A list of name, description, value, and optionally a day's `Spark` | Every settings-style list |
 | `NavRow` | A row of the sidebar | An icon, a label, an optional count; a project's row has a disclosure chevron instead of an icon. Only threads carry a status, in a `ThreadRow` |
 | `PageBody` | Title, subtitle, actions, content | Every page that is not a thread |
 | `AskCard` | Something waiting on the user | The only way an ask is shown |
@@ -199,7 +199,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `OutputBlock` | Output the agent produced | The only filled block: `codeBg`, mono at every density. A capped block says so in words |
 | `LiveRow` | The row work is happening on | One running dot, the headline, the latest line. The only row that moves |
 | `StateMessage` | Empty, loading, stale, error, planned | The only way these states are shown (§7) |
-| `Field` | A text input | Border only; the label is above it |
+| `Field` | A text input | Border only; the label is above it. `Field.multiline` is the same input for prose, taller and growing with what it holds |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
 | `Sheet` | A dialog or bottom sheet; it dims what is behind it with `scrim` | One per screen at most |
 | `Composer` | The field a thread is driven from | The draft, the mode and model chips, Stop while running, Send or Steer. A read-only session is one line saying why |

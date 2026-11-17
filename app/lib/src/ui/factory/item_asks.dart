@@ -128,6 +128,9 @@ class _ItemAsksState extends State<ItemAsks> {
             label: 'Your answer',
             controller: _reply,
             hint: 'In your own words',
+            // The answer action is drawn disabled until there are words, so
+            // the card is rebuilt as the person types.
+            onChanged: (_) => setState(() {}),
           ),
           const SizedBox(height: Space.s8),
         ],
@@ -144,8 +147,6 @@ class _ItemAsksState extends State<ItemAsks> {
         if (ask.kind == model.AskKind.recovery) ...[
           const SizedBox(height: Space.s12),
           RecoveryForm(
-            diagnosis: '',
-            attempts: '',
             enabled: enabled,
             onSubmit: (choice) => _run(ask.id, () async {
               await widget.onRecover?.call(choice);
@@ -166,23 +167,38 @@ class _ItemAsksState extends State<ItemAsks> {
   /// One action of [ask]: offered while nothing is in flight, and drawn
   /// disabled with its reason when the item cannot take it.
   ///
-  /// A completion's merge needs the reviewed identity the item holds. With
-  /// none it is drawn disabled and says why, rather than offering a control
-  /// the bridge would refuse (web/bridge/factory_completion_batch.go).
+  /// A completion's merge needs the reviewed identity the item holds, and a
+  /// decision's answer needs words. With neither, the action is drawn disabled
+  /// and says why rather than offering a control that would do nothing or a
+  /// command the bridge would refuse (web/bridge/factory_completion_batch.go).
   AskAction _action(model.Ask ask, model.AskAction action, bool enabled) {
     final blocked =
         ask.kind == model.AskKind.completion &&
         action.label == _mergeLabel &&
         widget.item.merge == null;
+    final unanswered =
+        ask.kind == model.AskKind.decision &&
+        action.kind == model.AskActionKind.reply &&
+        _reply.text.trim().isEmpty;
     return AskAction(
       action.label,
-      onTap: enabled && !blocked ? () => _act(ask, action) : null,
-      note: blocked ? noMergeTargetNote : null,
+      onTap: enabled && !blocked && !unanswered
+          ? () => _act(ask, action)
+          : null,
+      note: blocked
+          ? noMergeTargetNote
+          : unanswered
+          ? _emptyAnswerNote
+          : null,
     );
   }
 
   /// The label the completion ask gives its merge.
   static const _mergeLabel = 'Merge and complete';
+
+  /// Why a decision's answer is drawn disabled: an answer with nothing in it is
+  /// not worth a round trip.
+  static const _emptyAnswerNote = 'Type your answer first';
 
   /// What one action does. A recovery's own settings are sent by its form.
   void _act(model.Ask ask, model.AskAction action) {

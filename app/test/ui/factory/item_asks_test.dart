@@ -202,6 +202,38 @@ void main() {
       height: 2000,
     );
     await tester.enterText(find.byType(EditableText), 'the rounds');
+    await tester.pump();
+    await tester.tap(find.text('Answer'));
+    await tester.pump();
+    expect(answered, 'the rounds');
+  });
+
+  testWidgets('a decision\u2019s answer is disabled until there are words', (
+    tester,
+  ) async {
+    String? answered;
+    await pumpKit(
+      tester,
+      WorkItemScreen(
+        item: WorkItemView.of('local', item(pending: decision())),
+        now: now,
+        onAnswer: (answer) async => answered = answer,
+      ),
+      width: 1000,
+      height: 2000,
+    );
+
+    // An empty answer is not worth a round trip, so the control says so
+    // instead of taking a tap that would post nothing.
+    final answer = tester.widget<Btn>(find.widgetWithText(Btn, 'Answer'));
+    expect(answer.onTap, isNull, reason: 'drawn disabled with nothing to send');
+
+    await tester.tap(find.text('Answer'));
+    await tester.pump();
+    expect(answered, isNull);
+
+    await tester.enterText(find.byType(EditableText), 'the rounds');
+    await tester.pump();
     await tester.tap(find.text('Answer'));
     await tester.pump();
     expect(answered, 'the rounds');

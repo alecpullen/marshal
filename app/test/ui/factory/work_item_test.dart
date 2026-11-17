@@ -195,7 +195,38 @@ void main() {
   ) async {
     await pump(tester, item());
     await openTab(tester, 'Changes');
-    expect(find.text('Read the item again'), findsOneWidget);
+    // The item is unavailable here, but with no read to retry the tab draws
+    // no control: a button that would do nothing is not drawn (§7).
+    expect(
+      find.text('Read the item again'),
+      findsNothing,
+      reason: 'no retry handler means no retry button',
+    );
+    expect(
+      tester.widget<StateMessage>(find.byType(StateMessage)).kind,
+      StateKind.unavailable,
+    );
+  });
+
+  testWidgets('the Changes tab offers the retry its host gave it', (
+    tester,
+  ) async {
+    var retried = 0;
+    await pumpKit(
+      tester,
+      WorkItemScreen(
+        item: WorkItemView.of('local', item()),
+        now: now,
+        pulls: const [],
+        onRetry: () => retried++,
+      ),
+      width: 1000,
+      height: 2000,
+    );
+    await openTab(tester, 'Changes');
+    await tester.tap(find.text('Read the item again'));
+    await tester.pump();
+    expect(retried, 1);
   });
 
   testWidgets('the Pull requests tab says there is none yet', (tester) async {

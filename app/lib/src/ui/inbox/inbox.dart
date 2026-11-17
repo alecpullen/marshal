@@ -200,11 +200,8 @@ class _InboxState extends State<Inbox> {
   /// what did not arrive (§8). A healthy source says nothing here, and one
   /// still making its first attempt says nothing either.
   List<Widget> _freshness() {
-    final retry = StateAction(
-      'Read the fleet again',
-      onTap: widget.onRetry ?? () {},
-    );
-    return [
+    final retry = StateAction('Read again', onTap: widget.onRetry ?? () {});
+    final rows = [
       for (final source in widget.sources)
         if (source.stale || source.unavailable)
           Padding(
@@ -212,6 +209,30 @@ class _InboxState extends State<Inbox> {
             child: _freshnessRow(source, retry),
           ),
     ];
+    // A screen the shell calls stale whose sources all count as healthy (a
+    // stream that stopped without a failed read) still marks the age: §7
+    // never presents old data as current.
+    if (rows.isEmpty && widget.state == StateKind.stale) {
+      return [
+        StateMessage.stale(
+          age: _oldestSeen() ?? 'now',
+          detail: 'The fleet has not answered; this is what it last said.',
+        ),
+      ];
+    }
+    return rows;
+  }
+
+  /// The age of the oldest snapshot any source holds, in the design system's
+  /// words, or null when nothing has been read yet.
+  String? _oldestSeen() {
+    DateTime? oldest;
+    for (final source in widget.sources) {
+      final read = source.lastRead;
+      if (read == null) continue;
+      if (oldest == null || read.isBefore(oldest)) oldest = read;
+    }
+    return oldest == null ? null : relativeAge(oldest, widget.now);
   }
 
   /// One source's row, in that source's own words.
@@ -535,9 +556,9 @@ class _InboxState extends State<Inbox> {
       ),
       StateKind.unavailable => StateMessage.unavailable(
         host: 'The daemon',
-        // No read has made a snapshot, so there is no age to give: the word
-        // says that rather than inventing one.
-        lastSeen: 'unknown',
+        // No read has made a snapshot, so there is no age to give, and the
+        // kit says "Not seen yet" rather than inventing one.
+        lastSeen: _oldestSeen(),
         action: retry,
       ),
       // Unreachable: a stale screen keeps its content and draws each source's

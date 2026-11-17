@@ -374,4 +374,50 @@ void main() {
       findsNothing,
     );
   });
+
+  testWidgets('a screen called stale still marks the age when no source '
+      'reports a failure', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: [
+        SourceState(
+          kind: SourceKind.fleet,
+          host: 'local',
+          loaded: true,
+          lastRead: shellNow.subtract(const Duration(minutes: 4)),
+        ),
+      ],
+      projects: const [],
+      capacity: const [],
+      spend: null,
+    );
+    await tester.pumpWidget(show(overview, state: StateKind.stale));
+
+    // The projects and asks stay, and the last read is marked with its age.
+    expect(find.text('Last updated 4m ago'), findsOneWidget);
+    expect(
+      find.text('The fleet has not answered; this is what it last said.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('an unreachable daemon nothing was read from says not seen yet', (
+    tester,
+  ) async {
+    const overview = OverviewModel(
+      needsYou: [],
+      running: [],
+      needsYouTotal: 0,
+      sources: [],
+      projects: [],
+      capacity: [],
+      spend: null,
+    );
+    await tester.pumpWidget(show(overview, state: StateKind.unavailable));
+
+    expect(find.text('Not seen yet'), findsOneWidget);
+    expect(find.textContaining('ago'), findsNothing);
+  });
 }

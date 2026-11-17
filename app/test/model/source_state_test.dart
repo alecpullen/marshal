@@ -74,8 +74,11 @@ void main() {
       fixture.clock.now().subtract(const Duration(minutes: 3)),
     );
     final words = state.words(fixture.clock.now());
-    expect(words, contains('old, and the last read failed — offline'));
-    expect(words, 'Factory: 3m old, and the last read failed — offline');
+    expect(words, contains('the last read failed'));
+    // The row's own line carries the age ("Last updated 3m ago"), so the
+    // detail does not repeat it.
+    expect(words, isNot(contains('3m old')));
+    expect(words, 'Factory: the last read failed — offline');
   });
 
   test('a source that never answered is unavailable, not empty', () async {
@@ -117,6 +120,24 @@ void main() {
       expect(state.words(fixture.clock.now()), 'Factory: connecting');
     },
   );
+
+  test('a read under a minute ago never says “now ago”', () async {
+    final fixture = await ModelFixture.start([
+      const FixtureHost(name: 'local'),
+    ]);
+    final factory = FactoryStore(fixture.registry, now: fixture.clock.now);
+    addTearDown(factory.dispose);
+    await factory.refresh('local');
+    fixture.clock.advance(const Duration(seconds: 20));
+
+    final state = row(sourceStates(fixture.store, factory: factory));
+
+    // relativeAge says "now" under a minute; the words spell that out rather
+    // than gluing "ago" to it.
+    final words = state.words(fixture.clock.now());
+    expect(words, 'Factory: read just now');
+    expect(words, isNot(contains('now ago')));
+  });
 
   test('the rows are ordered by host then fleet before factory', () async {
     final fixture = await ModelFixture.start([

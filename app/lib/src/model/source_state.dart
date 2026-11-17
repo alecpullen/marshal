@@ -66,13 +66,21 @@ class SourceState {
   /// What this source's row says, in the design system's words (§8): what is
   /// held, how old it is, and what did not arrive.
   String words(DateTime now) {
-    final age = lastRead == null ? 'unknown' : relativeAge(lastRead!, now);
+    final read = lastRead;
+    final age = read == null ? null : relativeAge(read, now);
+    // relativeAge says "now" under a minute, which reads wrong glued to
+    // "ago": the cases below spell that out rather than printing "now ago".
+    final when = switch (age) {
+      null => 'never',
+      'now' => 'just now',
+      _ => '$age ago',
+    };
     return switch (this) {
-      _ when healthy => '${kind.label}: read $age ago',
-      _ when stale =>
-        '${kind.label}: $age old, and the last read failed — $failure',
-      _ when unavailable =>
-        '${kind.label}: unavailable — ${failure ?? 'no answer yet'}',
+      _ when healthy => '${kind.label}: read $when',
+      // The row's own line already carries the age ("Last updated 4m ago"),
+      // so this says what went wrong rather than repeating it.
+      _ when stale => '${kind.label}: the last read failed — $failure',
+      _ when unavailable => '${kind.label}: unavailable — $failure',
       _ => '${kind.label}: connecting',
     };
   }

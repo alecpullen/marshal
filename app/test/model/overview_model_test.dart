@@ -325,11 +325,10 @@ void main() {
       );
       expect(factorySource.failure, 'offline');
       expect(factorySource.healthy, isFalse);
-      expect(
-        factorySource.stale || factorySource.unavailable,
-        isTrue,
-        reason: 'a failed factory read is stale or unavailable, never healthy',
-      );
+      // The factory never answered at all, so it holds no snapshot to be
+      // stale: it is unavailable, and says so.
+      expect(factorySource.unavailable, isTrue);
+      expect(factorySource.stale, isFalse);
     },
   );
 }

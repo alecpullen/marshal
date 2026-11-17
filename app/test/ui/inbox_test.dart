@@ -382,17 +382,16 @@ void main() {
             id: 'p-1',
             kind: model.AskKind.pull,
             actions: ['Fix it'],
-            project: '/home/u/marshal',
             withThread: false,
           ),
         ]),
       );
 
-      // Each feed's entry says which feed it came from, and its scope.
-      expect(find.text('Fleet · Everyone'), findsOneWidget);
+      // Each feed's entry says which feed it came from, and its scope. Two
+      // fleet asks are two lines, not one shared guess.
+      expect(find.text('Fleet · Everyone'), findsNWidgets(2));
       expect(find.text('Review bot · Everyone'), findsOneWidget);
       expect(find.text('Network · Everyone'), findsOneWidget);
-      expect(find.text('Fleet · marshal · Everyone'), findsOneWidget);
       // None is drawn with a blank source line, thread or no thread.
       for (final card in tester.widgetList<AskCard>(find.byType(AskCard))) {
         expect(card.source, isNotNull);
@@ -460,6 +459,8 @@ void main() {
     await tester.pump();
     expect(find.byType(AskCard), findsOneWidget);
     expect(find.text('Start'), findsOneWidget);
+    // The way back is gone once it is taken.
+    expect(find.text('Show every ask'), findsNothing);
   });
 
   testWidgets('a stale source is named with its own age', (tester) async {
@@ -477,7 +478,7 @@ void main() {
             kind: SourceKind.fleet,
             host: 'local',
             loaded: true,
-            lastRead: shellNow.subtract(const Duration(minutes: 4)),
+            lastRead: shellNow.subtract(const Duration(minutes: 7)),
             failure: 'offline',
           ),
         ],
@@ -485,10 +486,12 @@ void main() {
     );
 
     // The row carries the read's own age and the bridge's words, not an
-    // invented one.
-    expect(find.text('Last updated 4m ago'), findsOneWidget);
-    expect(find.textContaining('4m old'), findsOneWidget);
+    // invented one. The age lives in the row's own line, so the detail does
+    // not repeat it (and never says "now old").
+    expect(find.text('Last updated 7m ago'), findsOneWidget);
+    expect(find.textContaining('the last read failed'), findsOneWidget);
     expect(find.textContaining('offline'), findsOneWidget);
+    expect(find.textContaining('now old'), findsNothing);
     expect(find.text('Last updated now ago'), findsNothing);
   });
 
@@ -511,5 +514,54 @@ void main() {
     // rather than a summary that reads as every check having passed.
     expect(find.text('0 of 0 checks passed'), findsOneWidget);
     expect(find.text('2 of 2 checks passed'), findsNothing);
+  });
+
+  testWidgets('a screen called stale still marks the age when no source '
+      'reports a failure', (tester) async {
+    // A stream that stopped without a failed read leaves every source
+    // "healthy", but the last queue is not current: §7 marks it anyway.
+    await tester.pumpWidget(
+      show(
+        [
+          ask(
+            id: 'tc-1',
+            kind: model.AskKind.approval,
+            actions: ['Approve once', 'Deny'],
+          ),
+        ],
+        state: StateKind.stale,
+        sources: [
+          SourceState(
+            kind: SourceKind.fleet,
+            host: 'local',
+            loaded: true,
+            lastRead: shellNow.subtract(const Duration(minutes: 4)),
+          ),
+        ],
+      ),
+    );
+
+    expect(find.byType(AskCard), findsOneWidget);
+    final stale = tester
+        .widgetList<StateMessage>(find.byType(StateMessage))
+        .where((message) => message.kind == StateKind.stale);
+    expect(stale, hasLength(1));
+    expect(find.text('Last updated 4m ago'), findsOneWidget);
+    expect(
+      find.text('The fleet has not answered; this is what it last said.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('an unreachable daemon nothing was read from says not seen yet', (
+    tester,
+  ) async {
+    await tester.pumpWidget(show(const [], state: StateKind.unavailable));
+
+    // No read made a snapshot, so the row says so instead of printing an
+    // invented age, or "unknown ago".
+    expect(find.text('The daemon is unreachable'), findsOneWidget);
+    expect(find.text('Not seen yet'), findsOneWidget);
+    expect(find.textContaining('ago'), findsNothing);
   });
 }

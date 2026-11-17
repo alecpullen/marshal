@@ -134,8 +134,8 @@ class Overview extends StatelessWidget {
   /// what did not arrive (§8). A healthy source says nothing here, and one
   /// still making its first attempt says nothing either.
   List<Widget> _freshness() {
-    final retry = StateAction('Read the fleet again', onTap: onRetry ?? () {});
-    return [
+    final retry = StateAction('Read again', onTap: onRetry ?? () {});
+    final rows = [
       for (final source in overview.sources)
         if (source.stale || source.unavailable)
           Padding(
@@ -143,6 +143,30 @@ class Overview extends StatelessWidget {
             child: _freshnessRow(source, retry),
           ),
     ];
+    // A screen the shell calls stale whose sources all count as healthy (a
+    // stream that stopped without a failed read) still marks the age: §7
+    // never presents old data as current.
+    if (rows.isEmpty && state == StateKind.stale) {
+      return [
+        StateMessage.stale(
+          age: _oldestSeen() ?? 'now',
+          detail: 'The fleet has not answered; this is what it last said.',
+        ),
+      ];
+    }
+    return rows;
+  }
+
+  /// The age of the oldest snapshot any source holds, in the design system's
+  /// words, or null when nothing has been read yet.
+  String? _oldestSeen() {
+    DateTime? oldest;
+    for (final source in overview.sources) {
+      final read = source.lastRead;
+      if (read == null) continue;
+      if (oldest == null || read.isBefore(oldest)) oldest = read;
+    }
+    return oldest == null ? null : relativeAge(oldest, now);
   }
 
   /// One source's row, in that source's own words.
@@ -439,9 +463,9 @@ class Overview extends StatelessWidget {
       ),
       StateKind.unavailable => StateMessage.unavailable(
         host: hosts.isEmpty ? 'The daemon' : hosts.first.name,
-        // No read has made a snapshot, so there is no age to give: the word
-        // says that rather than inventing one.
-        lastSeen: 'unknown',
+        // No read has made a snapshot, so there is no age to give; when one
+        // has, its own age is the honest one.
+        lastSeen: _oldestSeen(),
         action: retry,
       ),
       // Unreachable: a stale screen keeps its content and draws each source's

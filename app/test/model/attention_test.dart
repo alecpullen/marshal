@@ -22,6 +22,17 @@ void main() {
   );
 
   test('every source has a label and a note that says more than the label', () {
+    // The labels are the words a card shows, so they are pinned exactly: a
+    // placeholder would otherwise pass the checks below.
+    expect(
+      {for (final source in AskSource.values) source.name: source.label},
+      {
+        'fleet': 'Fleet',
+        'review': 'Review bot',
+        'network': 'Network',
+        'factory': 'Factory',
+      },
+    );
     for (final source in AskSource.values) {
       expect(source.label.trim(), isNotEmpty, reason: source.name);
       expect(source.note.trim(), isNotEmpty, reason: source.name);
@@ -31,6 +42,10 @@ void main() {
   });
 
   test('every scope has a label and a note', () {
+    expect(
+      {for (final scope in AskScope.values) scope.name: scope.label},
+      {'everyone': 'Everyone', 'projectWide': 'Project-wide'},
+    );
     for (final scope in AskScope.values) {
       expect(scope.label.trim(), isNotEmpty, reason: scope.name);
       expect(scope.note.trim(), isNotEmpty, reason: scope.name);

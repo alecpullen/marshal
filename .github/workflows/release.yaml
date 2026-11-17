@@ -81,11 +81,11 @@ jobs:
         with:
           flutter-version: '3.50.0'
           channel: stable
-      - name: Build the Studio for /next/
+      - name: Build the Studio for /
         working-directory: app
         run: |
           flutter pub get
-          flutter build web --base-href /next/ --output ../web/bridge/static-next
+          flutter build web --base-href / --output ../web/bridge/static-next
       - uses: actions/upload-artifact@v4
         with:
           name: studio-web

@@ -55,27 +55,28 @@ daemon), `fleet` (the fleet screen on the local daemon), `history`, `plugin`,
 ### Web control plane
 
 ```bash
-cd web/ui && npm install && npm run build   # writes web/bridge/static/
-go build ./cmd/webbridge                    # embeds the built assets
+cd app && flutter build web --base-href / --output ../web/bridge/static-next
+go build ./cmd/webbridge                    # embeds the Studio
 ```
 
-The SPA is baked in with `//go:embed`, so a change under `web/ui/src` is
-**invisible until `npm run build` reruns and the binary is rebuilt**.
+The Studio is the Flutter app in `app/` (`docs/studio-flutter/`), and `/`
+serves it from F8 on. `web/bridge/static-next/` is its build; in a Go-only
+checkout it holds a placeholder index. The app job and the release build both
+run that command before building `webbridge`, because `//go:embed` bakes it in.
 
-The Svelte Studio is frozen from F2 on: bug fixes only. The Studio's future is
-the Flutter app in `app/` (`docs/studio-flutter/`), which replaces the Svelte
-places one phase at a time; new UI work goes there, not under `web/ui/src`.
-
-The Flutter Studio is embedded beside it and served at `/next/` (F2):
+The Svelte Studio is frozen from F2 on: bug fixes only. For the length of the
+trial release it is served beside the Studio under `/classic/`, and `/next/…`
+redirects permanently to the same place at `/`. Its build carries that prefix:
 
 ```bash
-cd app && flutter build web --base-href /next/ --output ../web/bridge/static-next
+cd web/ui && npm install && npm run build -- --base=/classic/
 go build ./cmd/webbridge
 ```
 
-`web/bridge/static-next/` is the Flutter build; in a Go-only checkout it holds
-a placeholder index. The web tests and the release build both run that command
-before building `webbridge`, because `//go:embed` bakes it in.
+`web/bridge/static/` is that build, and the web job checks its committed copy
+against a fresh one. The SPA is baked in with `//go:embed`, so a change under
+`web/ui/src` is **invisible until `npm run build` reruns and the binary is
+rebuilt**.
 
 `web/bridge/contract` holds the fleet loop's wire types. `web/ui/src/lib/contract.ts`
 is generated from it: regenerate with

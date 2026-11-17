@@ -105,6 +105,52 @@ Suggested pull requests, in order.
 - CI fails if a `package.json` or a `.svelte` file exists anywhere in the
   repository after removal.
 
+## Trial measurements
+
+Taken on the trial build (Flutter at `/`, Svelte at `/classic/`), 2026-11-17,
+on the development host. First load is each Studio's `index.html` plus every
+byte it fetches before its first screen. **The bridge compresses nothing** —
+there is no `Content-Encoding` on any route in `web/bridge` — so the browser
+receives these bytes raw; the gzip column is what a compressing proxy would
+send, and is the lower bound.
+
+| Measure | Svelte raw (gz) | Flutter raw (gz) |
+|---|---|---|
+| `index.html` | 413 (290) | 2,079 (1,041) |
+| App bundle | 1,584,992 (471,374) | 2,940,163 (870,764) |
+| Styles / bootstrap | 54,591 (11,735) | 14,407 (5,772) |
+| Rendering engine | — | 7,402,483 (2,955,524) |
+| Fonts | 52,528 (52,657) | 1,208,916 (555,856) |
+| **First load** | **1,692,524 (536,056)** | **11,568,048 (4,388,957)** |
+
+`webbridge`, built here with both Studios' real output embedded: 66,372,191
+bytes. With the Svelte tree as it ships and the Flutter placeholder, the same
+build is 22,622,960 bytes — the difference is the 42 MB of build output the
+embed takes in, not the swap. The swap itself moves no bytes: the two trees
+keep their sizes and only their prefixes change. Removal (Task 4) is what
+shrinks the binary, by the 2.3 MB Svelte tree.
+
+**First load is 6.8× Svelte's raw (8.2× compressed), over the ceiling in
+decision 6 (3×)** — raised here, before removal, as the plan requires.
+
+Two facts about that number decide what it means:
+
+- **7.4 MB of it is the rendering engine, which does not come from the
+  bridge.** The build fetches CanvasKit from `gstatic.com/flutter-canvaskit`
+  unless it is made with `--no-web-resources-cdn`, and neither workflow passes
+  that flag, although `app/web/flutter_bootstrap.js` says they should. So a
+  browser that has CanvasKit cached from any other Flutter site fetches none
+  of it, and the app-served figure is 4,165,565 raw (2.46×) — inside the
+  ceiling. A first visit is what is over.
+- **The same fact breaks the private-network case.** On a network that cannot
+  reach `gstatic.com`, the engine never arrives and the Studio does not start
+  at all. That is the phone-over-a-private-network measurement the plan asks
+  for, and it currently cannot pass.
+
+Time to first usable screen **on a phone was not measured**: this host has no
+browser and no phone (see the environment-blocked list). The byte counts stand
+in for it until one does.
+
 ## Done when
 
 - A tagged release contains no Svelte and no Node step, and its Studio is

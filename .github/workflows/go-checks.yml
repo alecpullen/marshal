@@ -70,7 +70,10 @@ jobs:
           cache-dependency-path: web/ui/package-lock.json
       - run: npm ci
       - run: npm test
-      - run: npm run build
+      # The Svelte Studio is served under /classic/ for the trial release (F8
+      # decision 1), so its assets are built with that base. The committed copy
+      # in web/bridge/static is checked against this build below.
+      - run: npm run build -- --base=/classic/
       - name: Check committed embedded assets
         working-directory: .
         run: |
@@ -104,10 +107,10 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
-      # The Studio is served at /next/ beside the Svelte one (F2): the build
-      # is embedded by `go:embed`, so it is built before the Go binary is.
-      - name: Build the Studio for /next/
-        run: flutter build web --base-href /next/ --output ../web/bridge/static-next
+      # The Studio is served at `/` from F8 on: the build is embedded by
+      # `go:embed`, so it is built before the Go binary is.
+      - name: Build the Studio for /
+        run: flutter build web --base-href / --output ../web/bridge/static-next
       - name: The Studio's build embeds
         working-directory: .
         run: CGO_ENABLED=1 go build -o /tmp/webbridge ./cmd/webbridge

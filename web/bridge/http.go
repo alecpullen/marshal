@@ -216,13 +216,22 @@ func (s *Server) route(api http.Handler, w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if isNextPath(r.URL.Path) {
-		// The Flutter Studio, before the Svelte one: both are client-side
-		// applications, and only the prefix tells them apart.
-		nextHandler().ServeHTTP(w, r)
+		// The Studio's prefix during the trial: a permanent redirect to the
+		// same place at the root, so a bookmark made then keeps working (F8
+		// decision 2).
+		redirectNext(w, r)
+		return
+	}
+	if isClassicPath(r.URL.Path) {
+		// The Svelte Studio, kept for the length of the trial release: both
+		// Studios are client-side applications, and only the prefix tells
+		// them apart.
+		classicHandler().ServeHTTP(w, r)
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {
-		staticHandler().ServeHTTP(w, r)
+		// Everything else that is not the API is the Studio, at the root.
+		studioHandler().ServeHTTP(w, r)
 		return
 	}
 	api.ServeHTTP(w, r)

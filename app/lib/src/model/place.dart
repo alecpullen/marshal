@@ -30,15 +30,27 @@ const linkTabKey = 't';
 /// same parser serves a deep link on the desktop, where there is no URL.
 @immutable
 class Place {
-  const Place(this.kind, {this.host, this.id, this.query = const {}})
-    : assert(
-        kind != PlaceKind.project || id != null,
-        'a project place names its project',
-      ),
-      assert(
-        kind != PlaceKind.thread || (host != null && id != null),
-        'a thread place names its host and its thread',
-      );
+  const Place(
+    this.kind, {
+    this.host,
+    this.id,
+    this.section,
+    this.query = const {},
+  }) : assert(
+         kind != PlaceKind.project || id != null,
+         'a project place names its project',
+       ),
+       assert(
+         kind != PlaceKind.thread || id != null,
+         'a thread place names its thread',
+       ),
+       assert(
+         section == null ||
+             kind == PlaceKind.automations ||
+             kind == PlaceKind.library ||
+             kind == PlaceKind.settings,
+         'only Automations, Library and Settings have sections',
+       );
 
   /// The overview: the fleet at a glance.
   const Place.overview() : this(PlaceKind.overview);
@@ -49,10 +61,19 @@ class Place {
   final PlaceKind kind;
 
   /// The host a thread belongs to. Every other place spans hosts.
+  ///
+  /// A thread a link names by its id alone has none: a link written for the
+  /// one-bridge Studio could not know which host answers for it, so the fleet
+  /// is asked instead (F8 decision 2).
   final String? host;
 
   /// The project's id (its root) or the thread's id.
   final String? id;
+
+  /// The section of Automations, Library or Settings a link names, in the
+  /// vocabulary those places use for it ([automationsSections] and its
+  /// siblings). Null is the place's first section.
+  final String? section;
 
   /// What a link carries beyond the place itself: the inspector's width
   /// ([linkWidthKey]) and tab ([linkTabKey]) (F4 decision 3). Only the keys
@@ -65,6 +86,7 @@ class Place {
     kind,
     host: host,
     id: id,
+    section: section,
     query: Map<String, String>.unmodifiable(query),
   );
 
@@ -74,6 +96,7 @@ class Place {
       other.kind == kind &&
       other.host == host &&
       other.id == id &&
+      other.section == section &&
       mapEquals(other.query, query);
 
   @override
@@ -81,6 +104,7 @@ class Place {
     kind,
     host,
     id,
+    section,
     Object.hashAllUnordered(
       query.entries.map((entry) => Object.hash(entry.key, entry.value)),
     ),
@@ -90,7 +114,47 @@ class Place {
   String toString() =>
       'Place(${kind.name}${host == null ? '' : ', $host'}'
       '${id == null ? '' : ', $id'}'
+      '${section == null ? '' : ', $section'}'
       '${query.isEmpty ? '' : ', $query'})';
+}
+
+/// Automations' section names, in tab order.
+const automationsSections = ['bots', 'schedules', 'watches', 'recipes'];
+
+/// Library's section names, in tab order.
+const librarySections = ['skills', 'plugins', 'mcp', 'memory'];
+
+/// Settings' section names, in the design's order (F7 decision 7), which is
+/// also `SettingsSectionKind`'s.
+const settingsSections = [
+  'hosts',
+  'environments',
+  'connections',
+  'models',
+  'secrets',
+  'network',
+  'usage',
+  'notifications',
+  'access',
+  'general',
+];
+
+/// The section names [kind] accepts, or null for a place with no sections.
+List<String>? sectionsOf(PlaceKind kind) => switch (kind) {
+  PlaceKind.automations => automationsSections,
+  PlaceKind.library => librarySections,
+  PlaceKind.settings => settingsSections,
+  _ => null,
+};
+
+/// Which section of [place] a link names: `0` when it names none, or a
+/// section this build does not know — the place opens, at its first section.
+int sectionIndex(Place place) {
+  final names = sectionsOf(place.kind);
+  final name = place.section;
+  if (names == null || name == null) return 0;
+  final index = names.indexOf(name);
+  return index < 0 ? 0 : index;
 }
 
 /// The path segment of each simple place. `project` and `thread` carry a
@@ -161,21 +225,35 @@ Place _placeOf(List<String> parts) {
     case 'pulls':
       return parts.length == 1 ? const Place(PlaceKind.pulls) : _unknown;
     case 'automations':
-      return parts.length == 1 ? const Place(PlaceKind.automations) : _unknown;
+      return _sectioned(PlaceKind.automations, parts);
     case 'library':
-      return parts.length == 1 ? const Place(PlaceKind.library) : _unknown;
+      return _sectioned(PlaceKind.library, parts);
     case 'settings':
-      return parts.length == 1 ? const Place(PlaceKind.settings) : _unknown;
+      return _sectioned(PlaceKind.settings, parts);
     case 'project':
       return parts.length == 2
           ? Place(PlaceKind.project, id: parts[1])
           : _unknown;
     case 'thread':
+      // `/thread/<id>` names a thread no host is named for: a link written
+      // before the app knew which host answers for it (F8 decision 2), or one
+      // a person typed. The shell asks the fleet.
+      if (parts.length == 2) return Place(PlaceKind.thread, id: parts[1]);
       return parts.length == 3
           ? Place(PlaceKind.thread, host: parts[1], id: parts[2])
           : _unknown;
   }
   return _unknown;
+}
+
+/// The place [parts] name within a place that has sections: the place
+/// itself, or one of its sections, and nothing deeper.
+Place _sectioned(PlaceKind kind, List<String> parts) {
+  if (parts.length == 1) return Place(kind);
+  if (parts.length > 2) return _unknown;
+  final names = sectionsOf(kind);
+  if (names == null || !names.contains(parts[1])) return _unknown;
+  return Place(kind, section: parts[1]);
 }
 
 const _unknown = Place.overview();
@@ -184,11 +262,18 @@ const _unknown = Place.overview();
 /// that carries its target, its query keys in order.
 String formatPlace(Place place) {
   final segment = _segments[place.kind];
+  final section = place.section;
   final path = segment != null
-      ? '/$segment'
+      ? (section == null
+            ? '/$segment'
+            : '/$segment/${Uri.encodeComponent(section)}')
       : switch (place.kind) {
           PlaceKind.project =>
             '/project/${Uri.encodeComponent(place.id ?? '')}',
+          // A thread a link names without its host keeps that form: the path
+          // says no more than the link did.
+          PlaceKind.thread when place.host == null =>
+            '/thread/${Uri.encodeComponent(place.id ?? '')}',
           PlaceKind.thread =>
             '/thread/${Uri.encodeComponent(place.host ?? '')}'
                 '/${Uri.encodeComponent(place.id ?? '')}',

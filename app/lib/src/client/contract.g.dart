@@ -1774,6 +1774,7 @@ class ProjectStatus {
     required this.trust,
     required this.isolation,
     this.mcpProjectID,
+    this.repoID,
     this.orphanWorktrees,
     this.rawEnums = const {},
   });
@@ -1791,6 +1792,13 @@ class ProjectStatus {
   /// given. It is optional so a bridge that has not minted one yet keeps the
   /// response it always had.
   final String? mcpProjectID;
+  /// RepoID names the registered repo this project's work comes from: the
+  /// repo its settings' intake names, while that repo is still registered.
+  /// It is what `GET /api/repos/{id}/issues` is keyed by, so it is what lets
+  /// a client ask a project for its issues at all. Omitted for a project
+  /// that names none — a local checkout with no remote, which has no issues
+  /// to serve — rather than an id the bridge made up.
+  final String? repoID;
   /// OrphanWorktrees are worktrees under this project that no known agent
   /// claims. Reported, never deleted — they may hold uncommitted work.
   final List<String>? orphanWorktrees;
@@ -1813,6 +1821,7 @@ class ProjectStatus {
       trust: trust,
       isolation: json['isolation'] as String,
       mcpProjectID: json['mcpProjectId'] as String?,
+      repoID: json['repoId'] as String?,
       orphanWorktrees: _listOrNull(
         json['orphanWorktrees'],
         (value) => value as String,
@@ -1832,6 +1841,9 @@ class ProjectStatus {
     json['isolation'] = isolation;
     if (mcpProjectID != null) {
       json['mcpProjectId'] = mcpProjectID;
+    }
+    if (repoID != null) {
+      json['repoId'] = repoID;
     }
     if (orphanWorktrees != null) {
       json['orphanWorktrees'] = orphanWorktrees!;

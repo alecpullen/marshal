@@ -148,8 +148,11 @@ class DraftsModel extends ChangeNotifier {
   /// next deliberate write would send.
   bool _unsaved = false;
 
-  /// Whether the last write did not reach the bridge. A read that failed sets
-  /// `_failure` but not this: they are different promises.
+  /// Whether the last write did not reach the bridge. A *list* read that fails
+  /// sets `_failure` but not this: nothing was being written, so it is a
+  /// different promise. A conflict read that fails does set it, because the
+  /// refusal that raised the read already means the text on screen was not
+  /// stored, and the version that won it could not be read.
   bool _writeFailed = false;
 
   /// The draft this editor holds, or null before one is created.

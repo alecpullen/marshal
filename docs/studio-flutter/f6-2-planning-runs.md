@@ -62,6 +62,16 @@ settled here, the deviations from its letter, and what is not done.
   mounted, so leaving an edited page asks first.
 - `main.dart` wires `projectFor` from the host's client, filtering `/api/runs`
   to the project, and `answerRunFor` to `BridgeClient.answerRun`.
+- `main.dart` wires `handoffFor` to read the project's settings before the
+  review opens, so the sheet inherits the project's factory defaults — its
+  repository, host, branch, workspace, expected checks and round allowance —
+  through `ProjectDefaults.fromSettings`. The implementer's and reviewer's
+  profiles and the planner's authority are not inherited: the settings document
+  holds a routing payload for the first two and nothing for the third, so the
+  sheet says the project states them not and the person chooses. A settings
+  read that fails opens the sheet on the host alone rather than leaving the plan
+  unhanded, and the sheet then blocks on the repository it does not know
+  instead of posting a guess.
 
 ## Decisions this record makes
 

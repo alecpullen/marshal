@@ -169,4 +169,80 @@ void main() {
     expect(model.consequence, contains('2 rounds'));
     expect(model.consequence, contains(HandoffAuthority.nothing));
   });
+
+  test('a project\'s settings are what its handoff inherits', () {
+    // The live wiring reads the project's settings when a plan is handed off
+    // (F6 decision 8), so what the sheet shows as inherited is the document
+    // the project page edits rather than the host alone. Without the mapping
+    // the repository is unstated and approval is blocked.
+    final defaults = ProjectDefaults.fromSettings(
+      ProjectSettings.fromJson({
+        'workspace': 'alpha',
+        'intake': {'repoId': 'repo-1'},
+        'factoryDefaults': {
+          'targetBranch': 'main',
+          'maxRounds': 5,
+          'expectedChecks': [
+            {'appId': 42, 'kind': 'check', 'name': 'build'},
+            {'appId': 42, 'kind': 'check', 'name': 'unit'},
+          ],
+        },
+      }),
+      hostID: 'local',
+    );
+
+    expect(defaults.repoID, 'repo-1');
+    expect(defaults.hostID, 'local', reason: 'the project names no host');
+    expect(defaults.targetBranch, 'main');
+    expect(defaults.expectedChecks, ['build', 'unit']);
+    expect(defaults.maxRounds, 5);
+    expect(defaults.native, isTrue, reason: 'no workspace is named');
+
+    final model = _handoff(defaults: defaults);
+    addTearDown(model.dispose);
+    expect(model.sourceOf(HandoffField.repository), FieldSource.inherited);
+    expect(model.words(HandoffField.repository), 'repo-1');
+    expect(model.words(HandoffField.checks), 'build, unit');
+    expect(model.words(HandoffField.rounds), '5');
+    expect(
+      model.canApprove,
+      isTrue,
+      reason: 'the repository is inherited, not left for the person to guess',
+    );
+    expect(model.draft.config.repoID, 'repo-1');
+    expect(model.draft.config.targetBranch, 'main');
+    expect(model.draft.config.maxRounds, 5);
+  });
+
+  test('a project that names a workspace runs its work there', () {
+    final defaults = ProjectDefaults.fromSettings(
+      ProjectSettings.fromJson({
+        'intake': {'repoId': 'repo-1'},
+        'factoryDefaults': {'workspace': 'ws-1', 'hostId': 'builder'},
+      }),
+      hostID: 'local',
+    );
+
+    expect(defaults.workspace, 'ws-1');
+    expect(defaults.native, isFalse);
+    expect(defaults.hostID, 'builder', reason: 'the project names its host');
+  });
+
+  test('a project that states no defaults leaves the sheet saying so', () {
+    final defaults = ProjectDefaults.fromSettings(
+      ProjectSettings.fromJson({'intake': <String, dynamic>{}}),
+      hostID: 'local',
+    );
+
+    final model = _handoff(defaults: defaults);
+    addTearDown(model.dispose);
+    expect(model.hostID, 'local');
+    expect(model.words(HandoffField.repository), 'Not stated');
+    expect(
+      model.canApprove,
+      isFalse,
+      reason: 'the sheet blocks on what the project does not state',
+    );
+    expect(model.blockers, contains('Choose the repository the work is on.'));
+  });
 }

@@ -344,7 +344,14 @@ class Studio extends StatefulWidget {
   /// Builds the handoff review for a plan (F6 decision 8). Null leaves the one
   /// action that hands a plan off out, rather than offering a sheet that
   /// cannot create an item.
-  final HandoffModel Function(model.ThreadRef thread, String plan, String spec)?
+  ///
+  /// It is asynchronous because what the review inherits is the project's own
+  /// settings, read when the person hands the plan off (F6 decision 12).
+  final Future<HandoffModel> Function(
+    model.ThreadRef thread,
+    String plan,
+    String spec,
+  )?
   handoffFor;
 
   /// Builds a plan run's model for one agent (F6 decision 11). Null leaves a
@@ -731,7 +738,11 @@ class _ThreadPlace extends StatefulWidget {
   final void Function(StartedPlanner planner)? onPlannerStarted;
 
   /// The handoff review's model, and where an approved item opens.
-  final HandoffModel Function(model.ThreadRef thread, String plan, String spec)?
+  final Future<HandoffModel> Function(
+    model.ThreadRef thread,
+    String plan,
+    String spec,
+  )?
   handoffFor;
   final void Function(String itemID)? onOpenItem;
   final List<inbox.Ask> asks;
@@ -803,7 +814,14 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
   ) async {
     final build = widget.handoffFor;
     if (build == null) return;
-    final model = build(widget.thread, plan, spec);
+    final model = await build(widget.thread, plan, spec);
+    // The project's settings are read before the sheet opens, so the place may
+    // be gone by now; the review is disposed rather than opened on a dead
+    // context.
+    if (!context.mounted) {
+      model.dispose();
+      return;
+    }
     final item = await showHandoffSheet(context, model);
     model.dispose();
     if (item != null) widget.onOpenItem?.call(item);
@@ -1125,7 +1143,11 @@ class _PlanningPlace extends StatefulWidget {
 
   final model.ThreadRef thread;
   final PlanningModel plan;
-  final HandoffModel Function(model.ThreadRef thread, String plan, String spec)?
+  final Future<HandoffModel> Function(
+    model.ThreadRef thread,
+    String plan,
+    String spec,
+  )?
   handoffFor;
   final DateTime? now;
   final void Function(String itemID)? onOpenItem;
@@ -1146,7 +1168,18 @@ class _PlanningPlaceState extends State<_PlanningPlace> {
     final build = widget.handoffFor;
     if (build == null) return;
     final latest = widget.plan.latest;
-    final model = build(widget.thread, latest?.plan ?? '', latest?.spec ?? '');
+    final model = await build(
+      widget.thread,
+      latest?.plan ?? '',
+      latest?.spec ?? '',
+    );
+    // What the review inherits is read before the sheet opens, so the place
+    // may be gone by now; the review is disposed rather than opened on a dead
+    // context.
+    if (!context.mounted) {
+      model.dispose();
+      return;
+    }
     final item = await showHandoffSheet(context, model);
     model.dispose();
     if (item != null) widget.onOpenItem?.call(item);

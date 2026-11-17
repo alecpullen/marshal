@@ -389,8 +389,32 @@ type Fleet struct {
 	// checkBuild runs a new binary's --version; tests replace it. Nil runs
 	// the binary.
 	checkBuild func(ctx context.Context, bin string) (version string, err error)
-	// sweepMu keeps one restart sweep at a time.
+	// sweepMu keeps one restart sweep at a time, and guards the bridge's own
+	// restart state below except where noted.
 	sweepMu sync.Mutex
+
+	// ownPath is the daemon's own executable, recorded by SetOwnBinary; empty
+	// until then, which is what leaves the restart route answering 501
+	// (decision 7).
+	ownPath string
+	// ownInfo is ownPath's identity at SetOwnBinary, so a replaced build is
+	// told apart from the one this process is running.
+	ownInfo os.FileInfo
+	// ownRefused is the replacement whose --version check failed: restarting
+	// would execute it, so nothing restarts until the file changes.
+	ownRefused os.FileInfo
+	// ownRestartMu guards ownRestartState, which GET /api/daemon reads
+	// without holding sweepMu.
+	ownRestartMu    sync.Mutex
+	ownRestartState *DaemonRestart
+	// selfRestart carries the decision to re-execute; buffered one, so the
+	// fleet never blocks on a main that is not listening.
+	selfRestart chan SelfRestart
+	// selfFired is true once this process has decided to restart: at most one
+	// decision per process (decision 3). selfVersion is the build it restarts
+	// on, so a second ask answers the same version.
+	selfFired   bool
+	selfVersion string
 
 	// pruneMu serializes prune callers against each other: the HTTP
 	// prune endpoint and the spawn-path enforceDisk prune both call

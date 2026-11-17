@@ -49,6 +49,10 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	out.Projects = s.projectRoots()
 	out.Pinned = s.pinnedRoots()
 	out.Children = s.projectChildren()
+	out.Restart = nil
+	if s.fleet != nil {
+		out.Restart = s.fleet.ownRestart()
+	}
 	out.Refresh = nil
 	if s.refresh != nil {
 		pid, restarts := s.refresh.State()

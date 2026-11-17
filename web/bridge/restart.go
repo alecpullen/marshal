@@ -173,6 +173,11 @@ func (f *Fleet) SweepRestarts(ctx context.Context, now time.Time) {
 
 		f.recycleProjectChild(ctx, pc, state, version)
 	}
+
+	// The bridge's own binary is checked last, still under sweepMu: every
+	// child has been walked, so a child that is mid-restart holds this back
+	// rather than being restarted under (decisions 3 and 4).
+	f.sweepOwnRestart(ctx, now)
 }
 
 // askProjectState asks pc's child for its project/state, bounded by

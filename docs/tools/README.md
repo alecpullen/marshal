@@ -47,7 +47,11 @@ reach the engine, so these are registered by the agent builder
 Two further surfaces register outside `native` entirely and are documented in
 their own packages, not here: the desktop `browser.*` tools when
 `[desktop] enabled` (`internal/tools/desktop/tools.go:108`), and MCP tools when
-a server is configured (`internal/tools/mcp/manager.go:339`).
+a server is configured (`internal/tools/mcp/manager.go:339`). With
+`[images] enabled` those same tools hand back images: `browser.screenshot`
+returns one `schema.ImageRef` instead of a path, and says `(images disabled)` in
+its summary when it does not. `image.view` and `image.capture` register inside
+`native`, under the same flag plus a wired image store.
 
 ## Registration flags
 
@@ -81,6 +85,41 @@ kind of action:
 | `network` | outbound requests |
 | `destructive` | privileged or irreversible operations |
 | `environment` | mutates state **outside** the working directory (build caches, global config, system package managers) — always requires explicit approval, even in auto-approve modes, because those modes own the workspace, not the machine |
+
+## Capture (`[capture]`)
+
+`image.capture` (`internal/tools/native/capture.go`, over the leaf package
+`internal/capture/`) photographs the display session this process runs in and
+returns the image through the store as one `schema.ImageRef`. It registers only
+when `[capture] enabled = true` **and** an image store is wired: with no store
+it could only fail.
+
+```toml
+[capture]
+enabled = false   # the tool registers only when true
+backend = ""      # "" detects the session; or "sway", "hyprland", "darwin"
+timeout = "10s"   # per helper command
+```
+
+Two targets (`target`, an enum):
+
+| Target | What it captures | Backends |
+|---|---|---|
+| `active_window` (default) | the focused window's absolute rect | sway: `swaymsg -t get_tree -r` + `grim -g "x,y wxh" -`; Hyprland: `hyprctl -j activewindow` + the same `grim`; macOS: `osascript -l JavaScript` for the frontmost layer-0 `CGWindowID` + `screencapture -x -l<id> -t png` |
+| `screen` | every display | `grim -` with no geometry; macOS `screencapture -x -t png` |
+
+With `backend = ""` the session decides: `SWAYSOCK`, then
+`HYPRLAND_INSTANCE_SIGNATURE`, then `GOOS=darwin`, else `ErrNoBackend` saying
+which ones were looked for. A missing helper is `ErrHelperMissing`, a refused
+macOS Screen Recording permission is `ErrPermission` naming the System Settings
+pane, and an empty focus is `ErrNoFocused`; none of them is a generic failure.
+
+The risk is `read_only` and the workspace effect `session_only`, but a
+screenshot leaves the workspace and shows the whole machine, so the built-in
+permission rules carry one `image.capture` / `*` / `ask` rule and the tool
+prompts anyway. The approval pattern is the target, not the file: approving for
+the session covers that target for the rest of the session; config `deny` still
+wins.
 
 ## tools.select
 

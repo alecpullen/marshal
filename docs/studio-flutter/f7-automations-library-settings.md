@@ -275,3 +275,90 @@ predates this branch.
   stays where it works (model-level `test()` cases) and a widget test
   scripts the routes it expects.
 
+
+## Implementation record (F7 plan 2, 2026-11-17)
+
+Branch `studio/f7-2-settings`, off `studio/f7-1-automations-library`. Every
+task landed as one commit, `f7-2-settings: task N — <title>`.
+
+### What landed
+
+| Task | What it is | Where |
+|---|---|---|
+| 1 | The Settings frame: the ten sections in the design's order, the section list beside the open one (above it under 760), the planned state for a section this step does not build, and appearance taking effect through `EmberTheme`. Hosts (discovered, read-only, "Add a host" planned) and General (appearance, transcript density, the keyboard map and the local daemon's document) | `app/lib/src/ui/settings/{settings_place,placeholder,hosts_section,general_section}.dart`, `app/lib/src/model/{hosts,general}_model.dart` |
+| 2 | Connections (forges with what their credential permits, providers with health and Probe) and Models and routing (roles, presets, the caps and what happens at them, write-only provider keys), on the transcribed `connections.go` and `models.go` | `web/bridge/contract/{connections,models}.go`, `app/lib/src/model/{connections,models}_model.dart`, `app/lib/src/ui/settings/{connections,models}_section.dart` |
+| 3 | Secrets (references, where each is used, a value written and never read) and Network (hosts with rule, requests and last seen, filtered by environment and agent). A blocked request is an ask of kind `network`, answered Allow for this agent / Add to the environment / Block | `web/bridge/contract/{secrets,network}.go`, `app/lib/src/model/{secrets,network}_model.dart`, `app/lib/src/ui/settings/{secrets,network}_section.dart`, `app/lib/src/model/inbox_model.dart` |
+| 4 | The environment gallery as rows (contents in one line, version, use), the import that starts a draft, and a template's builds with a log streamed from its event route | `web/bridge/contract/environments.go`, `app/lib/src/model/environments_model.dart`, `app/lib/src/ui/settings/{environments_section,builds_view}.dart` |
+| 5 | The designer: layers and source as two views of one document, a chosen layer selecting its range, one layer rewritten without touching another, Save draft, Build with its log, Publish gated on a passing build, and the panel's size, start times, warm pool and gate | `app/lib/src/model/environment_model.dart`, `app/lib/src/ui/settings/{environment_designer,layer_list}.dart`, `Field.mono` in the kit |
+| 6 | Usage, the audit log and the disk. The kit gains `Chart` by the design system's §10 (bars, `fg` for one series, at most `ok`/`warn`/`err`, no legend beyond direct labels), with the gallery, its goldens and the §10 entry. Prune confirms and names what goes | `app/lib/src/ui/kit/chart.dart`, `docs/studio-flutter/design-system.md`, `web/bridge/contract/usage.go`, `app/lib/src/model/usage_model.dart`, `app/lib/src/ui/settings/usage_section.dart` |
+| 7 | Notifications (webhooks and Send a test, Signal and Element planned) and Access (the Studio token, where the MCP clients are, status links listed, made and revoked). Share on a thread's header now has a status link to hand out | `web/bridge/contract/{notifications,statuslinks}.go`, `app/lib/src/model/{notifications,access}_model.dart`, `app/lib/src/ui/settings/{notifications,access}_section.dart` |
+| 8 | The route-parity table and its test, and this record | `docs/studio-flutter/route-parity.md`, `app/test/route_parity_test.dart` |
+
+Every section is a `SectionPage` and is registered in
+`app/test/support/screens.dart` with all five states (the designer is
+registered as its own screen). The two exceptions the design allows are the
+designer (decision 6) and the chart above Usage's rows (decision 8).
+
+### Choices this plan left open
+
+- **Hosts and General are `SectionModel`s like every other section.** The
+  plan's one pattern applies to all ten, so a read-only section still says
+  what a row is and what a save would write (nothing, in these two).
+- **General's appearance and density are this window's.** The bridge's
+  `/api/config` route is not mapped in this build, so the section says so
+  rather than implying it stored the choice. The daemon row reads
+  `GET /api/daemon`, the same document the tray parses.
+- **The designer's layers are read from the source, not from the bridge's
+  parse.** One local scan of the table headers keeps the two views in step on
+  every keystroke; a save hands the source to the bridge, whose diagnostics
+  replace the scan's silence. The plan's decision that the source is a
+  monospace `Field` needed one kit addition (`Field.mono`).
+- **A table written more than once is one layer, one range per block.** The
+  scan keeps every `[[mounts]]` header, not only the first: a layer owns each
+  block its table is written as, `textOf` reads them in the document's order,
+  and an edit is written back at the first block and takes the rest with it.
+  The source view can select only one span, so a table declared in several
+  places selects from its first line to its last.
+- **Access points at Library's MCP tab with a row, not a link that navigates.**
+  Settings is not wired to the shell's `PlaceNavigation` yet (F7 plan 1 left
+  Automations and Library in the same position), so the row names where the
+  clients are and what they hold.
+- **`Chart` is bars only.** The plan allowed bars or one line; a line needs a
+  scale and axis furniture the kit has no tokens for, so the one series is a
+  row of labelled bars.
+- **Two `dartgen` bugs were fixed with fixture rules.** A map of structs
+  encoded its values from an undeclared `value` instead of `entry.value`, and
+  a field whose name is a Dart keyword (`extends`) was rejected rather than
+  taking a trailing underscore. Both are pinned by
+  `web/bridge/contract/tsgen/testdata/rules` and its generated modules.
+
+### Verification
+
+| Task | Verify command | Result |
+|---|---|---|
+| 1 | `cd app && flutter test` | **pass** (1863) |
+| 2 | `CGO_ENABLED=1 go test ./web/... -count=1`; `cd app && flutter test` | go **pass**; flutter **pass** (1987) |
+| 3 | `CGO_ENABLED=1 go test ./web/... -count=1`; `cd app && flutter test` | go **pass**; flutter **pass** (2110) |
+| 4 | `CGO_ENABLED=1 go test ./web/... -count=1`; `cd app && flutter test` | go **pass**; flutter **pass** (2173) |
+| 5 | `cd app && flutter test` | **pass** (2237) |
+| 6 | `CGO_ENABLED=1 go test ./web/... -count=1`; `cd app && flutter test` | go **pass**; flutter **pass** (2300) |
+| 7 | `CGO_ENABLED=1 go test ./web/... -count=1`; `cd app && flutter test` | go **pass**; flutter **pass** (2424) |
+| 8 | `cd app && flutter analyze && flutter test && dart format --output=none --set-exit-if-changed lib test`; `CGO_ENABLED=1 go test ./web/... -count=1`; `cd web/ui && npm run check && npm test` | see below |
+
+`flutter test --platform chrome`, `flutter test integration_test -d linux` and
+`flutter build linux --debug` are environment-blocked on this host: there is
+no browser, no display and no CMake/GTK3. Two `dartgen` fixes are described
+above; they were needed to express the contract in Dart, not to quiet a test.
+
+### Unfinished, and what later plans rely on
+
+- Settings is not yet wired into the shell's place dispatch: the sections are
+  built and registered, and `PlaceKind.settings` still draws the planned
+  message until the shell passes a `SettingsPlace` its navigation. The
+  designer's and Environments' data come from the bridge, so the wiring is the
+  remaining step.
+- Access's pointer to Library's MCP tab becomes a real navigation when that
+  seam exists.
+- Share on a thread's header has its status link (`AccessModel.share`); the
+  shell passes the callback when it builds the thread place's header.
+- `route-parity.md` is the table F8 requires to be complete.

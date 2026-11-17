@@ -300,6 +300,7 @@ class _PinnedAsk extends StatelessWidget {
           model.AskKind.decision => AskKind.decision,
           model.AskKind.recovery => AskKind.decision,
           model.AskKind.completion => AskKind.decision,
+          model.AskKind.network => AskKind.network,
         },
         title: ask.title,
         body: ask.body.isEmpty ? null : ask.body,

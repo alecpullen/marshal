@@ -1,0 +1,17 @@
+{
+  "StatusLink": {
+    "id": "sl-1",
+    "agentId": "a-1",
+    "createdAt": "2026-11-17T03:00:00Z",
+    "expiresAt": "2026-11-18T03:00:00Z"
+  },
+  "StatusLinkCreate": {
+    "agentId": "a-1",
+    "ttlHours": 24
+  },
+  "StatusLinkCreated": {
+    "id": "sl-1",
+    "url": "/status/sl-1.token",
+    "expiresAt": "2026-11-18T03:00:00Z"
+  }
+}

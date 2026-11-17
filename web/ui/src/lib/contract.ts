@@ -463,6 +463,82 @@ export interface PutGrantRequest {
 }
 
 /**
+ * Credential is one forge credential as GET /api/credentials answers it
+ * (web/bridge/repos_http.go). It never carries a value: Set says whether the
+ * secret it points at can be read now, and nothing on the wire can write or
+ * read that secret.
+ */
+export interface Credential {
+  id: string;
+  /**
+   * none, pat, ssh or vault
+   */
+  kind: string;
+  /**
+   * EnvVar is where a pat credential's token is read from.
+   */
+  envVar?: string;
+  /**
+   * KeyPath is the private key an ssh credential names.
+   */
+  keyPath?: string;
+  /**
+   * Ref is the vault path a vault credential names.
+   */
+  ref?: string;
+  user?: string;
+  /**
+   * Set reports whether the secret exists; the credential is refused at use
+   * when it does not.
+   */
+  set: boolean;
+}
+
+/**
+ * CredentialInput is POST /api/credentials' body: the same record without the
+ * read-only Set.
+ */
+export interface CredentialInput {
+  id: string;
+  kind: string;
+  envVar?: string;
+  keyPath?: string;
+  ref?: string;
+  user?: string;
+}
+
+/**
+ * Repo is one registered repository: GET /api/repos' row and POST /api/repos'
+ * body (web/bridge/workspace.go).
+ */
+export interface Repo {
+  id: string;
+  url: string;
+  branch?: string;
+  credRef?: string;
+  ownerId: string;
+  /**
+   * Forge names the hosting provider's API family: github or gitea.
+   */
+  forge?: string;
+  /**
+   * APIBase overrides the API root for a self-hosted instance.
+   */
+  apiBase?: string;
+  /**
+   * Watch turns the issue poller on, and WatchLabel is the label that
+   * triggers a spawn.
+   */
+  watch?: boolean;
+  watchLabel?: string;
+  /**
+   * LastPolled and LastPollErr are what the poller last did.
+   */
+  lastPolled?: string;
+  lastPollErr?: string;
+}
+
+/**
  * DaemonInfo is what GET /api/daemon answers about the local daemon.
  */
 export interface DaemonInfo {
@@ -599,6 +675,247 @@ export interface WorkingDraftSaveRequest {
 export interface WorkingDraftDeleteRequest {
   requestId: string;
   expectedVersion: number;
+}
+
+/**
+ * EnvWorkspace is the `[workspace]` layer.
+ */
+export interface EnvWorkspace {
+  name: string;
+  base: string;
+  toolchains?: string[];
+  extends?: string;
+}
+
+/**
+ * EnvPackages is the `[packages]` layer.
+ */
+export interface EnvPackages {
+  apt?: string[];
+  go?: string[];
+  npm?: string[];
+  pip?: string[];
+}
+
+/**
+ * EnvMount is one entry of `[[mounts]]`.
+ */
+export interface EnvMount {
+  repo?: string;
+  volume?: string;
+  target: string;
+  readonly?: boolean;
+}
+
+/**
+ * EnvFile is one shared file of `[files]`.
+ */
+export interface EnvFile {
+  target: string;
+  readonly?: boolean;
+}
+
+/**
+ * EnvInject is one credential injection of `[inject]`.
+ */
+export interface EnvInject {
+  ref: string;
+  header?: string;
+  format?: string;
+}
+
+/**
+ * EnvNetwork is the `[network]` layer.
+ */
+export interface EnvNetwork {
+  /**
+   * open, allowlist or off
+   */
+  mode?: string;
+  egress?: string[];
+}
+
+/**
+ * EnvResources is the `[resources]` layer.
+ */
+export interface EnvResources {
+  cpu?: number;
+  memory?: string;
+  disk?: string;
+  timeout?: string;
+}
+
+/**
+ * EnvPolicy is the `[policy]` layer. Auto is optional: absent means the
+ * document does not set it, while an explicit false is a real value.
+ */
+export interface EnvPolicy {
+  mode?: string;
+  auto?: boolean;
+  allow?: string[];
+}
+
+/**
+ * EnvSetup is the `[setup]` layer.
+ */
+export interface EnvSetup {
+  run?: string;
+}
+
+/**
+ * EnvPreview is the `[preview]` layer: the ports the Studio may expose.
+ */
+export interface EnvPreview {
+  ports?: number[];
+}
+
+/**
+ * EnvDoc is a template's parsed document: the designer's two views of one
+ * thing, since every layer here is a range of the same source.
+ */
+export interface EnvDoc {
+  workspace: EnvWorkspace;
+  packages: EnvPackages;
+  mounts?: EnvMount[];
+  files?: Record<string, EnvFile>;
+  secretsEnv?: Record<string, string>;
+  inject?: Record<string, EnvInject>;
+  network: EnvNetwork;
+  resources: EnvResources;
+  policy: EnvPolicy;
+  setup: EnvSetup;
+  preview?: EnvPreview;
+}
+
+/**
+ * EnvSection is one layer's 1-based inclusive line range in the source.
+ */
+export interface EnvSection {
+  layer: number;
+  key: string;
+  startLine: number;
+  endLine: number;
+}
+
+/**
+ * EnvDiagnostic is one parse diagnostic.
+ */
+export interface EnvDiagnostic {
+  line: number;
+  message: string;
+  /**
+   * error or warning
+   */
+  severity: string;
+}
+
+/**
+ * EnvVersion is one built or buildable version of a template.
+ */
+export interface EnvVersion {
+  n: number;
+  at: string;
+  by: string;
+  sha256: string;
+  imageTag?: string;
+  /**
+   * pending, building, ok or failed
+   */
+  buildStatus: string;
+  sizeBytes?: number;
+  buildMs?: number;
+}
+
+/**
+ * EnvMeta is a template's own record.
+ */
+export interface EnvMeta {
+  name: string;
+  ownerId: string;
+  createdAt: string;
+  published: number;
+  pool: number;
+  versions: EnvVersion[];
+}
+
+/**
+ * EnvListItem is one row of GET /api/workspaces.
+ */
+export interface EnvListItem {
+  /**
+   * studio or repo
+   */
+  source: string;
+  name: string;
+  project?: string;
+  published?: number;
+  pool?: number;
+  versions?: EnvVersion[];
+  usage: number;
+  draftChanges?: boolean;
+}
+
+/**
+ * EnvPool is a template's warm pool.
+ */
+export interface EnvPool {
+  size: number;
+  idle: number;
+  starting: number;
+}
+
+/**
+ * EnvStarts is the median cold and warm start, in milliseconds; zero means
+ * no sample yet.
+ */
+export interface EnvStarts {
+  coldMs: number;
+  warmMs: number;
+}
+
+/**
+ * EnvBuilds is GET /api/workspaces/{name}/builds' answer.
+ */
+export interface EnvBuilds {
+  versions: EnvVersion[];
+  pool: EnvPool;
+  starts: EnvStarts;
+}
+
+/**
+ * EnvLoaded is GET /api/workspaces/{name}'s answer and what a draft save
+ * answers: the source, its parse, and the record behind it.
+ */
+export interface EnvLoaded {
+  source: string;
+  version: number;
+  doc: EnvDoc;
+  sections: EnvSection[];
+  diagnostics: EnvDiagnostic[];
+  meta: EnvMeta;
+}
+
+/**
+ * EnvCreate is POST /api/workspaces' body. From is `blank`, `starter:<name>`,
+ * `devcontainer:<path>` or `snapshot:<agent>`.
+ */
+export interface EnvCreate {
+  name: string;
+  from: string;
+}
+
+/**
+ * EnvDraft is PUT /api/workspaces/{name}/draft's body.
+ */
+export interface EnvDraft {
+  source: string;
+}
+
+/**
+ * EnvBuildStart is POST /api/workspaces/{name}/builds' body and answer.
+ */
+export interface EnvBuildStart {
+  version: number;
 }
 
 /**
@@ -2055,6 +2372,323 @@ export interface MemoryConfidence {
 }
 
 /**
+ * ProviderView is one provider as clients see it. A provider's key is never
+ * part of it: HasKey and KeySource are all a client learns, and
+ * PUT /api/models/providers/{name}/key is the only way a key goes in.
+ */
+export interface ProviderView {
+  type: string;
+  baseUrl: string;
+  apiKeyEnv?: string;
+  toolCalling: boolean;
+  template?: string;
+  auth?: string;
+  keepAlive?: string;
+  /**
+   * ThinkingBudget, ReasoningSummary, ReasoningField, StructuredOutput and
+   * TemperatureLocked are the provider's own knobs, passed through.
+   */
+  thinkingBudget?: number;
+  reasoningSummary?: boolean;
+  reasoningField?: string;
+  structuredOutput?: boolean;
+  temperatureLocked?: boolean;
+  /**
+   * HasKey says a key can be read for this provider now; KeySource says
+   * where from: config, env or none.
+   */
+  hasKey: boolean;
+  keySource: string;
+}
+
+/**
+ * ProviderWrite is one provider as PUT /api/models/providers takes it: the
+ * same record without the read-only credential facts.
+ */
+export interface ProviderWrite {
+  type: string;
+  baseUrl: string;
+  apiKeyEnv?: string;
+  toolCalling: boolean;
+  template?: string;
+  auth?: string;
+  keepAlive?: string;
+  thinkingBudget?: number;
+  reasoningSummary?: boolean;
+  reasoningField?: string;
+  structuredOutput?: boolean;
+  temperatureLocked?: boolean;
+}
+
+/**
+ * ProvidersUpdate is PUT /api/models/providers' body. A null provider is
+ * removed.
+ */
+export interface ProvidersUpdate {
+  providers: Record<string, ProviderWrite | null>;
+}
+
+/**
+ * Preset is one model preset: a provider and a model with the limits it is
+ * run with.
+ */
+export interface Preset {
+  provider: string;
+  model: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  toolCalling?: string;
+  localOnly?: boolean;
+  thinking?: string;
+  temperature?: number;
+  /**
+   * VerificationGate turns the gate off for a preset that cannot reach it.
+   */
+  verificationGate?: boolean;
+}
+
+/**
+ * PresetsUpdate is PUT /api/models/presets' body. A null preset is removed.
+ */
+export interface PresetsUpdate {
+  presets: Record<string, Preset | null>;
+}
+
+/**
+ * Binding is what one role runs: a preset, or a custom agent.
+ */
+export interface Binding {
+  preset?: string;
+  customAgent?: string;
+}
+
+/**
+ * RoutingUpdate is PUT /api/models/routing' body: the parts of the routing
+ * document a client changes. An omitted part is left as it was.
+ */
+export interface RoutingUpdate {
+  profiles?: Record<string, Record<string, Binding>>;
+  defaultProfile?: string;
+  activePreset?: string;
+}
+
+/**
+ * ProviderKey is PUT /api/models/providers/{name}/key's body. It goes one way:
+ * no route answers a key back.
+ */
+export interface ProviderKey {
+  key: string;
+}
+
+/**
+ * ProbeRequest is POST /api/models/probe's body.
+ */
+export interface ProbeRequest {
+  name: string;
+}
+
+/**
+ * ProbeModel is one model a probe found.
+ */
+export interface ProbeModel {
+  id: string;
+  contextWindow?: number;
+}
+
+/**
+ * ProbeResult is POST /api/models/probe's answer. A probe that failed is a
+ * result with Error set, not a refusal.
+ */
+export interface ProbeResult {
+  models: ProbeModel[];
+  error?: string;
+}
+
+/**
+ * ModelsConfig is GET /api/models' answer: the user-global config's providers,
+ * presets, roles and caps.
+ */
+export interface ModelsConfig {
+  providers: Record<string, ProviderView>;
+  presets: Record<string, Preset>;
+  /**
+   * Profiles maps a profile name to its roles, and a role to its binding.
+   */
+  profiles: Record<string, Record<string, Binding>>;
+  customAgents: string[];
+  defaultProfile: string;
+  activePreset: string;
+  roles: string[];
+  budgets: Budgets;
+}
+
+/**
+ * BudgetsUpdate is PUT /api/budgets' body: the caps, written to the user's
+ * global config, which answers the report it stored.
+ */
+export interface BudgetsUpdate {
+  budgets: Budgets;
+}
+
+/**
+ * NetHostRow is one host of GET /api/network?view=hosts, with the rule that
+ * covers it.
+ */
+export interface NetHostRow {
+  workspace?: string;
+  agentId?: string;
+  host: string;
+  /**
+   * Rule is why the host is reachable or not: allowlisted, granted, open,
+   * injected or blocked.
+   */
+  rule: string;
+  requests: number;
+  blocked: number;
+  bytesUp: number;
+  bytesDown: number;
+  /**
+   * Unix milliseconds
+   */
+  lastSeen: number;
+  /**
+   * allow or block
+   */
+  decision: string;
+  injected?: boolean;
+}
+
+/**
+ * NetHosts is that view's answer.
+ */
+export interface NetHosts {
+  processMode: boolean;
+  rows: NetHostRow[];
+  /**
+   * EgressError says the proxy is down when it is set; the rows are the
+   * last thing it logged.
+   */
+  egressError?: string;
+}
+
+/**
+ * NetRecord is one connection record, from view=requests.
+ */
+export interface NetRecord {
+  /**
+   * Unix milliseconds
+   */
+  at: number;
+  agentId: string;
+  workspace?: string;
+  host: string;
+  port: number;
+  /**
+   * allow or block
+   */
+  decision: string;
+  injected?: boolean;
+  bytesUp: number;
+  bytesDown: number;
+  durationMs: number;
+}
+
+/**
+ * NetAgentRow is one agent of view=agents.
+ */
+export interface NetAgentRow {
+  agentId: string;
+  workspace?: string;
+  hosts: number;
+  requests: number;
+  blocked: number;
+  bytesUp: number;
+  bytesDown: number;
+  /**
+   * Unix milliseconds
+   */
+  lastSeen: number;
+}
+
+/**
+ * NetPending is one blocked request still awaiting a decision, in the shape of
+ * the `network_block` delta (web/bridge/egress_fleet.go).
+ */
+export interface NetPending {
+  /**
+   * network_block
+   */
+  kind: string;
+  sessionId: string;
+  agentId: string;
+  host: string;
+  workspace?: string;
+  /**
+   * Unix milliseconds
+   */
+  at: number;
+}
+
+/**
+ * NetPendingList is GET /api/network/pending's answer.
+ */
+export interface NetPendingList {
+  pending: NetPending[];
+}
+
+/**
+ * NetDecisionKind is one answer to a blocked request.
+ */
+export type NetDecisionKind = 'block' | 'allow-agent' | 'add-to-workspace';
+
+/**
+ * NetDecision is POST /api/network/decisions' body.
+ */
+export interface NetDecision {
+  agentId: string;
+  host: string;
+  decision: NetDecisionKind;
+}
+
+/**
+ * NetDecisionResult is that route's answer. A Studio template's draft changed
+ * and there is nothing to show but the workspace's name; a repo template
+ * answers a patch to apply.
+ */
+export interface NetDecisionResult {
+  ok?: boolean;
+  patch?: string;
+  workspace?: string;
+  source?: string;
+}
+
+/**
+ * NotifyWebhook is one outbound notification target. Its signing secret is a
+ * reference: the secret itself is never returned.
+ */
+export interface NotifyWebhook {
+  id: string;
+  url: string;
+  secretRef?: string;
+  events: string[];
+}
+
+/**
+ * NotifyConfig is GET and PUT /api/notifications' body: the webhooks.
+ */
+export interface NotifyConfig {
+  webhooks: NotifyWebhook[];
+}
+
+/**
+ * NotifyTestResult is POST /api/notifications/test's answer: how many webhooks
+ * the test was queued for.
+ */
+export interface NotifyTestResult {
+  sent: number;
+}
+
+/**
  * PlannerOccupancy is how a workspace looks to a new planner. Ownership is
  * never inferred from a missing record.
  */
@@ -2964,6 +3598,34 @@ export interface Schedule {
 }
 
 /**
+ * SecretsStatus is GET /api/secrets/status' answer: which backend holds the
+ * secrets and whether it answers.
+ */
+export interface SecretsStatus {
+  /**
+   * env, local or openbao
+   */
+  backend: string;
+  healthy: boolean;
+  error?: string;
+}
+
+/**
+ * SecretList is GET /api/secrets' answer: references only, each as
+ * `vault:<path>`.
+ */
+export interface SecretList {
+  refs: string[];
+}
+
+/**
+ * SecretWrite is PUT /api/secrets/{ref}'s body. It goes one way.
+ */
+export interface SecretWrite {
+  value: string;
+}
+
+/**
  * SessionSummary is one session as GET /api/sessions lists it: the entry an
  * agent's session/list returns for this project.
  */
@@ -3445,6 +4107,36 @@ export interface StackPatch {
 }
 
 /**
+ * StatusLink is one link as GET /api/status-links lists it.
+ */
+export interface StatusLink {
+  id: string;
+  agentId: string;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt?: string;
+}
+
+/**
+ * StatusLinkCreate is POST /api/status-links' body. A zero TTL takes the
+ * bridge's default.
+ */
+export interface StatusLinkCreate {
+  agentId: string;
+  ttlHours?: number;
+}
+
+/**
+ * StatusLinkCreated is that route's answer: the only time the URL is ever
+ * given out.
+ */
+export interface StatusLinkCreated {
+  id: string;
+  url: string;
+  expiresAt: string;
+}
+
+/**
  * DeltaKind is the discriminator of a fleet-stream delta.
  */
 export type DeltaKind = 'activity' | 'mode' | 'telemetry' | 'watch' | 'run' | 'pending' | 'gate' | 'hold' | 'budget' | 'project_removed' | 'inbox' | 'pull';
@@ -3537,6 +4229,82 @@ export interface TerminalInput {
 export interface TerminalResize {
   cols: number;
   rows: number;
+}
+
+/**
+ * UsageTotals is the report's totals over its window.
+ */
+export interface UsageTotals {
+  costUsd: number;
+  promptTokens: number;
+  completionTokens: number;
+  agentHours: number;
+  prsShipped: number;
+}
+
+/**
+ * UsagePoint is one series entry: a day, a project, a role or a model.
+ */
+export interface UsagePoint {
+  key: string;
+  costUsd: number;
+  tokens: number;
+}
+
+/**
+ * UsageReport is GET /api/usage?range=&by='s answer.
+ */
+export interface UsageReport {
+  range: string;
+  totals: UsageTotals;
+  series: UsagePoint[];
+}
+
+/**
+ * AuditEvent is one row of GET /api/audit?limit=, newest first.
+ */
+export interface AuditEvent {
+  ts: string;
+  event: string;
+  ownerId?: string;
+  agentId?: string;
+  clientId?: string;
+  repoId?: string;
+  origin?: string;
+  /**
+   * Reason is an operator- or policy-supplied explanation.
+   */
+  reason?: string;
+  /**
+   * Detail is a short non-sensitive specific: a branch name, a repo id.
+   */
+  detail?: string;
+  /**
+   * Bytes is set by prune records.
+   */
+  bytes?: number;
+}
+
+/**
+ * DiskStatus is GET /api/disk's answer: the bytes each part of the state
+ * directory takes, and the budget it is held to.
+ */
+export interface DiskStatus {
+  repos: number;
+  work: number;
+  total: number;
+  measuredAt: string;
+  budgetMB: number;
+}
+
+/**
+ * PruneResult is POST /api/prune's answer. A partial prune answers the bytes
+ * it did reclaim with a warning, rather than failing.
+ */
+export interface PruneResult {
+  reclaimed: number;
+  total: number;
+  warning?: string;
 }
 
 /**

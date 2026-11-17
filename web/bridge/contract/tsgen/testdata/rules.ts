@@ -49,6 +49,17 @@ export interface Sample {
    */
   pointers: (Inner | null)[];
   /**
+   * ByName and OptByName hold structs, so each value needs encoding back
+   * to JSON rather than being written as it is.
+   */
+  byName: Record<string, Inner>;
+  optByName?: Record<string, Inner | null>;
+  /**
+   * Extends is named after a Dart keyword: it keeps its JSON name and takes
+   * a trailing underscore in Dart.
+   */
+  extends?: string;
+  /**
    * Tricky has a tricky *\/ terminator in its comment.
    */
   tricky: string;

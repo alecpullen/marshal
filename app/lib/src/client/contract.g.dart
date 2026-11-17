@@ -1546,6 +1546,201 @@ class PutGrantRequest {
   }
 }
 
+/// Credential is one forge credential as GET /api/credentials answers it
+/// (web/bridge/repos_http.go). It never carries a value: Set says whether the
+/// secret it points at can be read now, and nothing on the wire can write or
+/// read that secret.
+class Credential {
+  const Credential({
+    required this.id,
+    required this.kind,
+    this.envVar,
+    this.keyPath,
+    this.ref,
+    this.user,
+    required this.set,
+  });
+
+  final String id;
+  /// none, pat, ssh or vault
+  final String kind;
+  /// EnvVar is where a pat credential's token is read from.
+  final String? envVar;
+  /// KeyPath is the private key an ssh credential names.
+  final String? keyPath;
+  /// Ref is the vault path a vault credential names.
+  final String? ref;
+  final String? user;
+  /// Set reports whether the secret exists; the credential is refused at use
+  /// when it does not.
+  final bool set;
+
+  factory Credential.fromJson(Map<String, dynamic> json) {
+    return Credential(
+      id: json['id'] as String,
+      kind: json['kind'] as String,
+      envVar: json['envVar'] as String?,
+      keyPath: json['keyPath'] as String?,
+      ref: json['ref'] as String?,
+      user: json['user'] as String?,
+      set: json['set'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['kind'] = kind;
+    if (envVar != null) {
+      json['envVar'] = envVar;
+    }
+    if (keyPath != null) {
+      json['keyPath'] = keyPath;
+    }
+    if (ref != null) {
+      json['ref'] = ref;
+    }
+    if (user != null) {
+      json['user'] = user;
+    }
+    json['set'] = set;
+    return json;
+  }
+}
+
+/// CredentialInput is POST /api/credentials' body: the same record without the
+/// read-only Set.
+class CredentialInput {
+  const CredentialInput({
+    required this.id,
+    required this.kind,
+    this.envVar,
+    this.keyPath,
+    this.ref,
+    this.user,
+  });
+
+  final String id;
+  final String kind;
+  final String? envVar;
+  final String? keyPath;
+  final String? ref;
+  final String? user;
+
+  factory CredentialInput.fromJson(Map<String, dynamic> json) {
+    return CredentialInput(
+      id: json['id'] as String,
+      kind: json['kind'] as String,
+      envVar: json['envVar'] as String?,
+      keyPath: json['keyPath'] as String?,
+      ref: json['ref'] as String?,
+      user: json['user'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['kind'] = kind;
+    if (envVar != null) {
+      json['envVar'] = envVar;
+    }
+    if (keyPath != null) {
+      json['keyPath'] = keyPath;
+    }
+    if (ref != null) {
+      json['ref'] = ref;
+    }
+    if (user != null) {
+      json['user'] = user;
+    }
+    return json;
+  }
+}
+
+/// Repo is one registered repository: GET /api/repos' row and POST /api/repos'
+/// body (web/bridge/workspace.go).
+class Repo {
+  const Repo({
+    required this.id,
+    required this.url,
+    this.branch,
+    this.credRef,
+    required this.ownerID,
+    this.forge,
+    this.apiBase,
+    this.watch,
+    this.watchLabel,
+    this.lastPolled,
+    this.lastPollErr,
+  });
+
+  final String id;
+  final String url;
+  final String? branch;
+  final String? credRef;
+  final String ownerID;
+  /// Forge names the hosting provider's API family: github or gitea.
+  final String? forge;
+  /// APIBase overrides the API root for a self-hosted instance.
+  final String? apiBase;
+  /// Watch turns the issue poller on, and WatchLabel is the label that
+  /// triggers a spawn.
+  final bool? watch;
+  final String? watchLabel;
+  /// LastPolled and LastPollErr are what the poller last did.
+  final String? lastPolled;
+  final String? lastPollErr;
+
+  factory Repo.fromJson(Map<String, dynamic> json) {
+    return Repo(
+      id: json['id'] as String,
+      url: json['url'] as String,
+      branch: json['branch'] as String?,
+      credRef: json['credRef'] as String?,
+      ownerID: json['ownerId'] as String,
+      forge: json['forge'] as String?,
+      apiBase: json['apiBase'] as String?,
+      watch: json['watch'] as bool?,
+      watchLabel: json['watchLabel'] as String?,
+      lastPolled: json['lastPolled'] as String?,
+      lastPollErr: json['lastPollErr'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['url'] = url;
+    if (branch != null) {
+      json['branch'] = branch;
+    }
+    if (credRef != null) {
+      json['credRef'] = credRef;
+    }
+    json['ownerId'] = ownerID;
+    if (forge != null) {
+      json['forge'] = forge;
+    }
+    if (apiBase != null) {
+      json['apiBase'] = apiBase;
+    }
+    if (watch != null) {
+      json['watch'] = watch;
+    }
+    if (watchLabel != null) {
+      json['watchLabel'] = watchLabel;
+    }
+    if (lastPolled != null) {
+      json['lastPolled'] = lastPolled;
+    }
+    if (lastPollErr != null) {
+      json['lastPollErr'] = lastPollErr;
+    }
+    return json;
+  }
+}
+
 /// DaemonInfo is what GET /api/daemon answers about the local daemon.
 class DaemonInfo {
   const DaemonInfo({
@@ -1985,6 +2180,918 @@ class WorkingDraftDeleteRequest {
     final json = <String, dynamic>{};
     json['requestId'] = requestID;
     json['expectedVersion'] = expectedVersion;
+    return json;
+  }
+}
+
+/// EnvWorkspace is the `[workspace]` layer.
+class EnvWorkspace {
+  const EnvWorkspace({
+    required this.name,
+    required this.base,
+    this.toolchains,
+    this.extends_,
+  });
+
+  final String name;
+  final String base;
+  final List<String>? toolchains;
+  final String? extends_;
+
+  factory EnvWorkspace.fromJson(Map<String, dynamic> json) {
+    return EnvWorkspace(
+      name: json['name'] as String,
+      base: json['base'] as String,
+      toolchains: _listOrNull(
+        json['toolchains'],
+        (value) => value as String,
+      ),
+      extends_: json['extends'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['base'] = base;
+    if (toolchains != null) {
+      json['toolchains'] = toolchains!;
+    }
+    if (extends_ != null) {
+      json['extends'] = extends_;
+    }
+    return json;
+  }
+}
+
+/// EnvPackages is the `[packages]` layer.
+class EnvPackages {
+  const EnvPackages({
+    this.apt,
+    this.go,
+    this.npm,
+    this.pip,
+  });
+
+  final List<String>? apt;
+  final List<String>? go;
+  final List<String>? npm;
+  final List<String>? pip;
+
+  factory EnvPackages.fromJson(Map<String, dynamic> json) {
+    return EnvPackages(
+      apt: _listOrNull(
+        json['apt'],
+        (value) => value as String,
+      ),
+      go: _listOrNull(
+        json['go'],
+        (value) => value as String,
+      ),
+      npm: _listOrNull(
+        json['npm'],
+        (value) => value as String,
+      ),
+      pip: _listOrNull(
+        json['pip'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (apt != null) {
+      json['apt'] = apt!;
+    }
+    if (go != null) {
+      json['go'] = go!;
+    }
+    if (npm != null) {
+      json['npm'] = npm!;
+    }
+    if (pip != null) {
+      json['pip'] = pip!;
+    }
+    return json;
+  }
+}
+
+/// EnvMount is one entry of `[[mounts]]`.
+class EnvMount {
+  const EnvMount({
+    this.repo,
+    this.volume,
+    required this.target,
+    this.readonly,
+  });
+
+  final String? repo;
+  final String? volume;
+  final String target;
+  final bool? readonly;
+
+  factory EnvMount.fromJson(Map<String, dynamic> json) {
+    return EnvMount(
+      repo: json['repo'] as String?,
+      volume: json['volume'] as String?,
+      target: json['target'] as String,
+      readonly: json['readonly'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (repo != null) {
+      json['repo'] = repo;
+    }
+    if (volume != null) {
+      json['volume'] = volume;
+    }
+    json['target'] = target;
+    if (readonly != null) {
+      json['readonly'] = readonly;
+    }
+    return json;
+  }
+}
+
+/// EnvFile is one shared file of `[files]`.
+class EnvFile {
+  const EnvFile({
+    required this.target,
+    this.readonly,
+  });
+
+  final String target;
+  final bool? readonly;
+
+  factory EnvFile.fromJson(Map<String, dynamic> json) {
+    return EnvFile(
+      target: json['target'] as String,
+      readonly: json['readonly'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['target'] = target;
+    if (readonly != null) {
+      json['readonly'] = readonly;
+    }
+    return json;
+  }
+}
+
+/// EnvInject is one credential injection of `[inject]`.
+class EnvInject {
+  const EnvInject({
+    required this.ref,
+    this.header,
+    this.format,
+  });
+
+  final String ref;
+  final String? header;
+  final String? format;
+
+  factory EnvInject.fromJson(Map<String, dynamic> json) {
+    return EnvInject(
+      ref: json['ref'] as String,
+      header: json['header'] as String?,
+      format: json['format'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['ref'] = ref;
+    if (header != null) {
+      json['header'] = header;
+    }
+    if (format != null) {
+      json['format'] = format;
+    }
+    return json;
+  }
+}
+
+/// EnvNetwork is the `[network]` layer.
+class EnvNetwork {
+  const EnvNetwork({
+    this.mode,
+    this.egress,
+  });
+
+  /// open, allowlist or off
+  final String? mode;
+  final List<String>? egress;
+
+  factory EnvNetwork.fromJson(Map<String, dynamic> json) {
+    return EnvNetwork(
+      mode: json['mode'] as String?,
+      egress: _listOrNull(
+        json['egress'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (mode != null) {
+      json['mode'] = mode;
+    }
+    if (egress != null) {
+      json['egress'] = egress!;
+    }
+    return json;
+  }
+}
+
+/// EnvResources is the `[resources]` layer.
+class EnvResources {
+  const EnvResources({
+    this.cpu,
+    this.memory,
+    this.disk,
+    this.timeout,
+  });
+
+  final double? cpu;
+  final String? memory;
+  final String? disk;
+  final String? timeout;
+
+  factory EnvResources.fromJson(Map<String, dynamic> json) {
+    return EnvResources(
+      cpu: (json['cpu'] as num?)?.toDouble(),
+      memory: json['memory'] as String?,
+      disk: json['disk'] as String?,
+      timeout: json['timeout'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (cpu != null) {
+      json['cpu'] = cpu;
+    }
+    if (memory != null) {
+      json['memory'] = memory;
+    }
+    if (disk != null) {
+      json['disk'] = disk;
+    }
+    if (timeout != null) {
+      json['timeout'] = timeout;
+    }
+    return json;
+  }
+}
+
+/// EnvPolicy is the `[policy]` layer. Auto is optional: absent means the
+/// document does not set it, while an explicit false is a real value.
+class EnvPolicy {
+  const EnvPolicy({
+    this.mode,
+    this.auto,
+    this.allow,
+  });
+
+  final String? mode;
+  final bool? auto;
+  final List<String>? allow;
+
+  factory EnvPolicy.fromJson(Map<String, dynamic> json) {
+    return EnvPolicy(
+      mode: json['mode'] as String?,
+      auto: json['auto'] as bool?,
+      allow: _listOrNull(
+        json['allow'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (mode != null) {
+      json['mode'] = mode;
+    }
+    if (auto != null) {
+      json['auto'] = auto;
+    }
+    if (allow != null) {
+      json['allow'] = allow!;
+    }
+    return json;
+  }
+}
+
+/// EnvSetup is the `[setup]` layer.
+class EnvSetup {
+  const EnvSetup({
+    this.run,
+  });
+
+  final String? run;
+
+  factory EnvSetup.fromJson(Map<String, dynamic> json) {
+    return EnvSetup(
+      run: json['run'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (run != null) {
+      json['run'] = run;
+    }
+    return json;
+  }
+}
+
+/// EnvPreview is the `[preview]` layer: the ports the Studio may expose.
+class EnvPreview {
+  const EnvPreview({
+    this.ports,
+  });
+
+  final List<int>? ports;
+
+  factory EnvPreview.fromJson(Map<String, dynamic> json) {
+    return EnvPreview(
+      ports: _listOrNull(
+        json['ports'],
+        (value) => (value as num).toInt(),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (ports != null) {
+      json['ports'] = ports!;
+    }
+    return json;
+  }
+}
+
+/// EnvDoc is a template's parsed document: the designer's two views of one
+/// thing, since every layer here is a range of the same source.
+class EnvDoc {
+  const EnvDoc({
+    required this.workspace,
+    required this.packages,
+    this.mounts,
+    this.files,
+    this.secretsEnv,
+    this.inject,
+    required this.network,
+    required this.resources,
+    required this.policy,
+    required this.setup,
+    this.preview,
+  });
+
+  final EnvWorkspace workspace;
+  final EnvPackages packages;
+  final List<EnvMount>? mounts;
+  final Map<String, EnvFile>? files;
+  final Map<String, String>? secretsEnv;
+  final Map<String, EnvInject>? inject;
+  final EnvNetwork network;
+  final EnvResources resources;
+  final EnvPolicy policy;
+  final EnvSetup setup;
+  final EnvPreview? preview;
+
+  factory EnvDoc.fromJson(Map<String, dynamic> json) {
+    return EnvDoc(
+      workspace: _object(
+        json['workspace'],
+        EnvWorkspace.fromJson,
+      ),
+      packages: _object(
+        json['packages'],
+        EnvPackages.fromJson,
+      ),
+      mounts: _listOrNull(
+        json['mounts'],
+        (value) => _object(value, EnvMount.fromJson),
+      ),
+      files: _mapOrNull(
+        json['files'],
+        (value) => _object(value, EnvFile.fromJson),
+      ),
+      secretsEnv: _mapOrNull(
+        json['secretsEnv'],
+        (value) => value as String,
+      ),
+      inject: _mapOrNull(
+        json['inject'],
+        (value) => _object(value, EnvInject.fromJson),
+      ),
+      network: _object(
+        json['network'],
+        EnvNetwork.fromJson,
+      ),
+      resources: _object(
+        json['resources'],
+        EnvResources.fromJson,
+      ),
+      policy: _object(
+        json['policy'],
+        EnvPolicy.fromJson,
+      ),
+      setup: _object(
+        json['setup'],
+        EnvSetup.fromJson,
+      ),
+      preview: _objectOrNull(
+        json['preview'],
+        EnvPreview.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['workspace'] = workspace.toJson();
+    json['packages'] = packages.toJson();
+    if (mounts != null) {
+      json['mounts'] = [
+        for (final value in mounts!) value.toJson(),
+      ];
+    }
+    if (files != null) {
+      json['files'] = {for (final entry in files!.entries) entry.key: entry.value.toJson()};
+    }
+    if (secretsEnv != null) {
+      json['secretsEnv'] = secretsEnv!;
+    }
+    if (inject != null) {
+      json['inject'] = {for (final entry in inject!.entries) entry.key: entry.value.toJson()};
+    }
+    json['network'] = network.toJson();
+    json['resources'] = resources.toJson();
+    json['policy'] = policy.toJson();
+    json['setup'] = setup.toJson();
+    if (preview != null) {
+      json['preview'] = preview!.toJson();
+    }
+    return json;
+  }
+}
+
+/// EnvSection is one layer's 1-based inclusive line range in the source.
+class EnvSection {
+  const EnvSection({
+    required this.layer,
+    required this.key,
+    required this.startLine,
+    required this.endLine,
+  });
+
+  final int layer;
+  final String key;
+  final int startLine;
+  final int endLine;
+
+  factory EnvSection.fromJson(Map<String, dynamic> json) {
+    return EnvSection(
+      layer: (json['layer'] as num).toInt(),
+      key: json['key'] as String,
+      startLine: (json['startLine'] as num).toInt(),
+      endLine: (json['endLine'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['layer'] = layer;
+    json['key'] = key;
+    json['startLine'] = startLine;
+    json['endLine'] = endLine;
+    return json;
+  }
+}
+
+/// EnvDiagnostic is one parse diagnostic.
+class EnvDiagnostic {
+  const EnvDiagnostic({
+    required this.line,
+    required this.message,
+    required this.severity,
+  });
+
+  final int line;
+  final String message;
+  /// error or warning
+  final String severity;
+
+  factory EnvDiagnostic.fromJson(Map<String, dynamic> json) {
+    return EnvDiagnostic(
+      line: (json['line'] as num).toInt(),
+      message: json['message'] as String,
+      severity: json['severity'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['line'] = line;
+    json['message'] = message;
+    json['severity'] = severity;
+    return json;
+  }
+}
+
+/// EnvVersion is one built or buildable version of a template.
+class EnvVersion {
+  const EnvVersion({
+    required this.n,
+    required this.at,
+    required this.by,
+    required this.sha256,
+    this.imageTag,
+    required this.buildStatus,
+    this.sizeBytes,
+    this.buildMs,
+  });
+
+  final int n;
+  final String at;
+  final String by;
+  final String sha256;
+  final String? imageTag;
+  /// pending, building, ok or failed
+  final String buildStatus;
+  final int? sizeBytes;
+  final int? buildMs;
+
+  factory EnvVersion.fromJson(Map<String, dynamic> json) {
+    return EnvVersion(
+      n: (json['n'] as num).toInt(),
+      at: json['at'] as String,
+      by: json['by'] as String,
+      sha256: json['sha256'] as String,
+      imageTag: json['imageTag'] as String?,
+      buildStatus: json['buildStatus'] as String,
+      sizeBytes: (json['sizeBytes'] as num?)?.toInt(),
+      buildMs: (json['buildMs'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['n'] = n;
+    json['at'] = at;
+    json['by'] = by;
+    json['sha256'] = sha256;
+    if (imageTag != null) {
+      json['imageTag'] = imageTag;
+    }
+    json['buildStatus'] = buildStatus;
+    if (sizeBytes != null) {
+      json['sizeBytes'] = sizeBytes;
+    }
+    if (buildMs != null) {
+      json['buildMs'] = buildMs;
+    }
+    return json;
+  }
+}
+
+/// EnvMeta is a template's own record.
+class EnvMeta {
+  const EnvMeta({
+    required this.name,
+    required this.ownerID,
+    required this.createdAt,
+    required this.published,
+    required this.pool,
+    required this.versions,
+  });
+
+  final String name;
+  final String ownerID;
+  final String createdAt;
+  final int published;
+  final int pool;
+  final List<EnvVersion> versions;
+
+  factory EnvMeta.fromJson(Map<String, dynamic> json) {
+    return EnvMeta(
+      name: json['name'] as String,
+      ownerID: json['ownerId'] as String,
+      createdAt: json['createdAt'] as String,
+      published: (json['published'] as num).toInt(),
+      pool: (json['pool'] as num).toInt(),
+      versions: _list(
+        json['versions'],
+        (value) => _object(value, EnvVersion.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['ownerId'] = ownerID;
+    json['createdAt'] = createdAt;
+    json['published'] = published;
+    json['pool'] = pool;
+    json['versions'] = [
+      for (final value in versions) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// EnvListItem is one row of GET /api/workspaces.
+class EnvListItem {
+  const EnvListItem({
+    required this.source,
+    required this.name,
+    this.project,
+    this.published,
+    this.pool,
+    this.versions,
+    required this.usage,
+    this.draftChanges,
+  });
+
+  /// studio or repo
+  final String source;
+  final String name;
+  final String? project;
+  final int? published;
+  final int? pool;
+  final List<EnvVersion>? versions;
+  final int usage;
+  final bool? draftChanges;
+
+  factory EnvListItem.fromJson(Map<String, dynamic> json) {
+    return EnvListItem(
+      source: json['source'] as String,
+      name: json['name'] as String,
+      project: json['project'] as String?,
+      published: (json['published'] as num?)?.toInt(),
+      pool: (json['pool'] as num?)?.toInt(),
+      versions: _listOrNull(
+        json['versions'],
+        (value) => _object(value, EnvVersion.fromJson),
+      ),
+      usage: (json['usage'] as num).toInt(),
+      draftChanges: json['draftChanges'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    json['name'] = name;
+    if (project != null) {
+      json['project'] = project;
+    }
+    if (published != null) {
+      json['published'] = published;
+    }
+    if (pool != null) {
+      json['pool'] = pool;
+    }
+    if (versions != null) {
+      json['versions'] = [
+        for (final value in versions!) value.toJson(),
+      ];
+    }
+    json['usage'] = usage;
+    if (draftChanges != null) {
+      json['draftChanges'] = draftChanges;
+    }
+    return json;
+  }
+}
+
+/// EnvPool is a template's warm pool.
+class EnvPool {
+  const EnvPool({
+    required this.size,
+    required this.idle,
+    required this.starting,
+  });
+
+  final int size;
+  final int idle;
+  final int starting;
+
+  factory EnvPool.fromJson(Map<String, dynamic> json) {
+    return EnvPool(
+      size: (json['size'] as num).toInt(),
+      idle: (json['idle'] as num).toInt(),
+      starting: (json['starting'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['size'] = size;
+    json['idle'] = idle;
+    json['starting'] = starting;
+    return json;
+  }
+}
+
+/// EnvStarts is the median cold and warm start, in milliseconds; zero means
+/// no sample yet.
+class EnvStarts {
+  const EnvStarts({
+    required this.coldMs,
+    required this.warmMs,
+  });
+
+  final int coldMs;
+  final int warmMs;
+
+  factory EnvStarts.fromJson(Map<String, dynamic> json) {
+    return EnvStarts(
+      coldMs: (json['coldMs'] as num).toInt(),
+      warmMs: (json['warmMs'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['coldMs'] = coldMs;
+    json['warmMs'] = warmMs;
+    return json;
+  }
+}
+
+/// EnvBuilds is GET /api/workspaces/{name}/builds' answer.
+class EnvBuilds {
+  const EnvBuilds({
+    required this.versions,
+    required this.pool,
+    required this.starts,
+  });
+
+  final List<EnvVersion> versions;
+  final EnvPool pool;
+  final EnvStarts starts;
+
+  factory EnvBuilds.fromJson(Map<String, dynamic> json) {
+    return EnvBuilds(
+      versions: _list(
+        json['versions'],
+        (value) => _object(value, EnvVersion.fromJson),
+      ),
+      pool: _object(
+        json['pool'],
+        EnvPool.fromJson,
+      ),
+      starts: _object(
+        json['starts'],
+        EnvStarts.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['versions'] = [
+      for (final value in versions) value.toJson(),
+    ];
+    json['pool'] = pool.toJson();
+    json['starts'] = starts.toJson();
+    return json;
+  }
+}
+
+/// EnvLoaded is GET /api/workspaces/{name}'s answer and what a draft save
+/// answers: the source, its parse, and the record behind it.
+class EnvLoaded {
+  const EnvLoaded({
+    required this.source,
+    required this.version,
+    required this.doc,
+    required this.sections,
+    required this.diagnostics,
+    required this.meta,
+  });
+
+  final String source;
+  final int version;
+  final EnvDoc doc;
+  final List<EnvSection> sections;
+  final List<EnvDiagnostic> diagnostics;
+  final EnvMeta meta;
+
+  factory EnvLoaded.fromJson(Map<String, dynamic> json) {
+    return EnvLoaded(
+      source: json['source'] as String,
+      version: (json['version'] as num).toInt(),
+      doc: _object(
+        json['doc'],
+        EnvDoc.fromJson,
+      ),
+      sections: _list(
+        json['sections'],
+        (value) => _object(value, EnvSection.fromJson),
+      ),
+      diagnostics: _list(
+        json['diagnostics'],
+        (value) => _object(value, EnvDiagnostic.fromJson),
+      ),
+      meta: _object(
+        json['meta'],
+        EnvMeta.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    json['version'] = version;
+    json['doc'] = doc.toJson();
+    json['sections'] = [
+      for (final value in sections) value.toJson(),
+    ];
+    json['diagnostics'] = [
+      for (final value in diagnostics) value.toJson(),
+    ];
+    json['meta'] = meta.toJson();
+    return json;
+  }
+}
+
+/// EnvCreate is POST /api/workspaces' body. From is `blank`, `starter:&lt;name&gt;`,
+/// `devcontainer:&lt;path&gt;` or `snapshot:&lt;agent&gt;`.
+class EnvCreate {
+  const EnvCreate({
+    required this.name,
+    required this.from,
+  });
+
+  final String name;
+  final String from;
+
+  factory EnvCreate.fromJson(Map<String, dynamic> json) {
+    return EnvCreate(
+      name: json['name'] as String,
+      from: json['from'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['from'] = from;
+    return json;
+  }
+}
+
+/// EnvDraft is PUT /api/workspaces/{name}/draft's body.
+class EnvDraft {
+  const EnvDraft({
+    required this.source,
+  });
+
+  final String source;
+
+  factory EnvDraft.fromJson(Map<String, dynamic> json) {
+    return EnvDraft(
+      source: json['source'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    return json;
+  }
+}
+
+/// EnvBuildStart is POST /api/workspaces/{name}/builds' body and answer.
+class EnvBuildStart {
+  const EnvBuildStart({
+    required this.version,
+  });
+
+  final int version;
+
+  factory EnvBuildStart.fromJson(Map<String, dynamic> json) {
+    return EnvBuildStart(
+      version: (json['version'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['version'] = version;
     return json;
   }
 }
@@ -7056,6 +8163,1062 @@ class MemoryConfidence {
   }
 }
 
+/// ProviderView is one provider as clients see it. A provider's key is never
+/// part of it: HasKey and KeySource are all a client learns, and
+/// PUT /api/models/providers/{name}/key is the only way a key goes in.
+class ProviderView {
+  const ProviderView({
+    required this.type,
+    required this.baseURL,
+    this.apiKeyEnv,
+    required this.toolCalling,
+    this.template,
+    this.auth,
+    this.keepAlive,
+    this.thinkingBudget,
+    this.reasoningSummary,
+    this.reasoningField,
+    this.structuredOutput,
+    this.temperatureLocked,
+    required this.hasKey,
+    required this.keySource,
+  });
+
+  final String type;
+  final String baseURL;
+  final String? apiKeyEnv;
+  final bool toolCalling;
+  final String? template;
+  final String? auth;
+  final String? keepAlive;
+  /// ThinkingBudget, ReasoningSummary, ReasoningField, StructuredOutput and
+  /// TemperatureLocked are the provider's own knobs, passed through.
+  final int? thinkingBudget;
+  final bool? reasoningSummary;
+  final String? reasoningField;
+  final bool? structuredOutput;
+  final bool? temperatureLocked;
+  /// HasKey says a key can be read for this provider now; KeySource says
+  /// where from: config, env or none.
+  final bool hasKey;
+  final String keySource;
+
+  factory ProviderView.fromJson(Map<String, dynamic> json) {
+    return ProviderView(
+      type: json['type'] as String,
+      baseURL: json['baseUrl'] as String,
+      apiKeyEnv: json['apiKeyEnv'] as String?,
+      toolCalling: json['toolCalling'] as bool,
+      template: json['template'] as String?,
+      auth: json['auth'] as String?,
+      keepAlive: json['keepAlive'] as String?,
+      thinkingBudget: (json['thinkingBudget'] as num?)?.toInt(),
+      reasoningSummary: json['reasoningSummary'] as bool?,
+      reasoningField: json['reasoningField'] as String?,
+      structuredOutput: json['structuredOutput'] as bool?,
+      temperatureLocked: json['temperatureLocked'] as bool?,
+      hasKey: json['hasKey'] as bool,
+      keySource: json['keySource'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['type'] = type;
+    json['baseUrl'] = baseURL;
+    if (apiKeyEnv != null) {
+      json['apiKeyEnv'] = apiKeyEnv;
+    }
+    json['toolCalling'] = toolCalling;
+    if (template != null) {
+      json['template'] = template;
+    }
+    if (auth != null) {
+      json['auth'] = auth;
+    }
+    if (keepAlive != null) {
+      json['keepAlive'] = keepAlive;
+    }
+    if (thinkingBudget != null) {
+      json['thinkingBudget'] = thinkingBudget;
+    }
+    if (reasoningSummary != null) {
+      json['reasoningSummary'] = reasoningSummary;
+    }
+    if (reasoningField != null) {
+      json['reasoningField'] = reasoningField;
+    }
+    if (structuredOutput != null) {
+      json['structuredOutput'] = structuredOutput;
+    }
+    if (temperatureLocked != null) {
+      json['temperatureLocked'] = temperatureLocked;
+    }
+    json['hasKey'] = hasKey;
+    json['keySource'] = keySource;
+    return json;
+  }
+}
+
+/// ProviderWrite is one provider as PUT /api/models/providers takes it: the
+/// same record without the read-only credential facts.
+class ProviderWrite {
+  const ProviderWrite({
+    required this.type,
+    required this.baseURL,
+    this.apiKeyEnv,
+    required this.toolCalling,
+    this.template,
+    this.auth,
+    this.keepAlive,
+    this.thinkingBudget,
+    this.reasoningSummary,
+    this.reasoningField,
+    this.structuredOutput,
+    this.temperatureLocked,
+  });
+
+  final String type;
+  final String baseURL;
+  final String? apiKeyEnv;
+  final bool toolCalling;
+  final String? template;
+  final String? auth;
+  final String? keepAlive;
+  final int? thinkingBudget;
+  final bool? reasoningSummary;
+  final String? reasoningField;
+  final bool? structuredOutput;
+  final bool? temperatureLocked;
+
+  factory ProviderWrite.fromJson(Map<String, dynamic> json) {
+    return ProviderWrite(
+      type: json['type'] as String,
+      baseURL: json['baseUrl'] as String,
+      apiKeyEnv: json['apiKeyEnv'] as String?,
+      toolCalling: json['toolCalling'] as bool,
+      template: json['template'] as String?,
+      auth: json['auth'] as String?,
+      keepAlive: json['keepAlive'] as String?,
+      thinkingBudget: (json['thinkingBudget'] as num?)?.toInt(),
+      reasoningSummary: json['reasoningSummary'] as bool?,
+      reasoningField: json['reasoningField'] as String?,
+      structuredOutput: json['structuredOutput'] as bool?,
+      temperatureLocked: json['temperatureLocked'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['type'] = type;
+    json['baseUrl'] = baseURL;
+    if (apiKeyEnv != null) {
+      json['apiKeyEnv'] = apiKeyEnv;
+    }
+    json['toolCalling'] = toolCalling;
+    if (template != null) {
+      json['template'] = template;
+    }
+    if (auth != null) {
+      json['auth'] = auth;
+    }
+    if (keepAlive != null) {
+      json['keepAlive'] = keepAlive;
+    }
+    if (thinkingBudget != null) {
+      json['thinkingBudget'] = thinkingBudget;
+    }
+    if (reasoningSummary != null) {
+      json['reasoningSummary'] = reasoningSummary;
+    }
+    if (reasoningField != null) {
+      json['reasoningField'] = reasoningField;
+    }
+    if (structuredOutput != null) {
+      json['structuredOutput'] = structuredOutput;
+    }
+    if (temperatureLocked != null) {
+      json['temperatureLocked'] = temperatureLocked;
+    }
+    return json;
+  }
+}
+
+/// ProvidersUpdate is PUT /api/models/providers' body. A null provider is
+/// removed.
+class ProvidersUpdate {
+  const ProvidersUpdate({
+    required this.providers,
+  });
+
+  final Map<String, ProviderWrite?> providers;
+
+  factory ProvidersUpdate.fromJson(Map<String, dynamic> json) {
+    return ProvidersUpdate(
+      providers: _map(
+        json['providers'],
+        (value) => _objectOrNull(value, ProviderWrite.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['providers'] = {for (final entry in providers.entries) entry.key: entry.value?.toJson()};
+    return json;
+  }
+}
+
+/// Preset is one model preset: a provider and a model with the limits it is
+/// run with.
+class Preset {
+  const Preset({
+    required this.provider,
+    required this.model,
+    this.contextWindow,
+    this.maxOutputTokens,
+    this.toolCalling,
+    this.localOnly,
+    this.thinking,
+    this.temperature,
+    this.verificationGate,
+  });
+
+  final String provider;
+  final String model;
+  final int? contextWindow;
+  final int? maxOutputTokens;
+  final String? toolCalling;
+  final bool? localOnly;
+  final String? thinking;
+  final double? temperature;
+  /// VerificationGate turns the gate off for a preset that cannot reach it.
+  final bool? verificationGate;
+
+  factory Preset.fromJson(Map<String, dynamic> json) {
+    return Preset(
+      provider: json['provider'] as String,
+      model: json['model'] as String,
+      contextWindow: (json['contextWindow'] as num?)?.toInt(),
+      maxOutputTokens: (json['maxOutputTokens'] as num?)?.toInt(),
+      toolCalling: json['toolCalling'] as String?,
+      localOnly: json['localOnly'] as bool?,
+      thinking: json['thinking'] as String?,
+      temperature: (json['temperature'] as num?)?.toDouble(),
+      verificationGate: json['verificationGate'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['provider'] = provider;
+    json['model'] = model;
+    if (contextWindow != null) {
+      json['contextWindow'] = contextWindow;
+    }
+    if (maxOutputTokens != null) {
+      json['maxOutputTokens'] = maxOutputTokens;
+    }
+    if (toolCalling != null) {
+      json['toolCalling'] = toolCalling;
+    }
+    if (localOnly != null) {
+      json['localOnly'] = localOnly;
+    }
+    if (thinking != null) {
+      json['thinking'] = thinking;
+    }
+    if (temperature != null) {
+      json['temperature'] = temperature;
+    }
+    if (verificationGate != null) {
+      json['verificationGate'] = verificationGate;
+    }
+    return json;
+  }
+}
+
+/// PresetsUpdate is PUT /api/models/presets' body. A null preset is removed.
+class PresetsUpdate {
+  const PresetsUpdate({
+    required this.presets,
+  });
+
+  final Map<String, Preset?> presets;
+
+  factory PresetsUpdate.fromJson(Map<String, dynamic> json) {
+    return PresetsUpdate(
+      presets: _map(
+        json['presets'],
+        (value) => _objectOrNull(value, Preset.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['presets'] = {for (final entry in presets.entries) entry.key: entry.value?.toJson()};
+    return json;
+  }
+}
+
+/// Binding is what one role runs: a preset, or a custom agent.
+class Binding {
+  const Binding({
+    this.preset,
+    this.customAgent,
+  });
+
+  final String? preset;
+  final String? customAgent;
+
+  factory Binding.fromJson(Map<String, dynamic> json) {
+    return Binding(
+      preset: json['preset'] as String?,
+      customAgent: json['customAgent'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (preset != null) {
+      json['preset'] = preset;
+    }
+    if (customAgent != null) {
+      json['customAgent'] = customAgent;
+    }
+    return json;
+  }
+}
+
+/// RoutingUpdate is PUT /api/models/routing' body: the parts of the routing
+/// document a client changes. An omitted part is left as it was.
+class RoutingUpdate {
+  const RoutingUpdate({
+    this.profiles,
+    this.defaultProfile,
+    this.activePreset,
+  });
+
+  final Map<String, Map<String, Binding>>? profiles;
+  final String? defaultProfile;
+  final String? activePreset;
+
+  factory RoutingUpdate.fromJson(Map<String, dynamic> json) {
+    return RoutingUpdate(
+      profiles: _mapOrNull(
+        json['profiles'],
+        (value) => _map(value, (value) => _object(value, Binding.fromJson)),
+      ),
+      defaultProfile: json['defaultProfile'] as String?,
+      activePreset: json['activePreset'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (profiles != null) {
+      json['profiles'] = {for (final entry in profiles!.entries) entry.key: {for (final entry in entry.value.entries) entry.key: entry.value.toJson()}};
+    }
+    if (defaultProfile != null) {
+      json['defaultProfile'] = defaultProfile;
+    }
+    if (activePreset != null) {
+      json['activePreset'] = activePreset;
+    }
+    return json;
+  }
+}
+
+/// ProviderKey is PUT /api/models/providers/{name}/key's body. It goes one way:
+/// no route answers a key back.
+class ProviderKey {
+  const ProviderKey({
+    required this.key,
+  });
+
+  final String key;
+
+  factory ProviderKey.fromJson(Map<String, dynamic> json) {
+    return ProviderKey(
+      key: json['key'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['key'] = key;
+    return json;
+  }
+}
+
+/// ProbeRequest is POST /api/models/probe's body.
+class ProbeRequest {
+  const ProbeRequest({
+    required this.name,
+  });
+
+  final String name;
+
+  factory ProbeRequest.fromJson(Map<String, dynamic> json) {
+    return ProbeRequest(
+      name: json['name'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    return json;
+  }
+}
+
+/// ProbeModel is one model a probe found.
+class ProbeModel {
+  const ProbeModel({
+    required this.id,
+    this.contextWindow,
+  });
+
+  final String id;
+  final int? contextWindow;
+
+  factory ProbeModel.fromJson(Map<String, dynamic> json) {
+    return ProbeModel(
+      id: json['id'] as String,
+      contextWindow: (json['contextWindow'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    if (contextWindow != null) {
+      json['contextWindow'] = contextWindow;
+    }
+    return json;
+  }
+}
+
+/// ProbeResult is POST /api/models/probe's answer. A probe that failed is a
+/// result with Error set, not a refusal.
+class ProbeResult {
+  const ProbeResult({
+    required this.models,
+    this.error,
+  });
+
+  final List<ProbeModel> models;
+  final String? error;
+
+  factory ProbeResult.fromJson(Map<String, dynamic> json) {
+    return ProbeResult(
+      models: _list(
+        json['models'],
+        (value) => _object(value, ProbeModel.fromJson),
+      ),
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['models'] = [
+      for (final value in models) value.toJson(),
+    ];
+    if (error != null) {
+      json['error'] = error;
+    }
+    return json;
+  }
+}
+
+/// ModelsConfig is GET /api/models' answer: the user-global config's providers,
+/// presets, roles and caps.
+class ModelsConfig {
+  const ModelsConfig({
+    required this.providers,
+    required this.presets,
+    required this.profiles,
+    required this.customAgents,
+    required this.defaultProfile,
+    required this.activePreset,
+    required this.roles,
+    required this.budgets,
+  });
+
+  final Map<String, ProviderView> providers;
+  final Map<String, Preset> presets;
+  /// Profiles maps a profile name to its roles, and a role to its binding.
+  final Map<String, Map<String, Binding>> profiles;
+  final List<String> customAgents;
+  final String defaultProfile;
+  final String activePreset;
+  final List<String> roles;
+  final Budgets budgets;
+
+  factory ModelsConfig.fromJson(Map<String, dynamic> json) {
+    return ModelsConfig(
+      providers: _map(
+        json['providers'],
+        (value) => _object(value, ProviderView.fromJson),
+      ),
+      presets: _map(
+        json['presets'],
+        (value) => _object(value, Preset.fromJson),
+      ),
+      profiles: _map(
+        json['profiles'],
+        (value) => _map(value, (value) => _object(value, Binding.fromJson)),
+      ),
+      customAgents: _list(
+        json['customAgents'],
+        (value) => value as String,
+      ),
+      defaultProfile: json['defaultProfile'] as String,
+      activePreset: json['activePreset'] as String,
+      roles: _list(
+        json['roles'],
+        (value) => value as String,
+      ),
+      budgets: _object(
+        json['budgets'],
+        Budgets.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['providers'] = {for (final entry in providers.entries) entry.key: entry.value.toJson()};
+    json['presets'] = {for (final entry in presets.entries) entry.key: entry.value.toJson()};
+    json['profiles'] = {for (final entry in profiles.entries) entry.key: {for (final entry in entry.value.entries) entry.key: entry.value.toJson()}};
+    json['customAgents'] = customAgents;
+    json['defaultProfile'] = defaultProfile;
+    json['activePreset'] = activePreset;
+    json['roles'] = roles;
+    json['budgets'] = budgets.toJson();
+    return json;
+  }
+}
+
+/// BudgetsUpdate is PUT /api/budgets' body: the caps, written to the user's
+/// global config, which answers the report it stored.
+class BudgetsUpdate {
+  const BudgetsUpdate({
+    required this.budgets,
+  });
+
+  final Budgets budgets;
+
+  factory BudgetsUpdate.fromJson(Map<String, dynamic> json) {
+    return BudgetsUpdate(
+      budgets: _object(
+        json['budgets'],
+        Budgets.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['budgets'] = budgets.toJson();
+    return json;
+  }
+}
+
+/// NetHostRow is one host of GET /api/network?view=hosts, with the rule that
+/// covers it.
+class NetHostRow {
+  const NetHostRow({
+    this.workspace,
+    this.agentID,
+    required this.host,
+    required this.rule,
+    required this.requests,
+    required this.blocked,
+    required this.bytesUp,
+    required this.bytesDown,
+    required this.lastSeen,
+    required this.decision,
+    this.injected,
+  });
+
+  final String? workspace;
+  final String? agentID;
+  final String host;
+  /// Rule is why the host is reachable or not: allowlisted, granted, open,
+  /// injected or blocked.
+  final String rule;
+  final int requests;
+  final int blocked;
+  final int bytesUp;
+  final int bytesDown;
+  /// Unix milliseconds
+  final int lastSeen;
+  /// allow or block
+  final String decision;
+  final bool? injected;
+
+  factory NetHostRow.fromJson(Map<String, dynamic> json) {
+    return NetHostRow(
+      workspace: json['workspace'] as String?,
+      agentID: json['agentId'] as String?,
+      host: json['host'] as String,
+      rule: json['rule'] as String,
+      requests: (json['requests'] as num).toInt(),
+      blocked: (json['blocked'] as num).toInt(),
+      bytesUp: (json['bytesUp'] as num).toInt(),
+      bytesDown: (json['bytesDown'] as num).toInt(),
+      lastSeen: (json['lastSeen'] as num).toInt(),
+      decision: json['decision'] as String,
+      injected: json['injected'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    if (agentID != null) {
+      json['agentId'] = agentID;
+    }
+    json['host'] = host;
+    json['rule'] = rule;
+    json['requests'] = requests;
+    json['blocked'] = blocked;
+    json['bytesUp'] = bytesUp;
+    json['bytesDown'] = bytesDown;
+    json['lastSeen'] = lastSeen;
+    json['decision'] = decision;
+    if (injected != null) {
+      json['injected'] = injected;
+    }
+    return json;
+  }
+}
+
+/// NetHosts is that view's answer.
+class NetHosts {
+  const NetHosts({
+    required this.processMode,
+    required this.rows,
+    this.egressError,
+  });
+
+  final bool processMode;
+  final List<NetHostRow> rows;
+  /// EgressError says the proxy is down when it is set; the rows are the
+  /// last thing it logged.
+  final String? egressError;
+
+  factory NetHosts.fromJson(Map<String, dynamic> json) {
+    return NetHosts(
+      processMode: json['processMode'] as bool,
+      rows: _list(
+        json['rows'],
+        (value) => _object(value, NetHostRow.fromJson),
+      ),
+      egressError: json['egressError'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['processMode'] = processMode;
+    json['rows'] = [
+      for (final value in rows) value.toJson(),
+    ];
+    if (egressError != null) {
+      json['egressError'] = egressError;
+    }
+    return json;
+  }
+}
+
+/// NetRecord is one connection record, from view=requests.
+class NetRecord {
+  const NetRecord({
+    required this.at,
+    required this.agentID,
+    this.workspace,
+    required this.host,
+    required this.port,
+    required this.decision,
+    this.injected,
+    required this.bytesUp,
+    required this.bytesDown,
+    required this.durationMs,
+  });
+
+  /// Unix milliseconds
+  final int at;
+  final String agentID;
+  final String? workspace;
+  final String host;
+  final int port;
+  /// allow or block
+  final String decision;
+  final bool? injected;
+  final int bytesUp;
+  final int bytesDown;
+  final int durationMs;
+
+  factory NetRecord.fromJson(Map<String, dynamic> json) {
+    return NetRecord(
+      at: (json['at'] as num).toInt(),
+      agentID: json['agentId'] as String,
+      workspace: json['workspace'] as String?,
+      host: json['host'] as String,
+      port: (json['port'] as num).toInt(),
+      decision: json['decision'] as String,
+      injected: json['injected'] as bool?,
+      bytesUp: (json['bytesUp'] as num).toInt(),
+      bytesDown: (json['bytesDown'] as num).toInt(),
+      durationMs: (json['durationMs'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['at'] = at;
+    json['agentId'] = agentID;
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    json['host'] = host;
+    json['port'] = port;
+    json['decision'] = decision;
+    if (injected != null) {
+      json['injected'] = injected;
+    }
+    json['bytesUp'] = bytesUp;
+    json['bytesDown'] = bytesDown;
+    json['durationMs'] = durationMs;
+    return json;
+  }
+}
+
+/// NetAgentRow is one agent of view=agents.
+class NetAgentRow {
+  const NetAgentRow({
+    required this.agentID,
+    this.workspace,
+    required this.hosts,
+    required this.requests,
+    required this.blocked,
+    required this.bytesUp,
+    required this.bytesDown,
+    required this.lastSeen,
+  });
+
+  final String agentID;
+  final String? workspace;
+  final int hosts;
+  final int requests;
+  final int blocked;
+  final int bytesUp;
+  final int bytesDown;
+  /// Unix milliseconds
+  final int lastSeen;
+
+  factory NetAgentRow.fromJson(Map<String, dynamic> json) {
+    return NetAgentRow(
+      agentID: json['agentId'] as String,
+      workspace: json['workspace'] as String?,
+      hosts: (json['hosts'] as num).toInt(),
+      requests: (json['requests'] as num).toInt(),
+      blocked: (json['blocked'] as num).toInt(),
+      bytesUp: (json['bytesUp'] as num).toInt(),
+      bytesDown: (json['bytesDown'] as num).toInt(),
+      lastSeen: (json['lastSeen'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['agentId'] = agentID;
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    json['hosts'] = hosts;
+    json['requests'] = requests;
+    json['blocked'] = blocked;
+    json['bytesUp'] = bytesUp;
+    json['bytesDown'] = bytesDown;
+    json['lastSeen'] = lastSeen;
+    return json;
+  }
+}
+
+/// NetPending is one blocked request still awaiting a decision, in the shape of
+/// the `network_block` delta (web/bridge/egress_fleet.go).
+class NetPending {
+  const NetPending({
+    required this.kind,
+    required this.sessionID,
+    required this.agentID,
+    required this.host,
+    this.workspace,
+    required this.at,
+  });
+
+  /// network_block
+  final String kind;
+  final String sessionID;
+  final String agentID;
+  final String host;
+  final String? workspace;
+  /// Unix milliseconds
+  final int at;
+
+  factory NetPending.fromJson(Map<String, dynamic> json) {
+    return NetPending(
+      kind: json['kind'] as String,
+      sessionID: json['sessionId'] as String,
+      agentID: json['agentId'] as String,
+      host: json['host'] as String,
+      workspace: json['workspace'] as String?,
+      at: (json['at'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = kind;
+    json['sessionId'] = sessionID;
+    json['agentId'] = agentID;
+    json['host'] = host;
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    json['at'] = at;
+    return json;
+  }
+}
+
+/// NetPendingList is GET /api/network/pending's answer.
+class NetPendingList {
+  const NetPendingList({
+    required this.pending,
+  });
+
+  final List<NetPending> pending;
+
+  factory NetPendingList.fromJson(Map<String, dynamic> json) {
+    return NetPendingList(
+      pending: _list(
+        json['pending'],
+        (value) => _object(value, NetPending.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['pending'] = [
+      for (final value in pending) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// NetDecisionKind is one answer to a blocked request.
+enum NetDecisionKind {
+  netDecisionBlock('block'),
+  netDecisionAllowAgent('allow-agent'),
+  netDecisionAddToWorkspace('add-to-workspace'),
+  unknown('unknown');
+
+  const NetDecisionKind(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static NetDecisionKind fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// NetDecision is POST /api/network/decisions' body.
+class NetDecision {
+  const NetDecision({
+    required this.agentID,
+    required this.host,
+    required this.decision,
+    this.rawEnums = const {},
+  });
+
+  final String agentID;
+  final String host;
+  final NetDecisionKind decision;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory NetDecision.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final decisionWire = json['decision'] as String;
+    final decision = NetDecisionKind.fromWire(decisionWire);
+    if (decision == NetDecisionKind.unknown) {
+      rawEnums['decision'] = decisionWire;
+    }
+    return NetDecision(
+      agentID: json['agentId'] as String,
+      host: json['host'] as String,
+      decision: decision,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['agentId'] = agentID;
+    json['host'] = host;
+    json['decision'] = rawEnums['decision'] ?? decision.wire;
+    return json;
+  }
+}
+
+/// NetDecisionResult is that route's answer. A Studio template's draft changed
+/// and there is nothing to show but the workspace's name; a repo template
+/// answers a patch to apply.
+class NetDecisionResult {
+  const NetDecisionResult({
+    this.ok,
+    this.patch,
+    this.workspace,
+    this.source,
+  });
+
+  final bool? ok;
+  final String? patch;
+  final String? workspace;
+  final String? source;
+
+  factory NetDecisionResult.fromJson(Map<String, dynamic> json) {
+    return NetDecisionResult(
+      ok: json['ok'] as bool?,
+      patch: json['patch'] as String?,
+      workspace: json['workspace'] as String?,
+      source: json['source'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (ok != null) {
+      json['ok'] = ok;
+    }
+    if (patch != null) {
+      json['patch'] = patch;
+    }
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    if (source != null) {
+      json['source'] = source;
+    }
+    return json;
+  }
+}
+
+/// NotifyWebhook is one outbound notification target. Its signing secret is a
+/// reference: the secret itself is never returned.
+class NotifyWebhook {
+  const NotifyWebhook({
+    required this.id,
+    required this.url,
+    this.secretRef,
+    required this.events,
+  });
+
+  final String id;
+  final String url;
+  final String? secretRef;
+  final List<String> events;
+
+  factory NotifyWebhook.fromJson(Map<String, dynamic> json) {
+    return NotifyWebhook(
+      id: json['id'] as String,
+      url: json['url'] as String,
+      secretRef: json['secretRef'] as String?,
+      events: _list(
+        json['events'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['url'] = url;
+    if (secretRef != null) {
+      json['secretRef'] = secretRef;
+    }
+    json['events'] = events;
+    return json;
+  }
+}
+
+/// NotifyConfig is GET and PUT /api/notifications' body: the webhooks.
+class NotifyConfig {
+  const NotifyConfig({
+    required this.webhooks,
+  });
+
+  final List<NotifyWebhook> webhooks;
+
+  factory NotifyConfig.fromJson(Map<String, dynamic> json) {
+    return NotifyConfig(
+      webhooks: _list(
+        json['webhooks'],
+        (value) => _object(value, NotifyWebhook.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['webhooks'] = [
+      for (final value in webhooks) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// NotifyTestResult is POST /api/notifications/test's answer: how many webhooks
+/// the test was queued for.
+class NotifyTestResult {
+  const NotifyTestResult({
+    required this.sent,
+  });
+
+  final int sent;
+
+  factory NotifyTestResult.fromJson(Map<String, dynamic> json) {
+    return NotifyTestResult(
+      sent: (json['sent'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['sent'] = sent;
+    return json;
+  }
+}
+
 /// PlannerOccupancy is how a workspace looks to a new planner. Ownership is
 /// never inferred from a missing record.
 enum PlannerOccupancy {
@@ -10166,6 +12329,85 @@ class Schedule {
   }
 }
 
+/// SecretsStatus is GET /api/secrets/status' answer: which backend holds the
+/// secrets and whether it answers.
+class SecretsStatus {
+  const SecretsStatus({
+    required this.backend,
+    required this.healthy,
+    this.error,
+  });
+
+  /// env, local or openbao
+  final String backend;
+  final bool healthy;
+  final String? error;
+
+  factory SecretsStatus.fromJson(Map<String, dynamic> json) {
+    return SecretsStatus(
+      backend: json['backend'] as String,
+      healthy: json['healthy'] as bool,
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['backend'] = backend;
+    json['healthy'] = healthy;
+    if (error != null) {
+      json['error'] = error;
+    }
+    return json;
+  }
+}
+
+/// SecretList is GET /api/secrets' answer: references only, each as
+/// `vault:&lt;path&gt;`.
+class SecretList {
+  const SecretList({
+    required this.refs,
+  });
+
+  final List<String> refs;
+
+  factory SecretList.fromJson(Map<String, dynamic> json) {
+    return SecretList(
+      refs: _list(
+        json['refs'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['refs'] = refs;
+    return json;
+  }
+}
+
+/// SecretWrite is PUT /api/secrets/{ref}'s body. It goes one way.
+class SecretWrite {
+  const SecretWrite({
+    required this.value,
+  });
+
+  final String value;
+
+  factory SecretWrite.fromJson(Map<String, dynamic> json) {
+    return SecretWrite(
+      value: json['value'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['value'] = value;
+    return json;
+  }
+}
+
 /// SessionSummary is one session as GET /api/sessions lists it: the entry an
 /// agent's session/list returns for this project.
 class SessionSummary {
@@ -11888,6 +14130,103 @@ class StackPatch {
   }
 }
 
+/// StatusLink is one link as GET /api/status-links lists it.
+class StatusLink {
+  const StatusLink({
+    required this.id,
+    required this.agentID,
+    required this.createdAt,
+    required this.expiresAt,
+    this.revokedAt,
+  });
+
+  final String id;
+  final String agentID;
+  final String createdAt;
+  final String expiresAt;
+  final String? revokedAt;
+
+  factory StatusLink.fromJson(Map<String, dynamic> json) {
+    return StatusLink(
+      id: json['id'] as String,
+      agentID: json['agentId'] as String,
+      createdAt: json['createdAt'] as String,
+      expiresAt: json['expiresAt'] as String,
+      revokedAt: json['revokedAt'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['agentId'] = agentID;
+    json['createdAt'] = createdAt;
+    json['expiresAt'] = expiresAt;
+    if (revokedAt != null) {
+      json['revokedAt'] = revokedAt;
+    }
+    return json;
+  }
+}
+
+/// StatusLinkCreate is POST /api/status-links' body. A zero TTL takes the
+/// bridge's default.
+class StatusLinkCreate {
+  const StatusLinkCreate({
+    required this.agentID,
+    this.ttlHours,
+  });
+
+  final String agentID;
+  final int? ttlHours;
+
+  factory StatusLinkCreate.fromJson(Map<String, dynamic> json) {
+    return StatusLinkCreate(
+      agentID: json['agentId'] as String,
+      ttlHours: (json['ttlHours'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['agentId'] = agentID;
+    if (ttlHours != null) {
+      json['ttlHours'] = ttlHours;
+    }
+    return json;
+  }
+}
+
+/// StatusLinkCreated is that route's answer: the only time the URL is ever
+/// given out.
+class StatusLinkCreated {
+  const StatusLinkCreated({
+    required this.id,
+    required this.url,
+    required this.expiresAt,
+  });
+
+  final String id;
+  final String url;
+  final String expiresAt;
+
+  factory StatusLinkCreated.fromJson(Map<String, dynamic> json) {
+    return StatusLinkCreated(
+      id: json['id'] as String,
+      url: json['url'] as String,
+      expiresAt: json['expiresAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['url'] = url;
+    json['expiresAt'] = expiresAt;
+    return json;
+  }
+}
+
 /// DeltaKind is the discriminator of a fleet-stream delta.
 enum DeltaKind {
   deltaActivity('activity'),
@@ -12284,6 +14623,255 @@ class TerminalResize {
     final json = <String, dynamic>{};
     json['cols'] = cols;
     json['rows'] = rows;
+    return json;
+  }
+}
+
+/// UsageTotals is the report's totals over its window.
+class UsageTotals {
+  const UsageTotals({
+    required this.costUSD,
+    required this.promptTokens,
+    required this.completionTokens,
+    required this.agentHours,
+    required this.pRsShipped,
+  });
+
+  final double costUSD;
+  final int promptTokens;
+  final int completionTokens;
+  final double agentHours;
+  final int pRsShipped;
+
+  factory UsageTotals.fromJson(Map<String, dynamic> json) {
+    return UsageTotals(
+      costUSD: (json['costUsd'] as num).toDouble(),
+      promptTokens: (json['promptTokens'] as num).toInt(),
+      completionTokens: (json['completionTokens'] as num).toInt(),
+      agentHours: (json['agentHours'] as num).toDouble(),
+      pRsShipped: (json['prsShipped'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['costUsd'] = costUSD;
+    json['promptTokens'] = promptTokens;
+    json['completionTokens'] = completionTokens;
+    json['agentHours'] = agentHours;
+    json['prsShipped'] = pRsShipped;
+    return json;
+  }
+}
+
+/// UsagePoint is one series entry: a day, a project, a role or a model.
+class UsagePoint {
+  const UsagePoint({
+    required this.key,
+    required this.costUSD,
+    required this.tokens,
+  });
+
+  final String key;
+  final double costUSD;
+  final int tokens;
+
+  factory UsagePoint.fromJson(Map<String, dynamic> json) {
+    return UsagePoint(
+      key: json['key'] as String,
+      costUSD: (json['costUsd'] as num).toDouble(),
+      tokens: (json['tokens'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['key'] = key;
+    json['costUsd'] = costUSD;
+    json['tokens'] = tokens;
+    return json;
+  }
+}
+
+/// UsageReport is GET /api/usage?range=&amp;by='s answer.
+class UsageReport {
+  const UsageReport({
+    required this.range,
+    required this.totals,
+    required this.series,
+  });
+
+  final String range;
+  final UsageTotals totals;
+  final List<UsagePoint> series;
+
+  factory UsageReport.fromJson(Map<String, dynamic> json) {
+    return UsageReport(
+      range: json['range'] as String,
+      totals: _object(
+        json['totals'],
+        UsageTotals.fromJson,
+      ),
+      series: _list(
+        json['series'],
+        (value) => _object(value, UsagePoint.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['range'] = range;
+    json['totals'] = totals.toJson();
+    json['series'] = [
+      for (final value in series) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// AuditEvent is one row of GET /api/audit?limit=, newest first.
+class AuditEvent {
+  const AuditEvent({
+    required this.ts,
+    required this.event,
+    this.ownerID,
+    this.agentID,
+    this.clientID,
+    this.repoID,
+    this.origin,
+    this.reason,
+    this.detail,
+    this.bytes,
+  });
+
+  final String ts;
+  final String event;
+  final String? ownerID;
+  final String? agentID;
+  final String? clientID;
+  final String? repoID;
+  final String? origin;
+  /// Reason is an operator- or policy-supplied explanation.
+  final String? reason;
+  /// Detail is a short non-sensitive specific: a branch name, a repo id.
+  final String? detail;
+  /// Bytes is set by prune records.
+  final int? bytes;
+
+  factory AuditEvent.fromJson(Map<String, dynamic> json) {
+    return AuditEvent(
+      ts: json['ts'] as String,
+      event: json['event'] as String,
+      ownerID: json['ownerId'] as String?,
+      agentID: json['agentId'] as String?,
+      clientID: json['clientId'] as String?,
+      repoID: json['repoId'] as String?,
+      origin: json['origin'] as String?,
+      reason: json['reason'] as String?,
+      detail: json['detail'] as String?,
+      bytes: (json['bytes'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['ts'] = ts;
+    json['event'] = event;
+    if (ownerID != null) {
+      json['ownerId'] = ownerID;
+    }
+    if (agentID != null) {
+      json['agentId'] = agentID;
+    }
+    if (clientID != null) {
+      json['clientId'] = clientID;
+    }
+    if (repoID != null) {
+      json['repoId'] = repoID;
+    }
+    if (origin != null) {
+      json['origin'] = origin;
+    }
+    if (reason != null) {
+      json['reason'] = reason;
+    }
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    if (bytes != null) {
+      json['bytes'] = bytes;
+    }
+    return json;
+  }
+}
+
+/// DiskStatus is GET /api/disk's answer: the bytes each part of the state
+/// directory takes, and the budget it is held to.
+class DiskStatus {
+  const DiskStatus({
+    required this.repos,
+    required this.work,
+    required this.total,
+    required this.measuredAt,
+    required this.budgetMB,
+  });
+
+  final int repos;
+  final int work;
+  final int total;
+  final String measuredAt;
+  final int budgetMB;
+
+  factory DiskStatus.fromJson(Map<String, dynamic> json) {
+    return DiskStatus(
+      repos: (json['repos'] as num).toInt(),
+      work: (json['work'] as num).toInt(),
+      total: (json['total'] as num).toInt(),
+      measuredAt: json['measuredAt'] as String,
+      budgetMB: (json['budgetMB'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['repos'] = repos;
+    json['work'] = work;
+    json['total'] = total;
+    json['measuredAt'] = measuredAt;
+    json['budgetMB'] = budgetMB;
+    return json;
+  }
+}
+
+/// PruneResult is POST /api/prune's answer. A partial prune answers the bytes
+/// it did reclaim with a warning, rather than failing.
+class PruneResult {
+  const PruneResult({
+    required this.reclaimed,
+    required this.total,
+    this.warning,
+  });
+
+  final int reclaimed;
+  final int total;
+  final String? warning;
+
+  factory PruneResult.fromJson(Map<String, dynamic> json) {
+    return PruneResult(
+      reclaimed: (json['reclaimed'] as num).toInt(),
+      total: (json['total'] as num).toInt(),
+      warning: json['warning'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['reclaimed'] = reclaimed;
+    json['total'] = total;
+    if (warning != null) {
+      json['warning'] = warning;
+    }
     return json;
   }
 }

@@ -64,6 +64,72 @@ class BridgeClient {
   Future<BudgetReport> budgets() =>
       _objectOf('/api/budgets', BudgetReport.fromJson);
 
+  /// GET /api/usage?range=&by=: what the fleet spent over a window, grouped by
+  /// day, project, role or model.
+  Future<UsageReport> usage({String range = '7d', String by = 'project'}) =>
+      _objectOf(
+        '/api/usage',
+        UsageReport.fromJson,
+        query: {'range': range, 'by': by},
+      );
+
+  /// GET /api/audit?limit=: the audit log, newest first.
+  Future<List<AuditEvent>> audit({int limit = 50}) =>
+      _listOf('/api/audit', AuditEvent.fromJson, query: {'limit': '$limit'});
+
+  /// GET /api/disk: the bytes each part of the state directory takes.
+  Future<DiskStatus> disk() => _objectOf('/api/disk', DiskStatus.fromJson);
+
+  /// POST /api/prune: reclaims unreferenced mirrors and orphaned work
+  /// directories, and answers what it freed.
+  Future<PruneResult> prune() =>
+      _objectOf('/api/prune', PruneResult.fromJson, method: 'POST');
+
+  /// GET /api/notifications: where Marshal reaches the user.
+  Future<NotifyConfig> notifications() =>
+      _objectOf('/api/notifications', NotifyConfig.fromJson);
+
+  /// PUT /api/notifications: writes the webhooks and answers what the bridge
+  /// kept.
+  Future<NotifyConfig> saveNotifications(NotifyConfig config) => _objectOf(
+    '/api/notifications',
+    NotifyConfig.fromJson,
+    method: 'PUT',
+    body: config,
+  );
+
+  /// POST /api/notifications/test: queues a test for every webhook and answers
+  /// how many it was queued for.
+  Future<NotifyTestResult> testNotifications() => _objectOf(
+    '/api/notifications/test',
+    NotifyTestResult.fromJson,
+    method: 'POST',
+  );
+
+  /// GET /api/status-links: every link, revoked ones included. The token is
+  /// never listed.
+  Future<List<StatusLink>> statusLinks() =>
+      _listOf('/api/status-links', StatusLink.fromJson);
+
+  /// POST /api/status-links: makes one, and answers the only copy of its URL.
+  Future<StatusLinkCreated> createStatusLink(
+    String agentId, {
+    int ttlHours = 0,
+  }) => _objectOf(
+    '/api/status-links',
+    StatusLinkCreated.fromJson,
+    method: 'POST',
+    body: StatusLinkCreate(agentID: agentId, ttlHours: ttlHours),
+  );
+
+  /// DELETE /api/status-links/{id}: revokes one, so its URL stops working.
+  Future<void> revokeStatusLink(String id) => _send(
+    Request(
+      method: 'DELETE',
+      path: '/api/status-links/${Uri.encodeComponent(id)}',
+    ),
+  );
+
   /// GET /api/prompts/recent: the prompts worth offering again.
   Future<RecentPrompts> recentPrompts() =>
       _objectOf('/api/prompts/recent', RecentPrompts.fromJson);
@@ -574,6 +640,247 @@ class BridgeClient {
     );
     return FactoryGrantState.fromJson(_object(response));
   }
+
+  /// GET /api/repos: every registered repository, with the forge and the
+  /// credential it is reached with.
+  Future<List<Repo>> repos() => _listOf('/api/repos', Repo.fromJson);
+
+  /// POST /api/repos: registers one, or replaces the one with its id.
+  Future<Repo> registerRepo(Repo repo) =>
+      _objectOf('/api/repos', Repo.fromJson, method: 'POST', body: repo);
+
+  /// DELETE /api/repos/{id}.
+  Future<void> removeRepo(String id) => _send(
+    Request(method: 'DELETE', path: '/api/repos/${Uri.encodeComponent(id)}'),
+  );
+
+  /// GET /api/credentials: every forge credential. It carries no value, only
+  /// whether the secret it names exists.
+  Future<List<Credential>> credentials() =>
+      _listOf('/api/credentials', Credential.fromJson);
+
+  /// POST /api/credentials: stores one and answers what the bridge kept.
+  Future<Credential> putCredential(CredentialInput input) => _objectOf(
+    '/api/credentials',
+    Credential.fromJson,
+    method: 'POST',
+    body: input,
+  );
+
+  /// DELETE /api/credentials/{id}: refused while a repo still names it.
+  Future<void> deleteCredential(String id) => _send(
+    Request(
+      method: 'DELETE',
+      path: '/api/credentials/${Uri.encodeComponent(id)}',
+    ),
+  );
+
+  /// GET /api/models: the user-global config's providers, presets, roles and
+  /// caps. Providers and presets are user-global only.
+  Future<ModelsConfig> models() =>
+      _objectOf('/api/models', ModelsConfig.fromJson);
+
+  /// PUT /api/models/providers: sends the named providers; a null one is
+  /// removed.
+  Future<void> setProviders(ProvidersUpdate update) =>
+      _put('/api/models/providers', update);
+
+  /// PUT /api/models/providers/{name}/key: stores a provider's key. Nothing
+  /// on any route answers it back.
+  Future<void> setProviderKey(String name, String key) => _put(
+    '/api/models/providers/${Uri.encodeComponent(name)}/key',
+    ProviderKey(key: key),
+  );
+
+  /// PUT /api/models/presets: sends the named presets; a null one is removed.
+  Future<void> setPresets(PresetsUpdate update) =>
+      _put('/api/models/presets', update);
+
+  /// PUT /api/models/routing: the profiles, the default profile and the active
+  /// preset, in the user's global config.
+  Future<void> setRouting(RoutingUpdate update) =>
+      _put('/api/models/routing', update);
+
+  /// POST /api/models/probe: lists the models a provider answers with. A probe
+  /// that fails is its answer, not a refusal.
+  Future<ProbeResult> probeProvider(String name) => _objectOf(
+    '/api/models/probe',
+    ProbeResult.fromJson,
+    method: 'POST',
+    body: ProbeRequest(name: name),
+  );
+
+  /// PUT /api/budgets: writes the caps to the user's global config and
+  /// answers the report the engine stored, which may clamp what was sent.
+  Future<BudgetReport> saveBudgets(Budgets budgets) => _objectOf(
+    '/api/budgets',
+    BudgetReport.fromJson,
+    method: 'PUT',
+    body: BudgetsUpdate(budgets: budgets),
+  );
+
+  /// GET /api/secrets/status: which backend holds the secrets and whether it
+  /// answers.
+  Future<SecretsStatus> secretsStatus() =>
+      _objectOf('/api/secrets/status', SecretsStatus.fromJson);
+
+  /// GET /api/secrets: references only, each as `vault:<path>`. A value has no
+  /// route out.
+  Future<List<String>> secrets({String? prefix}) async {
+    final response = await _send(
+      Request(path: '/api/secrets', query: {'prefix': ?prefix}),
+    );
+    final list = SecretList.fromJson(_object(response));
+    return list.refs;
+  }
+
+  /// PUT /api/secrets/{ref}: writes a value. It goes one way.
+  Future<void> putSecret(String ref, String value) => _send(
+    Request(
+      method: 'PUT',
+      path: _secretPath(ref),
+      body: SecretWrite(value: value),
+    ),
+  );
+
+  /// DELETE /api/secrets/{ref}.
+  Future<void> deleteSecret(String ref) =>
+      _send(Request(method: 'DELETE', path: _secretPath(ref)));
+
+  /// The `vault:` prefix stripped and every slash kept, so a nested path is
+  /// addressed as the bridge's own route does.
+  String _secretPath(String ref) {
+    final bare = ref.startsWith('vault:') ? ref.substring(6) : ref;
+    return '/api/secrets/${bare.split('/').map(Uri.encodeComponent).join('/')}';
+  }
+
+  /// GET /api/network?view=hosts: the egress hosts with the rule that covers
+  /// each, for one workspace, one agent, or all of them.
+  Future<NetHosts> networkHosts({String? workspace, String? agent}) =>
+      _objectOf(
+        '/api/network',
+        NetHosts.fromJson,
+        query: {
+          'view': 'hosts',
+          if (workspace != null && workspace.isNotEmpty) 'workspace': workspace,
+          if (agent != null && agent.isNotEmpty) 'agent': agent,
+        },
+      );
+
+  /// GET /api/network?view=requests: the connection records themselves.
+  Future<List<NetRecord>> networkRequests({String? workspace, String? agent}) =>
+      _listOf(
+        '/api/network',
+        NetRecord.fromJson,
+        query: {
+          'view': 'requests',
+          if (workspace != null && workspace.isNotEmpty) 'workspace': workspace,
+          if (agent != null && agent.isNotEmpty) 'agent': agent,
+        },
+      );
+
+  /// GET /api/network?view=agents: one row per agent that reached anything.
+  Future<List<NetAgentRow>> networkAgents({String? workspace}) => _listOf(
+    '/api/network',
+    NetAgentRow.fromJson,
+    query: {
+      'view': 'agents',
+      if (workspace != null && workspace.isNotEmpty) 'workspace': workspace,
+    },
+  );
+
+  /// GET /api/network/pending: the blocked requests still awaiting a decision,
+  /// oldest first.
+  Future<List<NetPending>> networkPending({String? agent}) async {
+    final response = await _send(
+      Request(
+        path: '/api/network/pending',
+        query: {if (agent != null && agent.isNotEmpty) 'agent': agent},
+      ),
+    );
+    return NetPendingList.fromJson(_object(response)).pending;
+  }
+
+  /// POST /api/network/decisions: answers one blocked request.
+  Future<NetDecisionResult> networkDecision(NetDecision decision) => _objectOf(
+    '/api/network/decisions',
+    NetDecisionResult.fromJson,
+    method: 'POST',
+    body: decision,
+  );
+
+  /// GET /api/workspaces: the gallery of environment templates, with their
+  /// versions and how many agents run on each.
+  Future<List<EnvListItem>> environments() =>
+      _listOf('/api/workspaces', EnvListItem.fromJson);
+
+  /// GET /api/workspaces/{name}: one template's source, its parse and its
+  /// record. Without [version] the draft is read when there is one.
+  Future<EnvLoaded> environment(String name, {int? version}) => _objectOf(
+    '/api/workspaces/${Uri.encodeComponent(name)}',
+    EnvLoaded.fromJson,
+    query: {if (version != null) 'version': '$version'},
+  );
+
+  /// POST /api/workspaces: starts a template from [from], which is `blank`,
+  /// `starter:<name>`, `devcontainer:<path>` or `snapshot:<agent>`.
+  Future<EnvMeta> createEnvironment(String name, String from) => _objectOf(
+    '/api/workspaces',
+    EnvMeta.fromJson,
+    method: 'POST',
+    body: EnvCreate(name: name, from: from),
+  );
+
+  /// PUT /api/workspaces/{name}/draft: writes the source and answers its
+  /// parse.
+  Future<EnvLoaded> saveEnvironmentDraft(String name, String source) =>
+      _objectOf(
+        '/api/workspaces/${Uri.encodeComponent(name)}/draft',
+        EnvLoaded.fromJson,
+        method: 'PUT',
+        body: EnvDraft(source: source),
+      );
+
+  /// POST /api/workspaces/{name}/publish: publishes the draft and answers the
+  /// version it made.
+  Future<EnvVersion> publishEnvironment(String name) => _objectOf(
+    '/api/workspaces/${Uri.encodeComponent(name)}/publish',
+    EnvVersion.fromJson,
+    method: 'POST',
+    body: const <String, Object?>{},
+  );
+
+  /// DELETE /api/workspaces/{name}.
+  Future<void> deleteEnvironment(String name) => _send(
+    Request(
+      method: 'DELETE',
+      path: '/api/workspaces/${Uri.encodeComponent(name)}',
+    ),
+  );
+
+  /// GET /api/workspaces/{name}/builds: the versions, the warm pool and the
+  /// median start times.
+  Future<EnvBuilds> environmentBuilds(String name) => _objectOf(
+    '/api/workspaces/${Uri.encodeComponent(name)}/builds',
+    EnvBuilds.fromJson,
+  );
+
+  /// POST /api/workspaces/{name}/builds: starts a build and answers which
+  /// version it is building.
+  Future<EnvBuildStart> startEnvironmentBuild(String name, {int? version}) =>
+      _objectOf(
+        '/api/workspaces/${Uri.encodeComponent(name)}/builds',
+        EnvBuildStart.fromJson,
+        method: 'POST',
+        body: {'version': ?version},
+      );
+
+  /// GET …/builds/{n}/events: the build's log, from its first line. The
+  /// caller starts it.
+  EventStream environmentBuildLog(String name, int n) => EventStream(
+    _transport,
+    '/api/workspaces/${Uri.encodeComponent(name)}/builds/$n/events',
+  );
 
   /// GET /api/sessions/{id}/stack: one transcript's tree at its current
   /// revision. [subagentId] names a child transcript; 0 is the parent's.
@@ -1133,6 +1440,14 @@ class BridgeClient {
     Map<String, String> query = const {},
   }) async {
     await _send(Request(method: 'POST', path: path, query: query, body: body));
+  }
+
+  Future<void> _put(
+    String path,
+    Object? body, {
+    Map<String, String> query = const {},
+  }) async {
+    await _send(Request(method: 'PUT', path: path, query: query, body: body));
   }
 }
 

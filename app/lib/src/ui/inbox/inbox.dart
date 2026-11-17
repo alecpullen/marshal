@@ -499,5 +499,6 @@ class _InboxState extends State<Inbox> {
     model.AskKind.decision => AskKind.decision,
     model.AskKind.recovery => AskKind.decision,
     model.AskKind.completion => AskKind.decision,
+    model.AskKind.network => AskKind.network,
   };
 }

@@ -568,8 +568,8 @@ func TestDaemonUninstallLeavesLingerEnabled(t *testing.T) {
 // TestDaemonStatusReportsARunningDaemon pins decision 12's happy path: three
 // lines, the daemon's version beside this marshal's, its start time, and its
 // projects — and a socket call bounded at two seconds. Under the daemon's line
-// it reports each child on a line of its own, with the child's environment
-// warning indented beneath it.
+// it reports each child on a line of its own, the restart that child holds and
+// its environment warning indented beneath it.
 func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 	home := daemonTestEnv(t)
 	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -594,12 +594,17 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 				Refresh:   &daemon.RefreshInfo{PID: 5151, Restarts: 2},
 				Children: []daemon.ChildInfo{
 					{
-						// Another build, with a warning: the line has to
-						// name both versions and the warning follows.
+						// Another build, with a warning and a held
+						// restart: the line has to name both versions,
+						// the restart follows it, and the warning last.
 						Root:       "/work/three",
 						Version:    "2.0.0",
 						Sessions:   []daemon.SessionInfo{{ID: "sess-1", Viewers: 1}},
 						EnvWarning: warning,
+						Restart: &daemon.DaemonRestart{
+							Reasons:    []string{"a new build", "config changed"},
+							WaitingFor: "2 sessions",
+						},
 					},
 					{
 						// This marshal's own version, no warning, no
@@ -639,9 +644,9 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
 	// The daemon's three lines, then its refresh helper's, then each
-	// child's, the warned child's second one included.
-	if len(lines) != 7 {
-		t.Fatalf("status printed %d lines, want 7:\n%s", len(lines), stdout.String())
+	// child's, the held restart and the warned child's warning included.
+	if len(lines) != 8 {
+		t.Fatalf("status printed %d lines, want 8:\n%s", len(lines), stdout.String())
 	}
 	if !strings.Contains(lines[0], "running") || !strings.Contains(lines[0], "4242") {
 		t.Errorf("service line = %q, want the running state and its pid", lines[0])
@@ -669,19 +674,23 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 		t.Errorf("refresh line = %q, want %q", lines[3], want)
 	}
 
-	// The first child runs another build and carries a warning: its line
-	// names its own version, this marshal's, and its one session, and the
-	// warning follows indented on a line of its own.
+	// The first child runs another build with a held restart and carries a
+	// warning: its line names its own version, this marshal's, and its one
+	// session; the restart follows it, then the warning, both indented.
 	if want := "child /work/three: version 2.0.0, 1 session (this marshal 0.9.0)"; lines[4] != want {
 		t.Errorf("child line = %q, want %q", lines[4], want)
 	}
-	if want := "  environment: " + warning; lines[5] != want {
-		t.Errorf("warning line = %q, want %q", lines[5], want)
+	if want := "  restart pending: a new build, config changed, waiting for 2 sessions"; lines[5] != want {
+		t.Errorf("restart line = %q, want %q under the child's", lines[5], want)
 	}
-	// The second child runs this marshal's version with no sessions and no
-	// warning: no "(this marshal ...)" aside, and no second line.
-	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[6] != want {
-		t.Errorf("child line = %q, want %q", lines[6], want)
+	if want := "  environment: " + warning; lines[6] != want {
+		t.Errorf("warning line = %q, want %q", lines[6], want)
+	}
+	// The second child runs this marshal's version with no sessions, no
+	// warning and no restart: no "(this marshal ...)" aside, and no second
+	// line.
+	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[7] != want {
+		t.Errorf("child line = %q, want %q", lines[7], want)
 	}
 	for _, line := range lines[4:] {
 		if strings.Contains(line, "/work/four") && strings.Contains(line, "this marshal") {
@@ -738,6 +747,71 @@ func TestDaemonChildLine(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if got := daemonChildLine(c.child, c.marshalVersion); got != c.want {
 				t.Errorf("daemonChildLine() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestDaemonRestartLines pins the restart lines under a child's: nothing for a
+// child that is current, the reasons and what they wait for while a restart is
+// held, the same reasons without the waiter when nothing holds it, and a
+// refusal on a line of its own. A restart with no reasons prints no bare
+// `restart pending: ` line, so a refusal alone still says what it is.
+func TestDaemonRestartLines(t *testing.T) {
+	cases := []struct {
+		name    string
+		restart *daemon.DaemonRestart
+		want    []string
+	}{
+		{
+			name:    "none",
+			restart: nil,
+			want:    nil,
+		},
+		{
+			name: "waiting",
+			restart: &daemon.DaemonRestart{
+				Reasons:    []string{"a new build", "config changed"},
+				WaitingFor: "2 sessions",
+			},
+			want: []string{"  restart pending: a new build, config changed, waiting for 2 sessions"},
+		},
+		{
+			name: "not waiting",
+			restart: &daemon.DaemonRestart{
+				Reasons: []string{"a new build"},
+			},
+			want: []string{"  restart pending: a new build"},
+		},
+		{
+			name: "refused",
+			restart: &daemon.DaemonRestart{
+				Reasons: []string{"a new build"},
+				Refused: "exit status 2",
+			},
+			want: []string{
+				"  restart pending: a new build",
+				"  restart refused: exit status 2",
+			},
+		},
+		{
+			name: "refused with no reasons",
+			restart: &daemon.DaemonRestart{
+				Refused: "exit status 2",
+			},
+			want: []string{"  restart refused: exit status 2"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := daemonRestartLines(daemon.ChildInfo{Restart: c.restart})
+			if len(got) != len(c.want) {
+				t.Fatalf("daemonRestartLines() = %q, want %q", got, c.want)
+			}
+			for i := range c.want {
+				if got[i] != c.want[i] {
+					t.Errorf("daemonRestartLines()[%d] = %q, want %q", i, got[i], c.want[i])
+				}
 			}
 		})
 	}

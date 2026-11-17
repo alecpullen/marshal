@@ -74,6 +74,35 @@ class ExpectedCheck {
   int get hashCode => Object.hash(kind, name, appID);
 }
 
+/// A check that already-recorded work in this project observed, and where it
+/// saw it: the evidence an editor may offer, never a forge lookup.
+///
+/// It carries its own provenance so a suggestion says where it came from — the
+/// work item's round and the moment — and a person can tell one recording from
+/// another. It is a record of what happened, not a statement of what the forge
+/// requires.
+@immutable
+class ObservedCheck {
+  const ObservedCheck({
+    required this.check,
+    required this.observedAt,
+    required this.revision,
+  });
+
+  /// The check as the forge named it, kept verbatim.
+  final ExpectedCheck check;
+
+  /// When the round observed it: the bridge's RFC3339 string, verbatim, so it
+  /// is shown as the bridge wrote it and sorts as a date.
+  final String observedAt;
+
+  /// The round of the item that observed it.
+  final int revision;
+
+  /// Where the evidence came from, in words.
+  String get provenance => 'revision $revision, observed $observedAt';
+}
+
 /// What parsing raw check text produced: the checks that parsed, the text as
 /// the caller wrote it, and why the rest cannot be saved.
 ///

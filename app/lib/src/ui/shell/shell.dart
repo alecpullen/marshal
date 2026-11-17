@@ -1426,6 +1426,8 @@ class _ProjectPlaceState extends State<_ProjectPlace> {
       onOpenAgent: widget.onOpenAgent,
       onOpenRun: widget.onOpenRun,
       onOpenAutomations: widget.onOpenAutomations,
+      observedChecks:
+          factory?.observedChecks(projectRoot: widget.root) ?? const [],
     );
   }
 }

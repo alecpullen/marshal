@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '../../model/age.dart';
+import '../../model/expected_checks.dart';
 import '../../model/project_model.dart';
 import '../../model/section_model.dart' show SaveState;
 import '../../model/thread_ref.dart' as threads;
@@ -42,6 +43,7 @@ class ProjectPage extends StatefulWidget {
     this.onOpenAgent,
     this.onOpenRun,
     this.onOpenAutomations,
+    this.observedChecks = const <ObservedCheck>[],
   });
 
   final ProjectModel model;
@@ -72,6 +74,10 @@ class ProjectPage extends StatefulWidget {
 
   /// Opens the Automations place. Null leaves the summary without its link.
   final VoidCallback? onOpenAutomations;
+
+  /// The checks this project's recorded work has observed: the evidence the
+  /// Defaults tab may offer beside the editor, never a requirement.
+  final List<ObservedCheck> observedChecks;
 
   @override
   State<ProjectPage> createState() => _ProjectPageState();
@@ -169,6 +175,7 @@ class _ProjectPageState extends State<ProjectPage> {
               model: model,
               state: widget.state,
               now: widget.now,
+              observedChecks: widget.observedChecks,
             ),
             _ => HealthTab(model: model, state: widget.state, now: widget.now),
           },

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../client/contract.g.dart';
 import '../client/host.dart';
 import '../client/transport.dart';
+import 'expected_checks.dart';
 import 'fleet_store.dart' show describeFailure;
 import 'merge_target.dart';
 
@@ -73,6 +74,51 @@ class FactoryStore extends ChangeNotifier {
       if (item.id == id) return item;
     }
     return null;
+  }
+
+  /// Every check this project's recorded work has observed, newest first and
+  /// deduped by (kind, name, appID): the evidence an editor may suggest.
+  ///
+  /// The source is the items this store already holds — read when a host was
+  /// polled — so it makes no request, asks no forge and changes nothing. An
+  /// editor offers what it returns as recorded evidence only: a check that
+  /// appeared once is not a statement of what the forge requires, and a
+  /// project with no recorded work yields an empty list rather than a guess.
+  List<ObservedCheck> observedChecks({
+    required String projectRoot,
+    String repoID = '',
+  }) {
+    final newest = <ExpectedCheck, ObservedCheck>{};
+    for (final item in items(projectRoot: projectRoot)) {
+      if (repoID.isNotEmpty && item.repoID != repoID) continue;
+      for (final round in item.rounds) {
+        final ci = round.ci;
+        if (ci == null) continue;
+        for (final check in ci.checks) {
+          final observed = ObservedCheck(
+            check: ExpectedCheck.of(check.key),
+            observedAt: check.observedAt,
+            revision: round.number,
+          );
+          final held = newest[observed.check];
+          // RFC3339 sorts as text, so the latest observation of a check is
+          // the greatest string and the round that saw it is its own.
+          if (held == null ||
+              held.observedAt.compareTo(observed.observedAt) < 0) {
+            newest[observed.check] = observed;
+          }
+        }
+      }
+    }
+    final all = newest.values.toList()
+      ..sort((a, b) {
+        final byTime = b.observedAt.compareTo(a.observedAt);
+        if (byTime != 0) return byTime;
+        final byName = a.check.name.compareTo(b.check.name);
+        if (byName != 0) return byName;
+        return a.check.appID.compareTo(b.check.appID);
+      });
+    return List.unmodifiable(all);
   }
 
   /// Every agent that is a worker of any item, ever (F6 decision 13).

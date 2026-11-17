@@ -5,9 +5,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart'
     show ProjectSettingsVersion;
 import 'package:marshal_app/src/client/contract.g.dart' as contract;
+import 'package:marshal_app/src/model/expected_checks.dart';
 import 'package:marshal_app/src/model/inbox_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/project_model.dart';
+import 'package:marshal_app/src/model/section_model.dart' show SaveState;
 import 'package:marshal_app/src/model/work_item_model.dart'
     show Stage, WorkItemView;
 import 'package:marshal_app/src/ui/kit/kit.dart';
@@ -24,48 +26,54 @@ final _now = DateTime.utc(2026, 11, 17, 4, 12);
 
 /// A project's settings with a repository to discover and a factory default
 /// block, and health and runs beside them.
-ProjectModel _model({String root = '/home/u/alpha', String name = 'alpha'}) =>
-    ProjectModel(
-      root: root,
-      name: name,
-      now: () => _now,
-      read: () async => ProjectSettingsVersion(
-        settings: contract.ProjectSettings.fromJson({
-          'routing': {'profile': 'balanced'},
-          'mode': 'act',
-          'intake': {'repoId': 'repo-1'},
-          'factoryDefaults': {'targetBranch': 'main', 'maxRounds': 3},
-        }),
-        etag: 'v1',
-      ),
-      write: (next, etag) async =>
-          ProjectSettingsVersion(settings: next, etag: 'v2'),
-      readHealth: () async => contract.ProjectHealth.fromJson({
-        'gateRunnable': 'yes',
-        'mirrorFresh': <Object?>[],
-        'orphanWorktrees': <Object?>[],
-        'trust': 'trusted',
-        'verify': {'build': 'go build ./...', 'test': ''},
-      }),
-      readRuns: () async => const <contract.RunListEntry>[],
-      discover: (repoID) async => contract.DiscoveryReport.fromJson({
-        'repoId': repoID,
-        'forge': 'github',
-        'status': 'ok',
-        'branch': 'main',
-        'revision': 'abc1234f',
-        'capabilities': [
-          {
-            'key': 'forge_metadata',
-            'state': 'supported',
-            'detail': 'It answered',
-          },
-        ],
-        'facts': <Object?>[],
-        'recommended': <Object?>[],
-        'gaps': <Object?>[],
-      }),
-    );
+///
+/// [factoryDefaults] replaces the whole factory block, so a test can store the
+/// checks a project states; [onWrite] sees the document a save would send.
+ProjectModel _model({
+  String root = '/home/u/alpha',
+  String name = 'alpha',
+  Map<String, Object?>? factoryDefaults,
+  void Function(contract.ProjectSettings next)? onWrite,
+}) => ProjectModel(
+  root: root,
+  name: name,
+  now: () => _now,
+  read: () async => ProjectSettingsVersion(
+    settings: contract.ProjectSettings.fromJson({
+      'routing': {'profile': 'balanced'},
+      'mode': 'act',
+      'intake': {'repoId': 'repo-1'},
+      'factoryDefaults':
+          factoryDefaults ?? {'targetBranch': 'main', 'maxRounds': 3},
+    }),
+    etag: 'v1',
+  ),
+  write: (next, etag) async {
+    onWrite?.call(next);
+    return ProjectSettingsVersion(settings: next, etag: 'v2');
+  },
+  readHealth: () async => contract.ProjectHealth.fromJson({
+    'gateRunnable': 'yes',
+    'mirrorFresh': <Object?>[],
+    'orphanWorktrees': <Object?>[],
+    'trust': 'trusted',
+    'verify': {'build': 'go build ./...', 'test': ''},
+  }),
+  readRuns: () async => const <contract.RunListEntry>[],
+  discover: (repoID) async => contract.DiscoveryReport.fromJson({
+    'repoId': repoID,
+    'forge': 'github',
+    'status': 'ok',
+    'branch': 'main',
+    'revision': 'abc1234f',
+    'capabilities': [
+      {'key': 'forge_metadata', 'state': 'supported', 'detail': 'It answered'},
+    ],
+    'facts': <Object?>[],
+    'recommended': <Object?>[],
+    'gaps': <Object?>[],
+  }),
+);
 
 /// A page tall enough that its discovery action is on screen.
 Future<void> _pumpTall(WidgetTester tester, Widget page) async {
@@ -73,6 +81,39 @@ Future<void> _pumpTall(WidgetTester tester, Widget page) async {
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(EmberApp(brightness: Brightness.light, home: page));
+  await tester.pump();
+}
+
+/// The Defaults tab with its expected-checks sheet open.
+Future<void> _openChecks(
+  WidgetTester tester,
+  ProjectModel model, {
+  List<ObservedCheck> observedChecks = const <ObservedCheck>[],
+}) async {
+  await _pumpTall(
+    tester,
+    ProjectPage(
+      model: model,
+      initialTab: 2,
+      now: _now,
+      observedChecks: observedChecks,
+    ),
+  );
+  await tester.pump();
+  await tester.tap(find.text('Expected checks'));
+  await tester.pumpAndSettle();
+}
+
+/// Types into the sheet's field labelled [label].
+Future<void> _enter(WidgetTester tester, String label, String text) async {
+  final field = find.ancestor(
+    of: find.text(label),
+    matching: find.byType(Field),
+  );
+  await tester.enterText(
+    find.descendant(of: field, matching: find.byType(EditableText)),
+    text,
+  );
   await tester.pump();
 }
 
@@ -566,5 +607,197 @@ void main() {
       findsOneWidget,
       reason: 'Enter opened the section',
     );
+  });
+
+  testWidgets('the defaults tab says whether it follows the app or states '
+      'checks', (tester) async {
+    final model = _model();
+    await _pumpTall(
+      tester,
+      ProjectPage(model: model, initialTab: 2, now: _now),
+    );
+    await tester.pump();
+
+    expect(find.text('Expected checks'), findsOneWidget);
+    expect(
+      find.text('Following the defaults'),
+      findsOneWidget,
+      reason: 'stored settings that state none follow the app\'s',
+    );
+  });
+
+  testWidgets('adding a check writes both checks and keeps the rest of the '
+      'settings', (tester) async {
+    final written = <Map<String, dynamic>>[];
+    final model = _model(
+      factoryDefaults: {
+        'targetBranch': 'main',
+        'maxRounds': 3,
+        'expectedChecks': [
+          {'kind': 'check_run', 'name': 'ci:build', 'appId': 42},
+        ],
+      },
+      onWrite: (next) => written.add(next.toJson()),
+    );
+    await _pumpTall(
+      tester,
+      ProjectPage(model: model, initialTab: 2, now: _now),
+    );
+    await tester.pump();
+    expect(find.text('1 check'), findsOneWidget);
+
+    await _openChecks(tester, model);
+
+    // The stored check is the sheet's row, its name and app kept whole.
+    expect(find.text('ci:build (App 42)'), findsOneWidget);
+
+    // A commit status whose context holds a colon, added from the form.
+    await tester.tap(find.text('check_run'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('commit_status'));
+    await tester.pumpAndSettle();
+    await _enter(tester, 'Name', 'ci:lint:repo');
+    await tester.tap(find.text('Add the check'));
+    await tester.pumpAndSettle();
+    expect(find.text('ci:lint:repo'), findsOneWidget);
+
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    expect(find.text('2 checks'), findsOneWidget);
+
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(written, hasLength(1));
+    final document = written.single;
+    expect(document['mode'], 'act', reason: 'unrelated settings survived');
+    final factory = document['factoryDefaults'] as Map<String, dynamic>;
+    expect(factory['targetBranch'], 'main');
+    expect(factory['expectedChecks'], [
+      {'kind': 'check_run', 'name': 'ci:build', 'appId': 42},
+      {'kind': 'commit_status', 'name': 'ci:lint:repo', 'appId': 0},
+    ]);
+  });
+
+  testWidgets('mode switching keeps invalid raw text and the page refuses it', (
+    tester,
+  ) async {
+    final written = <Map<String, dynamic>>[];
+    final model = _model(onWrite: (next) => written.add(next.toJson()));
+    await _openChecks(tester, model);
+
+    // Rows hands over to raw text, which is the draft's own text.
+    await tester.tap(find.text('Rows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Raw text'));
+    await tester.pumpAndSettle();
+    await _enter(tester, 'Checks', 'nonsense');
+    expect(find.textContaining('"nonsense" is neither'), findsOneWidget);
+
+    // Rows and back again: the text the person typed is still there, and so
+    // is the line that says why it cannot be stored.
+    await tester.tap(find.text('Raw text'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Raw text'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('nonsense'), findsOneWidget);
+    expect(find.textContaining('"nonsense" is neither'), findsOneWidget);
+
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    expect(find.text('Not valid'), findsOneWidget);
+
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(model.saveState, SaveState.failed);
+    expect(model.saveError, contains('nonsense'));
+    expect(written, isEmpty, reason: 'nothing unparsed reached the bridge');
+  });
+
+  testWidgets('observed checks are offered only when asked, and added one at '
+      'a time', (tester) async {
+    final written = <Map<String, dynamic>>[];
+    final model = _model(onWrite: (next) => written.add(next.toJson()));
+    const observed = [
+      ObservedCheck(
+        check: ExpectedCheck(kind: 'check_run', name: 'ci/build', appID: 11),
+        observedAt: '2026-11-17T03:00:00Z',
+        revision: 2,
+      ),
+      ObservedCheck(
+        check: ExpectedCheck(kind: 'check_run', name: 'ci/build', appID: 12),
+        observedAt: '2026-11-17T04:00:00Z',
+        revision: 3,
+      ),
+    ];
+    await _openChecks(tester, model, observedChecks: observed);
+
+    // Nothing is offered until the person asks for it.
+    expect(find.text('ci/build (App 11)'), findsNothing);
+    await tester.tap(find.text('Show checks observed in this project'));
+    await tester.pumpAndSettle();
+
+    // Both are listed, told apart by their app, and each says where it came
+    // from.
+    expect(find.text('ci/build (App 11)'), findsOneWidget);
+    expect(find.text('ci/build (App 12)'), findsOneWidget);
+    expect(
+      find.text('revision 2, observed 2026-11-17T03:00:00Z'),
+      findsOneWidget,
+    );
+    expect(
+      find.text('revision 3, observed 2026-11-17T04:00:00Z'),
+      findsOneWidget,
+    );
+    expect(
+      find.text(
+        'These were recorded by earlier work; they are not a complete list '
+        'of what the forge requires.',
+      ),
+      findsOneWidget,
+    );
+
+    // Looking is not choosing: the draft and the bridge are untouched.
+    expect(model.dirty, isFalse);
+    expect(written, isEmpty);
+
+    await tester.tap(find.text('Add').first);
+    await tester.pumpAndSettle();
+
+    expect(model.draft!.expectedChecks, [
+      const ExpectedCheck(kind: 'check_run', name: 'ci/build', appID: 11),
+    ]);
+  });
+
+  testWidgets('with nothing observed the editor says so and takes a check by '
+      'hand', (tester) async {
+    final model = _model();
+    await _openChecks(tester, model);
+
+    await tester.tap(find.text('Show checks observed in this project'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'No check has been observed in this project yet, so add them by hand.',
+      ),
+      findsOneWidget,
+    );
+
+    // The add form is still there, and still the way in.
+    await _enter(tester, 'Name', 'build');
+    await _enter(tester, 'GitHub App ID', '42');
+    await tester.tap(find.text('Add the check'));
+    await tester.pumpAndSettle();
+
+    expect(model.draft!.expectedChecks, [
+      const ExpectedCheck(kind: 'check_run', name: 'build', appID: 42),
+    ]);
   });
 }

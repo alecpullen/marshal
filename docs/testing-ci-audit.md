@@ -43,7 +43,7 @@ cache. A practical system-oriented local pass is:
 go test ./test/daemon/...
 CGO_ENABLED=1 go build ./cmd/marshal
 USABILITY_REQUIRE_BINARY=1 go test ./test/usability/... -run TestScripted -timeout 5m
-(cd web/ui && npm ci && npm test)
+(cd app && flutter analyze && flutter test)
 ```
 
 These commands are a fast feedback option, **not** a replacement for all
@@ -76,7 +76,7 @@ run) and `--go-only` (CI mode, Go job and vet only).
 | `quick` | `go test -short ./...`, cache enabled | 2m09 for 123 packages with a warm cache |
 | `full` | `go test -count=1 ./...`, parallel | 2m50 warm, ~9m cold |
 | `budgets` | only the 12 named latency budgets, `-p=1` | under a minute when the machine is idle |
-| `ci` | the three CI jobs in workflow order | ~7m Go job, plus usability and web |
+| `ci` | the CI jobs in workflow order | ~7m Go job, plus usability and the app/Studio job |
 
 `changed` is the default because most edits touch one or two packages. It maps
 each changed file to its nearest package ancestor (`testdata/` and `//go:embed`
@@ -85,7 +85,7 @@ include transitive dependents, test variants included, so a package whose test
 imports something you changed is still tested. A rename counts on both sides:
 the package that lost the file is as affected as the one that gained it. A diff
 that touches no package runs nothing and says so; one whose files sit under no
-Go package at all (`web/ui/src`) says that a Go run cannot cover it and that
+Go package at all (`app/lib/src`) says that a Go run cannot cover it and that
 `ci` can. It uses `-count=1` deliberately: the
 point of the mode is a real result for the cone, not a cached report for the
 one package whose inputs changed. Go's own cache already makes an unchanged

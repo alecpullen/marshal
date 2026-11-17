@@ -239,15 +239,15 @@ func (s *Server) route(api http.Handler, w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if isNextPath(r.URL.Path) {
-		// The Flutter Studio, at its prefix: the cutover is deferred, so the
-		// Svelte Studio keeps the root (F8 decision 1, revised 2026-11-17).
-		flutterHandler().ServeHTTP(w, r)
+		// The retired prefix: the Flutter Studio holds `/` now, so an old
+		// /next/ link moves to the place it names (F8 cutover).
+		nextRedirect(w, r)
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {
-		// Everything else that is not the API is the Svelte Studio, at the
+		// Everything else that is not the API is the Flutter Studio, at the
 		// root.
-		svelteHandler().ServeHTTP(w, r)
+		studioHandler().ServeHTTP(w, r)
 		return
 	}
 	api.ServeHTTP(w, r)

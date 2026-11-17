@@ -30,9 +30,9 @@ func TestWebIsStdlibOnly(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			// Skip vendored and generated trees under web/ui.
+			// Skip the embedded Studio build: it holds HTML and JS, never Go.
 			switch d.Name() {
-			case "node_modules", ".svelte-kit", "dist", "static":
+			case "static":
 				return fs.SkipDir
 			}
 			return nil

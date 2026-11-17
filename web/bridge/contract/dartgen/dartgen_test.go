@@ -17,9 +17,9 @@ var update = flag.Bool("update", false, "rewrite generated files from the curren
 // regeneration is the command that makes a stale generated file current.
 const regeneration = "go test ./web/bridge/contract/dartgen -run TestDartContractIsCurrent -update"
 
-// fixture is the shared rules package: the same one tsgen generates from, so
-// both modules are held to one fixture.
-const fixture = "../tsgen/testdata/rules"
+// fixture is the rules package the generator is exercised against: an ordinary
+// package under testdata, which Go's own testdata rule keeps out of the build.
+const fixture = "testdata/rules"
 
 // TestGeneratorRules generates the fixture package and checks every mapping
 // rule, then checks that each unsupported construct is a named error.

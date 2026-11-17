@@ -308,11 +308,12 @@ gofmt -w .                             # format
 go vet ./...                           # vet
 ```
 
-The built Web Studio SPA is committed under `web/bridge/static/` and embedded
-into the bridge binary, so `go build ./cmd/webbridge` gives you a working UI
-without touching Node. The Svelte source in `web/ui/` is a standalone Node
-project used at build time only; `npm run build` in `web/ui` rewrites the
-hashed assets, and the next `go build` picks them up.
+The Studio is the Flutter app in `app/`, and its web build is embedded into the
+bridge binary, so `go build ./cmd/webbridge` serves a working UI. The build is
+written to `web/bridge/static/` by `flutter build web --base-href /
+--no-web-resources-cdn` from `app/`; a Go-only checkout holds a placeholder
+index there, so the binary still serves a landing page before the Studio is
+built. F8's cutover retired the Svelte Studio and its Node toolchain.
 
 ```bash
 go test ./test/usability/... -run TestScripted -v   # synthetic-user scenarios

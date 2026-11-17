@@ -52,6 +52,7 @@ class _InspectTabState extends State<InspectTab> {
       message: 'The step could not be read.',
       retry: StateAction('Try again', onTap: () => setState(() {})),
     ),
+    StateKind.unauthorized => const StateMessage.unauthorized(),
     StateKind.unavailable => StateMessage.unavailable(
       host: 'The bridge',
       lastSeen: '4m',

@@ -303,6 +303,7 @@ class HealthTab extends StatelessWidget {
         message: model.healthError ?? 'The health could not be read.',
         retry: retry,
       ),
+      StateKind.unauthorized => const StateMessage.unauthorized(),
       StateKind.unavailable => StateMessage.unavailable(
         host: model.name,
         lastSeen: relativeAge(model.lastRead, _now),

@@ -499,6 +499,7 @@ class _InboxState extends State<Inbox> {
         message: 'The inbox could not be read.',
         retry: retry,
       ),
+      StateKind.unauthorized => const StateMessage.unauthorized(),
       StateKind.unavailable => StateMessage.unavailable(
         host: 'The daemon',
         lastSeen: '4m',

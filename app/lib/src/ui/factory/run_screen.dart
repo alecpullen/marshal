@@ -464,6 +464,7 @@ class _RunScreenState extends State<RunScreen> {
         message: 'The run could not be read.',
         retry: retry,
       ),
+      StateKind.unauthorized => const StateMessage.unauthorized(),
       StateKind.unavailable => StateMessage.unavailable(
         host: widget.model.agentID,
         lastSeen: relativeAge(_now, _now),

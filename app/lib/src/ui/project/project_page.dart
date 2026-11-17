@@ -319,6 +319,7 @@ class _ProjectPageState extends State<ProjectPage> {
         message: widget.model.error ?? 'The project could not be read.',
         retry: retry,
       ),
+      StateKind.unauthorized => const StateMessage.unauthorized(),
       StateKind.unavailable => StateMessage.unavailable(
         host: widget.model.name,
         lastSeen: relativeAge(widget.model.lastRead, _now),

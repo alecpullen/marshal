@@ -1559,6 +1559,7 @@ const requiredStates = {
   StateKind.stale,
   StateKind.error,
   StateKind.unavailable,
+  StateKind.unauthorized,
 };
 
 /// The thread the screen cases show.

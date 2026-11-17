@@ -98,6 +98,7 @@ class _FilesTabState extends State<FilesTab> {
         onTap: () => unawaited(widget.model.expand('')),
       ),
     ),
+    StateKind.unauthorized => const StateMessage.unauthorized(),
     StateKind.unavailable => StateMessage.unavailable(
       host: 'The bridge',
       lastSeen: '4m',

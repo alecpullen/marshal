@@ -329,6 +329,7 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
         message: 'The work item could not be read.',
         retry: retry,
       ),
+      StateKind.unauthorized => const StateMessage.unauthorized(),
       StateKind.unavailable => StateMessage.unavailable(
         host: widget.item.host,
         lastSeen: 'now',

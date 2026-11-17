@@ -112,6 +112,17 @@ class WorkItemScreen extends StatefulWidget {
 class _WorkItemScreenState extends State<WorkItemScreen> {
   int _tab = 0;
 
+  /// What the person has typed on an ask and what is in flight. It lives here
+  /// rather than in the cards so a poll, or a worker drill-in that swaps the
+  /// body out and back, does not lose it.
+  final _askDraft = WorkItemAskDraft();
+
+  @override
+  void dispose() {
+    _askDraft.dispose();
+    super.dispose();
+  }
+
   static const _tabs = ['Plan', 'Agents', 'Checks', 'Changes', 'Pull requests'];
 
   DateTime get _now => widget.now ?? DateTime.now();
@@ -189,6 +200,7 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
           ItemAsks(
             item: item,
             now: _now,
+            draft: _askDraft,
             conflict: widget.conflict,
             onApprove: widget.onApprove,
             onAnswer: widget.onAnswer,
@@ -209,10 +221,6 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
           ),
         ],
         const SizedBox(height: Space.s16),
-        Label('Activity', count: item.activity.length),
-        const SizedBox(height: Space.s4),
-        _activity(),
-        const SizedBox(height: Space.s16),
         Tabs(
           tabs: [for (final label in _tabs) TabItem(label)],
           index: _tab,
@@ -220,6 +228,10 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
         ),
         const SizedBox(height: Space.s12),
         _tabContent(context),
+        const SizedBox(height: Space.s16),
+        Label('Activity', count: item.activity.length),
+        const SizedBox(height: Space.s4),
+        _activity(),
       ],
     );
   }

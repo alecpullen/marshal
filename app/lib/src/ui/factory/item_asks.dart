@@ -13,11 +13,17 @@ import 'recovery_form.dart';
 /// work is done. An action taken shows as pending until the item changes, and
 /// a version conflict leaves the action available with the reason beside it —
 /// the person decides again on what is there now.
+///
+/// What the person is writing and what is in flight live in a
+/// [WorkItemAskDraft], which the item's screen owns: the card is rebuilt by
+/// every poll and unmounted by a worker drill-in, and neither may lose an
+/// answer half typed.
 class ItemAsks extends StatefulWidget {
   const ItemAsks({
     super.key,
     required this.item,
     required this.now,
+    this.draft,
     this.conflict,
     this.onApprove,
     this.onAnswer,
@@ -32,6 +38,10 @@ class ItemAsks extends StatefulWidget {
 
   /// What a relative age is measured against.
   final DateTime now;
+
+  /// The person's unsaved work, when the item's screen keeps it. Null leaves
+  /// the cards owning their own, which lasts as long as they are drawn.
+  final WorkItemAskDraft? draft;
 
   /// The bridge's refusal of the last action, in its own words: a conflict is
   /// not an error the person made.
@@ -63,34 +73,56 @@ class ItemAsks extends StatefulWidget {
 }
 
 class _ItemAsksState extends State<ItemAsks> {
-  final _reply = TextEditingController();
+  /// The person's unsaved work: the screen's when it keeps one, so a poll or a
+  /// worker drill-in does not lose it.
+  late WorkItemAskDraft _draft;
+  bool _ownsDraft = false;
 
-  /// The asks whose command is in flight, by ask id: an action taken is
-  /// acknowledged at once and shows as pending until the item changes (§7).
-  final _pending = <String>{};
+  @override
+  void initState() {
+    super.initState();
+    _adopt(widget.draft);
+  }
+
+  void _adopt(WorkItemAskDraft? draft) {
+    _draft = draft ?? WorkItemAskDraft();
+    _ownsDraft = draft == null;
+    _draft.addListener(_changed);
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
 
   @override
   void didUpdateWidget(ItemAsks old) {
     super.didUpdateWidget(old);
-    if (old.item.version != widget.item.version) _pending.clear();
+    if (!identical(old.draft, widget.draft)) {
+      _draft.removeListener(_changed);
+      if (_ownsDraft) _draft.dispose();
+      _adopt(widget.draft);
+    }
+    // A new version has answered whatever was in flight.
+    _draft.settle(widget.item.version);
   }
 
   @override
   void dispose() {
-    _reply.dispose();
+    _draft.removeListener(_changed);
+    if (_ownsDraft) _draft.dispose();
     super.dispose();
   }
 
   Future<void> _run(String id, Future<void> Function() action) async {
-    if (_pending.contains(id)) return;
-    setState(() => _pending.add(id));
+    if (_draft.isPending(id)) return;
+    _draft.begin(id);
     try {
       await action();
     } catch (_) {
       // The store keeps the bridge's words for a conflict; anything else is
       // the host's to say. Either way the action stays available.
     } finally {
-      if (mounted) setState(() => _pending.remove(id));
+      _draft.end(id);
     }
   }
 
@@ -116,7 +148,7 @@ class _ItemAsksState extends State<ItemAsks> {
   }
 
   Widget _card(BuildContext context, model.Ask ask) {
-    final pending = _pending.contains(ask.id);
+    final pending = _draft.isPending(ask.id);
     final enabled = !pending;
     final waiting = relativeAgeWords(widget.now, ask.since);
     final body = ask.body.trim();
@@ -126,7 +158,7 @@ class _ItemAsksState extends State<ItemAsks> {
         if (ask.kind == model.AskKind.decision) ...[
           Field(
             label: 'Your answer',
-            controller: _reply,
+            controller: _draft.answer,
             hint: 'In your own words',
             // The answer action is drawn disabled until there are words, so
             // the card is rebuilt as the person types.
@@ -179,7 +211,7 @@ class _ItemAsksState extends State<ItemAsks> {
     final unanswered =
         ask.kind == model.AskKind.decision &&
         action.kind == model.AskActionKind.reply &&
-        _reply.text.trim().isEmpty;
+        _draft.answer.text.trim().isEmpty;
     return AskAction(
       action.label,
       onTap: enabled && !blocked && !unanswered
@@ -212,7 +244,7 @@ class _ItemAsksState extends State<ItemAsks> {
           widget.onProposeChange?.call();
         }
       case model.AskKind.decision:
-        final answer = _reply.text.trim();
+        final answer = _draft.answer.text.trim();
         if (answer.isEmpty) return;
         _run(ask.id, () async {
           await widget.onAnswer?.call(answer);
@@ -266,4 +298,46 @@ String relativeAgeWords(DateTime now, DateTime since) {
   if (delta.inMinutes < 60) return '${delta.inMinutes}m';
   if (delta.inHours < 24) return '${delta.inHours}h';
   return '${delta.inDays}d';
+}
+
+/// The person's unsaved work on an item's asks: what they are typing and
+/// which commands are in flight.
+///
+/// It belongs to the item's screen rather than to the card that draws an
+/// ask: a worker drill-in rebuilds the body, and the answer being typed must
+/// still be there on the way back.
+class WorkItemAskDraft extends ChangeNotifier {
+  /// The words being written for a decision or a recovery.
+  final TextEditingController answer = TextEditingController();
+
+  final Set<String> _pending = {};
+  int _version = -1;
+
+  /// Whether [askID]'s command is in flight.
+  bool isPending(String askID) => _pending.contains(askID);
+
+  /// Acknowledges a command at once (design-system.md §7).
+  void begin(String askID) {
+    if (_pending.add(askID)) notifyListeners();
+  }
+
+  /// The command has finished: it is no longer pending.
+  void end(String askID) {
+    if (_pending.remove(askID)) notifyListeners();
+  }
+
+  /// Forgets what was in flight when the item itself moved: a new version has
+  /// answered it. It does not notify, because it runs while the item's widget
+  /// is already rebuilding.
+  void settle(int version) {
+    if (_version == version) return;
+    _version = version;
+    _pending.clear();
+  }
+
+  @override
+  void dispose() {
+    answer.dispose();
+    super.dispose();
+  }
 }

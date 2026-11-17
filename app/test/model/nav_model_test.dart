@@ -13,46 +13,39 @@ import 'support.dart';
 void main() {
   final now = DateTime.utc(2026, 11, 17, 12);
 
-  test(
-    'the fixed places are the design\'s order, with the planned ones marked',
-    () async {
-      final fixture = await ModelFixture.start([
-        const FixtureHost(name: 'local'),
-      ], now: now);
-      final model = buildNavModel(const Place.overview(), fixture.store);
+  test('the fixed places are the design\'s order', () async {
+    final fixture = await ModelFixture.start([
+      const FixtureHost(name: 'local'),
+    ], now: now);
+    final model = buildNavModel(const Place.overview(), fixture.store);
 
-      expect(
-        [for (final place in model.fixed) place.label],
-        [
-          'Overview',
-          'Inbox',
-          'Pull requests',
-          'Automations',
-          'Library',
-          'Settings',
-        ],
-      );
-      expect(
-        [for (final place in model.fixed) place.kind],
-        [
-          PlaceKind.overview,
-          PlaceKind.inbox,
-          PlaceKind.pulls,
-          PlaceKind.automations,
-          PlaceKind.library,
-          PlaceKind.settings,
-        ],
-      );
-      // The three above the tree are built — F5 brought the Pull requests
-      // place — and the rest open the message naming the phase that brings
-      // them.
-      expect(
-        [for (final place in model.fixed) place.planned],
-        [false, false, false, true, true, true],
-      );
-      expect(navAboveProjects, 3);
-    },
-  );
+    expect(
+      [for (final place in model.fixed) place.label],
+      [
+        'Overview',
+        'Inbox',
+        'Pull requests',
+        'Automations',
+        'Library',
+        'Settings',
+      ],
+    );
+    expect(
+      [for (final place in model.fixed) place.kind],
+      [
+        PlaceKind.overview,
+        PlaceKind.inbox,
+        PlaceKind.pulls,
+        PlaceKind.automations,
+        PlaceKind.library,
+        PlaceKind.settings,
+      ],
+    );
+    // All six open a place now: F5 brought Pull requests and F7 brought
+    // Automations, Library and Settings. The model carries no "planned" flag —
+    // a place that cannot be drawn says so on the screen, not in the sidebar.
+    expect(navAboveProjects, 3);
+  });
 
   test('the current place is the active row', () async {
     final fixture = await ModelFixture.start([

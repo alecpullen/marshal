@@ -216,13 +216,15 @@ func (s *Server) route(api http.Handler, w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if isNextPath(r.URL.Path) {
-		// The Flutter Studio, before the Svelte one: both are client-side
-		// applications, and only the prefix tells them apart.
-		nextHandler().ServeHTTP(w, r)
+		// The Flutter Studio, at its prefix: the cutover is deferred, so the
+		// Svelte Studio keeps the root (F8 decision 1, revised 2026-11-17).
+		flutterHandler().ServeHTTP(w, r)
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {
-		staticHandler().ServeHTTP(w, r)
+		// Everything else that is not the API is the Svelte Studio, at the
+		// root.
+		svelteHandler().ServeHTTP(w, r)
 		return
 	}
 	api.ServeHTTP(w, r)

@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/services.dart' show SystemNavigator;
+
 import '../../model/age.dart';
 import '../../model/composer_model.dart';
 import '../../model/factory_store.dart';
@@ -13,6 +15,7 @@ import '../../model/overview_model.dart' show buildOverview;
 import '../../model/place.dart';
 import '../../model/planning_model.dart';
 import '../../model/project_model.dart';
+import '../../model/route_translation.dart';
 import '../../model/pulls_model.dart';
 import '../../model/revision_model.dart';
 import '../../model/run_model.dart';
@@ -58,6 +61,7 @@ class Shell extends StatefulWidget {
     this.now,
     this.onRetry,
     this.unsaved,
+    this.notice,
   });
 
   final NavModel nav;
@@ -88,6 +92,11 @@ class Shell extends StatefulWidget {
   /// The guard that asks before the shell leaves a place holding unsaved
   /// edits (design-system.md §9, F7 decision 3).
   final UnsavedGuard? unsaved;
+
+  /// What to say above the place, when the link that opened it names nothing
+  /// this build knows (F8 decision 2): one line, and never a state of its
+  /// own.
+  final String? notice;
 
   @override
   State<Shell> createState() => _ShellState();
@@ -208,6 +217,39 @@ class _ShellState extends State<Shell> {
 
   /// The place's content, or the state that stands in for it (§7).
   Widget _content() {
+    final body = _body();
+    final notice = widget.notice;
+    if (notice == null) return body;
+    // One line above the place, never a state of its own: the place it
+    // opened is a real one, and the line says why it is not the one the link
+    // named (F8 decision 2).
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _noticeLine(notice),
+        const Hairline(),
+        Expanded(child: body),
+      ],
+    );
+  }
+
+  /// The line a link from the old Studio shows: what happened, in the kit's
+  /// quietest role, with no control of its own.
+  Widget _noticeLine(String notice) {
+    final e = Ember.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        Layout.pageSide,
+        Space.s12,
+        Layout.pageSide,
+        Space.s12,
+      ),
+      child: Text(notice, style: e.small.tint(e.muted)),
+    );
+  }
+
+  /// The place's content, without the notice.
+  Widget _body() {
     final content = _place();
     final state = widget.state;
     if (state == null) return content;
@@ -302,7 +344,11 @@ class Studio extends StatefulWidget {
     this.runFor,
     this.answerRunFor,
     this.projectFor,
+    this.automationsFor,
+    this.libraryFor,
+    this.settingsFor,
     this.initialPlace = const Place.overview(),
+    this.startPage,
   });
 
   final FleetStore store;
@@ -368,8 +414,25 @@ class Studio extends StatefulWidget {
   /// never draws an editor that cannot save.
   final ProjectModel Function(String host, String root)? projectFor;
 
+  /// Builds the Automations place at one of its sections (F7 decision 4).
+  /// Null leaves the place planned, so a host that wires no bridge never
+  /// draws a section whose read could only fail; the builder itself answers
+  /// null while no host has answered yet.
+  final Widget? Function(int section, StateKind? state)? automationsFor;
+
+  /// Builds the Library place at one of its sections (F7 decision 5).
+  final Widget? Function(int section, StateKind? state)? libraryFor;
+
+  /// Builds the Settings place at one of its sections (F7 decision 7).
+  final Widget? Function(int section, StateKind? state)? settingsFor;
+
   /// The place a deep link names.
   final Place initialPlace;
+
+  /// The place the page's own address names, when the app was started by
+  /// opening a link (F8 decision 2). Null leaves [initialPlace] in charge: a
+  /// test, and a window the tray opened, name their place.
+  final StartPlace? startPage;
 
   @override
   State<Studio> createState() => _StudioState();
@@ -377,6 +440,10 @@ class Studio extends StatefulWidget {
 
 class _StudioState extends State<Studio> {
   late Place _place = widget.initialPlace;
+
+  /// What to say above the place when the link that opened this screen named
+  /// nothing this build knows (F8 decision 2).
+  String? _notice;
   bool _read = false;
   String? _failure;
 
@@ -401,7 +468,27 @@ class _StudioState extends State<Studio> {
   @override
   void initState() {
     super.initState();
+    _followPage();
     _reread();
+  }
+
+  /// Opens the place the page's own address names, and replaces a hash written
+  /// for the Svelte Studio with this build's path for that place (F8 decision
+  /// 2), so a reload and Back land on it.
+  ///
+  /// A screen that was handed a place — a test, the tray — is left alone: only
+  /// a page that named no place is followed.
+  void _followPage() {
+    final page = widget.startPage;
+    if (page == null) return;
+    _place = page.place;
+    _notice = page.notice;
+    if (page.fromHash) {
+      SystemNavigator.routeInformationUpdated(
+        uri: Uri.parse(formatPlace(page.place)),
+        replace: true,
+      );
+    }
   }
 
   @override
@@ -442,10 +529,16 @@ class _StudioState extends State<Studio> {
           place: place,
           state: _state(store),
           content: (navigation) => _content(place, nav, navigation),
-          onSelect: (next) => setState(() => _place = next),
+          onSelect: (next) => setState(() {
+            // The notice was about the link that opened the screen, not about
+            // the place the person has chosen since.
+            _notice = null;
+            _place = next;
+          }),
           onRetry: _reread,
           now: store.now,
           unsaved: _unsaved,
+          notice: _notice,
         );
       },
     );
@@ -511,6 +604,24 @@ class _StudioState extends State<Studio> {
           openSource: _openThread(navigation, pull),
         ),
       );
+    }
+    if (place.kind == PlaceKind.automations) {
+      final build = widget.automationsFor;
+      if (build == null) return plannedPlace(place, nav);
+      final built = build(sectionIndex(place), _state(widget.store));
+      return built ?? plannedPlace(place, nav);
+    }
+    if (place.kind == PlaceKind.library) {
+      final build = widget.libraryFor;
+      if (build == null) return plannedPlace(place, nav);
+      final built = build(sectionIndex(place), _state(widget.store));
+      return built ?? plannedPlace(place, nav);
+    }
+    if (place.kind == PlaceKind.settings) {
+      final build = widget.settingsFor;
+      if (build == null) return plannedPlace(place, nav);
+      final built = build(sectionIndex(place), _state(widget.store));
+      return built ?? plannedPlace(place, nav);
     }
     if (place.kind == PlaceKind.project) {
       final root = place.id;
@@ -626,9 +737,28 @@ class _StudioState extends State<Studio> {
   /// and a planner are looked up first, because their ids are their own
   /// namespaces and no agent can share one.
   model.ThreadRef? _threadRef(Place place) {
-    final host = place.host;
     final id = place.id;
-    if (host == null || id == null) return null;
+    if (id == null) return null;
+    final host = place.host;
+    // A link that named no host — one written for the one-bridge Studio (F8
+    // decision 2) — is answered by whichever host lists the thread. The
+    // screen's own bookkeeping is asked first: a planner or a run this screen
+    // started is not in the fleet's lists.
+    if (host != null) return _threadOn(host, id);
+    for (final candidate in _namesEveryHost()) {
+      final thread = _threadOn(candidate, id);
+      if (thread != null) return thread;
+    }
+    return null;
+  }
+
+  /// Every host the fleet reports, in discovery order.
+  Iterable<String> _namesEveryHost() => [
+    for (final host in widget.store.hosts) host.name,
+  ];
+
+  /// The thread [id] on [host], when that host lists it.
+  model.ThreadRef? _threadOn(String host, String id) {
     final planner = _planners[id];
     if (planner != null && planner.host == host) return planner;
     final run = _runs[id];

@@ -57,9 +57,17 @@ String placeTitle(Place place, NavModel nav) => _about(place, nav).$1;
       );
     case PlaceKind.thread:
       final thread = _thread(place, nav);
+      // The thread screen is built (F3), so a place this screen cannot open is
+      // never a phase's promise. When a hostless link or legacy `#runs/<id>`
+      // names an id no host answers for, the honest line is that nothing
+      // lists it.
+      if (thread == null) {
+        return (place.id ?? '', 'No host in this fleet lists that thread');
+      }
       return (
-        thread?.title ?? place.id ?? '',
-        'The thread screen arrives in F3',
+        thread.title,
+        'The thread screen is built; it opens once the shell wires the '
+            'per-host bridge',
       );
   }
 }
@@ -72,11 +80,16 @@ String _projectName(String id, NavModel nav) {
   return id;
 }
 
-/// The thread a place names, when the fleet still reports it.
+/// The thread a place names, when the sidebar's fleet lists it.
+///
+/// A place that carries no host of its own — a link written for the one-bridge
+/// Studio (F8 decision 2) — is answered by whichever host lists the id, as the
+/// shell's own lookup does.
 model.ThreadRef? _thread(Place place, NavModel nav) {
   for (final project in nav.projects) {
     for (final thread in project.current) {
-      if (thread.id == place.id && thread.host == place.host) return thread;
+      if (thread.id != place.id) continue;
+      if (place.host == null || thread.host == place.host) return thread;
     }
   }
   return null;

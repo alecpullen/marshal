@@ -12,99 +12,98 @@ import (
 	"time"
 )
 
-// staticFS embeds the SPA build output. During Go-only development it
-// contains a placeholder index.html; the real SPA is written here by
-// `npm run build` in web/ui.
+// svelteFS embeds the Svelte Studio's build output, which `/` keeps serving:
+// F8's cutover is deferred (decision 1, revised 2026-11-17), so the Svelte
+// Studio holds the root until the release that removes it. It is written here
+// by `npm run build` in web/ui, whose asset URLs are rooted at `/`; the
+// committed copy is checked against a fresh build in CI.
 //
 //go:embed static
-var staticFS embed.FS
+var svelteFS embed.FS
 
-// staticRoot is the sub-tree rooted at "static". It is created once so
-// path cleaning and prefix stripping are handled by the fs.Sub layer.
-var staticRoot, _ = fs.Sub(staticFS, "static")
+// svelteRoot is the sub-tree rooted at "static". It is created once so path
+// cleaning is handled by the fs.Sub layer.
+var svelteRoot, _ = fs.Sub(svelteFS, "static")
 
-// staticNextFS embeds the Flutter Studio's build output (F2). During Go-only
-// development it contains a placeholder index.html; the real Studio is written
-// here by `flutter build web --base-href /next/` in app/.
+// flutterFS embeds the Flutter Studio's build output, served under /next/
+// while the cutover is deferred. During Go-only development it holds a
+// placeholder index.html; the real Studio is written here by
+// `flutter build web --base-href /next/ --no-web-resources-cdn` in app/, so
+// the CanvasKit engine is fetched from the bridge rather than from a CDN —
+// without that flag a private network that cannot reach gstatic never starts
+// the Studio at all.
 //
 //go:embed static-next
-var staticNextFS embed.FS
+var flutterFS embed.FS
 
-// staticNextRoot is the sub-tree rooted at "static-next".
-var staticNextRoot, _ = fs.Sub(staticNextFS, "static-next")
+// flutterRoot is the sub-tree rooted at "static-next".
+var flutterRoot, _ = fs.Sub(flutterFS, "static-next")
 
-// nextPrefix is where the Flutter Studio is served, beside the Svelte one.
-// Its place is the URL path under it: /next/, /next/inbox,
-// /next/project/<id>, /next/thread/<host>/<id> (F2 decision 9).
+// nextPrefix is where the Flutter Studio is served while the Svelte one holds
+// `/`: /next/, /next/inbox, /next/thread/local/a-1 and so on. Its build bakes
+// the prefix into every asset URL, so the prefix is stripped before the
+// embedded tree is read.
 const nextPrefix = "/next"
 
-// isNextPath reports whether a request is for the Studio.
+// isNextPath reports whether a request is for the Flutter Studio's prefix.
 func isNextPath(p string) bool {
 	return p == nextPrefix || strings.HasPrefix(p, nextPrefix+"/")
 }
 
-// nextHandler serves the embedded Flutter Studio under /next/. Paths that do
-// not match a real asset fall back to its index.html, exactly as
-// staticHandler does for the Svelte build, so the Studio's own router can
-// render the place in the URL.
-func nextHandler() http.Handler {
+// svelteHandler serves the Svelte Studio at the root. Its router reads the
+// hash, so a path that names no file falls back to its index.html.
+func svelteHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rest := strings.TrimPrefix(r.URL.Path, nextPrefix)
-		// Nothing under /next/ may stand in front of the bridge's API, and
-		// nothing there may answer for it: the route is the mux's, or it is
-		// not found.
-		if strings.HasPrefix(rest, "/api/") {
-			http.NotFound(w, r)
-			return
-		}
-		p := path.Clean("/" + rest)[1:]
-		if p == "" || p == "." {
-			p = "index.html"
-		}
-		f, err := staticNextRoot.Open(p)
-		if err == nil {
-			serveFile(w, r, p, f)
-			return
-		}
-		f, err = staticNextRoot.Open("index.html")
-		if err != nil {
-			http.Error(w, "index.html not found in the embedded Studio assets", http.StatusInternalServerError)
-			return
-		}
-		serveFile(w, r, "index.html", f)
-	})
-}
-
-// staticHandler serves the embedded SPA. Non-API paths that do not match a
-// real static asset fall back to index.html so client-side routing works.
-func staticHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The bridge's API is the mux's: a static handler must never answer
+		// for it.
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			http.NotFound(w, r)
 			return
 		}
-		// Clean the path and strip the leading slash.
-		p := path.Clean("/" + r.URL.Path)[1:]
-		if p == "" {
-			p = "index.html"
-		}
-
-		// Try the exact file first.
-		f, err := staticRoot.Open(p)
-		if err == nil {
-			serveFile(w, r, p, f)
-			return
-		}
-
-		// Fall back to index.html for client-side routes; the SPA's own
-		// router will render based on window.location.hash.
-		f, err = staticRoot.Open("index.html")
-		if err != nil {
-			http.Error(w, "index.html not found in embedded assets", http.StatusInternalServerError)
-			return
-		}
-		serveFile(w, r, "index.html", f)
+		serveFrom(w, r, svelteRoot, r.URL.Path, "index.html not found in embedded assets")
 	})
+}
+
+// flutterHandler serves the Flutter Studio under /next/. Its build bakes the
+// prefix into every asset URL, so the prefix is stripped before the embedded
+// tree is read; a path that names no asset falls back to its index.html, so
+// the Studio's own router renders the place (/next/inbox,
+// /next/thread/local/a-1).
+func flutterHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == nextPrefix {
+			// The build's base href is /next/, so its index is only coherent
+			// at the trailing-slash form; without it every relative asset URL
+			// would resolve a level too high.
+			http.Redirect(w, r, nextPrefix+"/", http.StatusPermanentRedirect)
+			return
+		}
+		rest := strings.TrimPrefix(r.URL.Path, nextPrefix)
+		if strings.HasPrefix(rest, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+		serveFrom(w, r, flutterRoot, rest, "index.html not found in the embedded Studio assets")
+	})
+}
+
+// serveFrom writes the embedded file [urlPath] names in [root], falling back
+// to the tree's index.html so a client-side route renders.
+func serveFrom(w http.ResponseWriter, r *http.Request, root fs.FS, urlPath, missing string) {
+	p := path.Clean("/" + urlPath)[1:]
+	if p == "" || p == "." {
+		p = "index.html"
+	}
+	if f, err := root.Open(p); err == nil {
+		serveFile(w, r, p, f)
+		return
+	}
+	f, err := root.Open("index.html")
+	if err != nil {
+		http.Error(w, missing, http.StatusInternalServerError)
+		return
+	}
+	serveFile(w, r, "index.html", f)
 }
 
 // serveFile writes a single embedded file with a sensible content type and
@@ -207,14 +206,4 @@ func base64url(s string) bool {
 		}
 	}
 	return true
-}
-
-// openStatic is exposed for tests that need to inspect the embedded tree.
-func openStatic(name string) (fs.File, error) {
-	return staticRoot.Open(name)
-}
-
-// openStaticNext is the same for the Studio's tree.
-func openStaticNext(name string) (fs.File, error) {
-	return staticNextRoot.Open(name)
 }

@@ -46,7 +46,6 @@ void main() {
       '/nothing',
       '/inbox/extra',
       '/project',
-      '/thread/local',
       '/thread/local/a-1/step',
       '/pulls/today',
     ]) {
@@ -54,6 +53,20 @@ void main() {
     }
     // A malformed escape cannot name a place either.
     expect(parsePlace('/project/%ZZ'), const Place.overview());
+  });
+
+  test('a thread named without its host is still the thread', () {
+    // A link written for the one-bridge Studio named a thread and no host
+    // (F8 decision 2); the shell asks the fleet which host answers for it.
+    const place = Place(PlaceKind.thread, id: 'a-1');
+
+    expect(parsePlace('/thread/a-1'), place);
+    expect(formatPlace(place), '/thread/a-1');
+    expect(
+      everyPlace,
+      isNot(contains(place)),
+      reason: 'the round-trip list names hosts, as this build writes them',
+    );
   });
 
   test('a trailing slash, a query and a fragment are ignored', () {

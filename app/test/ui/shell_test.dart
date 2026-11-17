@@ -92,6 +92,41 @@ void main() {
     expect(find.textContaining('later phase'), findsOneWidget);
   });
 
+  testWidgets('a thread no host lists says so, not that a phase brings it', (
+    tester,
+  ) async {
+    // A stale bookmark, or a legacy `#runs/<id>` for a thread that has since
+    // gone: the thread screen shipped in F3, so promising it would be a lie.
+    final (shell, _) = shellAt(
+      const Place(PlaceKind.thread, host: 'local', id: 'gone'),
+    );
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    expect(
+      find.textContaining('No host in this fleet lists that thread'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('arrives in F3'), findsNothing);
+  });
+
+  testWidgets('a hostless thread link finds the host that lists it', (
+    tester,
+  ) async {
+    // A link written for the one-bridge Studio names no host; the thread it
+    // names is still shown, with its own title.
+    final (shell, _) = shellAt(const Place(PlaceKind.thread, id: 'a-1'));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    expect(find.text('Reliable session recovery'), findsWidgets);
+    expect(find.textContaining('is built'), findsOneWidget);
+    expect(find.textContaining('No host in this fleet'), findsNothing);
+    expect(find.textContaining('arrives in F3'), findsNothing);
+  });
+
   testWidgets('places this phase builds say they are built', (tester) async {
     // Automations and Library are real screens registered with the gallery;
     // the shell simply has no per-host bridge to wire them yet, and a promise

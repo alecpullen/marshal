@@ -104,6 +104,7 @@ class PrActions {
   const PrActions({
     this.review,
     this.merge,
+    this.mergeNote,
     this.openOnForge,
     this.fix,
     this.fixChoices = const [],
@@ -115,6 +116,11 @@ class PrActions {
 
   final VoidCallback? review;
   final VoidCallback? merge;
+
+  /// Why Merge is drawn disabled, when it is disabled for a reason worth
+  /// saying. A merge the app cannot perform is drawn saying which phase
+  /// supplies it, not left as a button that would fail (§7).
+  final String? mergeNote;
   final VoidCallback? openOnForge;
 
   /// Fix with a worker: one click, no form.
@@ -305,7 +311,13 @@ class PrCard extends StatelessWidget {
     final buttons = <Widget>[
       if (pull.state == PrState.ready) ...[
         Btn.primary('Review', onTap: actions.review),
-        Btn('Merge', onTap: actions.merge),
+        // A merge this build cannot perform is drawn disabled with the reason,
+        // never as a button that would fail (F5: a factory item's merge needs
+        // the reviewed identity F6's work items carry).
+        if (actions.mergeNote case final note?)
+          Tip(message: note, child: const Btn('Merge'))
+        else
+          Btn('Merge', onTap: actions.merge),
       ] else if (pull.state == PrState.failing) ...[
         Row(
           mainAxisSize: MainAxisSize.min,

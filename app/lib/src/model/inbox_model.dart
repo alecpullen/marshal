@@ -374,6 +374,17 @@ class InboxModel extends ChangeNotifier {
     try {
       await _post(ask, action, body);
     } on BridgeFailure catch (failure) {
+      if (failure.status == 409 && ask.kind == AskKind.pull) {
+        // A worker is already on this check: the bridge refuses a second
+        // dispatch with 409, which is the same thing the card's own fix
+        // control means by it. The ask did not fail — it still waits — so it
+        // goes back to waiting and the fleet is read again, so what it shows
+        // is what the bridge holds rather than the retry that was refused.
+        _overlays.remove(key);
+        await _store.refresh(ask.host);
+        _reflow();
+        return;
+      }
       _overlays[key] = (
         state: AskState.failed,
         error: describeFailure(failure),

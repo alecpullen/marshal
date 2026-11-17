@@ -1,5 +1,6 @@
 import '../client/contract.g.dart';
 import 'inbox_model.dart';
+import 'merge_target.dart';
 import 'thread_ref.dart';
 
 /// The four stages a work item is drawn on (F6 decision 2), in order.
@@ -450,6 +451,7 @@ class WorkItemView {
     required this.activity,
     required this.asks,
     required this.proposals,
+    this.merge,
   });
 
   /// Reads [item] as [host]'s screen draws it.
@@ -501,6 +503,7 @@ class WorkItemView {
       ],
       activity: activityOf(item),
       asks: asksOf(host, item),
+      merge: mergeTargetOf(item),
       proposals: [
         for (final proposal
             in item.proposals ?? const <FactoryRevisionProposal>[])
@@ -553,6 +556,11 @@ class WorkItemView {
 
   /// What it waits on a person for, pinned above its activity.
   final List<Ask> asks;
+
+  /// The reviewed pull request its merge names, or null when the item holds
+  /// no open one. A merge with no identity is drawn disabled rather than
+  /// offered and refused (F6 decision 5).
+  final MergeTarget? merge;
 
   /// Its proposed plan revisions, in words.
   final List<String> proposals;

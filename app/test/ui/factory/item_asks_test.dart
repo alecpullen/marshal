@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart' hide CheckState;
 import 'package:marshal_app/src/model/factory_store.dart';
+import 'package:marshal_app/src/model/merge_target.dart';
 import 'package:marshal_app/src/model/work_item_model.dart';
 import 'package:marshal_app/src/ui/factory/item_asks.dart';
 import 'package:marshal_app/src/ui/factory/recovery_form.dart';
@@ -28,12 +29,18 @@ void main() {
     'createdAt': '2026-11-17T11:00:00Z',
   });
 
-  FactoryItem item({String state = 'implementing', FactoryDecision? pending}) =>
-      factoryItem(
-        state: state,
-        decision: pending,
-        history: [factoryEvent(1, 'created', 'the draft was created')],
-      );
+  FactoryItem item({
+    String state = 'implementing',
+    FactoryDecision? pending,
+    List<FactoryPR> prs = const [],
+    List<FactoryWorker> workers = const [],
+  }) => factoryItem(
+    state: state,
+    decision: pending,
+    prs: prs,
+    workers: workers,
+    history: [factoryEvent(1, 'created', 'the draft was created')],
+  );
 
   /// The fixture: one host whose item answers every command with itself.
   Future<({ModelFixture fixture, FactoryStore store})> start(
@@ -70,7 +77,7 @@ void main() {
   }
 
   test('each ask posts its own command kind and fields', () async {
-    final subject = item();
+    final subject = item(prs: [factoryPR()], workers: [factoryWorker()]);
     final started = await start(subject);
     final store = started.store;
 
@@ -97,21 +104,40 @@ void main() {
     await store.stopItem('local', subject.id);
     expect(lastCommand(started.fixture)['kind'], 'stop');
 
-    await store.mergeAndComplete(
-      'local',
-      subject.id,
-      repoID: 'repo-1',
-      number: 412,
-      headSHA: 'head-412',
-      baseRef: 'main',
-    );
+    await store.mergeAndComplete('local', subject.id);
     body = lastCommand(started.fixture);
     expect(body['kind'], 'merge_and_complete');
-    final prs = (body['completion'] as Map<String, dynamic>)['prs'] as List;
-    expect((prs.single as Map<String, dynamic>)['headSha'], 'head-412');
+    final completion = body['completion'] as Map<String, dynamic>;
+    final merged = (completion['prs'] as List).single as Map<String, dynamic>;
     expect(
-      (body['completion'] as Map<String, dynamic>)['completeAfter'],
-      isTrue,
+      merged['nodeId'],
+      'node-412',
+      reason: 'the merge names the reviewed pull request\u2019s real node id',
+    );
+    expect(merged['headSha'], 'head-412');
+    expect(merged['baseRef'], 'main');
+    expect(merged['repoId'], 'repo-1');
+    expect(completion['completeAfter'], isTrue);
+    expect(
+      completion['runChoice'],
+      'continue',
+      reason: 'the item\u2019s run is active, so the bridge demands a choice',
+    );
+  });
+
+  test('a merge with no reviewed pull request posts nothing', () async {
+    final subject = item(state: 'ready');
+    final started = await start(subject);
+
+    expect(
+      () => started.store.mergeAndComplete('local', subject.id),
+      throwsA(isA<StateError>()),
+      reason: 'the item holds no reviewed identity to merge',
+    );
+    expect(
+      started.fixture.requests('local').where((r) => r.method == 'POST'),
+      isEmpty,
+      reason: 'a merge the bridge would refuse is never sent',
     );
   });
 
@@ -176,6 +202,38 @@ void main() {
       height: 2000,
     );
     await tester.enterText(find.byType(EditableText), 'the rounds');
+    await tester.pump();
+    await tester.tap(find.text('Answer'));
+    await tester.pump();
+    expect(answered, 'the rounds');
+  });
+
+  testWidgets('a decision\u2019s answer is disabled until there are words', (
+    tester,
+  ) async {
+    String? answered;
+    await pumpKit(
+      tester,
+      WorkItemScreen(
+        item: WorkItemView.of('local', item(pending: decision())),
+        now: now,
+        onAnswer: (answer) async => answered = answer,
+      ),
+      width: 1000,
+      height: 2000,
+    );
+
+    // An empty answer is not worth a round trip, so the control says so
+    // instead of taking a tap that would post nothing.
+    final answer = tester.widget<Btn>(find.widgetWithText(Btn, 'Answer'));
+    expect(answer.onTap, isNull, reason: 'drawn disabled with nothing to send');
+
+    await tester.tap(find.text('Answer'));
+    await tester.pump();
+    expect(answered, isNull);
+
+    await tester.enterText(find.byType(EditableText), 'the rounds');
+    await tester.pump();
     await tester.tap(find.text('Answer'));
     await tester.pump();
     expect(answered, 'the rounds');
@@ -208,7 +266,10 @@ void main() {
     await pumpKit(
       tester,
       WorkItemScreen(
-        item: WorkItemView.of('local', item(state: 'ready')),
+        item: WorkItemView.of(
+          'local',
+          item(state: 'ready', prs: [factoryPR()]),
+        ),
         now: now,
         onComplete: () async => calls.add('complete'),
         onMergeAndComplete: () async => calls.add('merge'),
@@ -223,6 +284,41 @@ void main() {
     await tester.tap(find.text('Merge and complete'));
     await tester.pump();
     expect(calls, ['merge']);
+  });
+
+  testWidgets('a merge with no reviewed pull request is disabled, with the '
+      'reason, and takes no action', (tester) async {
+    var merges = 0;
+    await pumpKit(
+      tester,
+      WorkItemScreen(
+        item: WorkItemView.of('local', item(state: 'ready')),
+        now: now,
+        onComplete: () async {},
+        onMergeAndComplete: () async => merges++,
+        onReopen: () async {},
+      ),
+      width: 1000,
+      height: 2000,
+    );
+
+    final merge = tester.widget<Btn>(
+      find.widgetWithText(Btn, 'Merge and complete'),
+    );
+    expect(merge.onTap, isNull, reason: 'drawn disabled, not offered');
+    expect(
+      hasTip(
+        tester,
+        find.widgetWithText(Btn, 'Merge and complete'),
+        noMergeTargetNote,
+      ),
+      isTrue,
+      reason: 'a disabled merge says why it cannot be sent',
+    );
+
+    await tester.tap(find.text('Merge and complete'));
+    await tester.pump();
+    expect(merges, 0, reason: 'no command the bridge would refuse is sent');
   });
 
   testWidgets('stop confirms before it stops', (tester) async {

@@ -109,6 +109,40 @@ class ProjectDefaults {
 
   /// What the planner may decide alone.
   final String plannerAuthority;
+
+  /// The factory defaults a project's settings state (F6 decision 8): what a
+  /// handoff review inherits from the project the plan was made for.
+  ///
+  /// Only what the document carries is inherited. The implementer's and
+  /// reviewer's profiles are left unstated because the document holds a
+  /// routing payload there rather than a profile name, and the planner's
+  /// authority has no project setting at all; the sheet says the project
+  /// states those not, and the person chooses them.
+  factory ProjectDefaults.fromSettings(
+    ProjectSettings settings, {
+    required String hostID,
+  }) {
+    final factory = settings.factoryDefaults;
+    final statedHost = (factory?.hostID ?? '').trim();
+    final workspace = (factory?.workspace ?? '').trim();
+    return ProjectDefaults(
+      repoID: (settings.intake.repoID ?? '').trim(),
+      // The host the factory runs on: the project's own, or the one that
+      // holds the project when the project names none.
+      hostID: statedHost.isEmpty ? hostID : statedHost,
+      targetBranch: (factory?.targetBranch ?? '').trim(),
+      workspace: workspace,
+      // A project that names a workspace runs its factory work there; one
+      // that names none runs it on the host that holds the project.
+      native: workspace.isEmpty,
+      expectedChecks: [
+        for (final check
+            in factory?.expectedChecks ?? const <FactoryCheckKey>[])
+          if (check.name.trim().isNotEmpty) check.name.trim(),
+      ],
+      maxRounds: factory?.maxRounds ?? 3,
+    );
+  }
 }
 
 /// What a planner may decide without asking (F6 decision 8).

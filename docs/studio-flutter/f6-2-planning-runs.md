@@ -43,7 +43,10 @@ settled here, the deviations from its letter, and what is not done.
   forge, and runs discovery into a report.
 - **The run from a list.** A run a project page lists opens its own thread: the
   digest the list carried builds the run's lanes, graph and timeline, and the
-  question it stopped on is answered through the app's `answerRunFor` seam.
+  question it stopped on is answered through the app's `answerRunFor` seam. A
+  run place the app builds without that seam is still readable, and its gate's
+  one action is drawn disabled with the reason rather than as a tap that would
+  post nothing (§9).
 - **The end-to-end.** `test/ui/factory/f6_2_e2e_test.dart` drives a plan through
   the planner's journal and a frozen snapshot, one review sheet, an approval
   posted over the fixture bridge, and the item the store opens as a work item's
@@ -62,6 +65,16 @@ settled here, the deviations from its letter, and what is not done.
   mounted, so leaving an edited page asks first.
 - `main.dart` wires `projectFor` from the host's client, filtering `/api/runs`
   to the project, and `answerRunFor` to `BridgeClient.answerRun`.
+- `main.dart` wires `handoffFor` to read the project's settings before the
+  review opens, so the sheet inherits the project's factory defaults — its
+  repository, host, branch, workspace, expected checks and round allowance —
+  through `ProjectDefaults.fromSettings`. The implementer's and reviewer's
+  profiles and the planner's authority are not inherited: the settings document
+  holds a routing payload for the first two and nothing for the third, so the
+  sheet says the project states them not and the person chooses. A settings
+  read that fails opens the sheet on the host alone rather than leaving the plan
+  unhanded, and the sheet then blocks on the repository it does not know
+  instead of posting a guess.
 
 ## Decisions this record makes
 
@@ -92,12 +105,15 @@ settled here, the deviations from its letter, and what is not done.
 - **The Automations tab is a summary and a link.** The place exists (F7), so the
   tab states what the project configured and offers the way there rather than
   embedding a second editor.
-- **The end-to-end is a model-level flow test**, for the reason F6 plan 1
-  recorded: `integration_test` needs a Linux device toolchain this machine does
-  not have, and a widget test cannot host the flow, because a request posted
-  from a tapped callback runs in the test's fake-async zone where the fixture
-  bridge's real HTTP never completes. `test/ui/factory/f6_2_e2e_test.dart`
-  drives both flows; the drawing and the actions are covered by
+- **The end-to-end is a model-level flow test**, because `integration_test`
+  needs a Linux device toolchain this machine does not have. A widget test does
+  host the loop a tap starts: `tester.runAsync` lets the fixture bridge's real
+  socket answer, which `planning_test.dart` uses for a snapshot and
+  `project_page_test.dart` for the discovery action — tap, model, bridge, and
+  the answer drawn. What the model-level flow adds is the sequences that cross
+  models and places: one plan through the planner's journal, one review sheet,
+  and the approval the store opens as a work item. `test/ui/factory/
+  f6_2_e2e_test.dart` drives both; the drawing and the actions are covered by
   `planning_test.dart`, `handoff_sheet_test.dart`, `run_model_test.dart`,
   `project_model_test.dart` and `project_page_test.dart`.
 
@@ -122,8 +138,11 @@ settled here, the deviations from its letter, and what is not done.
   here (no CMake/GTK3/display). The flows are driven by widget and model tests
   instead, as above.
 - `flutter test --platform chrome` cannot run here (no browser).
-- The gallery goldens are Linux-pinned and unchanged by this plan (no kit
-  component was added).
+- The gallery goldens are Linux-pinned. This plan changed both of them: `Lanes`
+  and `TaskGraph` are new kit components, declared in `design-system.md` §5 and
+  §10 and registered as sections in `lib/src/ui/gallery/gallery.dart`, so
+  `gallery_light.png` and `gallery_dark.png` were regenerated on Linux and their
+  `test/kit/` component tests added with them (§10).
 - `web/ui`'s `npm run check` has the pre-existing five errors and five warnings
   the task brief names, and no new ones.
 

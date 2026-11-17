@@ -30,8 +30,9 @@ class Request {
   /// The body, encoded as JSON when it is not null.
   final Object? body;
 
-  /// Headers the route needs beyond the transport's own: a conditional write's
-  /// `If-Match`, and nothing else today.
+  /// Headers the route reads in addition to the transport's own: a
+  /// conditional write names `If-Match` here. A transport sets them after the
+  /// ones it needs itself, so a bearer token is never dropped.
   final Map<String, String> headers;
 }
 

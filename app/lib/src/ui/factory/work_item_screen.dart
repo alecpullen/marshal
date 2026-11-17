@@ -261,10 +261,14 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
           StateMessage.unavailable(
             host: widget.item.host,
             lastSeen: 'now',
-            action: StateAction(
-              'Read the item again',
-              onTap: widget.onRetry ?? () {},
-            ),
+            // Only when there is a read to retry: a control that would do
+            // nothing is not drawn (§7).
+            action: widget.onRetry == null
+                ? null
+                : StateAction(
+                    'Read the item again',
+                    onTap: () => widget.onRetry?.call(),
+                  ),
           ),
     _ => PullsTab(
       pulls: widget.pulls,

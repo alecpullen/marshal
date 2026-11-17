@@ -166,19 +166,38 @@ Future<void> main() async {
               read: () => client.planner(plannerID),
             );
           },
-          // The handoff review of a plan (F6 decision 8): its inherited values
-          // come from the project's factory defaults, which no route reports
-          // yet, so the sheet states what the project does not and the person
+          // The handoff review of a plan (F6 decision 8): what it inherits is
+          // the project's factory defaults, read from the project's settings —
+          // the document the project page edits — when the person hands the
+          // plan off. A project that cannot be read still opens the sheet on
+          // the host alone, because the review must open rather than fail: its
+          // fields then say the project states them not, and the person
           // chooses the rest. Approving creates the item through the one store
           // that reads the factory.
-          handoffFor: (thread, plan, spec) => HandoffModel(
-            defaults: ProjectDefaults(hostID: thread.host),
-            projectRoot: thread.project,
-            title: thread.title,
-            plan: plan,
-            spec: spec,
-            create: (draft) => factory.create(thread.host, draft),
-          ),
+          handoffFor: (thread, plan, spec) async {
+            final client = hosts.hosts
+                .firstWhere((owner) => owner.name == thread.host)
+                .client;
+            var defaults = ProjectDefaults(hostID: thread.host);
+            try {
+              final settings = await client.projectSettings(thread.project);
+              defaults = ProjectDefaults.fromSettings(
+                settings.settings,
+                hostID: thread.host,
+              );
+            } catch (_) {
+              // The sheet opens on the host alone, stating what the project
+              // does not; a settings read must not leave the plan unhanded.
+            }
+            return HandoffModel(
+              defaults: defaults,
+              projectRoot: thread.project,
+              title: thread.title,
+              plan: plan,
+              spec: spec,
+              create: (draft) => factory.create(thread.host, draft),
+            );
+          },
           // Answers a plan run's question, for a run opened from a project
           // page's list (F6 decision 12).
           answerRunFor: (host, agentID, answer) => hosts.hosts

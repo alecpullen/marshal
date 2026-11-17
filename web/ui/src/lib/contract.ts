@@ -999,7 +999,10 @@ export interface FactoryConfig {
   reviewerInstructions: string;
   implementerAuto: boolean;
   expectedChecks: FactoryCheckKey[];
-  noRequiredCIAcknowledged: boolean;
+  /**
+   * The tag's spelling is pre-move and load-bearing; see factory_tags_test.go.
+   */
+  noRequiredCiAcknowledged: boolean;
   maxRounds: number;
   ciPollSeconds: number;
   ciWaitSeconds: number;

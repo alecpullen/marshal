@@ -113,7 +113,7 @@ FactoryItem factoryItem({
       'reviewerInstructions': '',
       'implementerAuto': true,
       'expectedChecks': [],
-      'noRequiredCIAcknowledged': true,
+      'noRequiredCiAcknowledged': true,
       'maxRounds': 3,
       'ciPollSeconds': 30,
       'ciWaitSeconds': 900,
@@ -145,6 +145,27 @@ FactoryWorker factoryWorker({
   'spawnEffectId': 'effect-$role',
   'parked': false,
   'subagents': {'enabled': false, 'concurrency': 0},
+});
+
+/// One linked pull request as a test writes one: the item's own record of the
+/// reviewed identity a merge names.
+FactoryPR factoryPR({
+  int number = 412,
+  String nodeID = 'node-412',
+  String headSHA = 'head-412',
+  String baseRef = 'main',
+  String state = 'open',
+  bool draft = false,
+}) => FactoryPR.fromJson({
+  'number': number,
+  'url': 'https://forge.test/o/r/pull/$number',
+  'nodeId': nodeID,
+  'headRef': 'factory/item-1',
+  'baseRef': baseRef,
+  'headSha': headSHA,
+  'baseSha': 'base-1',
+  'state': state,
+  'draft': draft,
 });
 
 /// One history entry as a test writes one.

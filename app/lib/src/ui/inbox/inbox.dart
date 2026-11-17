@@ -226,8 +226,11 @@ class _InboxState extends State<Inbox> {
             placement: AskPlacement.inbox,
             // A request that asks several questions commits them together,
             // under the fields that collect them, so the card itself carries
-            // no action row.
-            actions: many
+            // no action row. A work item's four asks are answered in the
+            // item's own thread — they carry its version and its reviewed
+            // identity — so the list shows them without offering a control
+            // that would do nothing; the source line opens the thread.
+            actions: many || _threadOnly(ask.kind)
                 ? const []
                 : [
                     for (final action in ask.actions)
@@ -241,6 +244,25 @@ class _InboxState extends State<Inbox> {
       ),
     );
   }
+
+  /// Whether an ask is answered only in the item's own thread (F6 decision 5).
+  ///
+  /// A work item's draft, decision, recovery and completion all name the item's
+  /// version and its reviewed identity, so the model declines to answer them
+  /// from the list ([InboxModel.answer] returns early). The card draws no action
+  /// row for them rather than buttons that would do nothing; its source line
+  /// opens the thread they are answered in.
+  static bool _threadOnly(model.AskKind kind) => switch (kind) {
+    model.AskKind.approvalDraft ||
+    model.AskKind.decision ||
+    model.AskKind.recovery ||
+    model.AskKind.completion => true,
+    model.AskKind.approval ||
+    model.AskKind.question ||
+    model.AskKind.intake ||
+    model.AskKind.reviewDraft ||
+    model.AskKind.pull => false,
+  };
 
   /// The questions of a multi-question ask, one answer each, and the actions
   /// that post them all.

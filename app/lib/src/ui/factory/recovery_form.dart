@@ -28,19 +28,7 @@ class RecoveryChoice {
 /// goes on, and a person who has to open another screen to make it has lost
 /// the diagnosis they were reading.
 class RecoveryForm extends StatefulWidget {
-  const RecoveryForm({
-    super.key,
-    required this.diagnosis,
-    required this.attempts,
-    required this.onSubmit,
-    this.enabled = true,
-  });
-
-  /// Why the item needs a recovery, in the bridge's own words.
-  final String diagnosis;
-
-  /// What has been tried so far, in one line.
-  final String attempts;
+  const RecoveryForm({super.key, required this.onSubmit, this.enabled = true});
 
   /// Sends the choice. Null-safe: the form's submit is disabled when the host
   /// gave no handler.
@@ -80,20 +68,11 @@ class _RecoveryFormState extends State<RecoveryForm> {
 
   @override
   Widget build(BuildContext context) {
-    final e = Ember.of(context);
     final submit = widget.onSubmit;
     final rounds = int.tryParse(_rounds.text.trim()) ?? 0;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (widget.diagnosis.trim().isNotEmpty) ...[
-          Text(widget.diagnosis.trim(), style: e.body),
-          const SizedBox(height: Space.s6),
-        ],
-        if (widget.attempts.trim().isNotEmpty) ...[
-          Text(widget.attempts.trim(), style: e.small.tint(e.muted)),
-          const SizedBox(height: Space.s12),
-        ],
         Field(
           label: 'Model',
           controller: _model,

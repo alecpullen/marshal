@@ -390,7 +390,14 @@ class Studio extends StatefulWidget {
   /// Builds the handoff review for a plan (F6 decision 8). Null leaves the one
   /// action that hands a plan off out, rather than offering a sheet that
   /// cannot create an item.
-  final HandoffModel Function(model.ThreadRef thread, String plan, String spec)?
+  ///
+  /// It is asynchronous because what the review inherits is the project's own
+  /// settings, read when the person hands the plan off (F6 decision 12).
+  final Future<HandoffModel> Function(
+    model.ThreadRef thread,
+    String plan,
+    String spec,
+  )?
   handoffFor;
 
   /// Builds a plan run's model for one agent (F6 decision 11). Null leaves a
@@ -861,7 +868,11 @@ class _ThreadPlace extends StatefulWidget {
   final void Function(StartedPlanner planner)? onPlannerStarted;
 
   /// The handoff review's model, and where an approved item opens.
-  final HandoffModel Function(model.ThreadRef thread, String plan, String spec)?
+  final Future<HandoffModel> Function(
+    model.ThreadRef thread,
+    String plan,
+    String spec,
+  )?
   handoffFor;
   final void Function(String itemID)? onOpenItem;
   final List<inbox.Ask> asks;
@@ -933,7 +944,14 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
   ) async {
     final build = widget.handoffFor;
     if (build == null) return;
-    final model = build(widget.thread, plan, spec);
+    final model = await build(widget.thread, plan, spec);
+    // The project's settings are read before the sheet opens, so the place may
+    // be gone by now; the review is disposed rather than opened on a dead
+    // context.
+    if (!context.mounted) {
+      model.dispose();
+      return;
+    }
     final item = await showHandoffSheet(context, model);
     model.dispose();
     if (item != null) widget.onOpenItem?.call(item);
@@ -975,10 +993,13 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
   }
 
   /// Merges the pull request, after the confirmation that names it.
+  ///
+  /// A factory item's merge is not offered: it needs the reviewed identity a
+  /// pull record does not carry (F6). The review head draws it disabled.
   VoidCallback? _mergeFor(BuildContext context) {
     final pull = _pull;
     final pulls = widget.pulls;
-    if (pull == null || pulls == null) return null;
+    if (pull == null || pulls == null || pull.fromFactoryItem) return null;
     return () => unawaited(confirmMerge(context, pull: pull, model: pulls));
   }
 
@@ -1157,7 +1178,7 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
         ),
       ),
       onComplete: () => _command(() => store.complete(host, item.id)),
-      onMergeAndComplete: () => _merge(host, item.id, pulls),
+      onMergeAndComplete: () => _merge(host, item.id),
       onReopen: () => _command(() => store.reopen(host, item.id)),
       onStop: () => _command(() => store.stopItem(host, item.id)),
       pullActionsFor: widget.pulls == null
@@ -1206,25 +1227,10 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
   }
 
   /// Merges the reviewed pull request and completes the item. The identity is
-  /// the card's own, so nothing the surface assembled can be merged.
-  Future<void> _merge(String host, String id, List<PullView> pulls) async {
-    if (pulls.isEmpty) {
-      if (mounted) {
-        setState(() => _error = 'There is no pull request to merge yet.');
-      }
-      return;
-    }
-    final pull = pulls.first.record;
-    await _command(
-      () => widget.factory.mergeAndComplete(
-        host,
-        id,
-        repoID: pull.repoID,
-        number: pull.number,
-        headSHA: pull.headSHA,
-        baseRef: pull.baseRef,
-      ),
-    );
+  /// the item's own record of the reviewed pull request, resolved inside the
+  /// store, so nothing the surface assembled can be merged (F6 decision 5).
+  Future<void> _merge(String host, String id) async {
+    await _command(() => widget.factory.mergeAndComplete(host, id));
   }
 
   /// The item until the store has it: loading while the first read is in
@@ -1267,7 +1273,11 @@ class _PlanningPlace extends StatefulWidget {
 
   final model.ThreadRef thread;
   final PlanningModel plan;
-  final HandoffModel Function(model.ThreadRef thread, String plan, String spec)?
+  final Future<HandoffModel> Function(
+    model.ThreadRef thread,
+    String plan,
+    String spec,
+  )?
   handoffFor;
   final DateTime? now;
   final void Function(String itemID)? onOpenItem;
@@ -1288,7 +1298,18 @@ class _PlanningPlaceState extends State<_PlanningPlace> {
     final build = widget.handoffFor;
     if (build == null) return;
     final latest = widget.plan.latest;
-    final model = build(widget.thread, latest?.plan ?? '', latest?.spec ?? '');
+    final model = await build(
+      widget.thread,
+      latest?.plan ?? '',
+      latest?.spec ?? '',
+    );
+    // What the review inherits is read before the sheet opens, so the place
+    // may be gone by now; the review is disposed rather than opened on a dead
+    // context.
+    if (!context.mounted) {
+      model.dispose();
+      return;
+    }
     final item = await showHandoffSheet(context, model);
     model.dispose();
     if (item != null) widget.onOpenItem?.call(item);

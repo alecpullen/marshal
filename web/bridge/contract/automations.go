@@ -2,6 +2,12 @@ package contract
 
 import "encoding/json"
 
+// WebhookSecret is POST /api/repos/{id}/webhook-secret's answer. The secret
+// is returned once, and the forge must be given it before it is lost.
+type WebhookSecret struct {
+	Secret string `json:"secret"`
+}
+
 // Automations is a project's forge automation settings
 // (web/bridge/automation.go).
 type Automations struct {

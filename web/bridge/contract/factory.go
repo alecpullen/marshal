@@ -512,6 +512,15 @@ type FactoryCommand struct {
 	ReviewerFreeze    *FactorySubagentSettings `json:"-"`
 }
 
+// FactorySettingsVersion is GET /api/factory/settings-version's answer: the
+// combined version a factory approval checks against, composed from the
+// project's settings and the control session's reported defaults. It is
+// served from the same method an approval uses, so a client never builds a
+// version the bridge would compare differently.
+type FactorySettingsVersion struct {
+	SettingsVersion string `json:"settingsVersion"`
+}
+
 // FactoryRevisionAssessment is a planner's recorded judgement about one
 // proposed revision. It is advisory: it names the classification it asserts,
 // the work it believes is affected, the routing it recommends and whether the

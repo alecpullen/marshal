@@ -200,6 +200,14 @@ export interface RecentPrompts {
 }
 
 /**
+ * WebhookSecret is POST /api/repos/{id}/webhook-secret's answer. The secret
+ * is returned once, and the forge must be given it before it is lost.
+ */
+export interface WebhookSecret {
+  secret: string;
+}
+
+/**
  * Automations is a project's forge automation settings
  * (web/bridge/automation.go).
  */
@@ -1375,6 +1383,17 @@ export interface FactoryCommand {
    * or a command replayed from an older journal — proceeds as it always did.
    */
   settingsVersion?: string;
+}
+
+/**
+ * FactorySettingsVersion is GET /api/factory/settings-version's answer: the
+ * combined version a factory approval checks against, composed from the
+ * project's settings and the control session's reported defaults. It is
+ * served from the same method an approval uses, so a client never builds a
+ * version the bridge would compare differently.
+ */
+export interface FactorySettingsVersion {
+  settingsVersion: string;
 }
 
 /**
@@ -4458,4 +4477,49 @@ export interface WatchInfo {
   notify?: boolean;
   resume?: boolean;
   lastReroute?: LastReroute;
+}
+
+/**
+ * WatchSpec is what a watch watches: POST /api/watches' `spec`, which the
+ * agent's session hands to its watch engine unchanged. Exactly one of
+ * Command, JobID and Path carries the source, chosen by Kind.
+ */
+export interface WatchSpec {
+  name: string;
+  /**
+   * command, job or file
+   */
+  kind: string;
+  command?: string;
+  jobId?: string;
+  path?: string;
+  condition?: string;
+  /**
+   * once or repeat
+   */
+  mode: string;
+  intervalMs: number;
+  notify?: boolean;
+  resume?: boolean;
+}
+
+/**
+ * WatchCreate is POST /api/watches' body: the spec, the agent whose session
+ * starts it (absent means the bridge's own control session), and the action
+ * on trip. A reroute is allowed only on a Studio watch: it rewrites
+ * user-global config, which no single agent's watch should be able to do.
+ */
+export interface WatchCreate {
+  agentId?: string;
+  spec: WatchSpec;
+  onTrip?: OnTrip;
+}
+
+/**
+ * WatchStarted is POST /api/watches' answer: what the engine made.
+ */
+export interface WatchStarted {
+  id: string;
+  name?: string;
+  agentId?: string;
 }

@@ -343,6 +343,7 @@ class Studio extends StatefulWidget {
     this.handoffFor,
     this.runFor,
     this.answerRunFor,
+    this.rosterFor,
     this.projectFor,
     this.automationsFor,
     this.libraryFor,
@@ -408,6 +409,11 @@ class Studio extends StatefulWidget {
   /// run's question as a fact: no action is offered that could not be taken.
   final Future<void> Function(String host, String agentID, String answer)?
   answerRunFor;
+
+  /// Reads a session's roster, so a plan run's lanes name the roles they drew
+  /// and the models behind them (GET /api/sessions/{id}/roster). Null leaves
+  /// the lanes without a roles strip rather than drawing bindings nobody read.
+  final Future<Roster> Function(String host, String agentID)? rosterFor;
 
   /// Builds a project's page model for one host and root (F6 decision 12).
   /// Null leaves the project place planned, so a host that wires no settings
@@ -665,6 +671,9 @@ class _StudioState extends State<Studio> {
             answer: answerRun == null
                 ? null
                 : (words) => answerRun(thread.host, thread.id, words),
+            roster: widget.rosterFor == null
+                ? null
+                : () => widget.rosterFor!(thread.host, thread.id),
             now: widget.store.now,
           );
         }
@@ -1434,6 +1443,7 @@ class _RunPlace extends StatefulWidget {
     this.run,
     this.digest,
     this.answer,
+    this.roster,
     this.now,
   }) : assert(
          run != null || digest != null,
@@ -1446,6 +1456,9 @@ class _RunPlace extends StatefulWidget {
 
   /// Answers the question the run stopped on, when the app can post one.
   final Future<void> Function(String answer)? answer;
+
+  /// Reads the session's roster, so the lanes name the roles they drew.
+  final Future<Roster> Function()? roster;
   final DateTime? now;
 
   @override
@@ -1461,6 +1474,7 @@ class _RunPlaceState extends State<_RunPlace> {
         widget.thread.id,
         widget.digest!,
         answer: widget.answer,
+        roster: widget.roster,
       );
 
   bool get _owned => widget.run == null;

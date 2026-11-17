@@ -61,3 +61,36 @@ type WatchInfo struct {
 	Resume      *bool        `json:"resume,omitempty"`
 	LastReroute *LastReroute `json:"lastReroute,omitempty"`
 }
+
+// WatchSpec is what a watch watches: POST /api/watches' `spec`, which the
+// agent's session hands to its watch engine unchanged. Exactly one of
+// Command, JobID and Path carries the source, chosen by Kind.
+type WatchSpec struct {
+	Name       string `json:"name"`
+	Kind       string `json:"kind"` // command, job or file
+	Command    string `json:"command,omitempty"`
+	JobID      string `json:"jobId,omitempty"`
+	Path       string `json:"path,omitempty"`
+	Condition  string `json:"condition,omitempty"`
+	Mode       string `json:"mode"` // once or repeat
+	IntervalMs int64  `json:"intervalMs"`
+	Notify     *bool  `json:"notify,omitempty"`
+	Resume     *bool  `json:"resume,omitempty"`
+}
+
+// WatchCreate is POST /api/watches' body: the spec, the agent whose session
+// starts it (absent means the bridge's own control session), and the action
+// on trip. A reroute is allowed only on a Studio watch: it rewrites
+// user-global config, which no single agent's watch should be able to do.
+type WatchCreate struct {
+	AgentID string    `json:"agentId,omitempty"`
+	Spec    WatchSpec `json:"spec"`
+	OnTrip  *OnTrip   `json:"onTrip,omitempty"`
+}
+
+// WatchStarted is POST /api/watches' answer: what the engine made.
+type WatchStarted struct {
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	AgentID string `json:"agentId,omitempty"`
+}

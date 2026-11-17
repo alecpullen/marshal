@@ -68,7 +68,7 @@ issues, and so does a route the client issues that has no row.
 | POST | `/api/factory/items` | createFactoryItem |  |
 | GET | `/api/factory/items/X` | factoryItem |  |
 | POST | `/api/factory/items/X/commands` | factoryCommand |  |
-| GET | `/api/factory/settings-version` | — | dropped: no screen compares a draft against the settings version it was written under |
+| GET | `/api/factory/settings-version` | factorySettingsVersion |  |
 | GET | `/api/factory/working-drafts` | workingDrafts |  |
 | POST | `/api/factory/working-drafts` | createWorkingDraft |  |
 | GET | `/api/factory/working-drafts/X` | workingDraft |  |
@@ -145,7 +145,7 @@ issues, and so does a route the client issues that has no row.
 | GET | `/api/repos/X/issues` | issues |  |
 | POST | `/api/repos/X/issues/X/spawn` | — | dropped: the new-work dialog starts an agent through spawn; the issue shortcut has no caller |
 | GET | `/api/repos/X/preview-environments?ref=…` | — | dropped: no screen reads preview environments; a preview is opened through the agent’s own /preview route |
-| POST | `/api/repos/X/webhook-secret` | — | dropped: issuing a webhook secret is the web client’s forge setup |
+| POST | `/api/repos/X/webhook-secret` | issueWebhookSecret |  |
 | POST | `/api/reroutes/X/undo` | undoReroute |  |
 | GET | `/api/runs` | runs |  |
 | POST | `/api/runs` | — | dropped: the app lists a run and answers the question it stopped on; it never starts one |
@@ -172,7 +172,7 @@ issues, and so does a route the client issues that has no row.
 | POST | `/api/sessions/X/mode` | setMode |  |
 | GET | `/api/sessions/X/nodes/X` | node |  |
 | POST | `/api/sessions/X/prompt` | prompt |  |
-| GET | `/api/sessions/X/roster` | — | dropped: no screen reads the token roster; the generated Roster type has no caller |
+| GET | `/api/sessions/X/roster` | sessionRoster |  |
 | GET | `/api/sessions/X/stack` | stack |  |
 | POST | `/api/sessions/X/steer` | steer |  |
 | GET | `/api/sessions/X/step-diffs` | stepDiffs |  |
@@ -181,8 +181,8 @@ issues, and so does a route the client issues that has no row.
 | DELETE | `/api/status-links/X` | revokeStatusLink |  |
 | GET | `/api/usage` | usage |  |
 | GET | `/api/watches` | watches |  |
-| POST | `/api/watches` | — | dropped: the app lists watches and undoes a reroute; creating and stopping them is not built |
-| DELETE | `/api/watches/X/X` | — | dropped: the app lists watches and undoes a reroute; creating and stopping them is not built |
+| POST | `/api/watches` | createWatch |  |
+| DELETE | `/api/watches/X/X` | stopWatch |  |
 | GET | `/api/workspaces` | environments |  |
 | POST | `/api/workspaces` | createEnvironment |  |
 | GET | `/api/workspaces/X?version=…` | environment |  |

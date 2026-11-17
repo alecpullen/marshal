@@ -1379,5 +1379,8 @@
     "baseSha256": "aa11",
     "contentSha256": "bb22",
     "executable": false
+  },
+  "FactorySettingsVersion": {
+    "settingsVersion": "p1:digest-1"
   }
 }

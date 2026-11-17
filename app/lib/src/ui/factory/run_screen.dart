@@ -54,6 +54,9 @@ class _RunScreenState extends State<RunScreen> {
   void initState() {
     super.initState();
     widget.model.addListener(_changed);
+    // The lanes name the roles they drew, so the roster is read once here. A
+    // model the app built without a reader draws nothing rather than guessing.
+    unawaited(widget.model.loadRoster());
   }
 
   @override
@@ -198,7 +201,13 @@ class _RunScreenState extends State<RunScreen> {
   }
 
   Widget _view(RunModel model) => switch (model.view) {
-    RunView.lanes => Box.flush(child: _lanes(model)),
+    RunView.lanes => Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Box.flush(child: _lanes(model)),
+        _roles(model),
+      ],
+    ),
     RunView.graph => Box(
       child: TaskGraph(
         nodes: [
@@ -300,6 +309,66 @@ class _RunScreenState extends State<RunScreen> {
           ),
       ],
     );
+  }
+
+  /// The roles the lanes drew, under the grid (web/ui/src/lib/runs/Lanes.svelte):
+  /// each role and the model behind it. A roster the bridge could not answer
+  /// is stated, never hidden; a run the app opened without a reader draws
+  /// nothing at all, rather than guessing bindings.
+  Widget _roles(RunModel model) {
+    if (!model.canReadRoster) return const SizedBox.shrink();
+    final e = Ember.of(context);
+    final failure = model.rosterFailure;
+    if (failure != null) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(
+          Space.s16,
+          Space.s12,
+          Space.s16,
+          Space.s12,
+        ),
+        child: Text(
+          'The roles could not be read: $failure',
+          style: e.small.tint(e.err),
+        ),
+      );
+    }
+    final roles = model.rosterRoles;
+    if (!model.rosterSettled || roles.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        Space.s16,
+        Space.s12,
+        Space.s16,
+        Space.s12,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Roles', style: e.label.tint(e.muted)),
+          const SizedBox(height: Space.s8),
+          Wrap(
+            spacing: Space.s16,
+            runSpacing: Space.s4,
+            children: [
+              for (final role in roles)
+                Text('${role.role} · ${_binding(role)}', style: e.small),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One role's binding in words: the provider and model it resolves to, why
+  /// it is unresolved, or "default" when the bridge left both empty.
+  static String _binding(RosterRole role) {
+    final model = (role.model ?? '').trim();
+    final provider = (role.provider ?? '').trim();
+    if (model.isEmpty) {
+      return (role.error ?? '').trim().isEmpty ? 'default' : 'unresolved';
+    }
+    return provider.isEmpty ? model : '$provider/$model';
   }
 
   /// One cell of one lane, as the kit's `LaneCell`: its status, its word, its

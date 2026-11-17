@@ -7,7 +7,15 @@ import 'section_model.dart';
 // A watch reaches its screens through the model, so `ui/` reads `model/` and
 // never `client/` (test/boundary_test.dart).
 export '../client/contract.g.dart'
-    show LastReroute, OnTrip, RerouteRule, WatchInfo, WatchSample;
+    show
+        LastReroute,
+        OnTrip,
+        RerouteRule,
+        WatchCreate,
+        WatchInfo,
+        WatchSample,
+        WatchSpec,
+        WatchStarted;
 
 /// A watch that tripped, as the Overview's Automations card lists it: what it
 /// watches, what it did, and when (F7 decision 4, plan Task 3).
@@ -33,6 +41,19 @@ class TrippedWatch {
 
   @override
   String toString() => 'TrippedWatch($name, $agent)';
+}
+
+/// The roles and presets a Studio watch's reroute may name, as the models
+/// config reports them (F7 decision 4). Both are empty when the bridge could
+/// not answer, which the form reads as "no reroute available".
+@immutable
+class WatchChoices {
+  const WatchChoices({this.roles = const [], this.presets = const []});
+
+  final List<String> roles;
+  final List<String> presets;
+
+  bool get isEmpty => roles.isEmpty && presets.isEmpty;
 }
 
 /// The Watches section of Automations (F7 decision 4): what is watched, on
@@ -102,6 +123,37 @@ class WatchesModel extends SectionModel<WatchInfo> {
   /// the screen says so instead of offering the button.
   Future<void> undoReroute(String rerouteID) =>
       _requireBridge().undoReroute(rerouteID);
+
+  /// POST /api/watches: starts a watch, then reads the list again so the new
+  /// row is the bridge's own report of it rather than what this model guessed.
+  Future<WatchStarted> create(WatchCreate request) async {
+    final started = await _requireBridge().createWatch(request);
+    await load();
+    return started;
+  }
+
+  /// DELETE /api/watches/{owner}/{id}: stops one. [owner] is the watch's agent
+  /// id, or `studio` for the bridge's own control session — it is the row's
+  /// `agentId`, which is what the route's path takes.
+  Future<void> stop(WatchInfo watch) async {
+    await _requireBridge().stopWatch(watch.agentID, watch.id);
+    await load();
+  }
+
+  /// The roles and presets a Studio watch's reroute may name, read once for
+  /// the form. A bridge that cannot answer leaves both empty, and the form
+  /// says the reroute is unavailable rather than inventing choices.
+  Future<WatchChoices> choices() async {
+    final bridge = _bridge;
+    if (bridge == null) return const WatchChoices();
+    final config = await bridge.models();
+    return WatchChoices(
+      roles: List.unmodifiable(config.roles),
+      presets: List.unmodifiable(
+        [for (final name in config.presets.keys) name]..sort(),
+      ),
+    );
+  }
 
   /// What a watch does when it trips, in the words the row and the detail
   /// use.

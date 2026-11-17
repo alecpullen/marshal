@@ -189,12 +189,25 @@ Future<void> main() async {
               // The sheet opens on the host alone, stating what the project
               // does not; a settings read must not leave the plan unhanded.
             }
+            // The version this review is bound to: the combined one the bridge
+            // composes, so a settings change made while the review is open is
+            // noticed at approval rather than frozen unread. A read that fails
+            // leaves the review unbound, never blocked.
+            String? version;
+            try {
+              version = await client.factorySettingsVersion(thread.project);
+            } catch (_) {
+              version = null;
+            }
             return HandoffModel(
               defaults: defaults,
               projectRoot: thread.project,
               title: thread.title,
               plan: plan,
               spec: spec,
+              settingsVersion: version,
+              readSettingsVersion: (root) =>
+                  client.factorySettingsVersion(root),
               create: (draft) => factory.create(thread.host, draft),
             );
           },
@@ -204,6 +217,13 @@ Future<void> main() async {
               .firstWhere((owner) => owner.name == host)
               .client
               .answerRun(agentID, answer),
+          // A plan run's lanes name the roles they drew, read from the same
+          // session's roster (F6 decision 11). The bridge resolves an agent id
+          // to its session, so the run's thread id is what the route takes.
+          rosterFor: (host, agentID) => hosts.hosts
+              .firstWhere((owner) => owner.name == host)
+              .client
+              .sessionRoster(agentID),
           // The project page (F6 decision 12): its settings are one document
           // read with the ETag that names it, so a save that names a tag the
           // bridge no longer holds is refused rather than overwriting a change

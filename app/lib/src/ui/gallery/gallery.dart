@@ -7,6 +7,7 @@
 /// first entry in the registry of screens the enforcement tests pump.
 library;
 
+import '../../model/run_model.dart' show RunLane;
 import '../../model/section_model.dart';
 import '../kit/kit.dart';
 import '../sections/section_page.dart';
@@ -88,6 +89,9 @@ class _GalleryState extends State<Gallery> {
         ..._section('Label', _labels()),
         ..._section('Tabs', _tabs()),
         ..._section('Segments', _segments()),
+        ..._section('Activity', _activity()),
+        ..._section('Lanes', _lanes()),
+        ..._section('TaskGraph', _graphs()),
         ..._section('Meter', _meters()),
         ..._section('Spark', _spark()),
         ..._section('Chart', _charts()),
@@ -117,6 +121,58 @@ class _GalleryState extends State<Gallery> {
   }
 
   /// One section: its label, then its specimens a gap apart.
+  /// The lanes view of a run: two tasks, each with what its four roles did.
+  List<Widget> _lanes() => [
+    Lanes(
+      lanes: RunLane.all,
+      rows: const [
+        LaneRow(
+          title: 'Task 1 · Read the item',
+          detail: 'Committed',
+          cells: [
+            LaneCell(status: Status.ready, words: 'Passed'),
+            LaneCell(
+              status: Status.ready,
+              words: 'Passed',
+              note: 'go test ./... passed',
+            ),
+            LaneCell(status: Status.ready, words: 'Approved'),
+            LaneCell(status: Status.ready, words: 'Passed', note: 'a1b2c3d'),
+          ],
+        ),
+        LaneRow(
+          title: 'Task 2 · Approve it',
+          detail: 'Repairing',
+          cells: [
+            LaneCell(status: Status.running, words: 'Running'),
+            LaneCell(status: Status.idle, words: 'Pending'),
+            LaneCell(status: Status.failed, words: 'Failed', note: '1 round'),
+            LaneCell(status: Status.idle, words: 'Pending'),
+          ],
+        ),
+      ],
+    ),
+  ];
+
+  /// The graph view: three tasks in two dependency layers, with straight edges.
+  List<Widget> _graphs() => [
+    TaskGraph(
+      nodes: const [
+        GraphNode(number: 1, label: '1 · Read', layer: 0, index: 0),
+        GraphNode(number: 2, label: '2 · Approve', layer: 1, index: 0),
+        GraphNode(
+          number: 3,
+          label: '3 · Ship',
+          layer: 2,
+          index: 0,
+          status: Status.running,
+        ),
+      ],
+      edges: const [GraphEdge(from: 1, to: 2), GraphEdge(from: 2, to: 3)],
+    ),
+    const TaskGraph(nodes: [], edges: []),
+  ];
+
   List<Widget> _section(String name, List<Widget> specimens) => [
     Label(name),
     const SizedBox(height: Space.s12),
@@ -331,6 +387,33 @@ class _GalleryState extends State<Gallery> {
     Segments(done: 3, total: 6, status: Status.running),
     Segments(done: 1, total: 4, status: Status.failed),
     Segments(done: 4, total: 4, status: Status.ready),
+    StageStrip(
+      labels: ['Plan', 'Implement', 'Review', 'Ready'],
+      current: 1,
+      status: Status.running,
+    ),
+    StageStrip(
+      labels: ['Plan', 'Implement', 'Review', 'Ready'],
+      current: 3,
+      status: Status.idle,
+      endWord: 'Closed',
+    ),
+  ];
+
+  List<Widget> _activity() => const [
+    ActivityRow(
+      who: 'The implementer',
+      text: 'started round 1',
+      age: '8m',
+      detail: 'implement_started',
+    ),
+    ActivityRow(who: 'You', text: 'revision 1 was approved', age: '12m'),
+    ActivityRow(
+      who: 'The reviewer',
+      text: 'left one finding',
+      age: '4m',
+      detail: 'review_completed',
+    ),
   ];
 
   List<Widget> _meters() => const [
@@ -563,12 +646,25 @@ class _GalleryState extends State<Gallery> {
         AskAction('Dismiss', onTap: () {}),
       ],
     ),
+    AskCard(
+      kind: AskKind.pull,
+      title: '#131 · the fix was refused as a forbidden change',
+      body:
+          'unit · it wanted to delete the failing test · the test is right '
+          'and the code is wrong · Fix it by hand, or ask a worker with a note',
+      waiting: '6m',
+      source: 'acme/widgets › Quiet capture mode',
+      actions: [
+        AskAction('Open', onTap: () {}),
+        AskAction('Try again', onTap: () {}),
+        AskAction('Dismiss', onTap: () {}),
+      ],
+    ),
   ];
 
   static const _fixChoices = [
     ('Investigate only', 'Report the cause, change nothing'),
     ('Fix with a note', 'Tell the worker what you suspect'),
-    ('Choose the worker', 'Model, and how many attempts'),
     ('Always fix failures in marshal', 'For every pull request here'),
   ];
 
@@ -590,6 +686,7 @@ class _GalleryState extends State<Gallery> {
         reviews: '2 reviews passed',
         age: '26m',
         state: PrState.ready,
+        checkSummary: '4 of 4 checks passed',
         sourceKind: ThreadKind.workItem,
         sourceTitle: 'CI-first change review',
       ),
@@ -612,6 +709,7 @@ class _GalleryState extends State<Gallery> {
         reviews: 'review waits for checks',
         age: '4m',
         state: PrState.failing,
+        checkSummary: '1 failing: unit',
         failureTail:
             '--- FAIL: TestScriptedRecorderQuietMode (4.21s)\n'
             '    recorder_test.go:88: planner question interrupted a quiet '
@@ -645,6 +743,7 @@ class _GalleryState extends State<Gallery> {
         reviews: 'no reviewers configured',
         age: '31m',
         state: PrState.fixing,
+        checkSummary: '1 failing: test',
         sourceKind: ThreadKind.agent,
         sourceTitle: 'Fix flaky calendar test',
       ),
@@ -666,9 +765,30 @@ class _GalleryState extends State<Gallery> {
         reviews: 'no reviews yet',
         age: '2m',
         state: PrState.inProgress,
+        checkSummary: '1 of 3 checks passed, the rest running',
         draft: true,
         sourceKind: ThreadKind.planRun,
         sourceTitle: 'P6 plan 4',
+      ),
+      actions: PrActions(openOnForge: () {}, openSource: () {}),
+    ),
+    PrCard(
+      pull: const PullRequestFacts(
+        number: 125,
+        title: 'Release config: sign the binaries',
+        repo: 'alecpullen/marshal',
+        branch: 'agent/sign-binaries',
+        adds: 24,
+        dels: 3,
+        checks: [],
+        reviews: 'no reviews yet',
+        age: '8m',
+        state: PrState.unavailable,
+        checkSummary:
+            'Checks unavailable: the credential is an SSH key, which cannot '
+            'call the API',
+        sourceKind: ThreadKind.agent,
+        sourceTitle: 'Sign the binaries',
       ),
       actions: PrActions(openOnForge: () {}, openSource: () {}),
     ),

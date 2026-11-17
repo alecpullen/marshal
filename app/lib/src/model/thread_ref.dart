@@ -24,6 +24,7 @@ class ThreadRef {
     required this.status,
     required this.headline,
     required this.lastActive,
+    this.planning = false,
   });
 
   /// The host whose fleet reported it.
@@ -31,6 +32,12 @@ class ThreadRef {
 
   /// The agent's id, which is the id its asks and its deltas carry.
   final String id;
+
+  /// Whether this thread is a planning thread: a planner the bridge runs,
+  /// which becomes a work item's thread when it is handed off (F6 decision 8).
+  /// It is a flag rather than a fourth kind because a planning thread is an
+  /// agent's session, drawn with the agent's own kind.
+  final bool planning;
 
   /// The project root it works in.
   final String project;
@@ -53,6 +60,7 @@ class ThreadRef {
       other is ThreadRef &&
       other.host == host &&
       other.id == id &&
+      other.planning == planning &&
       other.project == project &&
       other.title == title &&
       other.kind == kind &&
@@ -61,8 +69,17 @@ class ThreadRef {
       other.lastActive == lastActive;
 
   @override
-  int get hashCode =>
-      Object.hash(host, id, project, title, kind, status, headline, lastActive);
+  int get hashCode => Object.hash(
+    host,
+    id,
+    planning,
+    project,
+    title,
+    kind,
+    status,
+    headline,
+    lastActive,
+  );
 
   @override
   String toString() => 'ThreadRef($host/$id, ${status.name})';

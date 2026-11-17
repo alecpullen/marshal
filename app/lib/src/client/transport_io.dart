@@ -23,10 +23,18 @@ Uri _uri(Uri base, Request request) => base.replace(
   queryParameters: request.query.isEmpty ? null : request.query,
 );
 
-/// Sets the body and content type a request carries.
+/// Sets the headers and the body a request carries.
 HttpClientRequest _writeBody(HttpClientRequest httpRequest, Request request) {
+  // The route's own headers, after the transport's: a conditional write names
+  // If-Match here, and the bearer token above is left alone.
+  for (final MapEntry(:key, :value) in request.headers.entries) {
+    httpRequest.headers.set(key, value);
+  }
   if (request.body != null) {
     httpRequest.headers.contentType = ContentType.json;
+    for (final entry in request.headers.entries) {
+      httpRequest.headers.set(entry.key, entry.value);
+    }
     httpRequest.write(jsonEncode(request.body));
   }
   return httpRequest;

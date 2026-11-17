@@ -43,11 +43,12 @@ void main() {
           PlaceKind.settings,
         ],
       );
-      // The three above the tree are built; the rest of the fixed places open
-      // the message naming the phase that brings them.
+      // The three above the tree are built — F5 brought the Pull requests
+      // place — and the rest open the message naming the phase that brings
+      // them.
       expect(
         [for (final place in model.fixed) place.planned],
-        [false, false, true, true, true, true],
+        [false, false, false, true, true, true],
       );
       expect(navAboveProjects, 3);
     },
@@ -231,7 +232,8 @@ void main() {
       2,
     );
 
-    // Nothing else carries the queue's size.
+    // Nothing else carries the queue's size. Pull requests carries its own
+    // count — how many wait for review (F5 decision 14).
     expect(
       [
         for (final row in buildNavModel(
@@ -240,7 +242,7 @@ void main() {
         ).fixed)
           if (row.count != null) row.label,
       ],
-      ['Inbox'],
+      ['Inbox', 'Pull requests'],
     );
   });
 

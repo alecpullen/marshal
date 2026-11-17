@@ -2,11 +2,15 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+
+	"marshal/web/bridge/contract"
 )
 
 func TestGiteaUsesTokenAuthAndIndexField(t *testing.T) {
@@ -140,5 +144,49 @@ func TestGiteaFailedChecksKeepNewestFailurePerContext(t *testing.T) {
 	log, err := f.CheckLog(context.Background(), repo, checks[0], Credential{literal: "t"})
 	if err != nil || log != "lint broke\nhttps://ci/7" {
 		t.Fatalf("log = %q, err = %v", log, err)
+	}
+}
+
+func TestGiteaListChecksMapsEveryState(t *testing.T) {
+	srv, gotPath := forgeFixtureServer(t, "gitea-statuses.json")
+	f := newGiteaForge(srv.Client())
+	repo := Repo{URL: "https://code.example.com/you/r.git", APIBase: srv.URL}
+
+	checks, err := f.ListChecks(context.Background(), repo, "abc123", Credential{Kind: "pat", literal: "t"})
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	if *gotPath != "/repos/you/r/commits/abc123/statuses" {
+		t.Fatalf("path = %q", *gotPath)
+	}
+	// docs reported twice; only its newest status counts.
+	want := []contract.PullCheck{
+		{Name: "build", State: contract.CheckPassed, URL: "https://code.example.com/you/r/actions/runs/71"},
+		{Name: "docs", State: contract.CheckPassed, URL: "https://code.example.com/you/r/actions/runs/69"},
+		{Name: "lint", State: contract.CheckFailed, URL: "https://code.example.com/you/r/actions/runs/72"},
+		{Name: "test / integration", State: contract.CheckFailed, URL: "https://code.example.com/you/r/actions/runs/74"},
+		{Name: "test / unit", State: contract.CheckPending, URL: "https://code.example.com/you/r/actions/runs/73"},
+	}
+	if !reflect.DeepEqual(checks, want) {
+		t.Fatalf("checks = %+v\nwant: %+v", checks, want)
+	}
+}
+
+func TestGiteaListChecksWithSSHCredentialIsUnavailable(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	f := newGiteaForge(srv.Client())
+	repo := Repo{URL: "https://code.example.com/you/r.git", APIBase: srv.URL}
+	for _, cred := range []Credential{{Kind: "ssh"}, {Kind: "none"}, {}} {
+		if _, err := f.ListChecks(context.Background(), repo, "abc", cred); !errors.Is(err, ErrChecksUnavailable) {
+			t.Fatalf("ListChecks with a %q credential = %v, want ErrChecksUnavailable", cred.Kind, err)
+		}
+	}
+	if called {
+		t.Fatal("the forge API was called with a credential that cannot call it")
 	}
 }

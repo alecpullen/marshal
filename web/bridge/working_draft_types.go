@@ -2,71 +2,37 @@ package bridge
 
 import (
 	"errors"
-	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // Working drafts are the bridge's durable copy of an incomplete manual factory
 // handoff. They are not factory items: saving one performs no factory
 // validation, starts no run and inherits no project defaults.
-//
+
 // Content is the raw editor input, never the effective factory configuration.
 // A blank override means "follow project settings when converted", and an
 // absent checks mode means the same. Empty and temporarily invalid values are
 // accepted while editing; conversion is what resolves and validates them.
-type WorkingDraftContent struct {
-	Title                    string `json:"title"`
-	Plan                     string `json:"plan"`
-	Spec                     string `json:"spec"`
-	RepoID                   string `json:"repoId"`
-	TargetBranchOverride     string `json:"targetBranchOverride"`
-	WorkspaceOverride        string `json:"workspaceOverride"`
-	ImplementerOverride      string `json:"implementerOverride"`
-	ReviewerOverride         string `json:"reviewerOverride"`
-	ReviewerInstructions     string `json:"reviewerInstructions"`
-	MaxRoundsOverride        string `json:"maxRoundsOverride"`
-	CIPollOverride           string `json:"ciPollOverride"`
-	CIWaitOverride           string `json:"ciWaitOverride"`
-	ChecksMode               string `json:"checksMode"`
-	ExpectedChecksText       string `json:"expectedChecksText"`
-	Native                   bool   `json:"native"`
-	NativeChosen             bool   `json:"nativeChosen"`
-	ImplementerAuto          bool   `json:"implementerAuto"`
-	NoRequiredCIAcknowledged bool   `json:"noRequiredCiAcknowledged"`
-}
 
-// WorkingDraft is one durable draft. ProjectRoot is the store's identity for
-// the draft's project and is never derived from content; the browser cannot
-// move a draft between projects.
-type WorkingDraft struct {
-	ID            string              `json:"id"`
-	ProjectRoot   string              `json:"projectRoot"`
-	Version       uint64              `json:"version"`
-	State         string              `json:"state"`
-	Content       WorkingDraftContent `json:"content"`
-	UpdatedAt     time.Time           `json:"updatedAt"`
-	FactoryItemID string              `json:"factoryItemId,omitempty"`
-	Error         string              `json:"error,omitempty"`
-}
+// The wire shapes are contract/drafts.go's (F6 decision 1), aliased here so no
+// bridge code changed with the move.
+type (
+	// WorkingDraftContent is one draft's editor state.
+	WorkingDraftContent = contract.WorkingDraftContent
+	// WorkingDraft is one durable draft.
+	WorkingDraft = contract.WorkingDraft
+	// workingDraftCreateBody is the POST /api/factory/working-drafts body.
+	workingDraftCreateBody = contract.WorkingDraftCreateRequest
+	// workingDraftSaveBody is the PUT .../working-drafts/{id} body.
+	workingDraftSaveBody = contract.WorkingDraftSaveRequest
+	// workingDraftDeleteBody is the DELETE .../working-drafts/{id} body.
+	workingDraftDeleteBody = contract.WorkingDraftDeleteRequest
+)
 
-// Wire requests for the working-draft API. The JSON names are the contract with
-// the Studio client: it sends and reads exactly these envelopes.
-type workingDraftCreateBody struct {
-	ProjectRoot string              `json:"projectRoot"`
-	RequestID   string              `json:"requestId"`
-	Content     WorkingDraftContent `json:"content"`
-}
-
-type workingDraftSaveBody struct {
-	RequestID       string              `json:"requestId"`
-	ExpectedVersion uint64              `json:"expectedVersion"`
-	Content         WorkingDraftContent `json:"content"`
-}
-
-type workingDraftDeleteBody struct {
-	RequestID       string `json:"requestId"`
-	ExpectedVersion uint64 `json:"expectedVersion"`
-}
-
+// workingDraftConvertBody is the POST .../working-drafts/{id}/convert body. It
+// names a factory draft and the settings version it was reviewed against, so
+// the conversion the bridge performs is the one the person approved.
 type workingDraftConvertBody struct {
 	RequestID       string         `json:"requestId"`
 	ExpectedVersion uint64         `json:"expectedVersion"`

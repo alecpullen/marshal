@@ -29,9 +29,13 @@ class WebTransport implements Transport {
     await _check(response);
     final body = (await response.text().toDart).toDart;
     final type = response.headers.get('content-type');
+    // The ETag is what a conditional write names back, so a route that answers
+    // one has to reach the client: a settings save re-reads on the value that
+    // won (web/bridge/projects.go).
+    final etag = response.headers.get('etag');
     return Response(
       status: response.status,
-      headers: {'content-type': ?type},
+      headers: {'content-type': ?type, 'etag': ?etag},
       body: body,
     );
   }
@@ -73,6 +77,10 @@ class WebTransport implements Transport {
     final token = tokens.read();
     if (token != null) {
       headers.set('Authorization', 'Bearer $token');
+    }
+    // The route's own headers: a conditional write names If-Match here.
+    for (final MapEntry(:key, :value) in request.headers.entries) {
+      headers.set(key, value);
     }
     final init = web.RequestInit(method: request.method, headers: headers);
     if (request.body != null) {

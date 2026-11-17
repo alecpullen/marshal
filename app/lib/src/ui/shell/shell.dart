@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import '../../model/age.dart';
 import '../../model/composer_model.dart';
+import '../../model/factory_store.dart';
+import '../../model/handoff_model.dart';
 import '../../model/new_work_model.dart';
 import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
@@ -7,12 +11,28 @@ import '../../model/inbox_model.dart' as inbox;
 import '../../model/nav_model.dart';
 import '../../model/overview_model.dart' show buildOverview;
 import '../../model/place.dart';
+import '../../model/planning_model.dart';
+import '../../model/project_model.dart';
+import '../../model/pulls_model.dart';
+import '../../model/revision_model.dart';
+import '../../model/run_model.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
+import '../../model/work_item_model.dart'
+    show WorkItemView, WorkItemWorker, threadOfItem;
 import '../inbox/inbox.dart' show Inbox;
+import '../factory/handoff_sheet.dart';
+import '../factory/planning_screen.dart';
+import '../factory/revision_sheet.dart';
+import '../factory/run_screen.dart';
+import '../factory/work_item_screen.dart';
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
+import '../project/project_page.dart';
+import '../pulls/fix_control.dart';
+import '../pulls/merge_control.dart';
+import '../pulls/pulls_place.dart';
 import '../sections/unsaved_guard.dart';
 import '../new_work/new_work_dialog.dart';
 import '../thread/thread_composer.dart';
@@ -271,15 +291,33 @@ class Studio extends StatefulWidget {
     super.key,
     required this.store,
     required this.inbox,
+    this.pulls,
+    this.factory,
     this.read,
     this.threadStore,
     this.composerFor,
     this.newWorkFor,
+    this.planningFor,
+    this.handoffFor,
+    this.runFor,
+    this.answerRunFor,
+    this.projectFor,
     this.initialPlace = const Place.overview(),
   });
 
   final FleetStore store;
   final InboxModel inbox;
+
+  /// The pull requests: their place, their ready count in the sidebar, and
+  /// the one click a failing card offers. Null leaves the place planned, so a
+  /// host that wires no bridge never draws one as working.
+  final PullsModel? pulls;
+
+  /// The work items, when the app holds them: a work item is a thread of its
+  /// own kind, with its stage, its activity and its five tabs (F6 decisions
+  /// 13 and 14). Null leaves a work item's place unbuilt rather than drawing
+  /// an empty thread.
+  final FactoryStore? factory;
 
   /// Reads the fleet: discovery when the app starts, and again when a person
   /// asks.
@@ -298,6 +336,38 @@ class Studio extends StatefulWidget {
   /// `⌘N` without a dialog.
   final NewWorkModel Function(model.ThreadRef thread)? newWorkFor;
 
+  /// Builds a planning thread's model, for a planner a person started (F6
+  /// decision 8). Null leaves the planning place unbuilt rather than drawing
+  /// an empty one.
+  final PlanningModel Function(String host, String plannerID)? planningFor;
+
+  /// Builds the handoff review for a plan (F6 decision 8). Null leaves the one
+  /// action that hands a plan off out, rather than offering a sheet that
+  /// cannot create an item.
+  ///
+  /// It is asynchronous because what the review inherits is the project's own
+  /// settings, read when the person hands the plan off (F6 decision 12).
+  final Future<HandoffModel> Function(
+    model.ThreadRef thread,
+    String plan,
+    String spec,
+  )?
+  handoffFor;
+
+  /// Builds a plan run's model for one agent (F6 decision 11). Null leaves a
+  /// plan run's place unbuilt rather than drawing an empty run.
+  final RunModel Function(String host, String agentID)? runFor;
+
+  /// Answers the question a run stopped on (F6 decision 11). Null leaves a
+  /// run's question as a fact: no action is offered that could not be taken.
+  final Future<void> Function(String host, String agentID, String answer)?
+  answerRunFor;
+
+  /// Builds a project's page model for one host and root (F6 decision 12).
+  /// Null leaves the project place planned, so a host that wires no settings
+  /// never draws an editor that cannot save.
+  final ProjectModel Function(String host, String root)? projectFor;
+
   /// The place a deep link names.
   final Place initialPlace;
 
@@ -313,6 +383,20 @@ class _StudioState extends State<Studio> {
   /// The one guard every place leaving this screen consults: the shell asks
   /// it, and a place that edits watches the models it holds (F7 decision 3).
   final _unsaved = UnsavedGuard();
+
+  /// The planning threads this screen started, by planner id (F6 decision 8).
+  /// A planner is none of the things the fleet lists, so the screen that
+  /// started it is the only one that can name its place.
+  final _planners = <String, model.ThreadRef>{};
+
+  /// The plan runs this screen opened, by agent id (F6 decision 11). A run is
+  /// an agent's session, so the agent id is its identity.
+  final _runs = <String, model.ThreadRef>{};
+
+  /// The digest each run this screen opened carried, by agent id: a run a
+  /// project page lists is drawn from the list's own digest rather than a
+  /// second read.
+  final _runDigests = <String, Map<String, dynamic>>{};
 
   @override
   void initState() {
@@ -346,7 +430,12 @@ class _StudioState extends State<Studio> {
       builder: (context, _) {
         final store = widget.store;
         final place = _place;
-        final nav = buildNavModel(place, store);
+        final nav = buildNavModel(
+          place,
+          store,
+          pullsReady: widget.pulls?.readyCount ?? 0,
+          factory: widget.factory,
+        );
         return Shell(
           nav: nav,
           hosts: store.hosts,
@@ -387,6 +476,7 @@ class _StudioState extends State<Studio> {
         overview: buildOverview(widget.store, widget.inbox),
         now: widget.store.now,
         hosts: widget.store.hosts,
+        pulls: widget.pulls?.views ?? const [],
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
@@ -395,15 +485,108 @@ class _StudioState extends State<Studio> {
     if (place.kind == PlaceKind.inbox) {
       return Inbox(
         asks: widget.inbox.asks,
+        pulls: widget.pulls?.views ?? const [],
         now: widget.store.now,
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
       );
     }
+    if (place.kind == PlaceKind.pulls) {
+      final pulls = widget.pulls;
+      // A host with no pull model has no index to draw: the place says which
+      // phase wires it rather than drawing an empty list (§7).
+      if (pulls == null) return plannedPlace(place, nav);
+      return PullsPlace(
+        groups: pulls.groups,
+        now: widget.store.now,
+        onRetry: _reread,
+        actionsFor: (context, pull) => pullCardActions(
+          context,
+          pull: pull,
+          model: pulls,
+          // Reviewing and opening the source land on the thread: its review
+          // head is where a pull request is read (decision 13).
+          review: _openThread(navigation, pull),
+          openSource: _openThread(navigation, pull),
+        ),
+      );
+    }
+    if (place.kind == PlaceKind.project) {
+      final root = place.id;
+      final build = widget.projectFor;
+      // A host that wires no settings leaves the place planned rather than
+      // drawing an editor whose Save could only fail.
+      if (root == null || build == null) return plannedPlace(place, nav);
+      final host = _hostOfProject(root);
+      return _ProjectPlace(
+        key: ValueKey('project/$host/$root'),
+        root: root,
+        host: host,
+        build: build,
+        factory: widget.factory,
+        store: widget.store,
+        guard: navigation.unsaved,
+        now: widget.store.now,
+        onOpenItem: (item) =>
+            navigation.go(Place(PlaceKind.thread, host: host, id: item.id)),
+        onOpenAgent: (agent) =>
+            navigation.go(Place(PlaceKind.thread, host: host, id: agent.id)),
+        onOpenRun: (run) => _openRun(navigation, host, run),
+        onOpenAutomations: () =>
+            navigation.go(const Place(PlaceKind.automations)),
+      );
+    }
     if (place.kind == PlaceKind.thread) {
       final build = widget.threadStore;
       final thread = _threadRef(place);
+      final factory = widget.factory;
+      if (thread != null && thread.kind == model.ThreadKind.planRun) {
+        final digest = _runDigests[thread.id];
+        final build = widget.runFor;
+        if (build != null || digest != null) {
+          final answerRun = widget.answerRunFor;
+          return _RunPlace(
+            key: ValueKey('run/${thread.host}/${thread.id}'),
+            thread: thread,
+            run: build?.call(thread.host, thread.id),
+            digest: digest,
+            answer: answerRun == null
+                ? null
+                : (words) => answerRun(thread.host, thread.id, words),
+            now: widget.store.now,
+          );
+        }
+      }
+      if (thread != null && thread.planning) {
+        final plan = widget.planningFor?.call(thread.host, thread.id);
+        if (plan != null) {
+          return _PlanningPlace(
+            key: ValueKey('planning/${thread.host}/${thread.id}'),
+            thread: thread,
+            plan: plan,
+            handoffFor: widget.handoffFor,
+            now: widget.store.now,
+            onOpenItem: (id) => navigation.go(
+              Place(PlaceKind.thread, host: thread.host, id: id),
+            ),
+          );
+        }
+      }
+      if (thread != null &&
+          factory != null &&
+          thread.kind == model.ThreadKind.workItem) {
+        return _WorkItemPlace(
+          key: ValueKey('work-item/${thread.host}/${thread.id}'),
+          thread: thread,
+          factory: factory,
+          pulls: widget.pulls,
+          threadStore: build,
+          composerFor: widget.composerFor,
+          now: widget.store.now,
+          onRetry: () => unawaited(factory.refresh(thread.host)),
+        );
+      }
       if (build != null && thread != null) {
         return _ThreadPlace(
           key: ValueKey('${thread.host}/${thread.id}'),
@@ -413,6 +596,15 @@ class _StudioState extends State<Studio> {
           newWorkFor: widget.newWorkFor,
           onThreadStarted: (id) =>
               navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
+          handoffFor: widget.handoffFor,
+          onOpenItem: (id) =>
+              navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
+          onPlannerStarted: (planner) {
+            _rememberPlanner(thread.host, thread.project, planner);
+            navigation.go(
+              Place(PlaceKind.thread, host: thread.host, id: planner.id),
+            );
+          },
           asks: [
             for (final ask in widget.inbox.asks)
               if (ask.thread?.host == thread.host &&
@@ -421,6 +613,7 @@ class _StudioState extends State<Studio> {
           ],
           onAnswer: widget.inbox.answer,
           now: widget.store.now,
+          pulls: widget.pulls,
         );
       }
       return plannedPlace(place, nav);
@@ -428,15 +621,87 @@ class _StudioState extends State<Studio> {
     return plannedPlace(place, nav);
   }
 
-  /// The thread a place names, when the fleet still lists its agent.
+  /// The thread a place names: a planning thread the person started, a work
+  /// item the factory reports, or an agent the fleet still lists. A work item
+  /// and a planner are looked up first, because their ids are their own
+  /// namespaces and no agent can share one.
   model.ThreadRef? _threadRef(Place place) {
     final host = place.host;
     final id = place.id;
     if (host == null || id == null) return null;
+    final planner = _planners[id];
+    if (planner != null && planner.host == host) return planner;
+    final run = _runs[id];
+    if (run != null && run.host == host) return run;
+    final item = widget.factory?.byId(host, id);
+    if (item != null) return threadOfItem(host, item);
     for (final agent in widget.store.agents(host: host)) {
       if (agent.id == id) return model.threadFor(host, agent);
     }
     return null;
+  }
+
+  /// Remembers a planner a person started, so its place resolves to a planning
+  /// thread (F6 decision 8): a planner is none of the things the fleet lists,
+  /// so the screen that started it is the only one that can name it.
+  void _rememberPlanner(String host, String project, StartedPlanner planner) {
+    setState(() {
+      _planners[planner.id] = model.ThreadRef(
+        host: host,
+        id: planner.id,
+        project: planner.projectRoot.isEmpty ? project : planner.projectRoot,
+        title: 'Planning',
+        kind: model.ThreadKind.agent,
+        status: model.ThreadStatus.running,
+        headline: 'Planning in ${planner.workspaceID}',
+        lastActive: widget.store.now,
+        planning: true,
+      );
+    });
+  }
+
+  /// Opens the thread a pull request came from, when the fleet still lists it.
+  /// Null leaves the card's button disabled rather than opening nothing.
+  VoidCallback? _openThread(PlaceNavigation navigation, PullView pull) {
+    final thread = pull.thread;
+    if (thread == null) return null;
+    return () => navigation.go(
+      Place(PlaceKind.thread, host: thread.host, id: thread.id),
+    );
+  }
+
+  /// The host whose fleet lists [root]. A project place carries no host of its
+  /// own, and its page's model needs one client; a project no host lists yet
+  /// is read from the first host there is.
+  String _hostOfProject(String root) {
+    for (final host in widget.store.hosts) {
+      for (final project in widget.store.projects(host: host.name)) {
+        if (project.root == root) return host.name;
+      }
+    }
+    final hosts = widget.store.hosts;
+    return hosts.isEmpty ? 'local' : hosts.first.name;
+  }
+
+  /// Opens a run a project page listed (F6 decision 12): remembers it as a
+  /// plan-run thread and the digest the list carried, so its place draws the
+  /// run's lanes rather than the agent's transcript.
+  void _openRun(PlaceNavigation navigation, String host, ProjectRun run) {
+    setState(() {
+      _runs[run.agentID] = model.ThreadRef(
+        host: host,
+        id: run.agentID,
+        project: run.project,
+        title: run.name.isEmpty ? 'Plan run' : run.name,
+        kind: model.ThreadKind.planRun,
+        status: run.status,
+        headline: run.headline,
+        lastActive: run.at,
+      );
+      final digest = run.digest;
+      if (digest != null) _runDigests[run.agentID] = digest;
+    });
+    navigation.go(Place(PlaceKind.thread, host: host, id: run.agentID));
   }
 }
 
@@ -450,9 +715,13 @@ class _ThreadPlace extends StatefulWidget {
     this.composerFor,
     this.newWorkFor,
     this.onThreadStarted,
+    this.onPlannerStarted,
+    this.handoffFor,
+    this.onOpenItem,
     this.asks = const [],
     this.onAnswer,
     this.now,
+    this.pulls,
   });
 
   final model.ThreadRef thread;
@@ -464,9 +733,25 @@ class _ThreadPlace extends StatefulWidget {
   /// `⌘N` without a dialog.
   final NewWorkModel Function(model.ThreadRef thread)? newWorkFor;
   final void Function(String agentId)? onThreadStarted;
+
+  /// Opens the planning thread a "Plan first" started (F6 decision 8).
+  final void Function(StartedPlanner planner)? onPlannerStarted;
+
+  /// The handoff review's model, and where an approved item opens.
+  final Future<HandoffModel> Function(
+    model.ThreadRef thread,
+    String plan,
+    String spec,
+  )?
+  handoffFor;
+  final void Function(String itemID)? onOpenItem;
   final List<inbox.Ask> asks;
   final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
   final DateTime? now;
+
+  /// The pull requests this thread shipped: the review head or the failing
+  /// card at the top of its conversation (F5 decision 13).
+  final PullsModel? pulls;
 
   @override
   State<_ThreadPlace> createState() => _ThreadPlaceState();
@@ -508,9 +793,38 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
           Navigator.maybePop(context);
           widget.onThreadStarted?.call(agentId);
         },
+        onPlanned: (planner) {
+          Navigator.maybePop(context);
+          widget.onPlannerStarted?.call(planner);
+        },
+        onWorkItem: (prompt) {
+          Navigator.maybePop(context);
+          unawaited(_openHandoff(context, prompt, ''));
+        },
       ),
     );
     model.dispose();
+  }
+
+  /// Opens the handoff review for [plan], and the item it creates.
+  Future<void> _openHandoff(
+    BuildContext context,
+    String plan,
+    String spec,
+  ) async {
+    final build = widget.handoffFor;
+    if (build == null) return;
+    final model = await build(widget.thread, plan, spec);
+    // The project's settings are read before the sheet opens, so the place may
+    // be gone by now; the review is disposed rather than opened on a dead
+    // context.
+    if (!context.mounted) {
+      model.dispose();
+      return;
+    }
+    final item = await showHandoffSheet(context, model);
+    model.dispose();
+    if (item != null) widget.onOpenItem?.call(item);
   }
 
   @override
@@ -523,11 +837,82 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
       asks: widget.asks,
       onAnswer: widget.onAnswer,
       now: widget.now,
+      pull: _pull,
+      pullActions: _pullActions(context),
+      onMerge: _mergeFor(context),
+      onSendBack: _pull == null || widget.pulls == null
+          ? null
+          : () => _sendBack(context),
       onNewWork: widget.newWorkFor == null ? null : () => _openNewWork(context),
       composer: composer == null
           ? null
           : ThreadComposer(model: composer, view: _view),
     );
+  }
+
+  /// The pull request this thread shipped, when it shipped one: the newest, so
+  /// a reopened pull request is the one at the head.
+  PullView? get _pull => widget.pulls?.forThread(widget.thread).firstOrNull;
+
+  /// The failing card's actions: the one click, the caret and the rest.
+  PrActions? _pullActions(BuildContext context) {
+    final pull = _pull;
+    final pulls = widget.pulls;
+    if (pull == null || pulls == null) return null;
+    return pullCardActions(context, pull: pull, model: pulls);
+  }
+
+  /// Merges the pull request, after the confirmation that names it.
+  ///
+  /// A factory item's merge is not offered: it needs the reviewed identity a
+  /// pull record does not carry (F6). The review head draws it disabled.
+  VoidCallback? _mergeFor(BuildContext context) {
+    final pull = _pull;
+    final pulls = widget.pulls;
+    if (pull == null || pulls == null || pull.fromFactoryItem) return null;
+    return () => unawaited(confirmMerge(context, pull: pull, model: pulls));
+  }
+
+  /// Sends the pull request back to this thread's own agent (decision 13).
+  /// The person's words reach a turn in flight as steering, and an idle agent
+  /// as the next thing it is asked to do.
+  Future<void> _sendBack(BuildContext context) async {
+    final pulls = widget.pulls;
+    if (pulls == null) return;
+    final e = Ember.of(context);
+    final controller = TextEditingController();
+    final words = await Sheet.show<String>(
+      context,
+      Sheet(
+        title: 'Send back to the agent',
+        actions: [
+          Btn.primary(
+            'Send it',
+            onTap: () => Navigator.maybePop(context, controller.text.trim()),
+          ),
+        ],
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Field(
+              label: 'What should change?',
+              controller: controller,
+              hint: 'Pin the clock in the fixture rather than widening it',
+            ),
+            const SizedBox(height: Space.s8),
+            Text(
+              'The agent that shipped this pull request reads it in this '
+              'thread.',
+              style: e.small.tint(e.muted),
+            ),
+          ],
+        ),
+      ),
+    );
+    final text = words?.trim() ?? '';
+    controller.dispose();
+    if (text.isEmpty) return;
+    await pulls.sendBack(_pull!, text: text);
   }
 }
 
@@ -543,4 +928,420 @@ class PlaceNavigation {
   /// The shell's one guard. A place watches the models it is editing when it
   /// mounts and drops them when it goes.
   final UnsavedGuard? unsaved;
+}
+
+/// One work item's place: the item as the factory store holds it, with the
+/// asks it waits on and the pull requests it reached.
+///
+/// The place keeps the item current — the store polls — so a stage, an ask and
+/// a card move without the person leaving the thread.
+class _WorkItemPlace extends StatefulWidget {
+  const _WorkItemPlace({
+    super.key,
+    required this.thread,
+    required this.factory,
+    this.pulls,
+    this.threadStore,
+    this.composerFor,
+    this.now,
+    this.onRetry,
+  });
+
+  final model.ThreadRef thread;
+  final FactoryStore factory;
+  final PullsModel? pulls;
+
+  /// The transcript a worker's conversation is read from, and its composer:
+  /// F3's screen, embedded (F6 decision 6).
+  final StackStore Function(model.ThreadRef thread)? threadStore;
+  final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
+  composerFor;
+  final DateTime? now;
+  final VoidCallback? onRetry;
+
+  @override
+  State<_WorkItemPlace> createState() => _WorkItemPlaceState();
+}
+
+class _WorkItemPlaceState extends State<_WorkItemPlace> {
+  /// The bridge's refusal of the last action, in its own words: a conflict is
+  /// not an error the person made, and the action stays available.
+  String? _error;
+
+  /// The worker whose conversation is open in the centre, or null while the
+  /// item's activity is.
+  WorkItemWorker? _worker;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.factory.addListener(_changed);
+  }
+
+  @override
+  void dispose() {
+    widget.factory.removeListener(_changed);
+    super.dispose();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final host = widget.thread.host;
+    final item = widget.factory.byId(host, widget.thread.id);
+    if (item == null) return _missing(context, host);
+    final pulls = widget.pulls?.forThread(widget.thread) ?? const <PullView>[];
+    final view = WorkItemView.of(host, item);
+    final store = widget.factory;
+    final worker = _worker;
+    final build = widget.threadStore;
+    return WorkItemScreen(
+      center: worker == null || build == null
+          ? null
+          : _ThreadPlace(
+              key: ValueKey('worker/${worker.sessionID}'),
+              thread: model.ThreadRef(
+                host: host,
+                id: worker.sessionID,
+                project: item.projectRoot,
+                title: worker.words,
+                kind: model.ThreadKind.agent,
+                status: model.ThreadStatus.running,
+                headline: '',
+                lastActive: widget.now ?? DateTime.now(),
+              ),
+              buildStore: build,
+              composerFor: widget.composerFor,
+              now: widget.now,
+              pulls: widget.pulls,
+            ),
+      onBack: () => setState(() => _worker = null),
+      onOpenWorker: (opened) => setState(() => _worker = opened),
+      onProposeChange: build == null
+          ? null
+          : () => unawaited(_propose(context, host, view)),
+
+      item: view,
+      now: widget.now,
+      pulls: pulls,
+      conflict: _error ?? store.conflictOf(host, item.id),
+      onRetry: widget.onRetry,
+      onApprove: () => _command(() => store.approve(host, item.id)),
+      onAnswer: (answer) => _command(
+        () => store.answerDecision(
+          host,
+          item.id,
+          decisionID: view.decisionID,
+          answer: answer,
+        ),
+      ),
+      onRecover: (choice) => _command(
+        () => store.recover(
+          host,
+          item.id,
+          model: choice.model,
+          fresh: choice.fresh,
+          extraRounds: choice.rounds,
+        ),
+      ),
+      onComplete: () => _command(() => store.complete(host, item.id)),
+      onMergeAndComplete: () => _merge(host, item.id),
+      onReopen: () => _command(() => store.reopen(host, item.id)),
+      onStop: () => _command(() => store.stopItem(host, item.id)),
+      pullActionsFor: widget.pulls == null
+          ? null
+          : (context, pull) =>
+                pullCardActions(context, pull: pull, model: widget.pulls!),
+    );
+  }
+
+  /// Opens the plan-revision sheet: the approved plan against the proposed
+  /// one, and the one action that sends it (F6 decision 6).
+  Future<void> _propose(
+    BuildContext context,
+    String host,
+    WorkItemView view,
+  ) async {
+    final model = RevisionModel(
+      approved: view.plan,
+      spec: view.spec,
+      baseRevision: view.revision,
+      baseHash: view.baseHash,
+      submit: (plan) async {
+        await widget.factory.proposeRevision(
+          host,
+          view.id,
+          plan: plan,
+          spec: view.spec,
+          baseRevision: view.revision,
+          baseHash: view.baseHash,
+        );
+      },
+    );
+    await showRevisionSheet(context, model);
+    model.dispose();
+  }
+
+  /// Runs one command, keeping the bridge's refusal for the thread to say and
+  /// leaving the action where it was, so the person can decide again.
+  Future<void> _command(Future<Object?> Function() action) async {
+    try {
+      await action();
+      if (mounted) setState(() => _error = null);
+    } catch (error) {
+      if (mounted) setState(() => _error = describeFailure(error));
+    }
+  }
+
+  /// Merges the reviewed pull request and completes the item. The identity is
+  /// the item's own record of the reviewed pull request, resolved inside the
+  /// store, so nothing the surface assembled can be merged (F6 decision 5).
+  Future<void> _merge(String host, String id) async {
+    await _command(() => widget.factory.mergeAndComplete(host, id));
+  }
+
+  /// The item until the store has it: loading while the first read is in
+  /// flight, and the bridge's own words when the read failed (§7).
+  Widget _missing(BuildContext context, String host) {
+    final retry = StateAction(
+      'Read the factory again',
+      onTap: widget.onRetry ?? () {},
+    );
+    final failure = widget.factory.failure(host);
+    return PageBody(
+      title: widget.thread.title,
+      children: [
+        if (failure == null)
+          const StateMessage.loading(lines: 4)
+        else
+          StateMessage.error(
+            message: 'The work item could not be read.',
+            retry: retry,
+          ),
+      ],
+    );
+  }
+}
+
+/// One planning thread's place (F6 decision 8): the planner's conversation,
+/// the requests it is parked on, and the plan its last snapshot froze.
+///
+/// It owns the model it was built with, so leaving the place lets the planner
+/// alone rather than leaving its reader running.
+class _PlanningPlace extends StatefulWidget {
+  const _PlanningPlace({
+    super.key,
+    required this.thread,
+    required this.plan,
+    this.handoffFor,
+    this.now,
+    this.onOpenItem,
+  });
+
+  final model.ThreadRef thread;
+  final PlanningModel plan;
+  final Future<HandoffModel> Function(
+    model.ThreadRef thread,
+    String plan,
+    String spec,
+  )?
+  handoffFor;
+  final DateTime? now;
+  final void Function(String itemID)? onOpenItem;
+
+  @override
+  State<_PlanningPlace> createState() => _PlanningPlaceState();
+}
+
+class _PlanningPlaceState extends State<_PlanningPlace> {
+  @override
+  void dispose() {
+    widget.plan.dispose();
+    super.dispose();
+  }
+
+  /// Opens the handoff review for the plan the last snapshot froze.
+  Future<void> _handOff(BuildContext context) async {
+    final build = widget.handoffFor;
+    if (build == null) return;
+    final latest = widget.plan.latest;
+    final model = await build(
+      widget.thread,
+      latest?.plan ?? '',
+      latest?.spec ?? '',
+    );
+    // What the review inherits is read before the sheet opens, so the place
+    // may be gone by now; the review is disposed rather than opened on a dead
+    // context.
+    if (!context.mounted) {
+      model.dispose();
+      return;
+    }
+    final item = await showHandoffSheet(context, model);
+    model.dispose();
+    if (item != null) widget.onOpenItem?.call(item);
+  }
+
+  @override
+  Widget build(BuildContext context) => PlanningScreen(
+    plan: widget.plan,
+    title: widget.thread.title,
+    subtitle: widget.thread.headline,
+    now: widget.now,
+    onRetry: () => unawaited(widget.plan.refresh()),
+    onHandToFactory: widget.handoffFor == null
+        ? null
+        : () => unawaited(_handOff(context)),
+  );
+}
+
+/// One project's place (F6 decision 12): its work, its automations, its
+/// defaults and its health.
+///
+/// It owns the page's model, built from the app's seam and disposed when the
+/// place goes, and it reads the board's items from the one factory store that
+/// polls them (F6 decision 14) rather than fetching a list of its own.
+class _ProjectPlace extends StatefulWidget {
+  const _ProjectPlace({
+    super.key,
+    required this.root,
+    required this.host,
+    required this.build,
+    required this.store,
+    this.factory,
+    this.guard,
+    this.now,
+    this.onOpenItem,
+    this.onOpenAgent,
+    this.onOpenRun,
+    this.onOpenAutomations,
+  });
+
+  final String root;
+  final String host;
+  final ProjectModel Function(String host, String root) build;
+  final FleetStore store;
+  final FactoryStore? factory;
+  final UnsavedGuard? guard;
+  final DateTime? now;
+  final void Function(WorkItemView item)? onOpenItem;
+  final void Function(model.ThreadRef agent)? onOpenAgent;
+  final void Function(ProjectRun run)? onOpenRun;
+  final VoidCallback? onOpenAutomations;
+
+  @override
+  State<_ProjectPlace> createState() => _ProjectPlaceState();
+}
+
+class _ProjectPlaceState extends State<_ProjectPlace> {
+  /// The page's model: built once for this project, and disposed with it.
+  late final ProjectModel _model = widget.build(widget.host, widget.root);
+
+  @override
+  void initState() {
+    super.initState();
+    widget.factory?.addListener(_changed);
+    widget.store.addListener(_changed);
+  }
+
+  @override
+  void dispose() {
+    widget.store.removeListener(_changed);
+    widget.factory?.removeListener(_changed);
+    _model.dispose();
+    super.dispose();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final factory = widget.factory;
+    // The board draws views of the items the one factory store holds (F6
+    // decision 14).
+    final items = [
+      for (final item
+          in factory?.items(host: widget.host, projectRoot: widget.root) ??
+              const [])
+        WorkItemView.of(widget.host, item),
+    ];
+    // A factory worker is not an independent agent (F6 decision 13).
+    final workers = factory?.workerAgentIds ?? const <String>{};
+    final agents = [
+      for (final agent in widget.store.agents(host: widget.host))
+        if (agent.project == widget.root && !workers.contains(agent.id))
+          model.threadFor(widget.host, agent),
+    ];
+    return ProjectPage(
+      model: _model,
+      items: items,
+      agents: agents,
+      guard: widget.guard,
+      now: widget.now,
+      onOpenItem: widget.onOpenItem,
+      onOpenAgent: widget.onOpenAgent,
+      onOpenRun: widget.onOpenRun,
+      onOpenAutomations: widget.onOpenAutomations,
+    );
+  }
+}
+
+/// One plan run's place (F6 decision 11): the run's tasks as lanes, graph or
+/// timeline, with the live step beneath and the question it stopped on pinned
+/// above.
+///
+/// It takes either a model the app built ([run]) or the digest a project page
+/// listed ([digest]), which it owns and disposes when the place goes.
+class _RunPlace extends StatefulWidget {
+  const _RunPlace({
+    super.key,
+    required this.thread,
+    this.run,
+    this.digest,
+    this.answer,
+    this.now,
+  }) : assert(
+         run != null || digest != null,
+         'a run place needs a model or a digest',
+       );
+
+  final model.ThreadRef thread;
+  final RunModel? run;
+  final Map<String, dynamic>? digest;
+
+  /// Answers the question the run stopped on, when the app can post one.
+  final Future<void> Function(String answer)? answer;
+  final DateTime? now;
+
+  @override
+  State<_RunPlace> createState() => _RunPlaceState();
+}
+
+class _RunPlaceState extends State<_RunPlace> {
+  /// The model this place draws: the one it was given, or the one it built
+  /// from the digest. It disposes only what it built.
+  late final RunModel _model =
+      widget.run ??
+      RunModel.fromDigest(
+        widget.thread.id,
+        widget.digest!,
+        answer: widget.answer,
+      );
+
+  bool get _owned => widget.run == null;
+
+  @override
+  void dispose() {
+    if (_owned) _model.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      RunScreen(model: _model, now: widget.now);
 }

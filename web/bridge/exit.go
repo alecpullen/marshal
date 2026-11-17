@@ -111,6 +111,9 @@ func (f *Fleet) Exit(ctx context.Context, agentID string, opts ExitOptions) (Exi
 		// A push straight to a branch has no pull request to look for.
 	} else if pr, err := f.createPR(ctx, a, branch, verify); err == nil {
 		a.PRUrl = pr.URL
+		// The record is kept whatever happens afterwards: the pull request
+		// exists on the forge, and the index is where a person finds it.
+		f.recordExitPull(a, branch, pr)
 	} else {
 		if !errors.Is(err, errNoForge) {
 			slog.Default().Warn("webbridge: create pull request failed; falling back to the pushed URL",

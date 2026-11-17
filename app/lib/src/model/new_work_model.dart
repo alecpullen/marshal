@@ -9,6 +9,32 @@ import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
 import '../client/transport.dart';
 
+/// What a "Plan first" started, in the terms a screen needs: the planner's id,
+/// the project it plans in, and the workspace it owns (F6 decision 8).
+///
+/// It is a value of this directory rather than the bridge's own
+/// [PlannerView], because `ui/` reads `model/` and never `client/` (F1's
+/// boundary).
+@immutable
+class StartedPlanner {
+  const StartedPlanner({
+    required this.id,
+    required this.projectRoot,
+    required this.workspaceID,
+  });
+
+  /// Reads the planner the bridge started.
+  factory StartedPlanner.of(PlannerView view) => StartedPlanner(
+    id: view.id,
+    projectRoot: view.projectRoot,
+    workspaceID: view.workspaceID,
+  );
+
+  final String id;
+  final String projectRoot;
+  final String workspaceID;
+}
+
 /// What a new work item may start (spec decision 11). Only an agent is built
 /// in this phase; a "Plan first" run and a work item are drawn in the planned
 /// state, naming F6, so nothing pretends to work.
@@ -21,8 +47,10 @@ enum NewWorkKind {
 
   final String word;
 
-  /// Whether this phase can start it. The other two arrive with F6.
-  bool get planned => this != NewWorkKind.agent;
+  /// Whether this phase can start it. All three do: an agent spawns, "Plan
+  /// first" starts a planning thread, and "Work item" opens the handoff
+  /// review (F6 decisions 8 and 9).
+  bool get planned => false;
 }
 
 /// The choices the dialog opens with: the project's root and the workspace it
@@ -133,6 +161,8 @@ class NewWorkModel extends ChangeNotifier {
     required Future<List<RepoIssue>> Function(String project) issues,
     required Future<List<Recipe>> Function() recipes,
     required Future<SpawnResult> Function(SpawnRequest request) spawn,
+    Future<PlannerView> Function(PlannerCreateRequest request)? plan,
+    String? repoId,
     bool issuesFromRepo = false,
     Map<String, List<String>> options = const {},
     Map<String, String> notes = const {},
@@ -141,6 +171,8 @@ class NewWorkModel extends ChangeNotifier {
        _issues = issues,
        _recipes = recipes,
        _spawn = spawn,
+       _plan = plan,
+       repoID = repoId,
        _issuesFromRepo = issuesFromRepo,
        _options = options,
        _notes = notes,
@@ -224,6 +256,16 @@ class NewWorkModel extends ChangeNotifier {
   final Future<List<Recipe>> Function() _recipes;
   final Future<SpawnResult> Function(SpawnRequest request) _spawn;
 
+  /// Starts a planner instead of an agent, for "Plan first" (F6 decision 8).
+  /// Null leaves the kind planned: a host that cannot start a planner never
+  /// offers to.
+  final Future<PlannerView> Function(PlannerCreateRequest request)? _plan;
+
+  /// The repository a planner is started against. The planner routes require
+  /// one, and no route names the repo of a project root yet, so a project the
+  /// caller could not name a repo for cannot start a planning thread.
+  final String? repoID;
+
   final Map<String, String> _choices;
 
   /// What a caller says each chip may be set to, apart from the value it
@@ -251,6 +293,7 @@ class NewWorkModel extends ChangeNotifier {
   bool _loading = false;
   String? _failure;
   SpawnResult? _started;
+  PlannerView? _startedPlanner;
 
   /// What the dialog will start.
   NewWorkKind get kind => _kind;
@@ -308,6 +351,10 @@ class NewWorkModel extends ChangeNotifier {
 
   /// The agent the last [start] made, if it made one.
   SpawnResult? get started => _started;
+
+  /// The planner the last [start] made, for a "Plan first" (F6 decision 8).
+  StartedPlanner? get startedPlanner =>
+      _startedPlanner == null ? null : StartedPlanner.of(_startedPlanner!);
 
   /// Whether Start can post: a prompt, and a kind this phase can start.
   bool get canStart => _prompt.trim().isNotEmpty && !_kind.planned;
@@ -380,8 +427,23 @@ class NewWorkModel extends ChangeNotifier {
   /// when one was chosen (never the placeholder for the project's own
   /// default), and the workspace choice as the `isolated` flag the bridge
   /// reads — not as a made-up workspace name.
+  ///
+  /// "Plan first" starts a planner instead (F6 decision 8): the prompt becomes
+  /// the planner's first turn, and the thread the dialog opens is a planning
+  /// thread.
   Future<void> start() async {
     if (!canStart) return;
+    _failure = null;
+    notifyListeners();
+    if (_kind == NewWorkKind.planFirst) {
+      await _startPlanning();
+      return;
+    }
+    if (_kind == NewWorkKind.workItem) {
+      // A work item opens the handoff review (F6 decision 9): the dialog shows
+      // the sheet, and nothing is spawned here.
+      return;
+    }
     final label = _choices['Permission mode']!;
     final mode = _modeWire(label);
     if (mode == null) {
@@ -391,8 +453,6 @@ class NewWorkModel extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    _failure = null;
-    notifyListeners();
     try {
       final baseBranch = _choices['Base branch'];
       _started = await _spawn(
@@ -404,6 +464,34 @@ class NewWorkModel extends ChangeNotifier {
               ? null
               : baseBranch,
           isolated: _choices['Workspace'] == NewWorkDefaults.isolatedWorktree,
+        ),
+      );
+    } catch (error) {
+      _failure = '$error';
+    }
+    notifyListeners();
+  }
+
+  /// Starts the planner a "Plan first" asks for, and keeps the one it made.
+  ///
+  /// The planner routes require a registered repository, so a project whose
+  /// repo this dialog was not told fails here in the bridge's words rather
+  /// than starting something that cannot plan.
+  Future<void> _startPlanning() async {
+    final plan = _plan;
+    if (plan == null) {
+      _failure = 'This project cannot start a planner yet.';
+      notifyListeners();
+      return;
+    }
+    try {
+      _startedPlanner = await plan(
+        PlannerCreateRequest(
+          projectRoot: _choices['Project']!,
+          repoID: repoID ?? '',
+          mode: _choices['Permission mode'] == 'Ask'
+              ? 'default'
+              : 'bypassPermissions',
         ),
       );
     } catch (error) {

@@ -1,3 +1,4 @@
+import 'package:marshal_app/src/client/contract.g.dart' as contract;
 import 'package:marshal_app/src/client/contract.g.dart'
     show
         Binding,
@@ -21,6 +22,10 @@ import 'package:marshal_app/src/client/contract.g.dart'
         NetHostRow,
         Preset,
         ProviderView,
+        PullCheck,
+        PullOrigin,
+        PullRecord,
+        PullState,
         Recipe,
         Repo,
         Schedule,
@@ -59,10 +64,13 @@ import 'package:marshal_app/src/model/files_model.dart';
 import 'package:marshal_app/src/model/inspect_model.dart';
 import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/preview_model.dart';
+import 'package:marshal_app/src/model/pulls_model.dart';
 import 'package:marshal_app/src/model/terminal_session.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/place.dart';
+import 'package:marshal_app/src/model/planning_model.dart';
+import 'package:marshal_app/src/model/run_model.dart';
 import 'package:marshal_app/src/model/recipes_model.dart';
 import 'package:marshal_app/src/model/schedules_model.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
@@ -72,6 +80,7 @@ import 'package:marshal_app/src/model/usage_model.dart';
 import 'package:marshal_app/src/model/notifications_model.dart';
 import 'package:marshal_app/src/model/access_model.dart';
 import 'package:marshal_app/src/model/watches_model.dart';
+import 'package:marshal_app/src/model/work_item_model.dart' as wmodel;
 import 'package:marshal_app/src/ui/automations/automations_place.dart';
 import 'package:marshal_app/src/ui/automations/bots_tab.dart';
 import 'package:marshal_app/src/ui/automations/recipes_tab.dart';
@@ -104,9 +113,19 @@ import 'package:marshal_app/src/ui/inspector/preview_tab.dart';
 import 'package:marshal_app/src/ui/inspector/terminal_tab.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/overview/overview.dart';
+import 'package:marshal_app/src/ui/project/project_page.dart';
+import 'package:marshal_app/src/ui/pulls/pulls_place.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
+import 'package:marshal_app/src/ui/factory/planning_screen.dart';
+import 'package:marshal_app/src/ui/factory/run_screen.dart';
+import 'package:marshal_app/src/ui/factory/work_item_screen.dart';
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
+import 'package:marshal_app/src/client/bridge_client.dart'
+    show ProjectSettingsVersion;
+import 'package:marshal_app/src/model/project_model.dart';
+
+import '../model/support.dart' show agent, factoryItem;
 
 /// One screen the enforcement tests pump: its ready state with fixture data,
 /// and one case for each §7 state it handles.
@@ -202,8 +221,14 @@ NavModel shellNavFor(Place place) => NavModel(
       count: 3,
       active: place.kind == PlaceKind.inbox,
     ),
+    NavPlace(
+      kind: PlaceKind.pulls,
+      label: 'Pull requests',
+      // F5: the place exists, so its row opens it and carries the ready count.
+      count: 1,
+      active: place.kind == PlaceKind.pulls,
+    ),
     for (final kind in const [
-      PlaceKind.pulls,
       PlaceKind.automations,
       PlaceKind.library,
       PlaceKind.settings,
@@ -211,7 +236,6 @@ NavModel shellNavFor(Place place) => NavModel(
       NavPlace(
         kind: kind,
         label: switch (kind) {
-          PlaceKind.pulls => 'Pull requests',
           PlaceKind.automations => 'Automations',
           PlaceKind.library => 'Library',
           _ => 'Settings',
@@ -353,6 +377,19 @@ Widget _inbox({StateKind? state}) => Inbox(
     ),
   ],
   now: shellNow,
+  pulls: [
+    _pull(number: 131, title: 'Quiet capture mode', group: PullGroup.ready),
+    _pull(
+      number: 132,
+      title: 'Fix flaky calendar test',
+      group: PullGroup.failing,
+      checkSummary: '1 failing: unit',
+      checks: const [
+        PullCheckView('build', PullCheckState.passed),
+        PullCheckView('unit', PullCheckState.failed),
+      ],
+    ),
+  ],
   state: state,
   onRetry: () {},
   onSelect: (_) {},
@@ -363,6 +400,19 @@ Widget _overview({StateKind? state}) => Overview(
   overview: _overviewModel(),
   now: shellNow,
   hosts: shellHosts,
+  pulls: [
+    _pull(number: 131, title: 'Quiet capture mode', group: PullGroup.ready),
+    _pull(
+      number: 132,
+      title: 'Fix flaky calendar test',
+      group: PullGroup.failing,
+      checkSummary: '1 failing: unit',
+      checks: const [
+        PullCheckView('build', PullCheckState.passed),
+        PullCheckView('unit', PullCheckState.failed),
+      ],
+    ),
+  ],
   automations: [
     TrippedWatch(
       name: 'the gate',
@@ -939,6 +989,144 @@ final _daemonInfo = DaemonInfo(
   children: const [],
 );
 
+/// One pull request the enforcement tests draw: a record and the view a card
+/// reads, so the place and the card are pumped together.
+PullView _pull({
+  required int number,
+  required String title,
+  required PullGroup group,
+  String checkSummary = '2 of 2 checks passed',
+  List<PullCheckView> checks = const [
+    PullCheckView('build', PullCheckState.passed),
+    PullCheckView('unit', PullCheckState.passed),
+  ],
+  String? failureTail,
+  String? report,
+  bool draft = false,
+  bool sending = false,
+  String? error,
+}) => PullView(
+  record: PullRecord(
+    id: 'acme/widgets#$number',
+    repoID: 'acme/widgets',
+    projectRoot: '/home/u/marshal',
+    number: number,
+    url: 'https://forge.example/acme/widgets/pull/$number',
+    title: title,
+    headRef: 'agent/quiet-capture',
+    baseRef: 'main',
+    headSHA: 'a1b2c3d4',
+    draft: draft,
+    additions: 412,
+    deletions: 96,
+    origin: PullOrigin.pullOriginAgent,
+    agentID: 'a-1',
+    state: switch (group) {
+      PullGroup.ready => PullState.pullReady,
+      PullGroup.failing => PullState.pullFailing,
+      PullGroup.beingFixed => PullState.pullBeingFixed,
+      PullGroup.inProgress => PullState.pullInProgress,
+      PullGroup.unavailable => PullState.pullChecksUnavailable,
+    },
+    checks: [
+      for (final check in checks)
+        PullCheck(name: check.name, state: _wireStateOf(check.state)),
+    ],
+    reviews: '2 reviews passed',
+    report: report,
+    observedAt: shellNow.millisecondsSinceEpoch,
+    updatedAt: shellNow.millisecondsSinceEpoch - 26 * 60 * 1000,
+  ),
+  thread: _shellThread('a-1', 'Quiet capture mode', model.ThreadStatus.ready),
+  group: group,
+  checkSummary: checkSummary,
+  checks: checks,
+  failureTail: failureTail,
+  sending: sending,
+  error: error,
+);
+
+/// The wire check state a fixture's check state stands for. The kit's
+/// `CheckState` is the drawn one, so the contract's is reached through its
+/// prefix.
+contract.CheckState _wireStateOf(PullCheckState state) => switch (state) {
+  PullCheckState.passed => contract.CheckState.checkPassed,
+  PullCheckState.failed => contract.CheckState.checkFailed,
+  PullCheckState.running => contract.CheckState.checkRunning,
+  PullCheckState.pending => contract.CheckState.checkPending,
+};
+
+/// The pull requests the place's fixture lists: one in every group.
+Map<PullGroup, List<PullView>> _pullGroups() => {
+  PullGroup.ready: [
+    _pull(
+      number: 118,
+      title: 'CI-first change review',
+      group: PullGroup.ready,
+      checkSummary: '2 of 2 checks passed',
+    ),
+  ],
+  PullGroup.failing: [
+    _pull(
+      number: 123,
+      title: 'Voice planning: quiet capture mode',
+      group: PullGroup.failing,
+      checkSummary: '1 failing: unit',
+      checks: const [
+        PullCheckView('build', PullCheckState.passed),
+        PullCheckView('unit', PullCheckState.failed),
+      ],
+      failureTail: '--- FAIL: TestScriptedRecorderQuietMode (4.21s)',
+    ),
+  ],
+  PullGroup.beingFixed: [
+    _pull(
+      number: 122,
+      title: 'Fix flaky calendar test',
+      group: PullGroup.beingFixed,
+      checkSummary: '1 failing: test',
+      checks: const [
+        PullCheckView('build', PullCheckState.passed),
+        PullCheckView('test', PullCheckState.failed),
+      ],
+    ),
+  ],
+  PullGroup.inProgress: [
+    _pull(
+      number: 124,
+      title: 'P6 plan 4: daemon upgrade',
+      group: PullGroup.inProgress,
+      checkSummary: '1 of 3 checks passed, the rest running',
+      checks: const [
+        PullCheckView('build', PullCheckState.passed),
+        PullCheckView('test', PullCheckState.running),
+        PullCheckView('lint', PullCheckState.pending),
+      ],
+      draft: true,
+    ),
+  ],
+  PullGroup.unavailable: [
+    _pull(
+      number: 125,
+      title: 'Release config: sign the binaries',
+      group: PullGroup.unavailable,
+      checkSummary:
+          'Checks unavailable: the credential is an SSH key, which cannot '
+          'call the API',
+      checks: const [],
+    ),
+  ],
+};
+
+/// The Pull requests place with its fixture data.
+Widget _pullsPlace({StateKind? state}) => PullsPlace(
+  groups: _pullGroups(),
+  now: shellNow,
+  state: state,
+  onRetry: () {},
+  actionsFor: (context, pull) => const PrActions(),
+);
+
 /// The registry of screens. F0 has one, the gallery; each later phase adds
 /// its screens here with fixture data, and `tooltips_test.dart`,
 /// `states_test.dart` and `overflow_test.dart` then hold them to the design
@@ -980,6 +1168,68 @@ final screens = <ScreenCase>[
     ready: () => _overview(),
     states: {
       for (final kind in requiredStates) kind: () => _overview(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'pull requests',
+    ready: () => _pullsPlace(),
+    states: {
+      for (final kind in requiredStates) kind: () => _pullsPlace(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'work item',
+    ready: () => _workItemScreen(),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _workItemScreen(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'planning',
+    ready: () => _planningScreen(),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _planningScreen(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'plan run',
+    ready: () => _runScreen(),
+    states: {
+      for (final kind in requiredStates) kind: () => _runScreen(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'project · work',
+    ready: () => _projectScreen(),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _projectScreen(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'project · automations',
+    ready: () => _projectScreen(tab: 1),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _projectScreen(tab: 1, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'project · defaults',
+    ready: () => _projectScreen(tab: 2),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _projectScreen(tab: 2, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'project · health',
+    ready: () => _projectScreen(tab: 3),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _projectScreen(tab: 3, state: kind),
     },
   ),
   ScreenCase(
@@ -1152,6 +1402,14 @@ final screens = <ScreenCase>[
     states: {
       for (final kind in requiredStates)
         kind: () => _threadScreen(state: kind, inspector: _inspectorState()),
+    },
+  ),
+  ScreenCase(
+    name: 'thread with a review head',
+    ready: () => _threadScreen(pull: _threadPull()),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _threadScreen(state: kind, pull: _threadPull()),
     },
   ),
   ScreenCase(
@@ -1381,11 +1639,426 @@ StackSnapshot _threadSnapshot() => StackSnapshot(
   ],
 );
 
-Widget _threadScreen({StateKind? state, InspectorState? inspector}) =>
-    ThreadScreen(
-      thread: _threadRef,
-      store: StackStore.seeded(_threadSnapshot()),
-      view: ThreadViewState(),
-      inspector: inspector,
-      state: state,
-    );
+/// The pull request the review-head case draws: a ready one from the thread
+/// the case shows.
+PullView _threadPull() => _pull(
+  number: 131,
+  title: 'Quiet capture mode',
+  group: PullGroup.ready,
+  checkSummary: '2 of 2 checks passed',
+  report: 'The clock crossed midnight in the test, so it is pinned now.',
+);
+
+Widget _threadScreen({
+  StateKind? state,
+  InspectorState? inspector,
+  PullView? pull,
+}) => ThreadScreen(
+  thread: _threadRef,
+  store: StackStore.seeded(_threadSnapshot()),
+  view: ThreadViewState(),
+  inspector: inspector,
+  pull: pull,
+  state: state,
+);
+
+/// One work item as the enforcement tests pump it: a decision pending, one
+/// worker, a round with a passing check and a review finding, and its history.
+contract.FactoryItem _workItem() => contract.FactoryItem.fromJson({
+  'id': 'item-8',
+  'title': 'Work item thread',
+  'state': 'needs_input',
+  'stage': 'implement',
+  'repoId': 'repo-1',
+  'projectRoot': '/home/u/alpha',
+  'hostId': 'local',
+  'branch': 'factory/item-8',
+  'baseSha': 'base-1',
+  'version': 4,
+  'draft': {
+    'requestId': 'req-1',
+    'title': 'Work item thread',
+    'plan': '## Task 1\nRead the item.\n## Task 2\nApprove it.\n',
+    'spec': 'Ship the work item thread.',
+    'config': {
+      'repoId': 'repo-1',
+      'projectRoot': '/home/u/alpha',
+      'hostId': 'local',
+      'targetBranch': 'main',
+      'workspace': '',
+      'native': true,
+      'implementerRouting': null,
+      'reviewerRouting': null,
+      'reviewerInstructions': '',
+      'implementerAuto': true,
+      'expectedChecks': <Object?>[],
+      'noRequiredCiAcknowledged': true,
+      'maxRounds': 3,
+      'ciPollSeconds': 30,
+      'ciWaitSeconds': 900,
+    },
+  },
+  'approvals': <Object?>[],
+  'grants': <Object?>[],
+  'rounds': <Object?>[
+    {
+      'number': 1,
+      'approvalRevision': 1,
+      'implementEffectId': 'effect-implementer',
+      'baseSha': 'base-1',
+      'headSha': 'head-1',
+      'treeSha': 'tree-1',
+      'ci': {
+        'headSha': 'head-1',
+        'checks': <Object?>[
+          {
+            'key': {'kind': 'check_run', 'name': 'test', 'appId': 7},
+            'id': 'check-test',
+            'sha': 'head-1',
+            'status': 'completed',
+            'conclusion': 'success',
+            'url': '',
+            'logTail': '',
+            'observedAt': '2026-11-17T04:00:00Z',
+          },
+        ],
+        'complete': true,
+        'observedAt': '2026-11-17T04:00:00Z',
+      },
+      'implementation': null,
+      'review': {
+        'operationId': 'effect-reviewer',
+        'outcome': 'approved',
+        'summary': 'One finding.',
+        'question': '',
+        'reason': '',
+        'baseSha': 'base-1',
+        'headSha': 'head-1',
+        'inputsAccessible': true,
+        'findings': <Object?>[
+          {
+            'severity': 'minor',
+            'path': 'app/lib/src/ui/factory/work_item_screen.dart',
+            'line': 42,
+            'title': 'Name the stage in words',
+          },
+        ],
+      },
+      'startedAt': '2026-11-17T03:50:00Z',
+      'finishedAt': '2026-11-17T04:00:00Z',
+    },
+  ],
+  'workers': <Object?>[
+    {
+      'agentId': 'agent-imp',
+      'sessionId': 'sess-imp',
+      'role': 'implementer',
+      'spawnEffectId': 'effect-implementer',
+      'parked': false,
+      'subagents': {'enabled': false, 'concurrency': 0},
+    },
+  ],
+  'prs': <Object?>[],
+  'effects': <Object?>[],
+  'decision': {
+    'id': 'decision-1',
+    'kind': 'scope',
+    'question': 'Which inspection does the inspector show?',
+    'reason': 'the plan names both',
+    'effectId': 'effect-implementer',
+    'createdAt': '2026-11-17T04:05:00Z',
+  },
+  'history': <Object?>[
+    {
+      'sequence': 1,
+      'at': '2026-11-17T03:40:00Z',
+      'kind': 'created',
+      'message': 'the draft was created',
+      'effectId': '',
+    },
+    {
+      'sequence': 2,
+      'at': '2026-11-17T03:50:00Z',
+      'kind': 'implement_started',
+      'message': 'the implementer started',
+      'effectId': 'effect-implementer',
+    },
+  ],
+  'createdAt': '2026-11-17T03:40:00Z',
+  'approvedAt': '2026-11-17T03:45:00Z',
+  'updatedAt': '2026-11-17T04:05:00Z',
+});
+
+/// The work item's thread, or one of its §7 states.
+Widget _workItemScreen({StateKind? state}) => WorkItemScreen(
+  item: wmodel.WorkItemView.of('local', _workItem()),
+  state: state,
+  now: shellNow,
+);
+
+/// A planner whose routes answer from the fixture: one journaled turn, one
+/// question waiting on a person, and one frozen snapshot.
+PlanningModel _planningModel() => PlanningModel(
+  plannerID: 'p-1',
+  events: (after) async => [
+    contract.PlannerEvent(
+      sequence: 1,
+      kind: 'planner.started',
+      data: const {'mode': 'bypassPermissions', 'workspaceId': 'w-1'},
+    ),
+    contract.PlannerEvent(
+      sequence: 2,
+      kind: 'turn.text',
+      data: const {'text': 'I read the intake path. The plan has two tasks.'},
+    ),
+    contract.PlannerEvent(
+      sequence: 3,
+      kind: 'turn.question',
+      data: const {
+        'requestId': 'req-1',
+        'method': 'session/request_question',
+        'params': {
+          'questions': [
+            {'question': 'Should the inspector dock or open as a sheet?'},
+          ],
+        },
+      },
+    ),
+  ],
+  promptPlanner: (request) async => contract.PlannerTurnReply(
+    requestID: request.requestID,
+    state: 'dispatched',
+  ),
+  cancelPlanner: () async {},
+  answerPlanner: (requestID, response) async {},
+  capture: (request) async => contract.PlannerSnapshotReply(
+    id: 'snap-1',
+    sha256: '9f2c1a55',
+    baseCommit: 'base-1',
+    artifacts: [
+      contract.PlannerSnapshotArtifact(
+        kind: 'plan',
+        content: '## Task 1\nRead the item.\n## Task 2\nApprove it.\n',
+        sha256: 'a1',
+      ),
+      contract.PlannerSnapshotArtifact(
+        kind: 'spec',
+        content: 'Ship the work item thread.',
+        sha256: 'a2',
+      ),
+    ],
+    files: const [],
+    createdAt: '2026-11-17T04:00:00Z',
+    rejected: const [],
+  ),
+);
+
+/// A plan run: two tasks, the first passed with a repair round, the second
+/// running, and a question waiting on a person.
+RunModel _runModel() => RunModel(
+  agentID: 'a-1',
+  run: contract.SDDRun.fromJson({
+    'active': true,
+    'planName': 'F6 plan 2',
+    'branch': 'sdd/run-1',
+    'totalTasks': 2,
+    'doneTasks': 1,
+    'currentTask': 2,
+    'phase': 'verify',
+    'detail': 'go test ./... is running',
+    'fixRound': 0,
+    'maxFixRounds': 3,
+    'tokensUsed': 12000,
+    'tokensMax': 200000,
+    'finished': false,
+    'succeeded': false,
+    'startedAt': 1763351900000,
+    'phaseStartedAt': 1763352000000,
+    'tasks': [
+      {
+        'n': 1,
+        'title': 'Read the item',
+        'dependsOn': <int>[],
+        'status': 'done',
+        'startedAt': 1763351900000,
+        'endedAt': 1763351990000,
+        'fixRounds': 1,
+        'commit': {'base': 'base-1', 'head': 'head-1'},
+        'stages': [
+          {'name': 'implement', 'state': 'done'},
+          {'name': 'verify', 'state': 'done', 'detail': 'go test ./... passed'},
+          {'name': 'review', 'state': 'done'},
+          {'name': 'commit', 'state': 'done'},
+        ],
+      },
+      {
+        'n': 2,
+        'title': 'Approve it',
+        'dependsOn': [1],
+        'status': 'active',
+        'startedAt': 1763352000000,
+        'fixRounds': 0,
+        'stages': [
+          {'name': 'implement', 'state': 'active'},
+        ],
+      },
+    ],
+    'gate': {
+      'taskN': 2,
+      'question': 'Should the fixtures be regenerated in the same commit?',
+    },
+  }),
+  answer: (answer) async {},
+);
+
+/// The plan run, or one of its §7 states.
+Widget _runScreen({StateKind? state}) =>
+    RunScreen(model: _runModel(), state: state, now: shellNow);
+
+/// The planning thread, or one of its §7 states.
+Widget _planningScreen({StateKind? state}) => PlanningScreen(
+  plan: _planningModel(),
+  title: 'Planning',
+  subtitle: 'Permissive · planning in w-1',
+  state: state,
+  now: shellNow,
+  onHandToFactory: () {},
+);
+
+/// One project's page state as the enforcement tests pump it: settings with an
+/// inherited factory role, a health report, one plan run and a discovery report
+/// the person can ask for.
+ProjectModel _projectModel() => ProjectModel(
+  root: '/home/u/alpha',
+  name: 'alpha',
+  now: () => shellNow,
+  read: () async => ProjectSettingsVersion(
+    settings: contract.ProjectSettings.fromJson({
+      'routing': {'profile': 'balanced'},
+      'mode': 'act',
+      'auto': true,
+      'shipTarget': 'merge',
+      'intake': {
+        'repoId': 'repo-1',
+        'labels': ['studio'],
+      },
+      'factoryDefaults': {
+        'targetBranch': 'main',
+        'maxRounds': 3,
+        'ciPollSeconds': 30,
+        'ciWaitSeconds': 900,
+        'reviewerInstructions': 'Look for missing tests.',
+      },
+      'automations': {
+        'reviewBot': {'enabled': true, 'repoId': 'repo-1', 'autoPost': false},
+        'ciFixer': {
+          'enabled': false,
+          'repoId': 'repo-1',
+          'branches': ['main'],
+        },
+      },
+    }),
+    etag: 'v1',
+  ),
+  write: (next, etag) async =>
+      ProjectSettingsVersion(settings: next, etag: 'v2'),
+  readHealth: () async => contract.ProjectHealth.fromJson({
+    'gateRunnable': 'yes',
+    'mirrorFresh': [
+      {
+        'repoId': 'repo-1',
+        'present': true,
+        'ageSeconds': 480,
+        'head': 'abc1234',
+      },
+    ],
+    'orphanWorktrees': <Object?>[],
+    'trust': 'trusted',
+    'workspaceResolves': {'ref': 'repo:alpha', 'resolves': true, 'built': true},
+    'verify': {'build': 'go build ./...', 'test': 'go test ./...'},
+  }),
+  readRuns: () async => [
+    contract.RunListEntry.fromJson({
+      'agentId': 'a-run',
+      'name': 'Plan run',
+      'project': '/home/u/alpha',
+      'run': {
+        'active': true,
+        'planName': 'F6 plan 2',
+        'branch': 'sdd/run-1',
+        'totalTasks': 3,
+        'doneTasks': 1,
+        'fixRound': 0,
+        'maxFixRounds': 3,
+        'tokensUsed': 0,
+        'tokensMax': 200000,
+        'finished': false,
+        'succeeded': false,
+        'tasks': <Object?>[],
+      },
+      'at': 1763352000000,
+    }),
+  ],
+  discover: (repoID) async => contract.DiscoveryReport.fromJson({
+    'repoId': repoID,
+    'forge': 'github',
+    'status': 'ok',
+    'branch': 'main',
+    'revision': 'abc1234f',
+    'capabilities': [
+      {
+        'key': 'forge_metadata',
+        'state': 'supported',
+        'detail': 'The forge answered',
+      },
+    ],
+    'facts': [
+      {
+        'origin': 'detected',
+        'section': 'checkout_instructions',
+        'kind': 'file',
+        'value': 'present',
+        'source': 'checkout:AGENTS.md',
+      },
+    ],
+    'recommended': <Object?>[],
+    'gaps': <Object?>[],
+  }),
+);
+
+/// The project's page, or one of its §7 states, on one tab.
+Widget _projectScreen({int tab = 0, StateKind? state}) => ProjectPage(
+  model: _projectModel(),
+  items: [
+    for (final item in [
+      factoryItem(id: 'item-1', title: 'Draft the intake', state: 'queued'),
+      factoryItem(
+        id: 'item-2',
+        title: 'Reliable session recovery',
+        state: 'implementing',
+      ),
+      factoryItem(
+        id: 'item-3',
+        title: 'Review the inspector',
+        state: 'reviewing',
+      ),
+      factoryItem(id: 'item-4', title: 'Ready to land', state: 'ready'),
+    ])
+      wmodel.WorkItemView.of('local', item),
+  ],
+  agents: [
+    model.threadFor(
+      'local',
+      agent(
+        id: 'a-1',
+        name: 'Recovery',
+        project: '/home/u/alpha',
+        status: contract.AgentState.agentRunning,
+        activity: 'Reading internal/acp',
+      ),
+    ),
+  ],
+  state: state,
+  now: shellNow,
+  initialTab: tab,
+);

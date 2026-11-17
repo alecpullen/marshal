@@ -183,6 +183,12 @@ func (g *generator) collectTypes() error {
 				if !ok {
 					continue
 				}
+				if !ts.Name.IsExported() {
+					// An unexported type is a package-internal helper, not part
+					// of the wire: the module declares only what a client can
+					// receive, so a journal's legacy form stays the bridge's.
+					continue
+				}
 				if ts.TypeParams != nil && ts.TypeParams.NumFields() > 0 {
 					return g.unsupported(ts.Pos(), "generic type")
 				}

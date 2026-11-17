@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../../model/drafts_model.dart';
 import '../../model/new_work_model.dart';
 import '../kit/kit.dart';
 
@@ -16,27 +17,52 @@ Sheet newWorkDialog(
   NewWorkModel model, {
   VoidCallback? onCancel,
   void Function(String agentId)? onStarted,
+  void Function(StartedPlanner planner)? onPlanned,
+  void Function(String prompt)? onWorkItem,
+  List<DraftVersion> drafts = const [],
+  void Function(DraftVersion draft)? onOpenDraft,
 }) => Sheet(
   title: 'Start a new agent',
   actions: [
     Btn.primary(
       'Start',
       onTap: () async {
+        if (model.kind == NewWorkKind.workItem) {
+          // "Work item" opens the handoff review with the prompt as the
+          // plan's starting text (F6 decision 9); nothing is spawned here.
+          onWorkItem?.call(model.prompt.trim());
+          return;
+        }
         await model.start();
+        final planner = model.startedPlanner;
+        if (planner != null) {
+          onPlanned?.call(planner);
+          return;
+        }
         final started = model.started;
         if (started != null) onStarted?.call(started.agentID);
       },
     ),
     Btn('Cancel', onTap: onCancel),
   ],
-  child: NewWorkForm(model: model),
+  child: NewWorkForm(model: model, drafts: drafts, onOpenDraft: onOpenDraft),
 );
 
 /// The dialog's body: the prompt, the kind, the chips and the three lists.
 class NewWorkForm extends StatefulWidget {
-  const NewWorkForm({super.key, required this.model});
+  const NewWorkForm({
+    super.key,
+    required this.model,
+    this.drafts = const [],
+    this.onOpenDraft,
+  });
 
   final NewWorkModel model;
+
+  /// The project's unfinished drafts (F6 decision 10): a draft is reopened
+  /// from here rather than retyped.
+  final List<DraftVersion> drafts;
+  final void Function(DraftVersion draft)? onOpenDraft;
 
   @override
   State<NewWorkForm> createState() => _NewWorkFormState();
@@ -172,6 +198,17 @@ class _NewWorkFormState extends State<NewWorkForm> {
                       onSelect: () => model.prefill(prompt),
                     ),
                 ], empty: 'No recent prompts'),
+                if (widget.onOpenDraft != null)
+                  _fillMenu('Drafts', [
+                    for (final draft in widget.drafts)
+                      MenuChoice(
+                        draft.title.trim().isEmpty
+                            ? 'Untitled work'
+                            : draft.title.trim(),
+                        'Open version ${draft.version ?? 'unsaved'}',
+                        onSelect: () => widget.onOpenDraft?.call(draft),
+                      ),
+                  ], empty: 'No unfinished drafts'),
                 _fillMenu('Recipes', [
                   for (final recipe in model.recipes)
                     MenuChoice(

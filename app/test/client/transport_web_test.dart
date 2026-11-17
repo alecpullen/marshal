@@ -57,6 +57,29 @@ void main() {
     expect(normalizeToken('Bearer'), '');
   });
 
+  test('a conditional write names If-Match beside the token', () async {
+    // The browser transport sets the route's headers after its own, so a
+    // conditional write names If-Match and the bearer token survives it. A
+    // transport that dropped the route's headers would make the write
+    // unconditional (web/bridge/projects.go).
+    const TokenStoreWeb().write('tok-123');
+
+    await WebTransport().send(
+      const Request(
+        method: 'PUT',
+        path: '/api/projects/settings',
+        query: {'root': '/home/u/alpha'},
+        body: {'workspace': 'alpha'},
+        headers: {'If-Match': '"0123"'},
+      ),
+    );
+
+    final call = calls.single;
+    expect(call.ifMatch, '"0123"');
+    expect(call.authorization, 'Bearer tok-123');
+    expect(call.url, '/api/projects/settings?root=%2Fhome%2Fu%2Falpha');
+  });
+
   test('401 is Unauthorized', () async {
     status = 401;
     body = 'the bridge refused the token';
@@ -70,10 +93,18 @@ void main() {
 
 /// One request the fake fetch received.
 class FakeCall {
-  FakeCall({required this.url, required this.authorization, this.body});
+  FakeCall({
+    required this.url,
+    required this.authorization,
+    this.ifMatch,
+    this.body,
+  });
 
   final String url;
   final String? authorization;
+
+  /// The `If-Match` the route named, when it named one.
+  final String? ifMatch;
   final String? body;
 }
 
@@ -112,6 +143,7 @@ JSPromise<JSAny> _fakeFetch(JSString input, [JSAny? init]) {
     FakeCall(
       url: input.toDart,
       authorization: headers?.get('authorization'),
+      ifMatch: headers?.get('if-match'),
       body: requestBody == null ? null : (requestBody as JSString).toDart,
     ),
   );

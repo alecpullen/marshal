@@ -14,44 +14,21 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // Automations is a project's forge automation settings.
-type Automations struct {
-	ReviewBot *ReviewBotSettings `json:"reviewBot,omitempty"`
-	CIFixer   *CIFixerSettings   `json:"ciFixer,omitempty"`
-}
+// Automations is contract.Automations: a project's forge automation settings.
+type Automations = contract.Automations
 
 // ReviewBotSettings configures the PR review bot.
-type ReviewBotSettings struct {
-	Enabled bool   `json:"enabled"`
-	RepoID  string `json:"repoId"`
-	// Labels, Authors and SkipDrafts filter which PRs are reviewed. Empty
-	// lists match everything.
-	Labels     []string `json:"labels,omitempty"`
-	SkipDrafts bool     `json:"skipDrafts"`
-	Authors    []string `json:"authors,omitempty"`
-	// Routing overrides the review recipe's model routing.
-	Routing json.RawMessage `json:"routing,omitempty"`
-	// AutoPost posts a finished review without waiting, unless a finding
-	// has a severity in HoldSeverities.
-	AutoPost       bool     `json:"autoPost"`
-	HoldSeverities []string `json:"holdSeverities,omitempty"`
-}
+// ReviewBotSettings is contract.ReviewBotSettings.
+type ReviewBotSettings = contract.ReviewBotSettings
 
 // CIFixerSettings configures the CI fixer.
-type CIFixerSettings struct {
-	Enabled bool   `json:"enabled"`
-	RepoID  string `json:"repoId"`
-	// Branches are the watched branches, as path.Match patterns.
-	Branches   []string `json:"branches"`
-	MaxMinutes int      `json:"maxMinutes,omitempty"`
-	MaxUSD     float64  `json:"maxUsd,omitempty"`
-	// Push pushes a fix straight to a branch matching PushBranches; every
-	// other fix opens a pull request.
-	Push         bool     `json:"push"`
-	PushBranches []string `json:"pushBranches,omitempty"`
-}
+// CIFixerSettings is contract.CIFixerSettings.
+type CIFixerSettings = contract.CIFixerSettings
 
 var validSeverities = map[string]bool{"blocking": true, "should-fix": true, "nit": true}
 
@@ -175,6 +152,14 @@ type autoState struct {
 	exit      func(context.Context, string, ExitOptions) (ExitResult, error)
 	// branchHead resolves a branch's tip commit for the polling fallback.
 	branchHead func(context.Context, Repo, string) (string, error)
+	// pullFix replaces the background start of a dispatched pull request fix
+	// (tests): it runs the fix inline, so the test sees its outcome.
+	pullFix func(context.Context, contract.PullRecord, contract.PullFix, contract.PullFixRequest) error
+	// pullsAutoFix remembers which head an automatic fix was dispatched for,
+	// per pull request, so a failure that survives a fix is not fixed again on
+	// its own. It is memory only: after a restart a head may be tried once
+	// more, and the single-fix rule refuses it while a fix runs.
+	pullsAutoFix map[string]string
 }
 
 // autoClaim marks key as in flight. It reports false when it already is.

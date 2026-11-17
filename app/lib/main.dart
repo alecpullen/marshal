@@ -4,11 +4,18 @@ import 'src/client/host_discovery_stub.dart'
     if (dart.library.io) 'src/client/host_discovery_io.dart';
 import 'src/menu/desktop_stub.dart'
     if (dart.library.io) 'src/menu/desktop.dart';
+import 'src/model/factory_store.dart';
 import 'src/model/fleet_store.dart';
+import 'src/model/handoff_model.dart';
 import 'src/model/composer_model.dart';
 import 'src/model/inbox_model.dart';
 import 'src/model/new_work_model.dart';
+import 'src/model/planning_model.dart';
+import 'src/model/project_model.dart';
+import 'src/model/pulls_model.dart';
+import 'src/model/pulls_store.dart';
 import 'src/model/stack_store.dart';
+import 'src/model/nav_model.dart' show projectName;
 import 'src/ui/kit/kit.dart';
 import 'src/ui/shell/shell.dart';
 
@@ -23,8 +30,18 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final hosts = HostRegistry(discovery: discoverHosts);
   final store = FleetStore(hosts);
+  // The work items: the one poller of the factory's list (F6 decision 14).
+  final factory = FactoryStore(hosts);
   final inbox = InboxModel(
     store,
+    client: (name) =>
+        hosts.hosts.firstWhere((host) => host.name == name).client,
+    factory: factory,
+  );
+  // The pull requests read the same hosts, follow the same fleet streams, and
+  // post through the same clients (F5).
+  final pulls = PullsModel(
+    PullsStore(hosts, store),
     client: (name) =>
         hosts.hosts.firstWhere((host) => host.name == name).client,
   );
@@ -33,6 +50,8 @@ Future<void> main() async {
       home: Studio(
         store: store,
         inbox: inbox,
+        pulls: pulls,
+        factory: factory,
         read: hosts.discover,
         // A thread place opens its own session's transcript on the client
         // that reaches its host (F3): the same client the inbox answers with.
@@ -60,8 +79,89 @@ Future<void> main() async {
           hosts.hosts.firstWhere((host) => host.name == thread.host).client,
           host: thread.host,
         ),
+        // A planning thread reads its planner's journal on the client that
+        // reaches its host, and captures the plan for review (F6 decision 8).
+        planningFor: (host, plannerID) {
+          final client = hosts.hosts
+              .firstWhere((owner) => owner.name == host)
+              .client;
+          return PlanningModel(
+            plannerID: plannerID,
+            events: (after) => client.plannerEvents(plannerID, after: after),
+            promptPlanner: (request) =>
+                client.promptPlanner(plannerID, request),
+            cancelPlanner: () => client.cancelPlanner(plannerID),
+            answerPlanner: (requestID, response) =>
+                client.answerPlanner(plannerID, requestID, response),
+            capture: (request) =>
+                client.createPlannerSnapshot(plannerID, request),
+            read: () => client.planner(plannerID),
+          );
+        },
+        // The handoff review of a plan (F6 decision 8): what it inherits is
+        // the project's factory defaults, read from the project's settings —
+        // the document the project page edits — when the person hands the
+        // plan off. A project that cannot be read still opens the sheet on
+        // the host alone, because the review must open rather than fail: its
+        // fields then say the project states them not, and the person chooses
+        // the rest. Approving creates the item through the one store that
+        // reads the factory.
+        handoffFor: (thread, plan, spec) async {
+          final client = hosts.hosts
+              .firstWhere((owner) => owner.name == thread.host)
+              .client;
+          var defaults = ProjectDefaults(hostID: thread.host);
+          try {
+            final settings = await client.projectSettings(thread.project);
+            defaults = ProjectDefaults.fromSettings(
+              settings.settings,
+              hostID: thread.host,
+            );
+          } catch (_) {
+            // The sheet opens on the host alone, stating what the project
+            // does not; a settings read must not leave the plan unhanded.
+          }
+          return HandoffModel(
+            defaults: defaults,
+            projectRoot: thread.project,
+            title: thread.title,
+            plan: plan,
+            spec: spec,
+            create: (draft) => factory.create(thread.host, draft),
+          );
+        },
+        // Answers a plan run's question, for a run opened from a project
+        // page's list (F6 decision 12).
+        answerRunFor: (host, agentID, answer) => hosts.hosts
+            .firstWhere((owner) => owner.name == host)
+            .client
+            .answerRun(agentID, answer),
+        // The project page (F6 decision 12): its settings are one document
+        // read with the ETag that names it, so a save that names a tag the
+        // bridge no longer holds is refused rather than overwriting a change
+        // the person has not seen. Its runs are the runs of this project, read
+        // from the same client.
+        projectFor: (host, root) {
+          final client = hosts.hosts
+              .firstWhere((owner) => owner.name == host)
+              .client;
+          return ProjectModel(
+            root: root,
+            name: projectName(root),
+            read: () => client.projectSettings(root),
+            write: (settings, etag) =>
+                client.putProjectSettings(root, settings, etag: etag),
+            readHealth: () => client.projectHealth(root),
+            readRuns: () async => [
+              for (final run in await client.runs())
+                if (run.project == root) run,
+            ],
+            discover: (repoID) => client.discoverRepo(repoID),
+          );
+        },
       ),
     ),
   );
+  factory.start();
   await startTray();
 }

@@ -1,9 +1,12 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
+import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
+import 'package:marshal_app/src/model/pulls_model.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 
+import '../support/pulls.dart';
 import '../support/screens.dart';
 
 /// The Inbox (F2 decision 7): every ask answered from its own card, a reply
@@ -61,13 +64,17 @@ void main() {
   /// into, named once here so a closure's own `answers` can shadow it.
   final posted = answers;
 
-  Widget show(List<model.Ask> asks, {StateKind? state}) => EmberApp(
+  Widget show(
+    List<model.Ask> asks, {
+    StateKind? state,
+    void Function(Place)? onSelect,
+  }) => EmberApp(
     brightness: Brightness.light,
     home: Inbox(
       asks: asks,
       now: shellNow,
       state: state,
-      onSelect: (_) {},
+      onSelect: onSelect ?? (_) {},
       onAnswer: (ask, action, {reply, answers}) {
         posted.add('${ask.id}:${action.label}');
         replies.add(reply);
@@ -247,5 +254,81 @@ void main() {
     await tester.pump();
     expect(find.byType(AskCard), findsOneWidget);
     expect(find.text('Start'), findsNothing);
+  });
+
+  testWidgets('the ready filter lists ready pull requests', (tester) async {
+    final opened = <Place>[];
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Inbox(
+          asks: const [],
+          now: shellNow,
+          pulls: [
+            pullView(number: 131, title: 'Quiet capture mode'),
+            // Failing is the Pull requests place's business, not the Ready
+            // filter's.
+            pullView(
+              number: 132,
+              title: 'Fix flaky calendar test',
+              group: PullGroup.failing,
+            ),
+          ],
+          onSelect: opened.add,
+          onAnswer: (ask, action, {reply, answers}) {},
+          onRetry: () {},
+        ),
+      ),
+    );
+
+    // The tab says how many wait, and only the ready one is listed.
+    expect(find.text('Ready'), findsOneWidget);
+    await tester.tap(find.text('Ready'));
+    await tester.pump();
+
+    expect(find.byType(PrCard), findsOneWidget);
+    expect(find.byType(AskCard), findsNothing);
+    expect(find.text('Quiet capture mode'), findsOneWidget);
+    expect(find.text('Fix flaky calendar test'), findsNothing);
+  });
+
+  testWidgets('a work item\u2019s ask draws no action row, and opens its '
+      'thread instead', (tester) async {
+    final opened = <Place>[];
+    await tester.pumpWidget(
+      show([
+        for (final (kind, label) in [
+          (model.AskKind.approvalDraft, 'Approve and start'),
+          (model.AskKind.decision, 'Answer'),
+          (model.AskKind.recovery, 'Continue'),
+          (model.AskKind.completion, 'Merge and complete'),
+        ])
+          ask(id: 'item-1:${kind.name}', kind: kind, actions: [label]),
+      ], onSelect: opened.add),
+    );
+
+    // The card is shown, and none of its actions is drawn: these four are
+    // answered in the item's own thread — they carry its version and its
+    // reviewed identity — so a button here would do nothing at all.
+    expect(find.byType(AskCard), findsNWidgets(4));
+    for (final label in const [
+      'Approve and start',
+      'Answer',
+      'Continue',
+      'Merge and complete',
+    ]) {
+      expect(
+        find.widgetWithText(Btn, label),
+        findsNothing,
+        reason: '$label posts nothing from the list',
+      );
+    }
+
+    // The source line is the way to the thread they are answered in.
+    await tester.tap(
+      find.text('marshal \u203a Reliable session recovery').first,
+    );
+    await tester.pump();
+    expect(opened.single.id, 'a-1');
   });
 }

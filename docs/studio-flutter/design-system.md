@@ -183,6 +183,10 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Label` | An uppercase section label | Optional count and one trailing link |
 | `Tabs` | Underlined text tabs | Views of one object. Never used for navigation between objects |
 | `Segments` | Progress as steps | Done is `ok`, current is the status colour, pending is `border` |
+| `StageStrip` | A work item's four stages, the one it is at marked | The stages as a `Segments` bar and as words; a stage the item left is `muted` and one ahead is `faint`. Never a fifth stage: an item that is ending says so in one word beside it |
+| `Lanes` | A run's tasks by role | One row per task, one column per lane — Implement, Verify, Review, Commit. Every cell is a status dot and its word, never colour alone; a cell with an action opens that role's conversation and one without is a fact |
+| `TaskGraph` | A plan's tasks as a dependency graph | Tasks laid out in dependency layers, left to right, with straight `border` edges and no free dragging. A plan that declares no dependency is drawn as one chain, in order, because that is the work it describes |
+| `ActivityRow` | One entry of a thread's activity | Who acted, in words, and what they did, with the event's own kind small beneath it and its age at the right. A timeline, not a transcript |
 | `Meter` | A labelled bar | Capacity and quota. Bar is `muted` unless it reports a fault |
 | `Spark` | A small line | One series, `fg`, no axes |
 | `CheckStrip` | One block per CI check | Order is the forge's order; tooltip names each check |
@@ -221,12 +225,44 @@ for rows separated by `Hairline`s, as `Rows` uses); `Btn` and `Btn.primary`;
 identifiers; `Meter` and `Meter.fault`; `PageBody`'s width, `full` (1180) or
 `list` (860), from §4; `AskCard`'s placement — Inbox (everything), Overview
 (the body only for a decision) or its own thread (no source line);
-`PrCard`'s four states — ready, failing, in progress, being fixed. Added in
+`PrCard`'s five states — ready, failing, in progress, being fixed and checks
+unavailable. Added in
 F4: `RowItem.mono` and `NavRow.mono`, a row whose name is an identifier such
 as a path, and `RowItem.selected`, the row a list is showing, filled with
 `selected` as a `NavRow` is. Added in F7: `Field.mono`, the field set in
 `mono` for the environment designer's source — a document a person edits line
 by line, never prose.
+
+Added in F5: `PrCard`'s **checks unavailable** state — the checks cannot be
+read, and the card says why in its own line. It is never drawn as passing and
+never as failing: its border is `border`, its mark `muted`. A failing card
+whose dispatch is in flight reads `Sending…` with the primary disabled (§7: an
+action taken is acknowledged at once), and the bridge's refusal, when there is
+one, sits above its buttons in `err`. A ready card whose merge this build
+cannot make draws Merge disabled under a `Tip` that names what brings it
+(`PrActions.mergeNote`), never as a button that would fail. `AskKind.pull` is
+the ask a fix that could not finish leaves: the pull request and the check,
+what was tried, and Open, Try again and Dismiss.
+
+Added in F6: `StageStrip` and `ActivityRow`, the work item's thread. The strip
+is a fact, not a control, and it has four stages and no fifth: an item that is
+stopping, stopped or closed says so in one word beside it. The activity row is
+the item's history, one entry per thing that happened, attributed to the
+planner, the implementer, the reviewer or the user in words. A work item's
+four asks — a draft awaiting approval, a decision, a recovery and a completion
+assessment — are drawn with the kit's existing `AskCard` kinds: the card's
+title and body say what is being decided, and a new kind for each would be a
+kind name that says nothing the title does not.
+
+Added in F6 for the plan run (§10): `Lanes` draws a run's tasks by role, one
+row per task and one column per lane, each cell a status dot and its word. It is
+a grid of facts, not a control: a cell that opens a role's conversation is
+clickable, and one that does not is read only. `TaskGraph` draws the same tasks
+as a dependency graph — dependency layers left to right, straight edges in
+`border`, no dragging — and draws a plan that declares no dependency as a single
+chain, because that is the work the plan describes. The run's third view, the
+timeline, is not a component of its own: it is `Segments`' bar per role over the
+run's own span, so its colours are the ones `Segments` already states.
 
 Supporting pieces, shared by the components and exported with them by
 `kit.dart`. None is drawn on its own, and none has variants:

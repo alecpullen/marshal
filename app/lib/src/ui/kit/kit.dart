@@ -31,6 +31,7 @@ export 'package:flutter/widgets.dart'
         TextStyle;
 
 export '../tokens.dart';
+export 'activity_row.dart';
 export 'ask_card.dart';
 export 'box.dart';
 export 'btn.dart';
@@ -45,6 +46,7 @@ export 'gate_list.dart';
 export 'hairline.dart';
 export 'icon_btn.dart';
 export 'label.dart';
+export 'lanes.dart';
 export 'live_row.dart';
 export 'menu.dart';
 export 'nav_row.dart';
@@ -58,9 +60,11 @@ export 'rows.dart';
 export 'segments.dart';
 export 'sheet.dart';
 export 'spark.dart';
+export 'stage_strip.dart';
 export 'state_message.dart';
 export 'step_header.dart';
 export 'tabs.dart';
+export 'task_graph.dart';
 export 'thread_row.dart';
 export 'tip.dart';
 export 'tool_row.dart';

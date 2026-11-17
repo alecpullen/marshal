@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // PRRequest is what the exit path asks the forge to create.
@@ -110,8 +112,30 @@ type Forge interface {
 	PostReview(ctx context.Context, repo Repo, number int, review Review, cred Credential) (string, error)
 	// ListFailedChecks returns the checks on ref that failed.
 	ListFailedChecks(ctx context.Context, repo Repo, ref string, cred Credential) ([]CheckInfo, error)
+	// ListChecks returns every check on ref with its state, so a pull request
+	// shows its checks whether they pass or not. A credential that cannot call
+	// the forge's API returns ErrChecksUnavailable.
+	ListChecks(ctx context.Context, repo Repo, ref string, cred Credential) ([]contract.PullCheck, error)
 	// CheckLog returns the tail (at most 256 KiB) of a failed check's log.
 	CheckLog(ctx context.Context, repo Repo, check CheckInfo, cred Credential) (string, error)
+}
+
+// ErrChecksUnavailable is returned when a credential cannot read a forge's
+// checks: an SSH-only or absent credential has no HTTP token, so the checks'
+// state is unavailable. It is never reported as passing.
+var ErrChecksUnavailable = errors.New("checks unavailable")
+
+// checksAvailable refuses a credential that cannot make API calls at all. A
+// PAT can; an SSH key and "no credential" cannot.
+func checksAvailable(cred Credential) error {
+	if cred.Kind == "pat" {
+		return nil
+	}
+	kind := cred.Kind
+	if kind == "" {
+		kind = "none"
+	}
+	return fmt.Errorf("%w: a %s credential cannot call the forge's API", ErrChecksUnavailable, kind)
 }
 
 // tailString keeps the last n bytes of s.

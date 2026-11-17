@@ -13,9 +13,14 @@ import 'ship_sheet.dart';
 /// It reads its model and draws it; it never fetches. A comment is posted
 /// through the model, which is the one thing here the agent hears.
 class ChangesTab extends StatelessWidget {
-  const ChangesTab({super.key, required this.model, this.state});
+  const ChangesTab({super.key, required this.model, this.state, this.shipped});
 
   final ChangesModel model;
+
+  /// The pull request this change shipped as, once it has (F5 decision 14):
+  /// one line naming it and what its checks say. Null before a ship, when
+  /// there is nothing to say.
+  final String? shipped;
 
   /// The data state to draw instead of the change set (§7). Null is the
   /// ready state, from the model.
@@ -313,6 +318,12 @@ class ChangesTab extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // Once the change has shipped, the footer says what became of it:
+          // the pull request and what its checks say (F5 decision 14).
+          if (shipped != null) ...[
+            Text(shipped!, style: e.small, maxLines: 2),
+            const SizedBox(height: Space.s4),
+          ],
           Text(_gateLine, style: e.small.tint(e.muted), maxLines: 2),
           const SizedBox(height: Space.s8),
           Wrap(

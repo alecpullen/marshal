@@ -79,7 +79,7 @@ void main() {
   });
 
   testWidgets('planned places say so', (tester) async {
-    final (shell, _) = shellAt(const Place(PlaceKind.pulls));
+    final (shell, _) = shellAt(const Place(PlaceKind.settings));
     await tester.pumpWidget(
       EmberApp(brightness: Brightness.light, home: shell),
     );
@@ -88,7 +88,7 @@ void main() {
         .widgetList<StateMessage>(find.byType(StateMessage))
         .where((message) => message.kind == StateKind.planned);
     expect(planned, isNotEmpty);
-    expect(find.text('Pull requests'), findsWidgets);
+    expect(find.text('Settings'), findsWidgets);
     expect(find.textContaining('later phase'), findsOneWidget);
   });
 
@@ -107,6 +107,16 @@ void main() {
       expect(find.textContaining('per-host bridge'), findsOneWidget);
       expect(find.textContaining('later phase'), findsNothing);
     }
+
+    // Pull requests is built and wired: a shell handed no pull model is the
+    // only one that falls back to the promise, and it says the screen exists.
+    final (shell, _) = shellAt(const Place(PlaceKind.pulls));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+    await tester.pump();
+    expect(find.textContaining('is built'), findsOneWidget);
+    expect(find.textContaining('later phase'), findsNothing);
   });
 
   testWidgets('an unreachable host is listed with its age', (tester) async {

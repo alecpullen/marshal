@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:marshal_app/src/client/contract.g.dart';
+// The contract's CheckState is a CI check's wire state; the kit's is a check
+// drawn in the interface. This test reads the kit's.
+import 'package:marshal_app/src/client/contract.g.dart' hide CheckState;
 import 'package:marshal_app/src/model/changes_model.dart';
 import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
@@ -25,6 +27,7 @@ Future<void> pumpChanges(
   WidgetTester tester,
   ChangesModel model, {
   InspectorState? inspector,
+  String? shipped,
 }) async {
   tester.view.physicalSize = const Size(1440, 900);
   tester.view.devicePixelRatio = 1;
@@ -41,7 +44,7 @@ Future<void> pumpChanges(
         view: ThreadViewState(),
         inspector: inspector ?? InspectorState(),
         inspectorBody: (tab) => tab == InspectorTab.changes
-            ? ChangesTab(model: model)
+            ? ChangesTab(model: model, shipped: shipped)
             : Text('body ${tab.name}'),
       ),
     ),
@@ -184,5 +187,28 @@ void main() {
     // showing another file's lines.
     expect(find.text('No changes to show'), findsOneWidget);
     expect(find.text('two'), findsNothing);
+  });
+
+  testWidgets('the footer says what the change shipped as', (tester) async {
+    final model = ChangesModel.seeded(
+      gate: const GateResult(ok: true, skipped: false),
+      files: const [
+        DiffFile(path: 'internal/acp/stack.go', added: 1, removed: 1),
+      ],
+      diff: _stackGo,
+    );
+
+    // Once it has shipped, the footer names the pull request and what its
+    // checks say (F5 decision 14).
+    await pumpChanges(
+      tester,
+      model,
+      shipped: 'Pull request #131 · 1 failing: unit',
+    );
+    expect(find.text('Pull request #131 · 1 failing: unit'), findsOneWidget);
+
+    // Before a ship there is nothing to say, and nothing is drawn.
+    await pumpChanges(tester, model);
+    expect(find.textContaining('Pull request'), findsNothing);
   });
 }

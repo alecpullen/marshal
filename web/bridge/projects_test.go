@@ -384,8 +384,8 @@ func TestProjectSettingsRoundTripFactoryDefaults(t *testing.T) {
 	if err := json.Unmarshal(raw, &stored); err != nil {
 		t.Fatalf("decode workspace file: %v", err)
 	}
-	if stored.Version != 11 {
-		t.Fatalf("workspace version = %d, want 11", stored.Version)
+	if stored.Version != workspaceVersion {
+		t.Fatalf("workspace version = %d, want %d", stored.Version, workspaceVersion)
 	}
 }
 

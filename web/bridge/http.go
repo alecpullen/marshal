@@ -330,6 +330,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/repos", s.listRepos)
 	s.mux.HandleFunc("POST /api/repos", s.registerRepo)
 	s.mux.HandleFunc("DELETE /api/repos/{id}", s.removeRepo)
+	// The pull requests the bridge opened, and the one index of their checks.
+	s.mux.HandleFunc("GET /api/pulls", s.listPulls)
+	s.mux.HandleFunc("GET /api/pulls/{id}", s.getPull)
+	s.mux.HandleFunc("POST /api/pulls/{id}/fix", s.fixPull)
+	s.mux.HandleFunc("POST /api/pulls/{id}/fix/stop", s.stopPullFix)
 	s.mux.HandleFunc("GET /api/network", s.networkView)
 	s.mux.HandleFunc("GET /api/network/pending", s.networkPending)
 	s.mux.HandleFunc("POST /api/network/decisions", s.networkDecision)
@@ -372,10 +377,16 @@ func writeErr(w http.ResponseWriter, err error) {
 	var budget ErrBudget
 	var setup ErrSetupFailed
 	var merge ErrWorkspaceMerge
+	var running pullFixRunning
 	switch {
 	case errors.Is(err, ErrFactoryConflict):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrUnknownRecipe), errors.Is(err, ErrUnknownSchedule):
+	case errors.As(err, &running):
+		// The refusal names the fix that is already running.
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "fixId": running.ID})
+	case errors.Is(err, ErrPullFixNotFailing), errors.Is(err, ErrInvalidPullFixMode):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrUnknownRecipe), errors.Is(err, ErrUnknownSchedule), errors.Is(err, ErrUnknownPull):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrInvalidRecipe), errors.Is(err, ErrRecipeBuiltin), errors.Is(err, errInvalidSchedule):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

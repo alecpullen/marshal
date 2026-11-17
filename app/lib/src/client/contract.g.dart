@@ -665,10 +665,17 @@ class Automations {
   const Automations({
     this.reviewBot,
     this.ciFixer,
+    this.autoFix,
   });
 
   final ReviewBotSettings? reviewBot;
   final CIFixerSettings? ciFixer;
+  /// AutoFix fixes a failing check on any of this project's Marshal pull
+  /// requests without being asked, exactly as a click would. It is off by
+  /// default: a bridge that changes a pull request on its own is a surprise
+  /// unless the project asked for it. Factory items are unaffected, because
+  /// they already repair inside their own allowance.
+  final bool? autoFix;
 
   factory Automations.fromJson(Map<String, dynamic> json) {
     return Automations(
@@ -680,6 +687,7 @@ class Automations {
         json['ciFixer'],
         CIFixerSettings.fromJson,
       ),
+      autoFix: json['autoFix'] as bool?,
     );
   }
 
@@ -690,6 +698,9 @@ class Automations {
     }
     if (ciFixer != null) {
       json['ciFixer'] = ciFixer!.toJson();
+    }
+    if (autoFix != null) {
+      json['autoFix'] = autoFix;
     }
     return json;
   }
@@ -1934,6 +1945,245 @@ class PinState {
   }
 }
 
+/// WorkingDraftContent is one draft's editor state.
+class WorkingDraftContent {
+  const WorkingDraftContent({
+    required this.title,
+    required this.plan,
+    required this.spec,
+    required this.repoID,
+    required this.targetBranchOverride,
+    required this.workspaceOverride,
+    required this.implementerOverride,
+    required this.reviewerOverride,
+    required this.reviewerInstructions,
+    required this.maxRoundsOverride,
+    required this.ciPollOverride,
+    required this.ciWaitOverride,
+    required this.checksMode,
+    required this.expectedChecksText,
+    required this.native,
+    required this.nativeChosen,
+    required this.implementerAuto,
+    required this.noRequiredCIAcknowledged,
+  });
+
+  final String title;
+  final String plan;
+  final String spec;
+  final String repoID;
+  final String targetBranchOverride;
+  final String workspaceOverride;
+  final String implementerOverride;
+  final String reviewerOverride;
+  final String reviewerInstructions;
+  final String maxRoundsOverride;
+  final String ciPollOverride;
+  final String ciWaitOverride;
+  final String checksMode;
+  final String expectedChecksText;
+  final bool native;
+  final bool nativeChosen;
+  final bool implementerAuto;
+  final bool noRequiredCIAcknowledged;
+
+  factory WorkingDraftContent.fromJson(Map<String, dynamic> json) {
+    return WorkingDraftContent(
+      title: json['title'] as String,
+      plan: json['plan'] as String,
+      spec: json['spec'] as String,
+      repoID: json['repoId'] as String,
+      targetBranchOverride: json['targetBranchOverride'] as String,
+      workspaceOverride: json['workspaceOverride'] as String,
+      implementerOverride: json['implementerOverride'] as String,
+      reviewerOverride: json['reviewerOverride'] as String,
+      reviewerInstructions: json['reviewerInstructions'] as String,
+      maxRoundsOverride: json['maxRoundsOverride'] as String,
+      ciPollOverride: json['ciPollOverride'] as String,
+      ciWaitOverride: json['ciWaitOverride'] as String,
+      checksMode: json['checksMode'] as String,
+      expectedChecksText: json['expectedChecksText'] as String,
+      native: json['native'] as bool,
+      nativeChosen: json['nativeChosen'] as bool,
+      implementerAuto: json['implementerAuto'] as bool,
+      noRequiredCIAcknowledged: json['noRequiredCiAcknowledged'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['title'] = title;
+    json['plan'] = plan;
+    json['spec'] = spec;
+    json['repoId'] = repoID;
+    json['targetBranchOverride'] = targetBranchOverride;
+    json['workspaceOverride'] = workspaceOverride;
+    json['implementerOverride'] = implementerOverride;
+    json['reviewerOverride'] = reviewerOverride;
+    json['reviewerInstructions'] = reviewerInstructions;
+    json['maxRoundsOverride'] = maxRoundsOverride;
+    json['ciPollOverride'] = ciPollOverride;
+    json['ciWaitOverride'] = ciWaitOverride;
+    json['checksMode'] = checksMode;
+    json['expectedChecksText'] = expectedChecksText;
+    json['native'] = native;
+    json['nativeChosen'] = nativeChosen;
+    json['implementerAuto'] = implementerAuto;
+    json['noRequiredCiAcknowledged'] = noRequiredCIAcknowledged;
+    return json;
+  }
+}
+
+/// WorkingDraft is one durable draft. ProjectRoot is the store's identity for
+/// the draft's project and is never derived from content; the browser cannot
+/// move a draft between projects.
+class WorkingDraft {
+  const WorkingDraft({
+    required this.id,
+    required this.projectRoot,
+    required this.version,
+    required this.state,
+    required this.content,
+    required this.updatedAt,
+    this.factoryItemID,
+    this.error,
+  });
+
+  final String id;
+  final String projectRoot;
+  final int version;
+  final String state;
+  final WorkingDraftContent content;
+  final String updatedAt;
+  final String? factoryItemID;
+  final String? error;
+
+  factory WorkingDraft.fromJson(Map<String, dynamic> json) {
+    return WorkingDraft(
+      id: json['id'] as String,
+      projectRoot: json['projectRoot'] as String,
+      version: (json['version'] as num).toInt(),
+      state: json['state'] as String,
+      content: _object(
+        json['content'],
+        WorkingDraftContent.fromJson,
+      ),
+      updatedAt: json['updatedAt'] as String,
+      factoryItemID: json['factoryItemId'] as String?,
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['projectRoot'] = projectRoot;
+    json['version'] = version;
+    json['state'] = state;
+    json['content'] = content.toJson();
+    json['updatedAt'] = updatedAt;
+    if (factoryItemID != null) {
+      json['factoryItemId'] = factoryItemID;
+    }
+    if (error != null) {
+      json['error'] = error;
+    }
+    return json;
+  }
+}
+
+/// WorkingDraftCreateRequest is the POST /api/factory/working-drafts body.
+class WorkingDraftCreateRequest {
+  const WorkingDraftCreateRequest({
+    required this.projectRoot,
+    required this.requestID,
+    required this.content,
+  });
+
+  final String projectRoot;
+  final String requestID;
+  final WorkingDraftContent content;
+
+  factory WorkingDraftCreateRequest.fromJson(Map<String, dynamic> json) {
+    return WorkingDraftCreateRequest(
+      projectRoot: json['projectRoot'] as String,
+      requestID: json['requestId'] as String,
+      content: _object(
+        json['content'],
+        WorkingDraftContent.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projectRoot'] = projectRoot;
+    json['requestId'] = requestID;
+    json['content'] = content.toJson();
+    return json;
+  }
+}
+
+/// WorkingDraftSaveRequest is the PUT /api/factory/working-drafts/{id} body:
+/// the version the editor last read, so a save made against a draft that has
+/// moved is refused rather than overwriting it.
+class WorkingDraftSaveRequest {
+  const WorkingDraftSaveRequest({
+    required this.requestID,
+    required this.expectedVersion,
+    required this.content,
+  });
+
+  final String requestID;
+  final int expectedVersion;
+  final WorkingDraftContent content;
+
+  factory WorkingDraftSaveRequest.fromJson(Map<String, dynamic> json) {
+    return WorkingDraftSaveRequest(
+      requestID: json['requestId'] as String,
+      expectedVersion: (json['expectedVersion'] as num).toInt(),
+      content: _object(
+        json['content'],
+        WorkingDraftContent.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['expectedVersion'] = expectedVersion;
+    json['content'] = content.toJson();
+    return json;
+  }
+}
+
+/// WorkingDraftDeleteRequest is the DELETE /api/factory/working-drafts/{id}
+/// body: a tombstone is a versioned write like any other.
+class WorkingDraftDeleteRequest {
+  const WorkingDraftDeleteRequest({
+    required this.requestID,
+    required this.expectedVersion,
+  });
+
+  final String requestID;
+  final int expectedVersion;
+
+  factory WorkingDraftDeleteRequest.fromJson(Map<String, dynamic> json) {
+    return WorkingDraftDeleteRequest(
+      requestID: json['requestId'] as String,
+      expectedVersion: (json['expectedVersion'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['expectedVersion'] = expectedVersion;
+    return json;
+  }
+}
+
 /// EnvWorkspace is the `[workspace]` layer.
 class EnvWorkspace {
   const EnvWorkspace({
@@ -2846,6 +3096,2391 @@ class EnvBuildStart {
   }
 }
 
+/// FactorySubagentOverrides is one role's subagent settings as a draft or a
+/// project's factory defaults state them. Every field is a pointer because the
+/// resolution chain distinguishes "unset" from "stated": a missing override
+/// inherits the next source, and an explicit false or an explicit empty model
+/// is a choice that is preserved.
+///
+/// A nil Model or a Model pointing at "" both mean normal child routing: only
+/// an explicit override is ever written here, so an empty string is a stated
+/// choice rather than an absence.
+class FactorySubagentOverrides {
+  const FactorySubagentOverrides({
+    this.enabled,
+    this.model,
+    this.concurrency,
+  });
+
+  final bool? enabled;
+  final String? model;
+  final int? concurrency;
+
+  factory FactorySubagentOverrides.fromJson(Map<String, dynamic> json) {
+    return FactorySubagentOverrides(
+      enabled: json['enabled'] as bool?,
+      model: json['model'] as String?,
+      concurrency: (json['concurrency'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (enabled != null) {
+      json['enabled'] = enabled;
+    }
+    if (model != null) {
+      json['model'] = model;
+    }
+    if (concurrency != null) {
+      json['concurrency'] = concurrency;
+    }
+    return json;
+  }
+}
+
+/// FactorySubagentSettings is one role's resolved subagent settings. It is what
+/// the resolution chain produced for a draft, and what an approval revision
+/// freezes: a later default change cannot reach an active revision through it.
+///
+/// An approval journalled before subagent settings existed carries the zero
+/// value, which is why a zero Concurrency means "no snapshot" rather than a
+/// cap of zero.
+class FactorySubagentSettings {
+  const FactorySubagentSettings({
+    required this.enabled,
+    this.model,
+    required this.concurrency,
+  });
+
+  final bool enabled;
+  final String? model;
+  final int concurrency;
+
+  factory FactorySubagentSettings.fromJson(Map<String, dynamic> json) {
+    return FactorySubagentSettings(
+      enabled: json['enabled'] as bool,
+      model: json['model'] as String?,
+      concurrency: (json['concurrency'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['enabled'] = enabled;
+    if (model != null) {
+      json['model'] = model;
+    }
+    json['concurrency'] = concurrency;
+    return json;
+  }
+}
+
+/// SelectedFile is one repository-relative file a snapshot captured. Path is a
+/// slash path relative to the planner's workspace root, never a host path, and
+/// Operation is exactly create, modify or delete.
+class SelectedFile {
+  const SelectedFile({
+    required this.path,
+    required this.operation,
+    this.baseSHA256,
+    this.contentSHA256,
+    required this.executable,
+  });
+
+  final String path;
+  final String operation;
+  final String? baseSHA256;
+  final String? contentSHA256;
+  final bool executable;
+
+  factory SelectedFile.fromJson(Map<String, dynamic> json) {
+    return SelectedFile(
+      path: json['path'] as String,
+      operation: json['operation'] as String,
+      baseSHA256: json['baseSha256'] as String?,
+      contentSHA256: json['contentSha256'] as String?,
+      executable: json['executable'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['path'] = path;
+    json['operation'] = operation;
+    if (baseSHA256 != null) {
+      json['baseSha256'] = baseSHA256;
+    }
+    if (contentSHA256 != null) {
+      json['contentSha256'] = contentSHA256;
+    }
+    json['executable'] = executable;
+    return json;
+  }
+}
+
+/// EditSnapshot is the hashed core of a snapshot: the base commit it was taken
+/// against and the files it froze, in the order the caller selected them. Its
+/// SHA256 is the digest of exactly those two fields, so the same capture always
+/// hashes the same way, whatever else the record carries.
+class EditSnapshot {
+  const EditSnapshot({
+    required this.baseCommit,
+    required this.files,
+    required this.sha256,
+  });
+
+  final String baseCommit;
+  final List<SelectedFile> files;
+  final String sha256;
+
+  factory EditSnapshot.fromJson(Map<String, dynamic> json) {
+    return EditSnapshot(
+      baseCommit: json['baseCommit'] as String,
+      files: _list(
+        json['files'],
+        (value) => _object(value, SelectedFile.fromJson),
+      ),
+      sha256: json['sha256'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['baseCommit'] = baseCommit;
+    json['files'] = [
+      for (final value in files) value.toJson(),
+    ];
+    json['sha256'] = sha256;
+    return json;
+  }
+}
+
+/// ReviewFinding is one finding of a review-findings result.
+class ReviewFinding {
+  const ReviewFinding({
+    required this.severity,
+    this.path,
+    this.line,
+    required this.title,
+    this.body,
+    this.stepNode,
+  });
+
+  final String severity;
+  final String? path;
+  final int? line;
+  final String title;
+  final String? body;
+  final String? stepNode;
+
+  factory ReviewFinding.fromJson(Map<String, dynamic> json) {
+    return ReviewFinding(
+      severity: json['severity'] as String,
+      path: json['path'] as String?,
+      line: (json['line'] as num?)?.toInt(),
+      title: json['title'] as String,
+      body: json['body'] as String?,
+      stepNode: json['stepNode'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['severity'] = severity;
+    if (path != null) {
+      json['path'] = path;
+    }
+    if (line != null) {
+      json['line'] = line;
+    }
+    json['title'] = title;
+    if (body != null) {
+      json['body'] = body;
+    }
+    if (stepNode != null) {
+      json['stepNode'] = stepNode;
+    }
+    return json;
+  }
+}
+
+class FactoryConfig {
+  const FactoryConfig({
+    required this.repoID,
+    required this.projectRoot,
+    required this.hostID,
+    required this.targetBranch,
+    required this.workspace,
+    required this.native,
+    required this.implementerRouting,
+    required this.reviewerRouting,
+    required this.reviewerInstructions,
+    required this.implementerAuto,
+    required this.expectedChecks,
+    required this.noRequiredCIAcknowledged,
+    required this.maxRounds,
+    required this.ciPollSeconds,
+    required this.ciWaitSeconds,
+    this.implementerSubagents,
+    this.reviewerSubagents,
+  });
+
+  final String repoID;
+  final String projectRoot;
+  final String hostID;
+  final String targetBranch;
+  final String workspace;
+  final bool native;
+  final Object? implementerRouting;
+  final Object? reviewerRouting;
+  final String reviewerInstructions;
+  final bool implementerAuto;
+  final List<FactoryCheckKey> expectedChecks;
+  /// The tag's spelling is pre-move and load-bearing; see factory_tags_test.go.
+  final bool noRequiredCIAcknowledged;
+  final int maxRounds;
+  final int ciPollSeconds;
+  final int ciWaitSeconds;
+  /// ImplementerSubagents and ReviewerSubagents hold only the work item's
+  /// explicit subagent overrides: nil means inherit. Nothing is copied onto
+  /// the draft from the project's defaults, so a draft follows a project
+  /// default it never stated while an override it does state stays fixed.
+  /// They are omitted when nil, so a journal written before they existed
+  /// keeps its bytes.
+  final FactorySubagentOverrides? implementerSubagents;
+  final FactorySubagentOverrides? reviewerSubagents;
+
+  factory FactoryConfig.fromJson(Map<String, dynamic> json) {
+    return FactoryConfig(
+      repoID: json['repoId'] as String,
+      projectRoot: json['projectRoot'] as String,
+      hostID: json['hostId'] as String,
+      targetBranch: json['targetBranch'] as String,
+      workspace: json['workspace'] as String,
+      native: json['native'] as bool,
+      implementerRouting: json['implementerRouting'],
+      reviewerRouting: json['reviewerRouting'],
+      reviewerInstructions: json['reviewerInstructions'] as String,
+      implementerAuto: json['implementerAuto'] as bool,
+      expectedChecks: _list(
+        json['expectedChecks'],
+        (value) => _object(value, FactoryCheckKey.fromJson),
+      ),
+      noRequiredCIAcknowledged: json['noRequiredCiAcknowledged'] as bool,
+      maxRounds: (json['maxRounds'] as num).toInt(),
+      ciPollSeconds: (json['ciPollSeconds'] as num).toInt(),
+      ciWaitSeconds: (json['ciWaitSeconds'] as num).toInt(),
+      implementerSubagents: _objectOrNull(
+        json['implementerSubagents'],
+        FactorySubagentOverrides.fromJson,
+      ),
+      reviewerSubagents: _objectOrNull(
+        json['reviewerSubagents'],
+        FactorySubagentOverrides.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['repoId'] = repoID;
+    json['projectRoot'] = projectRoot;
+    json['hostId'] = hostID;
+    json['targetBranch'] = targetBranch;
+    json['workspace'] = workspace;
+    json['native'] = native;
+    json['implementerRouting'] = implementerRouting;
+    json['reviewerRouting'] = reviewerRouting;
+    json['reviewerInstructions'] = reviewerInstructions;
+    json['implementerAuto'] = implementerAuto;
+    json['expectedChecks'] = [
+      for (final value in expectedChecks) value.toJson(),
+    ];
+    json['noRequiredCiAcknowledged'] = noRequiredCIAcknowledged;
+    json['maxRounds'] = maxRounds;
+    json['ciPollSeconds'] = ciPollSeconds;
+    json['ciWaitSeconds'] = ciWaitSeconds;
+    if (implementerSubagents != null) {
+      json['implementerSubagents'] = implementerSubagents!.toJson();
+    }
+    if (reviewerSubagents != null) {
+      json['reviewerSubagents'] = reviewerSubagents!.toJson();
+    }
+    return json;
+  }
+}
+
+class FactoryCreate {
+  const FactoryCreate({
+    required this.requestID,
+    required this.title,
+    required this.plan,
+    required this.spec,
+    required this.config,
+    this.editSnapshot,
+  });
+
+  final String requestID;
+  final String title;
+  final String plan;
+  final String spec;
+  final FactoryConfig config;
+  /// EditSnapshot is the reviewed selection a planner handoff bound to this
+  /// draft. It is optional and absent on every draft a Studio surface creates,
+  /// so those journals keep their bytes. The field is a pointer because
+  /// "no selection" and "an empty selection" are different approvals.
+  final EditSnapshot? editSnapshot;
+
+  factory FactoryCreate.fromJson(Map<String, dynamic> json) {
+    return FactoryCreate(
+      requestID: json['requestId'] as String,
+      title: json['title'] as String,
+      plan: json['plan'] as String,
+      spec: json['spec'] as String,
+      config: _object(
+        json['config'],
+        FactoryConfig.fromJson,
+      ),
+      editSnapshot: _objectOrNull(
+        json['editSnapshot'],
+        EditSnapshot.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['title'] = title;
+    json['plan'] = plan;
+    json['spec'] = spec;
+    json['config'] = config.toJson();
+    if (editSnapshot != null) {
+      json['editSnapshot'] = editSnapshot!.toJson();
+    }
+    return json;
+  }
+}
+
+class FactoryApproval {
+  const FactoryApproval({
+    required this.revision,
+    required this.plan,
+    required this.spec,
+    required this.planHash,
+    required this.config,
+    this.editSnapshot,
+    required this.implementerSubagents,
+    required this.reviewerSubagents,
+    required this.approvedAt,
+  });
+
+  final int revision;
+  final String plan;
+  final String spec;
+  /// PlanHash binds the exact plan, spec and selection this revision was
+  /// approved with (see factoryApprovalHash). An approval without a snapshot
+  /// holds the digest it always has.
+  final String planHash;
+  final FactoryConfig config;
+  final EditSnapshot? editSnapshot;
+  /// ImplementerSubagents and ReviewerSubagents are the subagent settings
+  /// this revision froze: runtime defaults, then the project's override, then
+  /// the draft's override, resolved when the approval was written. They are
+  /// values, not pointers, because an approval states what was approved.
+  /// An approval journalled before they existed carries the zero value and
+  /// keeps its bytes; nothing re-derives them for it.
+  final FactorySubagentSettings implementerSubagents;
+  final FactorySubagentSettings reviewerSubagents;
+  final String approvedAt;
+
+  factory FactoryApproval.fromJson(Map<String, dynamic> json) {
+    return FactoryApproval(
+      revision: (json['revision'] as num).toInt(),
+      plan: json['plan'] as String,
+      spec: json['spec'] as String,
+      planHash: json['planHash'] as String,
+      config: _object(
+        json['config'],
+        FactoryConfig.fromJson,
+      ),
+      editSnapshot: _objectOrNull(
+        json['editSnapshot'],
+        EditSnapshot.fromJson,
+      ),
+      implementerSubagents: _object(
+        json['implementerSubagents'],
+        FactorySubagentSettings.fromJson,
+      ),
+      reviewerSubagents: _object(
+        json['reviewerSubagents'],
+        FactorySubagentSettings.fromJson,
+      ),
+      approvedAt: json['approvedAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['revision'] = revision;
+    json['plan'] = plan;
+    json['spec'] = spec;
+    json['planHash'] = planHash;
+    json['config'] = config.toJson();
+    if (editSnapshot != null) {
+      json['editSnapshot'] = editSnapshot!.toJson();
+    }
+    json['implementerSubagents'] = implementerSubagents.toJson();
+    json['reviewerSubagents'] = reviewerSubagents.toJson();
+    json['approvedAt'] = approvedAt;
+    return json;
+  }
+}
+
+class FactoryGrant {
+  const FactoryGrant({
+    required this.id,
+    required this.reason,
+    required this.additionalRounds,
+    required this.at,
+  });
+
+  final String id;
+  final String reason;
+  final int additionalRounds;
+  final String at;
+
+  factory FactoryGrant.fromJson(Map<String, dynamic> json) {
+    return FactoryGrant(
+      id: json['id'] as String,
+      reason: json['reason'] as String,
+      additionalRounds: (json['additionalRounds'] as num).toInt(),
+      at: json['at'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['reason'] = reason;
+    json['additionalRounds'] = additionalRounds;
+    json['at'] = at;
+    return json;
+  }
+}
+
+class FactoryWorker {
+  const FactoryWorker({
+    required this.agentID,
+    required this.sessionID,
+    required this.role,
+    required this.spawnEffectID,
+    required this.parked,
+    this.approvalRevision,
+    required this.subagents,
+  });
+
+  final String agentID;
+  final String sessionID;
+  final String role;
+  final String spawnEffectID;
+  final bool parked;
+  /// ApprovalRevision and Subagents bind the snapshot this worker was started
+  /// with: the approval revision it came from and that revision's settings for
+  /// this worker's own role. A worker started before they existed carries the
+  /// zero value for both, and FactoryWorker's marshalling keeps that worker's
+  /// record byte-identical so an older journal still replays.
+  final int? approvalRevision;
+  final FactorySubagentSettings subagents;
+
+  factory FactoryWorker.fromJson(Map<String, dynamic> json) {
+    return FactoryWorker(
+      agentID: json['agentId'] as String,
+      sessionID: json['sessionId'] as String,
+      role: json['role'] as String,
+      spawnEffectID: json['spawnEffectId'] as String,
+      parked: json['parked'] as bool,
+      approvalRevision: (json['approvalRevision'] as num?)?.toInt(),
+      subagents: _object(
+        json['subagents'],
+        FactorySubagentSettings.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['agentId'] = agentID;
+    json['sessionId'] = sessionID;
+    json['role'] = role;
+    json['spawnEffectId'] = spawnEffectID;
+    json['parked'] = parked;
+    if (approvalRevision != null) {
+      json['approvalRevision'] = approvalRevision;
+    }
+    json['subagents'] = subagents.toJson();
+    return json;
+  }
+}
+
+class FactoryPR {
+  const FactoryPR({
+    required this.number,
+    required this.url,
+    required this.nodeID,
+    required this.headRef,
+    required this.baseRef,
+    required this.headSHA,
+    required this.baseSHA,
+    required this.state,
+    required this.draft,
+  });
+
+  final int number;
+  final String url;
+  final String nodeID;
+  final String headRef;
+  final String baseRef;
+  final String headSHA;
+  final String baseSHA;
+  final String state;
+  final bool draft;
+
+  factory FactoryPR.fromJson(Map<String, dynamic> json) {
+    return FactoryPR(
+      number: (json['number'] as num).toInt(),
+      url: json['url'] as String,
+      nodeID: json['nodeId'] as String,
+      headRef: json['headRef'] as String,
+      baseRef: json['baseRef'] as String,
+      headSHA: json['headSha'] as String,
+      baseSHA: json['baseSha'] as String,
+      state: json['state'] as String,
+      draft: json['draft'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['number'] = number;
+    json['url'] = url;
+    json['nodeId'] = nodeID;
+    json['headRef'] = headRef;
+    json['baseRef'] = baseRef;
+    json['headSha'] = headSHA;
+    json['baseSha'] = baseSHA;
+    json['state'] = state;
+    json['draft'] = draft;
+    return json;
+  }
+}
+
+class FactoryCheckKey {
+  const FactoryCheckKey({
+    required this.kind,
+    required this.name,
+    required this.appID,
+  });
+
+  final String kind;
+  final String name;
+  final int appID;
+
+  factory FactoryCheckKey.fromJson(Map<String, dynamic> json) {
+    return FactoryCheckKey(
+      kind: json['kind'] as String,
+      name: json['name'] as String,
+      appID: (json['appId'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = kind;
+    json['name'] = name;
+    json['appId'] = appID;
+    return json;
+  }
+}
+
+class FactoryCheck {
+  const FactoryCheck({
+    required this.key,
+    required this.id,
+    required this.sha,
+    required this.status,
+    required this.conclusion,
+    required this.url,
+    required this.logTail,
+    required this.observedAt,
+  });
+
+  final FactoryCheckKey key;
+  final String id;
+  final String sha;
+  final String status;
+  final String conclusion;
+  final String url;
+  final String logTail;
+  final String observedAt;
+
+  factory FactoryCheck.fromJson(Map<String, dynamic> json) {
+    return FactoryCheck(
+      key: _object(
+        json['key'],
+        FactoryCheckKey.fromJson,
+      ),
+      id: json['id'] as String,
+      sha: json['sha'] as String,
+      status: json['status'] as String,
+      conclusion: json['conclusion'] as String,
+      url: json['url'] as String,
+      logTail: json['logTail'] as String,
+      observedAt: json['observedAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['key'] = key.toJson();
+    json['id'] = id;
+    json['sha'] = sha;
+    json['status'] = status;
+    json['conclusion'] = conclusion;
+    json['url'] = url;
+    json['logTail'] = logTail;
+    json['observedAt'] = observedAt;
+    return json;
+  }
+}
+
+class FactoryCI {
+  const FactoryCI({
+    required this.headSHA,
+    required this.checks,
+    required this.complete,
+    required this.observedAt,
+  });
+
+  final String headSHA;
+  final List<FactoryCheck> checks;
+  final bool complete;
+  final String observedAt;
+
+  factory FactoryCI.fromJson(Map<String, dynamic> json) {
+    return FactoryCI(
+      headSHA: json['headSha'] as String,
+      checks: _list(
+        json['checks'],
+        (value) => _object(value, FactoryCheck.fromJson),
+      ),
+      complete: json['complete'] as bool,
+      observedAt: json['observedAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['headSha'] = headSHA;
+    json['checks'] = [
+      for (final value in checks) value.toJson(),
+    ];
+    json['complete'] = complete;
+    json['observedAt'] = observedAt;
+    return json;
+  }
+}
+
+class FactoryReport {
+  const FactoryReport({
+    required this.operationID,
+    required this.outcome,
+    required this.summary,
+    required this.question,
+    required this.reason,
+    required this.baseSHA,
+    required this.headSHA,
+    required this.inputsAccessible,
+    required this.findings,
+    this.narration,
+  });
+
+  final String operationID;
+  final String outcome;
+  final String summary;
+  final String question;
+  final String reason;
+  final String baseSHA;
+  final String headSHA;
+  final bool inputsAccessible;
+  final List<ReviewFinding> findings;
+  final FactoryNarration? narration;
+
+  factory FactoryReport.fromJson(Map<String, dynamic> json) {
+    return FactoryReport(
+      operationID: json['operationId'] as String,
+      outcome: json['outcome'] as String,
+      summary: json['summary'] as String,
+      question: json['question'] as String,
+      reason: json['reason'] as String,
+      baseSHA: json['baseSha'] as String,
+      headSHA: json['headSha'] as String,
+      inputsAccessible: json['inputsAccessible'] as bool,
+      findings: _list(
+        json['findings'],
+        (value) => _object(value, ReviewFinding.fromJson),
+      ),
+      narration: _objectOrNull(
+        json['narration'],
+        FactoryNarration.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['operationId'] = operationID;
+    json['outcome'] = outcome;
+    json['summary'] = summary;
+    json['question'] = question;
+    json['reason'] = reason;
+    json['baseSha'] = baseSHA;
+    json['headSha'] = headSHA;
+    json['inputsAccessible'] = inputsAccessible;
+    json['findings'] = [
+      for (final value in findings) value.toJson(),
+    ];
+    if (narration != null) {
+      json['narration'] = narration!.toJson();
+    }
+    return json;
+  }
+}
+
+/// FactoryNarration is the engineer's account of the change: the issue and the
+/// proposed solution, the reasoning behind the implementation, and the
+/// verification that backs it.
+///
+/// The sections are the approved list. Constraints are narrated inside the
+/// approach and the implementation choice, because they are the reasons those
+/// two sections take the shape they do.
+class FactoryNarration {
+  const FactoryNarration({
+    required this.issue,
+    required this.approach,
+    required this.existingBehaviour,
+    required this.alternatives,
+    required this.tradeoffs,
+    required this.choice,
+    required this.verification,
+    required this.limitations,
+    this.excerpts,
+  });
+
+  final String issue;
+  final String approach;
+  final String existingBehaviour;
+  final String alternatives;
+  final String tradeoffs;
+  final String choice;
+  final String verification;
+  final String limitations;
+  final List<FactoryExcerpt>? excerpts;
+
+  factory FactoryNarration.fromJson(Map<String, dynamic> json) {
+    return FactoryNarration(
+      issue: json['issue'] as String,
+      approach: json['approach'] as String,
+      existingBehaviour: json['existingBehaviour'] as String,
+      alternatives: json['alternatives'] as String,
+      tradeoffs: json['tradeoffs'] as String,
+      choice: json['choice'] as String,
+      verification: json['verification'] as String,
+      limitations: json['limitations'] as String,
+      excerpts: _listOrNull(
+        json['excerpts'],
+        (value) => _object(value, FactoryExcerpt.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['issue'] = issue;
+    json['approach'] = approach;
+    json['existingBehaviour'] = existingBehaviour;
+    json['alternatives'] = alternatives;
+    json['tradeoffs'] = tradeoffs;
+    json['choice'] = choice;
+    json['verification'] = verification;
+    json['limitations'] = limitations;
+    if (excerpts != null) {
+      json['excerpts'] = [
+        for (final value in excerpts!) value.toJson(),
+      ];
+    }
+    return json;
+  }
+}
+
+/// FactoryExcerpt is a selected piece of code that supports the narration. It
+/// is a selection, not a diff: the narration avoids narrating every changed
+/// line.
+class FactoryExcerpt {
+  const FactoryExcerpt({
+    required this.path,
+    this.lang,
+    required this.code,
+  });
+
+  final String path;
+  final String? lang;
+  final String code;
+
+  factory FactoryExcerpt.fromJson(Map<String, dynamic> json) {
+    return FactoryExcerpt(
+      path: json['path'] as String,
+      lang: json['lang'] as String?,
+      code: json['code'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['path'] = path;
+    if (lang != null) {
+      json['lang'] = lang;
+    }
+    json['code'] = code;
+    return json;
+  }
+}
+
+class FactoryRound {
+  const FactoryRound({
+    required this.number,
+    required this.approvalRevision,
+    required this.implementEffectID,
+    required this.baseSHA,
+    required this.headSHA,
+    required this.treeSHA,
+    this.ci,
+    this.implementation,
+    this.review,
+    required this.startedAt,
+    required this.finishedAt,
+  });
+
+  final int number;
+  final int approvalRevision;
+  final String implementEffectID;
+  final String baseSHA;
+  final String headSHA;
+  final String treeSHA;
+  final FactoryCI? ci;
+  final FactoryReport? implementation;
+  final FactoryReport? review;
+  final String startedAt;
+  final String finishedAt;
+
+  factory FactoryRound.fromJson(Map<String, dynamic> json) {
+    return FactoryRound(
+      number: (json['number'] as num).toInt(),
+      approvalRevision: (json['approvalRevision'] as num).toInt(),
+      implementEffectID: json['implementEffectId'] as String,
+      baseSHA: json['baseSha'] as String,
+      headSHA: json['headSha'] as String,
+      treeSHA: json['treeSha'] as String,
+      ci: _objectOrNull(
+        json['ci'],
+        FactoryCI.fromJson,
+      ),
+      implementation: _objectOrNull(
+        json['implementation'],
+        FactoryReport.fromJson,
+      ),
+      review: _objectOrNull(
+        json['review'],
+        FactoryReport.fromJson,
+      ),
+      startedAt: json['startedAt'] as String,
+      finishedAt: json['finishedAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['number'] = number;
+    json['approvalRevision'] = approvalRevision;
+    json['implementEffectId'] = implementEffectID;
+    json['baseSha'] = baseSHA;
+    json['headSha'] = headSHA;
+    json['treeSha'] = treeSHA;
+    json['ci'] = ci?.toJson();
+    json['implementation'] = implementation?.toJson();
+    json['review'] = review?.toJson();
+    json['startedAt'] = startedAt;
+    json['finishedAt'] = finishedAt;
+    return json;
+  }
+}
+
+/// FactoryDelegatedTurn is one worker turn's delegated child work: the children
+/// the turn launched, and how far they have been proven. It is journalled beside
+/// the effect that dispatched the turn, so the item keeps the effect and the
+/// candidate identity it was dispatched with until its children are settled.
+/// The waiting state is not an outcome: the report the turn wrote before those
+/// children settled is early, and is never the effect's result.
+class FactoryDelegatedTurn {
+  const FactoryDelegatedTurn({
+    required this.effectID,
+    required this.workerID,
+    required this.sessionID,
+    required this.parentTurnID,
+    required this.childIDs,
+    this.continuationID,
+    required this.state,
+  });
+
+  final String effectID;
+  final String workerID;
+  final String sessionID;
+  final String parentTurnID;
+  final List<int> childIDs;
+  final String? continuationID;
+  /// waiting, prepared, dispatched, settled, uncertain
+  final String state;
+
+  factory FactoryDelegatedTurn.fromJson(Map<String, dynamic> json) {
+    return FactoryDelegatedTurn(
+      effectID: json['effectId'] as String,
+      workerID: json['workerId'] as String,
+      sessionID: json['sessionId'] as String,
+      parentTurnID: json['parentTurnId'] as String,
+      childIDs: _list(
+        json['childIds'],
+        (value) => (value as num).toInt(),
+      ),
+      continuationID: json['continuationId'] as String?,
+      state: json['state'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['effectId'] = effectID;
+    json['workerId'] = workerID;
+    json['sessionId'] = sessionID;
+    json['parentTurnId'] = parentTurnID;
+    json['childIds'] = childIDs;
+    if (continuationID != null) {
+      json['continuationId'] = continuationID;
+    }
+    json['state'] = state;
+    return json;
+  }
+}
+
+class FactoryEffect {
+  const FactoryEffect({
+    this.outcome,
+    required this.id,
+    required this.kind,
+    required this.status,
+    required this.workerRole,
+    required this.round,
+    required this.approvalRevision,
+    this.worker,
+    required this.expectedHead,
+    required this.expectedBase,
+    required this.createdAt,
+    this.delegated,
+  });
+
+  /// Outcome retains accepted stop reasons and confirmed adapter evidence.
+  final FactoryOutcome? outcome;
+  final String id;
+  final String kind;
+  final String status;
+  final String workerRole;
+  final int round;
+  final int approvalRevision;
+  final FactoryWorker? worker;
+  final String expectedHead;
+  final String expectedBase;
+  final String createdAt;
+  /// Delegated is the turn's launched child work while it is not proven
+  /// settled, and the waiting state Studio shows beside the effect's status.
+  /// It is omitted when nil, so a record journalled before delegated turns
+  /// existed keeps its bytes.
+  final FactoryDelegatedTurn? delegated;
+
+  factory FactoryEffect.fromJson(Map<String, dynamic> json) {
+    return FactoryEffect(
+      outcome: _objectOrNull(
+        json['outcome'],
+        FactoryOutcome.fromJson,
+      ),
+      id: json['id'] as String,
+      kind: json['kind'] as String,
+      status: json['status'] as String,
+      workerRole: json['workerRole'] as String,
+      round: (json['round'] as num).toInt(),
+      approvalRevision: (json['approvalRevision'] as num).toInt(),
+      worker: _objectOrNull(
+        json['worker'],
+        FactoryWorker.fromJson,
+      ),
+      expectedHead: json['expectedHead'] as String,
+      expectedBase: json['expectedBase'] as String,
+      createdAt: json['createdAt'] as String,
+      delegated: _objectOrNull(
+        json['delegated'],
+        FactoryDelegatedTurn.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['outcome'] = outcome?.toJson();
+    json['id'] = id;
+    json['kind'] = kind;
+    json['status'] = status;
+    json['workerRole'] = workerRole;
+    json['round'] = round;
+    json['approvalRevision'] = approvalRevision;
+    json['worker'] = worker?.toJson();
+    json['expectedHead'] = expectedHead;
+    json['expectedBase'] = expectedBase;
+    json['createdAt'] = createdAt;
+    if (delegated != null) {
+      json['delegated'] = delegated!.toJson();
+    }
+    return json;
+  }
+}
+
+class FactoryOutcome {
+  const FactoryOutcome({
+    required this.effectID,
+    required this.stopReason,
+    required this.error,
+    required this.headSHA,
+    required this.treeSHA,
+    required this.baseSHA,
+    this.worker,
+    this.pr,
+    this.report,
+    required this.confirmed,
+    this.delegated,
+  });
+
+  final String effectID;
+  final String stopReason;
+  final String error;
+  final String headSHA;
+  final String treeSHA;
+  final String baseSHA;
+  final FactoryWorker? worker;
+  final FactoryPR? pr;
+  final FactoryReport? report;
+  final bool confirmed;
+  /// Delegated is the waiting turn a worker effect hands back instead of a
+  /// result: the turn launched children it did not prove settled, so the report
+  /// it wrote before they settled is early and is never applied. It is omitted
+  /// when nil, so a completed outcome keeps the bytes it always wrote.
+  final FactoryDelegatedTurn? delegated;
+
+  factory FactoryOutcome.fromJson(Map<String, dynamic> json) {
+    return FactoryOutcome(
+      effectID: json['effectId'] as String,
+      stopReason: json['stopReason'] as String,
+      error: json['error'] as String,
+      headSHA: json['headSha'] as String,
+      treeSHA: json['treeSha'] as String,
+      baseSHA: json['baseSha'] as String,
+      worker: _objectOrNull(
+        json['worker'],
+        FactoryWorker.fromJson,
+      ),
+      pr: _objectOrNull(
+        json['pr'],
+        FactoryPR.fromJson,
+      ),
+      report: _objectOrNull(
+        json['report'],
+        FactoryReport.fromJson,
+      ),
+      confirmed: json['confirmed'] as bool,
+      delegated: _objectOrNull(
+        json['delegated'],
+        FactoryDelegatedTurn.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['effectId'] = effectID;
+    json['stopReason'] = stopReason;
+    json['error'] = error;
+    json['headSha'] = headSHA;
+    json['treeSha'] = treeSHA;
+    json['baseSha'] = baseSHA;
+    json['worker'] = worker?.toJson();
+    json['pr'] = pr?.toJson();
+    json['report'] = report?.toJson();
+    json['confirmed'] = confirmed;
+    if (delegated != null) {
+      json['delegated'] = delegated!.toJson();
+    }
+    return json;
+  }
+}
+
+class FactoryDecision {
+  const FactoryDecision({
+    required this.id,
+    required this.kind,
+    required this.question,
+    required this.reason,
+    required this.effectID,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String kind;
+  final String question;
+  final String reason;
+  final String effectID;
+  final String createdAt;
+
+  factory FactoryDecision.fromJson(Map<String, dynamic> json) {
+    return FactoryDecision(
+      id: json['id'] as String,
+      kind: json['kind'] as String,
+      question: json['question'] as String,
+      reason: json['reason'] as String,
+      effectID: json['effectId'] as String,
+      createdAt: json['createdAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['kind'] = kind;
+    json['question'] = question;
+    json['reason'] = reason;
+    json['effectId'] = effectID;
+    json['createdAt'] = createdAt;
+    return json;
+  }
+}
+
+/// FactoryProvenance attributes one journaled factory mutation to the MCP
+/// client that caused it. It is optional: an entry written before provenance
+/// existed still replays, and an ordinary Studio mutation records none.
+///
+/// Action is the capability the mutation was admitted under, RequestID is the
+/// client's own request identity (the journal's is namespaced), and Authority
+/// is the grant's approvalAuthority or the answer mode the client claimed. It
+/// records what the server accepted, which for a user-directed action is a
+/// client assertion rather than a verified human instruction.
+class FactoryProvenance {
+  const FactoryProvenance({
+    required this.clientID,
+    required this.projectID,
+    required this.action,
+    required this.requestID,
+    this.authority,
+    this.decisionID,
+    this.instanceID,
+    this.sessionID,
+    this.workerID,
+    this.role,
+    this.authorityOrigin,
+  });
+
+  final String clientID;
+  final String projectID;
+  final String action;
+  final String requestID;
+  final String? authority;
+  final String? decisionID;
+  /// The authenticated built-in principal, when the mutation came from a
+  /// session association rather than an MCP client. Every field is optional
+  /// and appended last, so a record written before session principals existed
+  /// — and a client's own provenance — marshals byte for byte as it always
+  /// did. AuthorityOrigin says where Authority came from; it is never claimed
+  /// by a caller.
+  final String? instanceID;
+  final String? sessionID;
+  final String? workerID;
+  final String? role;
+  final String? authorityOrigin;
+
+  factory FactoryProvenance.fromJson(Map<String, dynamic> json) {
+    return FactoryProvenance(
+      clientID: json['clientId'] as String,
+      projectID: json['projectId'] as String,
+      action: json['action'] as String,
+      requestID: json['requestId'] as String,
+      authority: json['authority'] as String?,
+      decisionID: json['decisionId'] as String?,
+      instanceID: json['instanceId'] as String?,
+      sessionID: json['sessionId'] as String?,
+      workerID: json['workerId'] as String?,
+      role: json['role'] as String?,
+      authorityOrigin: json['authorityOrigin'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['clientId'] = clientID;
+    json['projectId'] = projectID;
+    json['action'] = action;
+    json['requestId'] = requestID;
+    if (authority != null) {
+      json['authority'] = authority;
+    }
+    if (decisionID != null) {
+      json['decisionId'] = decisionID;
+    }
+    if (instanceID != null) {
+      json['instanceId'] = instanceID;
+    }
+    if (sessionID != null) {
+      json['sessionId'] = sessionID;
+    }
+    if (workerID != null) {
+      json['workerId'] = workerID;
+    }
+    if (role != null) {
+      json['role'] = role;
+    }
+    if (authorityOrigin != null) {
+      json['authorityOrigin'] = authorityOrigin;
+    }
+    return json;
+  }
+}
+
+class FactoryEvent {
+  const FactoryEvent({
+    required this.sequence,
+    required this.at,
+    required this.kind,
+    required this.message,
+    required this.effectID,
+    this.provenance,
+  });
+
+  final int sequence;
+  final String at;
+  final String kind;
+  final String message;
+  final String effectID;
+  /// Provenance is absent from every entry the Studio surfaces write, and
+  /// from every record journalled before it existed, so those bytes are
+  /// unchanged.
+  final FactoryProvenance? provenance;
+
+  factory FactoryEvent.fromJson(Map<String, dynamic> json) {
+    return FactoryEvent(
+      sequence: (json['sequence'] as num).toInt(),
+      at: json['at'] as String,
+      kind: json['kind'] as String,
+      message: json['message'] as String,
+      effectID: json['effectId'] as String,
+      provenance: _objectOrNull(
+        json['provenance'],
+        FactoryProvenance.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['sequence'] = sequence;
+    json['at'] = at;
+    json['kind'] = kind;
+    json['message'] = message;
+    json['effectId'] = effectID;
+    if (provenance != null) {
+      json['provenance'] = provenance!.toJson();
+    }
+    return json;
+  }
+}
+
+class FactoryItem {
+  const FactoryItem({
+    required this.id,
+    required this.title,
+    required this.state,
+    required this.stage,
+    required this.repoID,
+    required this.projectRoot,
+    required this.hostID,
+    required this.branch,
+    required this.baseSHA,
+    required this.version,
+    required this.draft,
+    required this.approvals,
+    this.proposals,
+    required this.grants,
+    required this.rounds,
+    required this.workers,
+    required this.pRs,
+    required this.effects,
+    this.decision,
+    required this.history,
+    this.completion,
+    required this.createdAt,
+    required this.approvedAt,
+    required this.updatedAt,
+  });
+
+  final String id;
+  final String title;
+  final String state;
+  final String stage;
+  final String repoID;
+  final String projectRoot;
+  final String hostID;
+  final String branch;
+  final String baseSHA;
+  final int version;
+  final FactoryCreate draft;
+  final List<FactoryApproval> approvals;
+  /// Proposals is the append-only history of plan/specification revisions
+  /// proposed against this item. It is optional, so an item journalled
+  /// before proposals existed replays unchanged.
+  final List<FactoryRevisionProposal>? proposals;
+  final List<FactoryGrant> grants;
+  final List<FactoryRound> rounds;
+  final List<FactoryWorker> workers;
+  final List<FactoryPR> pRs;
+  final List<FactoryEffect> effects;
+  final FactoryDecision? decision;
+  final List<FactoryEvent> history;
+  /// Completion is the durable business completion status, which is
+  /// independent of State: the work counts as done as far as the user is
+  /// concerned, whatever the run happens to be doing. It is optional, so an
+  /// item journalled before completion existed replays unchanged, and a nil
+  /// record (or one whose status is empty) is open.
+  final FactoryCompletion? completion;
+  final String createdAt;
+  final String approvedAt;
+  final String updatedAt;
+
+  factory FactoryItem.fromJson(Map<String, dynamic> json) {
+    return FactoryItem(
+      id: json['id'] as String,
+      title: json['title'] as String,
+      state: json['state'] as String,
+      stage: json['stage'] as String,
+      repoID: json['repoId'] as String,
+      projectRoot: json['projectRoot'] as String,
+      hostID: json['hostId'] as String,
+      branch: json['branch'] as String,
+      baseSHA: json['baseSha'] as String,
+      version: (json['version'] as num).toInt(),
+      draft: _object(
+        json['draft'],
+        FactoryCreate.fromJson,
+      ),
+      approvals: _list(
+        json['approvals'],
+        (value) => _object(value, FactoryApproval.fromJson),
+      ),
+      proposals: _listOrNull(
+        json['proposals'],
+        (value) => _object(value, FactoryRevisionProposal.fromJson),
+      ),
+      grants: _list(
+        json['grants'],
+        (value) => _object(value, FactoryGrant.fromJson),
+      ),
+      rounds: _list(
+        json['rounds'],
+        (value) => _object(value, FactoryRound.fromJson),
+      ),
+      workers: _list(
+        json['workers'],
+        (value) => _object(value, FactoryWorker.fromJson),
+      ),
+      pRs: _list(
+        json['prs'],
+        (value) => _object(value, FactoryPR.fromJson),
+      ),
+      effects: _list(
+        json['effects'],
+        (value) => _object(value, FactoryEffect.fromJson),
+      ),
+      decision: _objectOrNull(
+        json['decision'],
+        FactoryDecision.fromJson,
+      ),
+      history: _list(
+        json['history'],
+        (value) => _object(value, FactoryEvent.fromJson),
+      ),
+      completion: _objectOrNull(
+        json['completion'],
+        FactoryCompletion.fromJson,
+      ),
+      createdAt: json['createdAt'] as String,
+      approvedAt: json['approvedAt'] as String,
+      updatedAt: json['updatedAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['title'] = title;
+    json['state'] = state;
+    json['stage'] = stage;
+    json['repoId'] = repoID;
+    json['projectRoot'] = projectRoot;
+    json['hostId'] = hostID;
+    json['branch'] = branch;
+    json['baseSha'] = baseSHA;
+    json['version'] = version;
+    json['draft'] = draft.toJson();
+    json['approvals'] = [
+      for (final value in approvals) value.toJson(),
+    ];
+    if (proposals != null) {
+      json['proposals'] = [
+        for (final value in proposals!) value.toJson(),
+      ];
+    }
+    json['grants'] = [
+      for (final value in grants) value.toJson(),
+    ];
+    json['rounds'] = [
+      for (final value in rounds) value.toJson(),
+    ];
+    json['workers'] = [
+      for (final value in workers) value.toJson(),
+    ];
+    json['prs'] = [
+      for (final value in pRs) value.toJson(),
+    ];
+    json['effects'] = [
+      for (final value in effects) value.toJson(),
+    ];
+    json['decision'] = decision?.toJson();
+    json['history'] = [
+      for (final value in history) value.toJson(),
+    ];
+    if (completion != null) {
+      json['completion'] = completion!.toJson();
+    }
+    json['createdAt'] = createdAt;
+    json['approvedAt'] = approvedAt;
+    json['updatedAt'] = updatedAt;
+    return json;
+  }
+}
+
+class FactoryCommand {
+  const FactoryCommand({
+    required this.requestID,
+    required this.kind,
+    required this.decisionID,
+    required this.answer,
+    required this.reason,
+    required this.expectedVersion,
+    required this.additionalRounds,
+    this.replacement,
+    required this.implementerRouting,
+    required this.reviewerRouting,
+    required this.confirmPreviousWorkerStopped,
+    this.revision,
+    this.completion,
+    this.settingsVersion,
+  });
+
+  final String requestID;
+  final String kind;
+  final String decisionID;
+  final String answer;
+  final String reason;
+  final int expectedVersion;
+  final int additionalRounds;
+  final FactoryCreate? replacement;
+  final Object? implementerRouting;
+  final Object? reviewerRouting;
+  final bool confirmPreviousWorkerStopped;
+  /// Revision is the structured payload of a plan-revision command:
+  /// revision_propose, revision_supersede, revision_reject,
+  /// revision_assess_request, revision_assess_claim, revision_assess_result,
+  /// revision_assess_retry, revision_authorize, revision_delivery_choice and
+  /// revision_follow_up_confirm read it, and every other kind leaves it nil,
+  /// so a command those kinds do not carry marshals as it always did.
+  final FactoryRevisionCommand? revision;
+  /// Completion is the structured payload of the completion commands:
+  /// link_pr reads the pull request it names, refresh_pr_evidence carries
+  /// nothing of its own, and the merge kinds read the reviewed set, the
+  /// strategy, the completion intent and the run choice. Every other kind
+  /// leaves it nil, so a command those kinds do not carry marshals as it
+  /// always did.
+  final FactoryCompletionCommand? completion;
+  /// SettingsVersion is the settings version the review surface displayed:
+  /// the project's settings ETag and the session's reported defaults digest,
+  /// as one string. An approval that carries it is refused when either side
+  /// has changed since review; an approval that omits it — a legacy client,
+  /// or a command replayed from an older journal — proceeds as it always did.
+  final String? settingsVersion;
+
+  factory FactoryCommand.fromJson(Map<String, dynamic> json) {
+    return FactoryCommand(
+      requestID: json['requestId'] as String,
+      kind: json['kind'] as String,
+      decisionID: json['decisionId'] as String,
+      answer: json['answer'] as String,
+      reason: json['reason'] as String,
+      expectedVersion: (json['expectedVersion'] as num).toInt(),
+      additionalRounds: (json['additionalRounds'] as num).toInt(),
+      replacement: _objectOrNull(
+        json['replacement'],
+        FactoryCreate.fromJson,
+      ),
+      implementerRouting: json['implementerRouting'],
+      reviewerRouting: json['reviewerRouting'],
+      confirmPreviousWorkerStopped: json['confirmPreviousWorkerStopped'] as bool,
+      revision: _objectOrNull(
+        json['revision'],
+        FactoryRevisionCommand.fromJson,
+      ),
+      completion: _objectOrNull(
+        json['completion'],
+        FactoryCompletionCommand.fromJson,
+      ),
+      settingsVersion: json['settingsVersion'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['kind'] = kind;
+    json['decisionId'] = decisionID;
+    json['answer'] = answer;
+    json['reason'] = reason;
+    json['expectedVersion'] = expectedVersion;
+    json['additionalRounds'] = additionalRounds;
+    json['replacement'] = replacement?.toJson();
+    json['implementerRouting'] = implementerRouting;
+    json['reviewerRouting'] = reviewerRouting;
+    json['confirmPreviousWorkerStopped'] = confirmPreviousWorkerStopped;
+    if (revision != null) {
+      json['revision'] = revision!.toJson();
+    }
+    if (completion != null) {
+      json['completion'] = completion!.toJson();
+    }
+    if (settingsVersion != null) {
+      json['settingsVersion'] = settingsVersion;
+    }
+    return json;
+  }
+}
+
+/// FactoryRevisionAssessment is a planner's recorded judgement about one
+/// proposed revision. It is advisory: it names the classification it asserts,
+/// the work it believes is affected, the routing it recommends and whether the
+/// proposal can wait for a safe boundary or needs the running turn interrupted.
+///
+/// Classification and strategy are assertions by a trusted planner, not proofs:
+/// the journal records what was claimed, and authorization rechecks who may act
+/// on it.
+class FactoryRevisionAssessment {
+  const FactoryRevisionAssessment({
+    required this.classification,
+    required this.reason,
+    this.affectedEffectID,
+    this.affectedWorkerID,
+    required this.recommendation,
+    required this.strategy,
+    required this.assessorID,
+    required this.candidateHash,
+    required this.baseRevision,
+  });
+
+  /// routine_clarification | scope_change | needs_user
+  final String classification;
+  final String reason;
+  final String? affectedEffectID;
+  final String? affectedWorkerID;
+  /// amend | follow_up
+  final String recommendation;
+  /// wait_safe | interrupt | hold
+  final String strategy;
+  final String assessorID;
+  final String candidateHash;
+  final int baseRevision;
+
+  factory FactoryRevisionAssessment.fromJson(Map<String, dynamic> json) {
+    return FactoryRevisionAssessment(
+      classification: json['classification'] as String,
+      reason: json['reason'] as String,
+      affectedEffectID: json['affectedEffectId'] as String?,
+      affectedWorkerID: json['affectedWorkerId'] as String?,
+      recommendation: json['recommendation'] as String,
+      strategy: json['strategy'] as String,
+      assessorID: json['assessorId'] as String,
+      candidateHash: json['candidateHash'] as String,
+      baseRevision: (json['baseRevision'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['classification'] = classification;
+    json['reason'] = reason;
+    if (affectedEffectID != null) {
+      json['affectedEffectId'] = affectedEffectID;
+    }
+    if (affectedWorkerID != null) {
+      json['affectedWorkerId'] = affectedWorkerID;
+    }
+    json['recommendation'] = recommendation;
+    json['strategy'] = strategy;
+    json['assessorId'] = assessorID;
+    json['candidateHash'] = candidateHash;
+    json['baseRevision'] = baseRevision;
+    return json;
+  }
+}
+
+/// FactoryRevisionDelivery is the recorded intent and evidence for handing an
+/// authorized revision to the worker that is running, or will run, the item.
+///
+/// It is evidence, not a request log: a state here was observed, or the outcome
+/// of the attempt is explicitly unknown. "delivered" means the runtime accepted
+/// the input, never that the agent followed it.
+class FactoryRevisionDelivery {
+  const FactoryRevisionDelivery({
+    required this.strategy,
+    required this.state,
+    this.sessionID,
+    this.turnID,
+    this.requestID,
+    required this.candidateHash,
+  });
+
+  /// wait_safe | interrupt | hold
+  final String strategy;
+  /// pending | dispatching | accepted | interrupting | waiting_safe_boundary | waiting_for_resume | delivered | undelivered | uncertain
+  final String state;
+  final String? sessionID;
+  final String? turnID;
+  final String? requestID;
+  final String candidateHash;
+
+  factory FactoryRevisionDelivery.fromJson(Map<String, dynamic> json) {
+    return FactoryRevisionDelivery(
+      strategy: json['strategy'] as String,
+      state: json['state'] as String,
+      sessionID: json['sessionId'] as String?,
+      turnID: json['turnId'] as String?,
+      requestID: json['requestId'] as String?,
+      candidateHash: json['candidateHash'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['strategy'] = strategy;
+    json['state'] = state;
+    if (sessionID != null) {
+      json['sessionId'] = sessionID;
+    }
+    if (turnID != null) {
+      json['turnId'] = turnID;
+    }
+    if (requestID != null) {
+      json['requestId'] = requestID;
+    }
+    json['candidateHash'] = candidateHash;
+    return json;
+  }
+}
+
+/// FactoryRevisionProposal is one immutable plan/specification revision
+/// proposed against an approved factory revision.
+///
+/// The candidate bytes, the base it was proposed against, its hash and its
+/// creator are journal history: an edit is a new proposal, and replacing an
+/// unresolved one explicitly supersedes it rather than rewriting it. Only
+/// state, assessment, authority and delivery move afterwards, and every one of
+/// those moves bumps Version so a caller writing from a stale read is refused.
+///
+/// While an amendment is authorized but not yet activated, the item's active
+/// approval stays the last entry of FactoryItem.Approvals: an in-flight worker
+/// keeps the revision it was started under.
+class FactoryRevisionProposal {
+  const FactoryRevisionProposal({
+    required this.id,
+    required this.version,
+    required this.baseRevision,
+    required this.baseHash,
+    required this.plan,
+    required this.spec,
+    required this.candidateHash,
+    required this.createdBy,
+    required this.autoAssess,
+    required this.status,
+    required this.assessmentState,
+    this.assessmentAttemptID,
+    this.assessment,
+    this.authorizedBy,
+    this.authority,
+    this.routing,
+    this.pauseState,
+    this.pauseRequestID,
+    this.delivery,
+    this.followUpRequestID,
+    this.followUpItemID,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  final String id;
+  final int version;
+  final int baseRevision;
+  final String baseHash;
+  final String plan;
+  final String spec;
+  final String candidateHash;
+  final String createdBy;
+  final bool autoAssess;
+  /// proposed | awaiting_authorization | authorized | activated | rejected | superseded | follow_up_pending | followed_up
+  final String status;
+  /// not_requested | pending | assessing | assessed | unavailable | uncertain | failed
+  final String assessmentState;
+  final String? assessmentAttemptID;
+  final FactoryRevisionAssessment? assessment;
+  final String? authorizedBy;
+  final String? authority;
+  /// amend | follow_up
+  final String? routing;
+  /// requested | stopping | paused | uncertain
+  final String? pauseState;
+  final String? pauseRequestID;
+  final FactoryRevisionDelivery? delivery;
+  final String? followUpRequestID;
+  final String? followUpItemID;
+  final String createdAt;
+  final String updatedAt;
+
+  factory FactoryRevisionProposal.fromJson(Map<String, dynamic> json) {
+    return FactoryRevisionProposal(
+      id: json['id'] as String,
+      version: (json['version'] as num).toInt(),
+      baseRevision: (json['baseRevision'] as num).toInt(),
+      baseHash: json['baseHash'] as String,
+      plan: json['plan'] as String,
+      spec: json['spec'] as String,
+      candidateHash: json['candidateHash'] as String,
+      createdBy: json['createdBy'] as String,
+      autoAssess: json['autoAssess'] as bool,
+      status: json['status'] as String,
+      assessmentState: json['assessmentState'] as String,
+      assessmentAttemptID: json['assessmentAttemptId'] as String?,
+      assessment: _objectOrNull(
+        json['assessment'],
+        FactoryRevisionAssessment.fromJson,
+      ),
+      authorizedBy: json['authorizedBy'] as String?,
+      authority: json['authority'] as String?,
+      routing: json['routing'] as String?,
+      pauseState: json['pauseState'] as String?,
+      pauseRequestID: json['pauseRequestId'] as String?,
+      delivery: _objectOrNull(
+        json['delivery'],
+        FactoryRevisionDelivery.fromJson,
+      ),
+      followUpRequestID: json['followUpRequestId'] as String?,
+      followUpItemID: json['followUpItemId'] as String?,
+      createdAt: json['createdAt'] as String,
+      updatedAt: json['updatedAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['version'] = version;
+    json['baseRevision'] = baseRevision;
+    json['baseHash'] = baseHash;
+    json['plan'] = plan;
+    json['spec'] = spec;
+    json['candidateHash'] = candidateHash;
+    json['createdBy'] = createdBy;
+    json['autoAssess'] = autoAssess;
+    json['status'] = status;
+    json['assessmentState'] = assessmentState;
+    if (assessmentAttemptID != null) {
+      json['assessmentAttemptId'] = assessmentAttemptID;
+    }
+    if (assessment != null) {
+      json['assessment'] = assessment!.toJson();
+    }
+    if (authorizedBy != null) {
+      json['authorizedBy'] = authorizedBy;
+    }
+    if (authority != null) {
+      json['authority'] = authority;
+    }
+    if (routing != null) {
+      json['routing'] = routing;
+    }
+    if (pauseState != null) {
+      json['pauseState'] = pauseState;
+    }
+    if (pauseRequestID != null) {
+      json['pauseRequestId'] = pauseRequestID;
+    }
+    if (delivery != null) {
+      json['delivery'] = delivery!.toJson();
+    }
+    if (followUpRequestID != null) {
+      json['followUpRequestId'] = followUpRequestID;
+    }
+    if (followUpItemID != null) {
+      json['followUpItemId'] = followUpItemID;
+    }
+    json['createdAt'] = createdAt;
+    json['updatedAt'] = updatedAt;
+    return json;
+  }
+}
+
+/// FactoryRevisionCommand is one plan-revision command's structured payload.
+///
+/// A candidate is named by its exact bytes and the hash that binds them, and
+/// every mutation names the proposal and the version the caller read, so a
+/// stale command conflicts instead of silently rebasing. BaseRevision and
+/// BaseHash name the approved revision the candidate was written against.
+class FactoryRevisionCommand {
+  const FactoryRevisionCommand({
+    this.proposalID,
+    this.proposalVersion,
+    this.baseRevision,
+    this.baseHash,
+    this.plan,
+    this.spec,
+    this.candidateHash,
+    this.attemptID,
+    this.assessment,
+    this.routing,
+    this.strategy,
+    this.followUp,
+  });
+
+  final String? proposalID;
+  final int? proposalVersion;
+  final int? baseRevision;
+  final String? baseHash;
+  final String? plan;
+  final String? spec;
+  final String? candidateHash;
+  final String? attemptID;
+  final FactoryRevisionAssessment? assessment;
+  final String? routing;
+  final String? strategy;
+  final FactoryCreate? followUp;
+
+  factory FactoryRevisionCommand.fromJson(Map<String, dynamic> json) {
+    return FactoryRevisionCommand(
+      proposalID: json['proposalId'] as String?,
+      proposalVersion: (json['proposalVersion'] as num?)?.toInt(),
+      baseRevision: (json['baseRevision'] as num?)?.toInt(),
+      baseHash: json['baseHash'] as String?,
+      plan: json['plan'] as String?,
+      spec: json['spec'] as String?,
+      candidateHash: json['candidateHash'] as String?,
+      attemptID: json['attemptId'] as String?,
+      assessment: _objectOrNull(
+        json['assessment'],
+        FactoryRevisionAssessment.fromJson,
+      ),
+      routing: json['routing'] as String?,
+      strategy: json['strategy'] as String?,
+      followUp: _objectOrNull(
+        json['followUp'],
+        FactoryCreate.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (proposalID != null) {
+      json['proposalId'] = proposalID;
+    }
+    if (proposalVersion != null) {
+      json['proposalVersion'] = proposalVersion;
+    }
+    if (baseRevision != null) {
+      json['baseRevision'] = baseRevision;
+    }
+    if (baseHash != null) {
+      json['baseHash'] = baseHash;
+    }
+    if (plan != null) {
+      json['plan'] = plan;
+    }
+    if (spec != null) {
+      json['spec'] = spec;
+    }
+    if (candidateHash != null) {
+      json['candidateHash'] = candidateHash;
+    }
+    if (attemptID != null) {
+      json['attemptId'] = attemptID;
+    }
+    if (assessment != null) {
+      json['assessment'] = assessment!.toJson();
+    }
+    if (routing != null) {
+      json['routing'] = routing;
+    }
+    if (strategy != null) {
+      json['strategy'] = strategy;
+    }
+    if (followUp != null) {
+      json['followUp'] = followUp!.toJson();
+    }
+    return json;
+  }
+}
+
+/// FactoryCompletionCommand is the structured payload of the completion
+/// commands. Each kind reads only the fields it needs, so a command those
+/// kinds do not carry marshals as it always did.
+class FactoryCompletionCommand {
+  const FactoryCompletionCommand({
+    this.link,
+    this.pRs,
+    this.strategy,
+    this.completeAfter,
+    this.runChoice,
+  });
+
+  /// Link is the pull request a link_pr command names: a number or a URL.
+  final String? link;
+  /// PRs is the reviewed, ordered set a merge_pr or merge_and_complete
+  /// command authorizes.
+  final List<FactoryCompletionPR>? pRs;
+  /// Strategy is the reviewed merge strategy.
+  final String? strategy;
+  /// CompleteAfter completes the item once every reviewed merge confirms.
+  final bool? completeAfter;
+  /// RunChoice is continue or request_stop when the item's own run is
+  /// active or its state cannot be established.
+  final String? runChoice;
+
+  factory FactoryCompletionCommand.fromJson(Map<String, dynamic> json) {
+    return FactoryCompletionCommand(
+      link: json['link'] as String?,
+      pRs: _listOrNull(
+        json['prs'],
+        (value) => _object(value, FactoryCompletionPR.fromJson),
+      ),
+      strategy: json['strategy'] as String?,
+      completeAfter: json['completeAfter'] as bool?,
+      runChoice: json['runChoice'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (link != null) {
+      json['link'] = link;
+    }
+    if (pRs != null) {
+      json['prs'] = [
+        for (final value in pRs!) value.toJson(),
+      ];
+    }
+    if (strategy != null) {
+      json['strategy'] = strategy;
+    }
+    if (completeAfter != null) {
+      json['completeAfter'] = completeAfter;
+    }
+    if (runChoice != null) {
+      json['runChoice'] = runChoice;
+    }
+    return json;
+  }
+}
+
+/// FactoryCompletionPR is one pull request a user reviewed for a merge batch.
+class FactoryCompletionPR {
+  const FactoryCompletionPR({
+    required this.repoID,
+    required this.number,
+    required this.nodeID,
+    required this.headSHA,
+    required this.baseRef,
+  });
+
+  final String repoID;
+  final int number;
+  final String nodeID;
+  final String headSHA;
+  final String baseRef;
+
+  factory FactoryCompletionPR.fromJson(Map<String, dynamic> json) {
+    return FactoryCompletionPR(
+      repoID: json['repoId'] as String,
+      number: (json['number'] as num).toInt(),
+      nodeID: json['nodeId'] as String,
+      headSHA: json['headSha'] as String,
+      baseRef: json['baseRef'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['repoId'] = repoID;
+    json['number'] = number;
+    json['nodeId'] = nodeID;
+    json['headSha'] = headSHA;
+    json['baseRef'] = baseRef;
+    return json;
+  }
+}
+
+class FactoryPRLink {
+  const FactoryPRLink({
+    required this.repoID,
+    required this.pr,
+    required this.origin,
+    required this.observedAt,
+    required this.fresh,
+  });
+
+  final String repoID;
+  final FactoryPR pr;
+  /// factory or user
+  final String origin;
+  final String observedAt;
+  final bool fresh;
+
+  factory FactoryPRLink.fromJson(Map<String, dynamic> json) {
+    return FactoryPRLink(
+      repoID: json['repoId'] as String,
+      pr: _object(
+        json['pr'],
+        FactoryPR.fromJson,
+      ),
+      origin: json['origin'] as String,
+      observedAt: json['observedAt'] as String,
+      fresh: json['fresh'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['repoId'] = repoID;
+    json['pr'] = pr.toJson();
+    json['origin'] = origin;
+    json['observedAt'] = observedAt;
+    json['fresh'] = fresh;
+    return json;
+  }
+}
+
+class FactoryAssessment {
+  const FactoryAssessment({
+    required this.status,
+    this.summary,
+    this.source,
+    required this.inputDigest,
+    required this.observedAt,
+    required this.fresh,
+  });
+
+  /// pending, available, failed, unavailable
+  final String status;
+  final String? summary;
+  final String? source;
+  final String inputDigest;
+  final String observedAt;
+  /// Fresh is derived, never stored: the server recomputes it on every item
+  /// it serves by comparing InputDigest with the item's current input digest,
+  /// so a result computed against inputs that have since moved is shown with
+  /// its summary intact and fresh false. The journalled value is never
+  /// trusted on read.
+  final bool fresh;
+
+  factory FactoryAssessment.fromJson(Map<String, dynamic> json) {
+    return FactoryAssessment(
+      status: json['status'] as String,
+      summary: json['summary'] as String?,
+      source: json['source'] as String?,
+      inputDigest: json['inputDigest'] as String,
+      observedAt: json['observedAt'] as String,
+      fresh: json['fresh'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['status'] = status;
+    if (summary != null) {
+      json['summary'] = summary;
+    }
+    if (source != null) {
+      json['source'] = source;
+    }
+    json['inputDigest'] = inputDigest;
+    json['observedAt'] = observedAt;
+    json['fresh'] = fresh;
+    return json;
+  }
+}
+
+class FactoryCompletionRecord {
+  const FactoryCompletionRecord({
+    required this.id,
+    required this.at,
+    required this.actor,
+    required this.goal,
+    required this.criteria,
+    this.assessment,
+    required this.links,
+    this.runChoice,
+  });
+
+  final String id;
+  final String at;
+  final String actor;
+  final String goal;
+  final String criteria;
+  final FactoryAssessment? assessment;
+  final List<FactoryPRLink> links;
+  /// continue or request_stop
+  final String? runChoice;
+
+  factory FactoryCompletionRecord.fromJson(Map<String, dynamic> json) {
+    return FactoryCompletionRecord(
+      id: json['id'] as String,
+      at: json['at'] as String,
+      actor: json['actor'] as String,
+      goal: json['goal'] as String,
+      criteria: json['criteria'] as String,
+      assessment: _objectOrNull(
+        json['assessment'],
+        FactoryAssessment.fromJson,
+      ),
+      links: _list(
+        json['links'],
+        (value) => _object(value, FactoryPRLink.fromJson),
+      ),
+      runChoice: json['runChoice'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['at'] = at;
+    json['actor'] = actor;
+    json['goal'] = goal;
+    json['criteria'] = criteria;
+    if (assessment != null) {
+      json['assessment'] = assessment!.toJson();
+    }
+    json['links'] = [
+      for (final value in links) value.toJson(),
+    ];
+    if (runChoice != null) {
+      json['runChoice'] = runChoice;
+    }
+    return json;
+  }
+}
+
+class FactoryMergeStep {
+  const FactoryMergeStep({
+    required this.repoID,
+    required this.number,
+    required this.nodeID,
+    required this.headSHA,
+    required this.baseRef,
+    required this.strategy,
+    required this.state,
+    this.result,
+  });
+
+  final String repoID;
+  final int number;
+  final String nodeID;
+  final String headSHA;
+  final String baseRef;
+  final String strategy;
+  /// unattempted, prepared, dispatched, confirmed, failed, uncertain
+  final String state;
+  final String? result;
+
+  factory FactoryMergeStep.fromJson(Map<String, dynamic> json) {
+    return FactoryMergeStep(
+      repoID: json['repoId'] as String,
+      number: (json['number'] as num).toInt(),
+      nodeID: json['nodeId'] as String,
+      headSHA: json['headSha'] as String,
+      baseRef: json['baseRef'] as String,
+      strategy: json['strategy'] as String,
+      state: json['state'] as String,
+      result: json['result'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['repoId'] = repoID;
+    json['number'] = number;
+    json['nodeId'] = nodeID;
+    json['headSha'] = headSHA;
+    json['baseRef'] = baseRef;
+    json['strategy'] = strategy;
+    json['state'] = state;
+    if (result != null) {
+      json['result'] = result;
+    }
+    return json;
+  }
+}
+
+class FactoryMergeBatch {
+  const FactoryMergeBatch({
+    required this.id,
+    required this.requestID,
+    required this.state,
+    required this.completeAfter,
+    this.runChoice,
+    required this.steps,
+  });
+
+  final String id;
+  final String requestID;
+  /// active, stopped, complete
+  final String state;
+  final bool completeAfter;
+  final String? runChoice;
+  final List<FactoryMergeStep> steps;
+
+  factory FactoryMergeBatch.fromJson(Map<String, dynamic> json) {
+    return FactoryMergeBatch(
+      id: json['id'] as String,
+      requestID: json['requestId'] as String,
+      state: json['state'] as String,
+      completeAfter: json['completeAfter'] as bool,
+      runChoice: json['runChoice'] as String?,
+      steps: _list(
+        json['steps'],
+        (value) => _object(value, FactoryMergeStep.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['requestId'] = requestID;
+    json['state'] = state;
+    json['completeAfter'] = completeAfter;
+    if (runChoice != null) {
+      json['runChoice'] = runChoice;
+    }
+    json['steps'] = [
+      for (final value in steps) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+class FactoryCompletion {
+  const FactoryCompletion({
+    required this.status,
+    this.links,
+    this.assessment,
+    this.records,
+    this.batch,
+    this.stopState,
+  });
+
+  /// open or complete; empty means open
+  final String status;
+  final List<FactoryPRLink>? links;
+  final FactoryAssessment? assessment;
+  final List<FactoryCompletionRecord>? records;
+  final FactoryMergeBatch? batch;
+  /// requested, stopped, failed, unknown
+  final String? stopState;
+
+  factory FactoryCompletion.fromJson(Map<String, dynamic> json) {
+    return FactoryCompletion(
+      status: json['status'] as String,
+      links: _listOrNull(
+        json['links'],
+        (value) => _object(value, FactoryPRLink.fromJson),
+      ),
+      assessment: _objectOrNull(
+        json['assessment'],
+        FactoryAssessment.fromJson,
+      ),
+      records: _listOrNull(
+        json['records'],
+        (value) => _object(value, FactoryCompletionRecord.fromJson),
+      ),
+      batch: _objectOrNull(
+        json['batch'],
+        FactoryMergeBatch.fromJson,
+      ),
+      stopState: json['stopState'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['status'] = status;
+    if (links != null) {
+      json['links'] = [
+        for (final value in links!) value.toJson(),
+      ];
+    }
+    if (assessment != null) {
+      json['assessment'] = assessment!.toJson();
+    }
+    if (records != null) {
+      json['records'] = [
+        for (final value in records!) value.toJson(),
+      ];
+    }
+    if (batch != null) {
+      json['batch'] = batch!.toJson();
+    }
+    if (stopState != null) {
+      json['stopState'] = stopState;
+    }
+    return json;
+  }
+}
+
 /// FileEntry is one directory entry.
 class FileEntry {
   const FileEntry({
@@ -3427,6 +6062,7 @@ class InboxGroups {
 enum InboxItemKind {
   inboxItemAgent('agent'),
   inboxItemIntake('intake'),
+  inboxItemPull('pull'),
   unknown('unknown');
 
   const InboxItemKind(this.wire);
@@ -3452,6 +6088,7 @@ class InboxItem {
     required this.kind,
     this.agentID,
     this.submission,
+    this.pull,
     required this.at,
     this.rawEnums = const {},
   });
@@ -3459,6 +6096,8 @@ class InboxItem {
   final InboxItemKind kind;
   final String? agentID;
   final PendingSubmission? submission;
+  /// Pull carries a "pull" item's ask. It is nil for every other kind.
+  final PullAsk? pull;
   final String at;
 
   /// The wire text of each enum field this build has no value
@@ -3479,6 +6118,10 @@ class InboxItem {
         json['submission'],
         PendingSubmission.fromJson,
       ),
+      pull: _objectOrNull(
+        json['pull'],
+        PullAsk.fromJson,
+      ),
       at: json['at'] as String,
       rawEnums: rawEnums,
     );
@@ -3492,6 +6135,9 @@ class InboxItem {
     }
     if (submission != null) {
       json['submission'] = submission!.toJson();
+    }
+    if (pull != null) {
+      json['pull'] = pull!.toJson();
     }
     json['at'] = at;
     return json;
@@ -6574,6 +9220,999 @@ class NotifyTestResult {
   }
 }
 
+/// PlannerOccupancy is how a workspace looks to a new planner. Ownership is
+/// never inferred from a missing record.
+enum PlannerOccupancy {
+  plannerOccupancyFree('free'),
+  plannerOccupancyInUse('in_use'),
+  plannerOccupancyUnknown('unknown'),
+  unknown('unknown');
+
+  const PlannerOccupancy(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static PlannerOccupancy fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// WorkerCapabilities is what a running worker session can actually do. It is
+/// per session rather than per backend: the same backend can offer workspace
+/// edits in one session and merely prompt in another.
+class WorkerCapabilities {
+  const WorkerCapabilities({
+    required this.prompt,
+    required this.cancel,
+    required this.permissionRequests,
+    required this.sessionLoad,
+    required this.workspaceEdits,
+    required this.modes,
+  });
+
+  final bool prompt;
+  final bool cancel;
+  final bool permissionRequests;
+  final bool sessionLoad;
+  final bool workspaceEdits;
+  final List<String> modes;
+
+  factory WorkerCapabilities.fromJson(Map<String, dynamic> json) {
+    return WorkerCapabilities(
+      prompt: json['prompt'] as bool,
+      cancel: json['cancel'] as bool,
+      permissionRequests: json['permissionRequests'] as bool,
+      sessionLoad: json['sessionLoad'] as bool,
+      workspaceEdits: json['workspaceEdits'] as bool,
+      modes: _list(
+        json['modes'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['prompt'] = prompt;
+    json['cancel'] = cancel;
+    json['permissionRequests'] = permissionRequests;
+    json['sessionLoad'] = sessionLoad;
+    json['workspaceEdits'] = workspaceEdits;
+    json['modes'] = modes;
+    return json;
+  }
+}
+
+/// PlannerArtifact is a reference to something the planner produced. The record
+/// persists the reference only; captured text lives on a snapshot instead.
+class PlannerArtifact {
+  const PlannerArtifact({
+    required this.kind,
+    required this.ref,
+    this.label,
+  });
+
+  final String kind;
+  final String ref;
+  final String? label;
+
+  factory PlannerArtifact.fromJson(Map<String, dynamic> json) {
+    return PlannerArtifact(
+      kind: json['kind'] as String,
+      ref: json['ref'] as String,
+      label: json['label'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = kind;
+    json['ref'] = ref;
+    if (label != null) {
+      json['label'] = label;
+    }
+    return json;
+  }
+}
+
+/// PlannerTurn is one dispatched prompt. TextHash is the digest of the text the
+/// request ID was first used for, so a replay of the same request ID can be
+/// recognised without storing the prompt twice.
+class PlannerTurn {
+  const PlannerTurn({
+    required this.requestID,
+    required this.textHash,
+    required this.state,
+    this.stopReason,
+    this.reason,
+    required this.at,
+  });
+
+  final String requestID;
+  final String textHash;
+  final String state;
+  final String? stopReason;
+  final String? reason;
+  final String at;
+
+  factory PlannerTurn.fromJson(Map<String, dynamic> json) {
+    return PlannerTurn(
+      requestID: json['requestId'] as String,
+      textHash: json['textHash'] as String,
+      state: json['state'] as String,
+      stopReason: json['stopReason'] as String?,
+      reason: json['reason'] as String?,
+      at: json['at'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['textHash'] = textHash;
+    json['state'] = state;
+    if (stopReason != null) {
+      json['stopReason'] = stopReason;
+    }
+    if (reason != null) {
+      json['reason'] = reason;
+    }
+    json['at'] = at;
+    return json;
+  }
+}
+
+/// PlannerDecision is one agent request and its single settlement. The chosen
+/// response is kept verbatim so a browser that reconnects learns what was
+/// decided rather than asking again.
+class PlannerDecision {
+  const PlannerDecision({
+    required this.requestID,
+    this.method,
+    required this.state,
+    this.response,
+    this.reason,
+    required this.at,
+  });
+
+  final String requestID;
+  final String? method;
+  final String state;
+  final Object? response;
+  final String? reason;
+  final String at;
+
+  factory PlannerDecision.fromJson(Map<String, dynamic> json) {
+    return PlannerDecision(
+      requestID: json['requestId'] as String,
+      method: json['method'] as String?,
+      state: json['state'] as String,
+      response: json['response'],
+      reason: json['reason'] as String?,
+      at: json['at'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    if (method != null) {
+      json['method'] = method;
+    }
+    json['state'] = state;
+    if (response != null) {
+      json['response'] = response;
+    }
+    if (reason != null) {
+      json['reason'] = reason;
+    }
+    json['at'] = at;
+    return json;
+  }
+}
+
+/// PlannerView is a planner as the routes report it: the durable record
+/// projected for the browser, plus what the bridge can say about it right now.
+/// Resume is reported separately from the capability so an absent capability is
+/// never read as an offer.
+class PlannerView {
+  const PlannerView({
+    required this.id,
+    required this.projectRoot,
+    required this.repoID,
+    required this.backendID,
+    required this.workspaceID,
+    required this.occupancy,
+    this.owners,
+    this.sessionID,
+    required this.requestedMode,
+    this.confirmedMode,
+    required this.modeConfirmed,
+    required this.state,
+    required this.live,
+    required this.eventSequence,
+    required this.capabilities,
+    required this.sessionLoad,
+    required this.resumeAvailable,
+    this.resumeReason,
+    this.trust,
+    this.turns,
+    this.requests,
+    this.artifacts,
+    this.reason,
+    required this.createdAt,
+    required this.updatedAt,
+    this.endedAt,
+    this.rawEnums = const {},
+  });
+
+  final String id;
+  final String projectRoot;
+  final String repoID;
+  final String backendID;
+  final String workspaceID;
+  final PlannerOccupancy occupancy;
+  final List<String>? owners;
+  final String? sessionID;
+  final String requestedMode;
+  final String? confirmedMode;
+  final bool modeConfirmed;
+  final String state;
+  final bool live;
+  final int eventSequence;
+  final WorkerCapabilities capabilities;
+  final bool sessionLoad;
+  /// ResumeAvailable is true only for a backend that can load a session and a
+  /// replay this bridge actually performed. It is false today, with
+  /// ResumeReason saying why, so the browser offers a new planner instead.
+  final bool resumeAvailable;
+  final String? resumeReason;
+  final String? trust;
+  final List<PlannerTurn>? turns;
+  final List<PlannerDecision>? requests;
+  final List<PlannerArtifact>? artifacts;
+  final String? reason;
+  final String createdAt;
+  final String updatedAt;
+  final String? endedAt;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory PlannerView.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final occupancyWire = json['occupancy'] as String;
+    final occupancy = PlannerOccupancy.fromWire(occupancyWire);
+    if (occupancy == PlannerOccupancy.unknown) {
+      rawEnums['occupancy'] = occupancyWire;
+    }
+    return PlannerView(
+      id: json['id'] as String,
+      projectRoot: json['projectRoot'] as String,
+      repoID: json['repoId'] as String,
+      backendID: json['backendId'] as String,
+      workspaceID: json['workspaceId'] as String,
+      occupancy: occupancy,
+      owners: _listOrNull(
+        json['owners'],
+        (value) => value as String,
+      ),
+      sessionID: json['sessionId'] as String?,
+      requestedMode: json['requestedMode'] as String,
+      confirmedMode: json['confirmedMode'] as String?,
+      modeConfirmed: json['modeConfirmed'] as bool,
+      state: json['state'] as String,
+      live: json['live'] as bool,
+      eventSequence: (json['eventSequence'] as num).toInt(),
+      capabilities: _object(
+        json['capabilities'],
+        WorkerCapabilities.fromJson,
+      ),
+      sessionLoad: json['sessionLoad'] as bool,
+      resumeAvailable: json['resumeAvailable'] as bool,
+      resumeReason: json['resumeReason'] as String?,
+      trust: json['trust'] as String?,
+      turns: _listOrNull(
+        json['turns'],
+        (value) => _object(value, PlannerTurn.fromJson),
+      ),
+      requests: _listOrNull(
+        json['requests'],
+        (value) => _object(value, PlannerDecision.fromJson),
+      ),
+      artifacts: _listOrNull(
+        json['artifacts'],
+        (value) => _object(value, PlannerArtifact.fromJson),
+      ),
+      reason: json['reason'] as String?,
+      createdAt: json['createdAt'] as String,
+      updatedAt: json['updatedAt'] as String,
+      endedAt: json['endedAt'] as String?,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['projectRoot'] = projectRoot;
+    json['repoId'] = repoID;
+    json['backendId'] = backendID;
+    json['workspaceId'] = workspaceID;
+    json['occupancy'] = rawEnums['occupancy'] ?? occupancy.wire;
+    if (owners != null) {
+      json['owners'] = owners!;
+    }
+    if (sessionID != null) {
+      json['sessionId'] = sessionID;
+    }
+    json['requestedMode'] = requestedMode;
+    if (confirmedMode != null) {
+      json['confirmedMode'] = confirmedMode;
+    }
+    json['modeConfirmed'] = modeConfirmed;
+    json['state'] = state;
+    json['live'] = live;
+    json['eventSequence'] = eventSequence;
+    json['capabilities'] = capabilities.toJson();
+    json['sessionLoad'] = sessionLoad;
+    json['resumeAvailable'] = resumeAvailable;
+    if (resumeReason != null) {
+      json['resumeReason'] = resumeReason;
+    }
+    if (trust != null) {
+      json['trust'] = trust;
+    }
+    if (turns != null) {
+      json['turns'] = [
+        for (final value in turns!) value.toJson(),
+      ];
+    }
+    if (requests != null) {
+      json['requests'] = [
+        for (final value in requests!) value.toJson(),
+      ];
+    }
+    if (artifacts != null) {
+      json['artifacts'] = [
+        for (final value in artifacts!) value.toJson(),
+      ];
+    }
+    if (reason != null) {
+      json['reason'] = reason;
+    }
+    json['createdAt'] = createdAt;
+    json['updatedAt'] = updatedAt;
+    if (endedAt != null) {
+      json['endedAt'] = endedAt;
+    }
+    return json;
+  }
+}
+
+/// PlannerCreateRequest is the POST /api/planners body. WorkspaceID names a
+/// workspace the bridge returned earlier; a filesystem path is never accepted
+/// in its place. ProceedShared is what a caller sets after seeing an in_use or
+/// unknown occupancy; it is never implied.
+class PlannerCreateRequest {
+  const PlannerCreateRequest({
+    required this.projectRoot,
+    required this.repoID,
+    this.workspaceID,
+    this.proceedShared,
+    this.mode,
+  });
+
+  final String projectRoot;
+  final String repoID;
+  final String? workspaceID;
+  final bool? proceedShared;
+  final String? mode;
+
+  factory PlannerCreateRequest.fromJson(Map<String, dynamic> json) {
+    return PlannerCreateRequest(
+      projectRoot: json['projectRoot'] as String,
+      repoID: json['repoId'] as String,
+      workspaceID: json['workspaceId'] as String?,
+      proceedShared: json['proceedShared'] as bool?,
+      mode: json['mode'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projectRoot'] = projectRoot;
+    json['repoId'] = repoID;
+    if (workspaceID != null) {
+      json['workspaceId'] = workspaceID;
+    }
+    if (proceedShared != null) {
+      json['proceedShared'] = proceedShared;
+    }
+    if (mode != null) {
+      json['mode'] = mode;
+    }
+    return json;
+  }
+}
+
+/// PlannerPromptRequest is the POST /api/planners/{id}/prompt body. Context is
+/// the additional bounded text a user supplied alongside the prompt: it is
+/// composed into the dispatched text after the prompt's own text, and the
+/// journal keeps only its hash and length.
+class PlannerPromptRequest {
+  const PlannerPromptRequest({
+    required this.requestID,
+    required this.text,
+    this.context,
+  });
+
+  final String requestID;
+  final String text;
+  final String? context;
+
+  factory PlannerPromptRequest.fromJson(Map<String, dynamic> json) {
+    return PlannerPromptRequest(
+      requestID: json['requestId'] as String,
+      text: json['text'] as String,
+      context: json['context'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['text'] = text;
+    if (context != null) {
+      json['context'] = context;
+    }
+    return json;
+  }
+}
+
+/// PlannerAnswerRequest is the POST /api/planners/{id}/requests/{requestId}
+/// body: the chosen response, passed through to the backend unchanged.
+class PlannerAnswerRequest {
+  const PlannerAnswerRequest({
+    required this.response,
+  });
+
+  final Object? response;
+
+  factory PlannerAnswerRequest.fromJson(Map<String, dynamic> json) {
+    return PlannerAnswerRequest(
+      response: json['response'],
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['response'] = response;
+    return json;
+  }
+}
+
+/// PlannerTurnReply is what a prompt answers: the dispatch of a new turn, or
+/// the outcome already recorded for a replayed request ID.
+class PlannerTurnReply {
+  const PlannerTurnReply({
+    required this.requestID,
+    required this.state,
+    this.stopReason,
+  });
+
+  final String requestID;
+  final String state;
+  final String? stopReason;
+
+  factory PlannerTurnReply.fromJson(Map<String, dynamic> json) {
+    return PlannerTurnReply(
+      requestID: json['requestId'] as String,
+      state: json['state'] as String,
+      stopReason: json['stopReason'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['state'] = state;
+    if (stopReason != null) {
+      json['stopReason'] = stopReason;
+    }
+    return json;
+  }
+}
+
+/// PlannerEvent is one journaled event. Sequence is the planner's own strictly
+/// increasing counter, not the backend's; Truncated marks a payload that
+/// exceeded the journal's per-event bound and was replaced by its marker.
+class PlannerEvent {
+  const PlannerEvent({
+    required this.sequence,
+    required this.kind,
+    this.data,
+    this.truncated,
+  });
+
+  final int sequence;
+  final String kind;
+  final Object? data;
+  final bool? truncated;
+
+  factory PlannerEvent.fromJson(Map<String, dynamic> json) {
+    return PlannerEvent(
+      sequence: (json['sequence'] as num).toInt(),
+      kind: json['kind'] as String,
+      data: json['data'],
+      truncated: json['truncated'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['sequence'] = sequence;
+    json['kind'] = kind;
+    if (data != null) {
+      json['data'] = data;
+    }
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    return json;
+  }
+}
+
+/// PlannerSnapshotArtifact is one piece of text a snapshot froze: the plan or
+/// the spec the user approved. Its content is stored with the snapshot record
+/// and its SHA256 is verified on every read, so a review never shows bytes that
+/// differ from the hash it reports.
+class PlannerSnapshotArtifact {
+  const PlannerSnapshotArtifact({
+    required this.kind,
+    required this.content,
+    required this.sha256,
+  });
+
+  final String kind;
+  final String content;
+  final String sha256;
+
+  factory PlannerSnapshotArtifact.fromJson(Map<String, dynamic> json) {
+    return PlannerSnapshotArtifact(
+      kind: json['kind'] as String,
+      content: json['content'] as String,
+      sha256: json['sha256'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = kind;
+    json['content'] = content;
+    json['sha256'] = sha256;
+    return json;
+  }
+}
+
+/// PlannerSnapshotRequest is the POST /api/planners/{id}/snapshots body: the
+/// exact plan and spec text the user approved, and the repository-relative
+/// paths they selected. An empty Paths list is a documents-only snapshot.
+class PlannerSnapshotRequest {
+  const PlannerSnapshotRequest({
+    required this.plan,
+    required this.spec,
+    required this.paths,
+  });
+
+  final String plan;
+  final String spec;
+  final List<String> paths;
+
+  factory PlannerSnapshotRequest.fromJson(Map<String, dynamic> json) {
+    return PlannerSnapshotRequest(
+      plan: json['plan'] as String,
+      spec: json['spec'] as String,
+      paths: _list(
+        json['paths'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['plan'] = plan;
+    json['spec'] = spec;
+    json['paths'] = paths;
+    return json;
+  }
+}
+
+/// PlannerRejection names one path a capture refused and why. A selected path
+/// is either captured or reported here; it is never silently dropped.
+class PlannerRejection {
+  const PlannerRejection({
+    required this.path,
+    required this.reason,
+  });
+
+  final String path;
+  final String reason;
+
+  factory PlannerRejection.fromJson(Map<String, dynamic> json) {
+    return PlannerRejection(
+      path: json['path'] as String,
+      reason: json['reason'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['path'] = path;
+    json['reason'] = reason;
+    return json;
+  }
+}
+
+/// PlannerSnapshotFile is one captured file as a review reports it: the frozen
+/// metadata plus its diff against the base commit. The diff is the text that
+/// was built at capture time, so the review still works after the workspace it
+/// came from is gone.
+///
+/// It flattens SelectedFile, which the bridge embeds: the wire shape is
+/// SelectedFile's fields followed by Diff.
+class PlannerSnapshotFile {
+  const PlannerSnapshotFile({
+    required this.path,
+    required this.operation,
+    this.baseSHA256,
+    this.contentSHA256,
+    required this.executable,
+    required this.diff,
+  });
+
+  final String path;
+  final String operation;
+  final String? baseSHA256;
+  final String? contentSHA256;
+  final bool executable;
+  final String diff;
+
+  factory PlannerSnapshotFile.fromJson(Map<String, dynamic> json) {
+    return PlannerSnapshotFile(
+      path: json['path'] as String,
+      operation: json['operation'] as String,
+      baseSHA256: json['baseSha256'] as String?,
+      contentSHA256: json['contentSha256'] as String?,
+      executable: json['executable'] as bool,
+      diff: json['diff'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['path'] = path;
+    json['operation'] = operation;
+    if (baseSHA256 != null) {
+      json['baseSha256'] = baseSHA256;
+    }
+    if (contentSHA256 != null) {
+      json['contentSha256'] = contentSHA256;
+    }
+    json['executable'] = executable;
+    json['diff'] = diff;
+    return json;
+  }
+}
+
+/// PlannerSnapshotView is a snapshot as the routes report it. It carries no
+/// absolute host path: every path in it is the repository-relative one the
+/// caller selected.
+class PlannerSnapshotView {
+  const PlannerSnapshotView({
+    required this.id,
+    required this.sha256,
+    required this.baseCommit,
+    required this.artifacts,
+    required this.files,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String sha256;
+  final String baseCommit;
+  final List<PlannerSnapshotArtifact> artifacts;
+  final List<PlannerSnapshotFile> files;
+  final String createdAt;
+
+  factory PlannerSnapshotView.fromJson(Map<String, dynamic> json) {
+    return PlannerSnapshotView(
+      id: json['id'] as String,
+      sha256: json['sha256'] as String,
+      baseCommit: json['baseCommit'] as String,
+      artifacts: _list(
+        json['artifacts'],
+        (value) => _object(value, PlannerSnapshotArtifact.fromJson),
+      ),
+      files: _list(
+        json['files'],
+        (value) => _object(value, PlannerSnapshotFile.fromJson),
+      ),
+      createdAt: json['createdAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['sha256'] = sha256;
+    json['baseCommit'] = baseCommit;
+    json['artifacts'] = [
+      for (final value in artifacts) value.toJson(),
+    ];
+    json['files'] = [
+      for (final value in files) value.toJson(),
+    ];
+    json['createdAt'] = createdAt;
+    return json;
+  }
+}
+
+/// PlannerSnapshotReply is what a capture answers: the snapshot it froze and
+/// the paths it refused.
+///
+/// It flattens PlannerSnapshotView, which the bridge embeds: the wire shape is
+/// the view's fields followed by Rejected.
+class PlannerSnapshotReply {
+  const PlannerSnapshotReply({
+    required this.id,
+    required this.sha256,
+    required this.baseCommit,
+    required this.artifacts,
+    required this.files,
+    required this.createdAt,
+    required this.rejected,
+  });
+
+  final String id;
+  final String sha256;
+  final String baseCommit;
+  final List<PlannerSnapshotArtifact> artifacts;
+  final List<PlannerSnapshotFile> files;
+  final String createdAt;
+  final List<PlannerRejection> rejected;
+
+  factory PlannerSnapshotReply.fromJson(Map<String, dynamic> json) {
+    return PlannerSnapshotReply(
+      id: json['id'] as String,
+      sha256: json['sha256'] as String,
+      baseCommit: json['baseCommit'] as String,
+      artifacts: _list(
+        json['artifacts'],
+        (value) => _object(value, PlannerSnapshotArtifact.fromJson),
+      ),
+      files: _list(
+        json['files'],
+        (value) => _object(value, PlannerSnapshotFile.fromJson),
+      ),
+      createdAt: json['createdAt'] as String,
+      rejected: _list(
+        json['rejected'],
+        (value) => _object(value, PlannerRejection.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['sha256'] = sha256;
+    json['baseCommit'] = baseCommit;
+    json['artifacts'] = [
+      for (final value in artifacts) value.toJson(),
+    ];
+    json['files'] = [
+      for (final value in files) value.toJson(),
+    ];
+    json['createdAt'] = createdAt;
+    json['rejected'] = [
+      for (final value in rejected) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// PlannerContextArtifact is one artifact source a briefing found. Approved is
+/// true only for text a user captured in a snapshot; a reference the planner
+/// record merely names is reported as unapproved, carrying no captured content
+/// and no hash this bridge can vouch for.
+class PlannerContextArtifact {
+  const PlannerContextArtifact({
+    required this.kind,
+    this.sha256,
+    required this.source,
+    required this.approved,
+    this.snapshotID,
+    this.ref,
+  });
+
+  final String kind;
+  final String? sha256;
+  final String source;
+  final bool approved;
+  final String? snapshotID;
+  final String? ref;
+
+  factory PlannerContextArtifact.fromJson(Map<String, dynamic> json) {
+    return PlannerContextArtifact(
+      kind: json['kind'] as String,
+      sha256: json['sha256'] as String?,
+      source: json['source'] as String,
+      approved: json['approved'] as bool,
+      snapshotID: json['snapshotId'] as String?,
+      ref: json['ref'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = kind;
+    if (sha256 != null) {
+      json['sha256'] = sha256;
+    }
+    json['source'] = source;
+    json['approved'] = approved;
+    if (snapshotID != null) {
+      json['snapshotId'] = snapshotID;
+    }
+    if (ref != null) {
+      json['ref'] = ref;
+    }
+    return json;
+  }
+}
+
+/// PlannerContextDecision is one settled agent request a briefing reports, with
+/// the request it came from as its source.
+class PlannerContextDecision {
+  const PlannerContextDecision({
+    required this.source,
+    required this.requestID,
+    this.method,
+    required this.state,
+    required this.at,
+  });
+
+  final String source;
+  final String requestID;
+  final String? method;
+  final String state;
+  final String at;
+
+  factory PlannerContextDecision.fromJson(Map<String, dynamic> json) {
+    return PlannerContextDecision(
+      source: json['source'] as String,
+      requestID: json['requestId'] as String,
+      method: json['method'] as String?,
+      state: json['state'] as String,
+      at: json['at'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    json['requestId'] = requestID;
+    if (method != null) {
+      json['method'] = method;
+    }
+    json['state'] = state;
+    json['at'] = at;
+    return json;
+  }
+}
+
+/// PlannerContextQuestion is one recorded question that is still unresolved.
+class PlannerContextQuestion {
+  const PlannerContextQuestion({
+    required this.source,
+    required this.requestID,
+    this.method,
+    required this.state,
+    required this.at,
+  });
+
+  final String source;
+  final String requestID;
+  final String? method;
+  final String state;
+  final String at;
+
+  factory PlannerContextQuestion.fromJson(Map<String, dynamic> json) {
+    return PlannerContextQuestion(
+      source: json['source'] as String,
+      requestID: json['requestId'] as String,
+      method: json['method'] as String?,
+      state: json['state'] as String,
+      at: json['at'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    json['requestId'] = requestID;
+    if (method != null) {
+      json['method'] = method;
+    }
+    json['state'] = state;
+    json['at'] = at;
+    return json;
+  }
+}
+
+/// PlannerContextView is the bounded briefing a planner record supports. Absent
+/// names the sources it does not hold: nothing here is invented to fill one in.
+class PlannerContextView {
+  const PlannerContextView({
+    required this.artifacts,
+    required this.decisions,
+    required this.unresolved,
+    required this.absent,
+  });
+
+  final List<PlannerContextArtifact> artifacts;
+  final List<PlannerContextDecision> decisions;
+  final List<PlannerContextQuestion> unresolved;
+  final List<String> absent;
+
+  factory PlannerContextView.fromJson(Map<String, dynamic> json) {
+    return PlannerContextView(
+      artifacts: _list(
+        json['artifacts'],
+        (value) => _object(value, PlannerContextArtifact.fromJson),
+      ),
+      decisions: _list(
+        json['decisions'],
+        (value) => _object(value, PlannerContextDecision.fromJson),
+      ),
+      unresolved: _list(
+        json['unresolved'],
+        (value) => _object(value, PlannerContextQuestion.fromJson),
+      ),
+      absent: _list(
+        json['absent'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['artifacts'] = [
+      for (final value in artifacts) value.toJson(),
+    ];
+    json['decisions'] = [
+      for (final value in decisions) value.toJson(),
+    ];
+    json['unresolved'] = [
+      for (final value in unresolved) value.toJson(),
+    ];
+    json['absent'] = absent;
+    return json;
+  }
+}
+
 /// TrustState is a project's trust decision.
 enum TrustState {
   trustNA('na'),
@@ -6680,6 +10319,1240 @@ class ProjectStatus {
     }
     if (orphanWorktrees != null) {
       json['orphanWorktrees'] = orphanWorktrees!;
+    }
+    return json;
+  }
+}
+
+/// ProjectIntake is the project's default intake configuration.
+class ProjectIntake {
+  const ProjectIntake({
+    this.repoID,
+    this.labels,
+    this.clients,
+  });
+
+  final String? repoID;
+  final List<String>? labels;
+  final List<String>? clients;
+
+  factory ProjectIntake.fromJson(Map<String, dynamic> json) {
+    return ProjectIntake(
+      repoID: json['repoId'] as String?,
+      labels: _listOrNull(
+        json['labels'],
+        (value) => value as String,
+      ),
+      clients: _listOrNull(
+        json['clients'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (repoID != null) {
+      json['repoId'] = repoID;
+    }
+    if (labels != null) {
+      json['labels'] = labels!;
+    }
+    if (clients != null) {
+      json['clients'] = clients!;
+    }
+    return json;
+  }
+}
+
+/// FactoryDefaults is a project's default factory configuration: every field a
+/// handoff inherits unless it states its own.
+class FactoryDefaults {
+  const FactoryDefaults({
+    this.targetBranch,
+    this.workspace,
+    this.hostID,
+    this.implementerRouting,
+    this.reviewerRouting,
+    this.reviewerInstructions,
+    this.expectedChecks,
+    this.maxRounds,
+    this.ciPollSeconds,
+    this.ciWaitSeconds,
+    this.implementerSubagents,
+    this.reviewerSubagents,
+  });
+
+  final String? targetBranch;
+  final String? workspace;
+  final String? hostID;
+  final Object? implementerRouting;
+  final Object? reviewerRouting;
+  final String? reviewerInstructions;
+  final List<FactoryCheckKey>? expectedChecks;
+  final int? maxRounds;
+  final int? ciPollSeconds;
+  final int? ciWaitSeconds;
+  final FactorySubagentOverrides? implementerSubagents;
+  final FactorySubagentOverrides? reviewerSubagents;
+
+  factory FactoryDefaults.fromJson(Map<String, dynamic> json) {
+    return FactoryDefaults(
+      targetBranch: json['targetBranch'] as String?,
+      workspace: json['workspace'] as String?,
+      hostID: json['hostId'] as String?,
+      implementerRouting: json['implementerRouting'],
+      reviewerRouting: json['reviewerRouting'],
+      reviewerInstructions: json['reviewerInstructions'] as String?,
+      expectedChecks: _listOrNull(
+        json['expectedChecks'],
+        (value) => _object(value, FactoryCheckKey.fromJson),
+      ),
+      maxRounds: (json['maxRounds'] as num?)?.toInt(),
+      ciPollSeconds: (json['ciPollSeconds'] as num?)?.toInt(),
+      ciWaitSeconds: (json['ciWaitSeconds'] as num?)?.toInt(),
+      implementerSubagents: _objectOrNull(
+        json['implementerSubagents'],
+        FactorySubagentOverrides.fromJson,
+      ),
+      reviewerSubagents: _objectOrNull(
+        json['reviewerSubagents'],
+        FactorySubagentOverrides.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (targetBranch != null) {
+      json['targetBranch'] = targetBranch;
+    }
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    if (hostID != null) {
+      json['hostId'] = hostID;
+    }
+    if (implementerRouting != null) {
+      json['implementerRouting'] = implementerRouting;
+    }
+    if (reviewerRouting != null) {
+      json['reviewerRouting'] = reviewerRouting;
+    }
+    if (reviewerInstructions != null) {
+      json['reviewerInstructions'] = reviewerInstructions;
+    }
+    if (expectedChecks != null) {
+      json['expectedChecks'] = [
+        for (final value in expectedChecks!) value.toJson(),
+      ];
+    }
+    if (maxRounds != null) {
+      json['maxRounds'] = maxRounds;
+    }
+    if (ciPollSeconds != null) {
+      json['ciPollSeconds'] = ciPollSeconds;
+    }
+    if (ciWaitSeconds != null) {
+      json['ciWaitSeconds'] = ciWaitSeconds;
+    }
+    if (implementerSubagents != null) {
+      json['implementerSubagents'] = implementerSubagents!.toJson();
+    }
+    if (reviewerSubagents != null) {
+      json['reviewerSubagents'] = reviewerSubagents!.toJson();
+    }
+    return json;
+  }
+}
+
+/// ProjectSettings is one project's settings document. The ETag that names a
+/// particular value is a header, never part of the body.
+class ProjectSettings {
+  const ProjectSettings({
+    this.workspace,
+    this.routing,
+    this.mode,
+    this.auto,
+    this.isolated,
+    this.shipTarget,
+    required this.intake,
+    this.automations,
+    this.factoryDefaults,
+    this.plannerDelegationEnabled,
+    this.designatedMCPClientID,
+    this.autoAssessPlanChanges,
+  });
+
+  final String? workspace;
+  final Object? routing;
+  final String? mode;
+  /// Auto accompanies Mode as a starting default. It is a pointer so an
+  /// absent value stays distinguishable from an explicit false.
+  final bool? auto;
+  /// Isolated is the default isolation; nil leaves the caller's default.
+  final bool? isolated;
+  final String? shipTarget;
+  final ProjectIntake intake;
+  final Automations? automations;
+  /// FactoryDefaults are the project's default factory configuration. A
+  /// handoff inherits every field it leaves unset.
+  final FactoryDefaults? factoryDefaults;
+  /// PlannerDelegationEnabled lets one designated MCP client answer the
+  /// planner's questions for this project.
+  final bool? plannerDelegationEnabled;
+  /// DesignatedMCPClientID names the one client that may answer while
+  /// delegation is enabled. Empty means no client is designated.
+  final String? designatedMCPClientID;
+  /// AutoAssessPlanChanges turns automatic assessment of a proposed factory
+  /// plan revision on or off. Nil means the default, which is on.
+  final bool? autoAssessPlanChanges;
+
+  factory ProjectSettings.fromJson(Map<String, dynamic> json) {
+    return ProjectSettings(
+      workspace: json['workspace'] as String?,
+      routing: json['routing'],
+      mode: json['mode'] as String?,
+      auto: json['auto'] as bool?,
+      isolated: json['isolated'] as bool?,
+      shipTarget: json['shipTarget'] as String?,
+      intake: _object(
+        json['intake'],
+        ProjectIntake.fromJson,
+      ),
+      automations: _objectOrNull(
+        json['automations'],
+        Automations.fromJson,
+      ),
+      factoryDefaults: _objectOrNull(
+        json['factoryDefaults'],
+        FactoryDefaults.fromJson,
+      ),
+      plannerDelegationEnabled: json['plannerDelegationEnabled'] as bool?,
+      designatedMCPClientID: json['designatedMCPClientId'] as String?,
+      autoAssessPlanChanges: json['autoAssessPlanChanges'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    if (routing != null) {
+      json['routing'] = routing;
+    }
+    if (mode != null) {
+      json['mode'] = mode;
+    }
+    if (auto != null) {
+      json['auto'] = auto;
+    }
+    if (isolated != null) {
+      json['isolated'] = isolated;
+    }
+    if (shipTarget != null) {
+      json['shipTarget'] = shipTarget;
+    }
+    json['intake'] = intake.toJson();
+    if (automations != null) {
+      json['automations'] = automations!.toJson();
+    }
+    if (factoryDefaults != null) {
+      json['factoryDefaults'] = factoryDefaults!.toJson();
+    }
+    if (plannerDelegationEnabled != null) {
+      json['plannerDelegationEnabled'] = plannerDelegationEnabled;
+    }
+    if (designatedMCPClientID != null) {
+      json['designatedMCPClientId'] = designatedMCPClientID;
+    }
+    if (autoAssessPlanChanges != null) {
+      json['autoAssessPlanChanges'] = autoAssessPlanChanges;
+    }
+    return json;
+  }
+}
+
+/// MirrorHealth is whether a repository's mirror exists and how fresh it is.
+class MirrorHealth {
+  const MirrorHealth({
+    required this.repoID,
+    required this.present,
+    this.ageSeconds,
+    this.head,
+  });
+
+  final String repoID;
+  /// Present is false when the repo has no mirror yet.
+  final bool present;
+  /// AgeSeconds is the time since the mirror last fetched.
+  final int? ageSeconds;
+  final String? head;
+
+  factory MirrorHealth.fromJson(Map<String, dynamic> json) {
+    return MirrorHealth(
+      repoID: json['repoId'] as String,
+      present: json['present'] as bool,
+      ageSeconds: (json['ageSeconds'] as num?)?.toInt(),
+      head: json['head'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['repoId'] = repoID;
+    json['present'] = present;
+    if (ageSeconds != null) {
+      json['ageSeconds'] = ageSeconds;
+    }
+    if (head != null) {
+      json['head'] = head;
+    }
+    return json;
+  }
+}
+
+/// WorkspaceHealth is whether a project's default workspace is usable.
+class WorkspaceHealth {
+  const WorkspaceHealth({
+    required this.ref,
+    required this.resolves,
+    required this.built,
+    this.error,
+  });
+
+  final String ref;
+  final bool resolves;
+  final bool built;
+  final String? error;
+
+  factory WorkspaceHealth.fromJson(Map<String, dynamic> json) {
+    return WorkspaceHealth(
+      ref: json['ref'] as String,
+      resolves: json['resolves'] as bool,
+      built: json['built'] as bool,
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['ref'] = ref;
+    json['resolves'] = resolves;
+    json['built'] = built;
+    if (error != null) {
+      json['error'] = error;
+    }
+    return json;
+  }
+}
+
+/// VerifyCommands is a project's configured gate commands. Empty strings mean
+/// unset, in which case the gate is skipped unless the engine detects a
+/// default.
+class VerifyCommands {
+  const VerifyCommands({
+    required this.build,
+    required this.test,
+  });
+
+  final String build;
+  final String test;
+
+  factory VerifyCommands.fromJson(Map<String, dynamic> json) {
+    return VerifyCommands(
+      build: json['build'] as String,
+      test: json['test'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['build'] = build;
+    json['test'] = test;
+    return json;
+  }
+}
+
+/// ProjectHealth is GET /api/projects/health.
+class ProjectHealth {
+  const ProjectHealth({
+    required this.gateRunnable,
+    required this.mirrorFresh,
+    required this.orphanWorktrees,
+    required this.trust,
+    this.workspaceResolves,
+    required this.verify,
+  });
+
+  /// GateRunnable is "yes", "no" (the last verify was skipped: nothing to
+  /// run) or "unknown" (no agent of the project has verified).
+  final String gateRunnable;
+  final List<MirrorHealth> mirrorFresh;
+  final List<String> orphanWorktrees;
+  final String trust;
+  final WorkspaceHealth? workspaceResolves;
+  /// Verify is the project's verify-gate commands from [sdd.verify] in
+  /// .marshal/config.toml. Only reported for a trusted project, since the
+  /// engine ignores an untrusted project's config.
+  final VerifyCommands verify;
+
+  factory ProjectHealth.fromJson(Map<String, dynamic> json) {
+    return ProjectHealth(
+      gateRunnable: json['gateRunnable'] as String,
+      mirrorFresh: _list(
+        json['mirrorFresh'],
+        (value) => _object(value, MirrorHealth.fromJson),
+      ),
+      orphanWorktrees: _list(
+        json['orphanWorktrees'],
+        (value) => value as String,
+      ),
+      trust: json['trust'] as String,
+      workspaceResolves: _objectOrNull(
+        json['workspaceResolves'],
+        WorkspaceHealth.fromJson,
+      ),
+      verify: _object(
+        json['verify'],
+        VerifyCommands.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['gateRunnable'] = gateRunnable;
+    json['mirrorFresh'] = [
+      for (final value in mirrorFresh) value.toJson(),
+    ];
+    json['orphanWorktrees'] = orphanWorktrees;
+    json['trust'] = trust;
+    if (workspaceResolves != null) {
+      json['workspaceResolves'] = workspaceResolves!.toJson();
+    }
+    json['verify'] = verify.toJson();
+    return json;
+  }
+}
+
+/// DiscoveryCapabilityState is the outcome of one read-only capability probe.
+enum DiscoveryCapabilityState {
+  discoveryCapabilitySupported('supported'),
+  discoveryCapabilityUnconfigured('unconfigured'),
+  discoveryCapabilityInsufficientPermission('insufficient_permission'),
+  discoveryCapabilityTemporarilyUnavailable('temporarily_unavailable'),
+  discoveryCapabilityUnsupported('unsupported'),
+  unknown('unknown');
+
+  const DiscoveryCapabilityState(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static DiscoveryCapabilityState fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// DiscoveryCapability is one capability the discovery probe tested.
+class DiscoveryCapability {
+  const DiscoveryCapability({
+    required this.key,
+    required this.state,
+    this.detail,
+    this.rawEnums = const {},
+  });
+
+  final String key;
+  final DiscoveryCapabilityState state;
+  final String? detail;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory DiscoveryCapability.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final stateWire = json['state'] as String;
+    final state = DiscoveryCapabilityState.fromWire(stateWire);
+    if (state == DiscoveryCapabilityState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return DiscoveryCapability(
+      key: json['key'] as String,
+      state: state,
+      detail: json['detail'] as String?,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['key'] = key;
+    json['state'] = rawEnums['state'] ?? state.wire;
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    return json;
+  }
+}
+
+/// DiscoveryFact is something detected in the checkout. Origin distinguishes a
+/// detected fact from a recommendation.
+class DiscoveryFact {
+  const DiscoveryFact({
+    required this.origin,
+    required this.section,
+    required this.kind,
+    required this.value,
+    required this.source,
+    this.revision,
+    this.size,
+    this.detail,
+  });
+
+  final String origin;
+  final String section;
+  final String kind;
+  final String value;
+  final String source;
+  final String? revision;
+  final int? size;
+  final String? detail;
+
+  factory DiscoveryFact.fromJson(Map<String, dynamic> json) {
+    return DiscoveryFact(
+      origin: json['origin'] as String,
+      section: json['section'] as String,
+      kind: json['kind'] as String,
+      value: json['value'] as String,
+      source: json['source'] as String,
+      revision: json['revision'] as String?,
+      size: (json['size'] as num?)?.toInt(),
+      detail: json['detail'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['origin'] = origin;
+    json['section'] = section;
+    json['kind'] = kind;
+    json['value'] = value;
+    json['source'] = source;
+    if (revision != null) {
+      json['revision'] = revision;
+    }
+    if (size != null) {
+      json['size'] = size;
+    }
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    return json;
+  }
+}
+
+/// DiscoveryRecommendation is an advisory setup option. It is never applied by
+/// discovery.
+class DiscoveryRecommendation {
+  const DiscoveryRecommendation({
+    required this.origin,
+    required this.section,
+    required this.kind,
+    required this.value,
+    required this.reason,
+  });
+
+  final String origin;
+  final String section;
+  final String kind;
+  final String value;
+  final String reason;
+
+  factory DiscoveryRecommendation.fromJson(Map<String, dynamic> json) {
+    return DiscoveryRecommendation(
+      origin: json['origin'] as String,
+      section: json['section'] as String,
+      kind: json['kind'] as String,
+      value: json['value'] as String,
+      reason: json['reason'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['origin'] = origin;
+    json['section'] = section;
+    json['kind'] = kind;
+    json['value'] = value;
+    json['reason'] = reason;
+    return json;
+  }
+}
+
+/// DiscoveryGap explains a capability that is not supported, so the UI can turn
+/// it into an actionable next step.
+class DiscoveryGap {
+  const DiscoveryGap({
+    required this.key,
+    required this.section,
+    required this.state,
+    required this.detail,
+    this.rawEnums = const {},
+  });
+
+  final String key;
+  final String section;
+  final DiscoveryCapabilityState state;
+  final String detail;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory DiscoveryGap.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final stateWire = json['state'] as String;
+    final state = DiscoveryCapabilityState.fromWire(stateWire);
+    if (state == DiscoveryCapabilityState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return DiscoveryGap(
+      key: json['key'] as String,
+      section: json['section'] as String,
+      state: state,
+      detail: json['detail'] as String,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['key'] = key;
+    json['section'] = section;
+    json['state'] = rawEnums['state'] ?? state.wire;
+    json['detail'] = detail;
+    return json;
+  }
+}
+
+/// DiscoveryWorktree is the locally observable Git state of a linked checkout.
+/// Dirty is a pointer: nil means not determined, which differs from a known
+/// clean checkout.
+class DiscoveryWorktree {
+  const DiscoveryWorktree({
+    required this.path,
+    this.branch,
+    this.head,
+    this.dirty,
+    this.dirtyFiles,
+    this.detail,
+  });
+
+  final String path;
+  final String? branch;
+  final String? head;
+  final bool? dirty;
+  final List<String>? dirtyFiles;
+  final String? detail;
+
+  factory DiscoveryWorktree.fromJson(Map<String, dynamic> json) {
+    return DiscoveryWorktree(
+      path: json['path'] as String,
+      branch: json['branch'] as String?,
+      head: json['head'] as String?,
+      dirty: json['dirty'] as bool?,
+      dirtyFiles: _listOrNull(
+        json['dirtyFiles'],
+        (value) => value as String,
+      ),
+      detail: json['detail'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['path'] = path;
+    if (branch != null) {
+      json['branch'] = branch;
+    }
+    if (head != null) {
+      json['head'] = head;
+    }
+    json['dirty'] = dirty;
+    if (dirtyFiles != null) {
+      json['dirtyFiles'] = dirtyFiles!;
+    }
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    return json;
+  }
+}
+
+/// DiscoveryReport is the single document `POST /api/repos/{id}/discover`
+/// returns. Status is "ok", "degraded" or "unavailable"; the report slices are
+/// always non-nil so the wire shape stays stable.
+class DiscoveryReport {
+  const DiscoveryReport({
+    required this.repoID,
+    required this.forge,
+    required this.status,
+    this.error,
+    this.revision,
+    this.branch,
+    this.worktree,
+    required this.capabilities,
+    required this.facts,
+    required this.recommended,
+    required this.gaps,
+  });
+
+  final String repoID;
+  final String forge;
+  final String status;
+  final String? error;
+  final String? revision;
+  final String? branch;
+  final DiscoveryWorktree? worktree;
+  final List<DiscoveryCapability> capabilities;
+  final List<DiscoveryFact> facts;
+  final List<DiscoveryRecommendation> recommended;
+  final List<DiscoveryGap> gaps;
+
+  factory DiscoveryReport.fromJson(Map<String, dynamic> json) {
+    return DiscoveryReport(
+      repoID: json['repoId'] as String,
+      forge: json['forge'] as String,
+      status: json['status'] as String,
+      error: json['error'] as String?,
+      revision: json['revision'] as String?,
+      branch: json['branch'] as String?,
+      worktree: _objectOrNull(
+        json['worktree'],
+        DiscoveryWorktree.fromJson,
+      ),
+      capabilities: _list(
+        json['capabilities'],
+        (value) => _object(value, DiscoveryCapability.fromJson),
+      ),
+      facts: _list(
+        json['facts'],
+        (value) => _object(value, DiscoveryFact.fromJson),
+      ),
+      recommended: _list(
+        json['recommended'],
+        (value) => _object(value, DiscoveryRecommendation.fromJson),
+      ),
+      gaps: _list(
+        json['gaps'],
+        (value) => _object(value, DiscoveryGap.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['repoId'] = repoID;
+    json['forge'] = forge;
+    json['status'] = status;
+    if (error != null) {
+      json['error'] = error;
+    }
+    if (revision != null) {
+      json['revision'] = revision;
+    }
+    if (branch != null) {
+      json['branch'] = branch;
+    }
+    if (worktree != null) {
+      json['worktree'] = worktree!.toJson();
+    }
+    json['capabilities'] = [
+      for (final value in capabilities) value.toJson(),
+    ];
+    json['facts'] = [
+      for (final value in facts) value.toJson(),
+    ];
+    json['recommended'] = [
+      for (final value in recommended) value.toJson(),
+    ];
+    json['gaps'] = [
+      for (final value in gaps) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// PullOrigin is where a recorded pull request came from: an agent that
+/// shipped, a factory item, or one of the bridge's automations.
+enum PullOrigin {
+  pullOriginAgent('agent'),
+  pullOriginFactory('factory'),
+  pullOriginAutomation('automation'),
+  unknown('unknown');
+
+  const PullOrigin(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static PullOrigin fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// PullState is a pull request's derived state, which is what a client shows.
+/// It is derived from the evidence on the current head and is never a claim
+/// about a head that has moved.
+enum PullState {
+  pullReady('ready'),
+  pullFailing('failing'),
+  pullInProgress('in_progress'),
+  pullBeingFixed('being_fixed'),
+  pullChecksUnavailable('checks_unavailable'),
+  unknown('unknown');
+
+  const PullState(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static PullState fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// CheckState is one check's state on a pull request's head.
+enum CheckState {
+  checkPassed('passed'),
+  checkFailed('failed'),
+  checkRunning('running'),
+  checkPending('pending'),
+  unknown('unknown');
+
+  const CheckState(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static CheckState fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// PullCheck is one check on a pull request's head.
+class PullCheck {
+  const PullCheck({
+    required this.name,
+    required this.state,
+    this.url,
+    this.logTail,
+    this.rawEnums = const {},
+  });
+
+  final String name;
+  final CheckState state;
+  final String? url;
+  /// LogTail is the tail of a failed check's log. Only the detail route
+  /// fills it, so an index stays small.
+  final String? logTail;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory PullCheck.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final stateWire = json['state'] as String;
+    final state = CheckState.fromWire(stateWire);
+    if (state == CheckState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return PullCheck(
+      name: json['name'] as String,
+      state: state,
+      url: json['url'] as String?,
+      logTail: json['logTail'] as String?,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['state'] = rawEnums['state'] ?? state.wire;
+    if (url != null) {
+      json['url'] = url;
+    }
+    if (logTail != null) {
+      json['logTail'] = logTail;
+    }
+    return json;
+  }
+}
+
+/// PullRecord is one pull request the bridge opened, with the evidence it holds
+/// for the head it last observed. Its id is &lt;repoId&gt;#&lt;number&gt;.
+class PullRecord {
+  const PullRecord({
+    required this.id,
+    required this.repoID,
+    required this.projectRoot,
+    required this.number,
+    required this.url,
+    required this.title,
+    required this.headRef,
+    required this.baseRef,
+    required this.headSHA,
+    required this.draft,
+    required this.additions,
+    required this.deletions,
+    required this.origin,
+    this.agentID,
+    this.factoryItem,
+    this.automation,
+    required this.state,
+    required this.checks,
+    required this.reviews,
+    this.unavailable,
+    this.report,
+    this.fix,
+    required this.observedAt,
+    required this.updatedAt,
+    this.rawEnums = const {},
+  });
+
+  final String id;
+  final String repoID;
+  final String projectRoot;
+  final int number;
+  final String url;
+  final String title;
+  final String headRef;
+  final String baseRef;
+  final String headSHA;
+  final bool draft;
+  final int additions;
+  final int deletions;
+  final PullOrigin origin;
+  final String? agentID;
+  final String? factoryItem;
+  final String? automation;
+  final PullState state;
+  final List<PullCheck> checks;
+  final String reviews;
+  /// Unavailable says why the checks cannot be read, when they cannot.
+  /// A record carrying it is never shown as passing.
+  final String? unavailable;
+  /// Report is the engineer's narrated report, when the origin has one.
+  /// Only the detail route fills it.
+  final String? report;
+  /// Fix is the dispatched fix, when a worker is on this pull request.
+  final PullFix? fix;
+  /// ObservedAt is when the evidence above was last read, in Unix millis.
+  /// UpdatedAt is when the record itself last changed.
+  final int observedAt;
+  final int updatedAt;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory PullRecord.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final originWire = json['origin'] as String;
+    final origin = PullOrigin.fromWire(originWire);
+    if (origin == PullOrigin.unknown) {
+      rawEnums['origin'] = originWire;
+    }
+    final stateWire = json['state'] as String;
+    final state = PullState.fromWire(stateWire);
+    if (state == PullState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return PullRecord(
+      id: json['id'] as String,
+      repoID: json['repoId'] as String,
+      projectRoot: json['projectRoot'] as String,
+      number: (json['number'] as num).toInt(),
+      url: json['url'] as String,
+      title: json['title'] as String,
+      headRef: json['headRef'] as String,
+      baseRef: json['baseRef'] as String,
+      headSHA: json['headSha'] as String,
+      draft: json['draft'] as bool,
+      additions: (json['additions'] as num).toInt(),
+      deletions: (json['deletions'] as num).toInt(),
+      origin: origin,
+      agentID: json['agentId'] as String?,
+      factoryItem: json['factoryItemId'] as String?,
+      automation: json['automation'] as String?,
+      state: state,
+      checks: _list(
+        json['checks'],
+        (value) => _object(value, PullCheck.fromJson),
+      ),
+      reviews: json['reviews'] as String,
+      unavailable: json['checksUnavailable'] as String?,
+      report: json['report'] as String?,
+      fix: _objectOrNull(
+        json['fix'],
+        PullFix.fromJson,
+      ),
+      observedAt: (json['observedAt'] as num).toInt(),
+      updatedAt: (json['updatedAt'] as num).toInt(),
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['repoId'] = repoID;
+    json['projectRoot'] = projectRoot;
+    json['number'] = number;
+    json['url'] = url;
+    json['title'] = title;
+    json['headRef'] = headRef;
+    json['baseRef'] = baseRef;
+    json['headSha'] = headSHA;
+    json['draft'] = draft;
+    json['additions'] = additions;
+    json['deletions'] = deletions;
+    json['origin'] = rawEnums['origin'] ?? origin.wire;
+    if (agentID != null) {
+      json['agentId'] = agentID;
+    }
+    if (factoryItem != null) {
+      json['factoryItemId'] = factoryItem;
+    }
+    if (automation != null) {
+      json['automation'] = automation;
+    }
+    json['state'] = rawEnums['state'] ?? state.wire;
+    json['checks'] = [
+      for (final value in checks) value.toJson(),
+    ];
+    json['reviews'] = reviews;
+    if (unavailable != null) {
+      json['checksUnavailable'] = unavailable;
+    }
+    if (report != null) {
+      json['report'] = report;
+    }
+    if (fix != null) {
+      json['fix'] = fix!.toJson();
+    }
+    json['observedAt'] = observedAt;
+    json['updatedAt'] = updatedAt;
+    return json;
+  }
+}
+
+/// PullFix is one dispatched fix. It is bound to the head it was asked about:
+/// a worker that starts after the head has moved is cancelled rather than run
+/// against different code.
+class PullFix {
+  const PullFix({
+    required this.id,
+    required this.check,
+    required this.headSHA,
+    required this.mode,
+    this.agentID,
+    required this.startedAt,
+  });
+
+  final String id;
+  final String check;
+  final String headSHA;
+  /// "fix" | "investigate"
+  final String mode;
+  final String? agentID;
+  final int startedAt;
+
+  factory PullFix.fromJson(Map<String, dynamic> json) {
+    return PullFix(
+      id: json['id'] as String,
+      check: json['check'] as String,
+      headSHA: json['headSha'] as String,
+      mode: json['mode'] as String,
+      agentID: json['agentId'] as String?,
+      startedAt: (json['startedAt'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['check'] = check;
+    json['headSha'] = headSHA;
+    json['mode'] = mode;
+    if (agentID != null) {
+      json['agentId'] = agentID;
+    }
+    json['startedAt'] = startedAt;
+    return json;
+  }
+}
+
+/// PullFixRequest is what POST /api/pulls/{id}/fix accepts.
+class PullFixRequest {
+  const PullFixRequest({
+    required this.check,
+    this.mode,
+    this.note,
+    this.routing,
+  });
+
+  final String check;
+  /// Mode is "fix" or "investigate"; empty means fix.
+  final String? mode;
+  final String? note;
+  final Object? routing;
+
+  factory PullFixRequest.fromJson(Map<String, dynamic> json) {
+    return PullFixRequest(
+      check: json['check'] as String,
+      mode: json['mode'] as String?,
+      note: json['note'] as String?,
+      routing: json['routing'],
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['check'] = check;
+    if (mode != null) {
+      json['mode'] = mode;
+    }
+    if (note != null) {
+      json['note'] = note;
+    }
+    if (routing != null) {
+      json['routing'] = routing;
+    }
+    return json;
+  }
+}
+
+/// PullDelta is the "pull" fleet delta's payload: the record that changed, or
+/// the id of one that went away.
+class PullDelta {
+  const PullDelta({
+    this.pull,
+    this.removed,
+  });
+
+  final PullRecord? pull;
+  final String? removed;
+
+  factory PullDelta.fromJson(Map<String, dynamic> json) {
+    return PullDelta(
+      pull: _objectOrNull(
+        json['pull'],
+        PullRecord.fromJson,
+      ),
+      removed: json['removed'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (pull != null) {
+      json['pull'] = pull!.toJson();
+    }
+    if (removed != null) {
+      json['removed'] = removed;
+    }
+    return json;
+  }
+}
+
+/// PullAsk is the inbox item a fix that could not finish leaves behind: which
+/// pull request and check, what the worker tried, what it found, and what the
+/// user can do next. An investigate-only run always ends in one, carrying the
+/// finding.
+class PullAsk {
+  const PullAsk({
+    required this.pull,
+    required this.check,
+    required this.outcome,
+    this.tried,
+    this.finding,
+    this.action,
+    this.at,
+  });
+
+  final String pull;
+  final String check;
+  /// Outcome is what became of the fix: "not_reproduced", "gave_up",
+  /// "forbidden_change", "stopped", "head_moved" or "investigated".
+  final String outcome;
+  final String? tried;
+  final String? finding;
+  final String? action;
+  final int? at;
+
+  factory PullAsk.fromJson(Map<String, dynamic> json) {
+    return PullAsk(
+      pull: json['pull'] as String,
+      check: json['check'] as String,
+      outcome: json['outcome'] as String,
+      tried: json['tried'] as String?,
+      finding: json['finding'] as String?,
+      action: json['action'] as String?,
+      at: (json['at'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['pull'] = pull;
+    json['check'] = check;
+    json['outcome'] = outcome;
+    if (tried != null) {
+      json['tried'] = tried;
+    }
+    if (finding != null) {
+      json['finding'] = finding;
+    }
+    if (action != null) {
+      json['action'] = action;
+    }
+    if (at != null) {
+      json['at'] = at;
     }
     return json;
   }
@@ -7029,6 +11902,350 @@ class ReviewCommentRequest {
     json['side'] = side;
     json['quote'] = quote;
     json['body'] = body;
+    return json;
+  }
+}
+
+/// RunStage is one stage of one task: the implementer's work, the verify gate,
+/// the reviewer's reading and the commit.
+class RunStage {
+  const RunStage({
+    required this.name,
+    required this.state,
+    this.detail,
+  });
+
+  final String name;
+  final String state;
+  final String? detail;
+
+  factory RunStage.fromJson(Map<String, dynamic> json) {
+    return RunStage(
+      name: json['name'] as String,
+      state: json['state'] as String,
+      detail: json['detail'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['state'] = state;
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    return json;
+  }
+}
+
+/// RunCommit is the range a task's commit covers: the base it started from and
+/// the head it reached.
+class RunCommit {
+  const RunCommit({
+    required this.base,
+    required this.head,
+  });
+
+  final String base;
+  final String head;
+
+  factory RunCommit.fromJson(Map<String, dynamic> json) {
+    return RunCommit(
+      base: json['base'] as String,
+      head: json['head'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['base'] = base;
+    json['head'] = head;
+    return json;
+  }
+}
+
+/// RunTask is one task of a plan run, with what each of its stages reported.
+class RunTask {
+  const RunTask({
+    required this.n,
+    required this.title,
+    required this.dependsOn,
+    required this.status,
+    this.startedAt,
+    this.endedAt,
+    this.execType,
+    this.commit,
+    required this.fixRounds,
+    required this.stages,
+  });
+
+  final int n;
+  final String title;
+  final List<int> dependsOn;
+  final String status;
+  final int? startedAt;
+  final int? endedAt;
+  final String? execType;
+  final RunCommit? commit;
+  final int fixRounds;
+  final List<RunStage> stages;
+
+  factory RunTask.fromJson(Map<String, dynamic> json) {
+    return RunTask(
+      n: (json['n'] as num).toInt(),
+      title: json['title'] as String,
+      dependsOn: _list(
+        json['dependsOn'],
+        (value) => (value as num).toInt(),
+      ),
+      status: json['status'] as String,
+      startedAt: (json['startedAt'] as num?)?.toInt(),
+      endedAt: (json['endedAt'] as num?)?.toInt(),
+      execType: json['execType'] as String?,
+      commit: _objectOrNull(
+        json['commit'],
+        RunCommit.fromJson,
+      ),
+      fixRounds: (json['fixRounds'] as num).toInt(),
+      stages: _list(
+        json['stages'],
+        (value) => _object(value, RunStage.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['n'] = n;
+    json['title'] = title;
+    json['dependsOn'] = dependsOn;
+    json['status'] = status;
+    if (startedAt != null) {
+      json['startedAt'] = startedAt;
+    }
+    if (endedAt != null) {
+      json['endedAt'] = endedAt;
+    }
+    if (execType != null) {
+      json['execType'] = execType;
+    }
+    if (commit != null) {
+      json['commit'] = commit!.toJson();
+    }
+    json['fixRounds'] = fixRounds;
+    json['stages'] = [
+      for (final value in stages) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// RunGate is the question a run stops on, when it stops on one.
+class RunGate {
+  const RunGate({
+    required this.taskN,
+    required this.question,
+  });
+
+  final int taskN;
+  final String question;
+
+  factory RunGate.fromJson(Map<String, dynamic> json) {
+    return RunGate(
+      taskN: (json['taskN'] as num).toInt(),
+      question: json['question'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['taskN'] = taskN;
+    json['question'] = question;
+    return json;
+  }
+}
+
+/// SDDRun is a plan run as `session/run` reports it: the whole digest, so a
+/// client that missed a delta can draw the run from one read.
+class SDDRun {
+  const SDDRun({
+    required this.active,
+    this.planName,
+    this.planPath,
+    this.branch,
+    required this.totalTasks,
+    required this.doneTasks,
+    required this.currentTask,
+    this.phase,
+    this.detail,
+    required this.fixRound,
+    required this.maxFixRounds,
+    required this.tokensUsed,
+    required this.tokensMax,
+    required this.finished,
+    required this.succeeded,
+    this.baseRef,
+    this.startedAt,
+    this.endedAt,
+    this.phaseStartedAt,
+    this.error,
+    required this.tasks,
+    this.gate,
+  });
+
+  final bool active;
+  final String? planName;
+  final String? planPath;
+  final String? branch;
+  final int totalTasks;
+  final int doneTasks;
+  final int currentTask;
+  final String? phase;
+  final String? detail;
+  final int fixRound;
+  final int maxFixRounds;
+  final int tokensUsed;
+  final int tokensMax;
+  final bool finished;
+  final bool succeeded;
+  final String? baseRef;
+  final int? startedAt;
+  final int? endedAt;
+  final int? phaseStartedAt;
+  final String? error;
+  final List<RunTask> tasks;
+  final RunGate? gate;
+
+  factory SDDRun.fromJson(Map<String, dynamic> json) {
+    return SDDRun(
+      active: json['active'] as bool,
+      planName: json['planName'] as String?,
+      planPath: json['planPath'] as String?,
+      branch: json['branch'] as String?,
+      totalTasks: (json['totalTasks'] as num).toInt(),
+      doneTasks: (json['doneTasks'] as num).toInt(),
+      currentTask: (json['currentTask'] as num).toInt(),
+      phase: json['phase'] as String?,
+      detail: json['detail'] as String?,
+      fixRound: (json['fixRound'] as num).toInt(),
+      maxFixRounds: (json['maxFixRounds'] as num).toInt(),
+      tokensUsed: (json['tokensUsed'] as num).toInt(),
+      tokensMax: (json['tokensMax'] as num).toInt(),
+      finished: json['finished'] as bool,
+      succeeded: json['succeeded'] as bool,
+      baseRef: json['baseRef'] as String?,
+      startedAt: (json['startedAt'] as num?)?.toInt(),
+      endedAt: (json['endedAt'] as num?)?.toInt(),
+      phaseStartedAt: (json['phaseStartedAt'] as num?)?.toInt(),
+      error: json['error'] as String?,
+      tasks: _list(
+        json['tasks'],
+        (value) => _object(value, RunTask.fromJson),
+      ),
+      gate: _objectOrNull(
+        json['gate'],
+        RunGate.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['active'] = active;
+    if (planName != null) {
+      json['planName'] = planName;
+    }
+    if (planPath != null) {
+      json['planPath'] = planPath;
+    }
+    if (branch != null) {
+      json['branch'] = branch;
+    }
+    json['totalTasks'] = totalTasks;
+    json['doneTasks'] = doneTasks;
+    json['currentTask'] = currentTask;
+    if (phase != null) {
+      json['phase'] = phase;
+    }
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    json['fixRound'] = fixRound;
+    json['maxFixRounds'] = maxFixRounds;
+    json['tokensUsed'] = tokensUsed;
+    json['tokensMax'] = tokensMax;
+    json['finished'] = finished;
+    json['succeeded'] = succeeded;
+    if (baseRef != null) {
+      json['baseRef'] = baseRef;
+    }
+    if (startedAt != null) {
+      json['startedAt'] = startedAt;
+    }
+    if (endedAt != null) {
+      json['endedAt'] = endedAt;
+    }
+    if (phaseStartedAt != null) {
+      json['phaseStartedAt'] = phaseStartedAt;
+    }
+    if (error != null) {
+      json['error'] = error;
+    }
+    json['tasks'] = [
+      for (final value in tasks) value.toJson(),
+    ];
+    if (gate != null) {
+      json['gate'] = gate!.toJson();
+    }
+    return json;
+  }
+}
+
+/// RunListEntry is one run as `GET /api/runs` lists it: the agent it runs on,
+/// the digest it last sent, and where it came from.
+class RunListEntry {
+  const RunListEntry({
+    required this.agentID,
+    this.name,
+    required this.project,
+    required this.run,
+    required this.at,
+    this.error,
+  });
+
+  final String agentID;
+  final String? name;
+  final String project;
+  /// Run is the agent's last run digest, as it sent it.
+  final Object? run;
+  /// At is when the digest arrived, in Unix milliseconds, like the run delta
+  /// and the usage rows.
+  final int at;
+  final String? error;
+
+  factory RunListEntry.fromJson(Map<String, dynamic> json) {
+    return RunListEntry(
+      agentID: json['agentId'] as String,
+      name: json['name'] as String?,
+      project: json['project'] as String,
+      run: json['run'],
+      at: (json['at'] as num).toInt(),
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['agentId'] = agentID;
+    if (name != null) {
+      json['name'] = name;
+    }
+    json['project'] = project;
+    json['run'] = run;
+    json['at'] = at;
+    if (error != null) {
+      json['error'] = error;
+    }
     return json;
   }
 }
@@ -9036,6 +14253,7 @@ enum DeltaKind {
   deltaBudget('budget'),
   deltaProjectRemoved('project_removed'),
   deltaInbox('inbox'),
+  deltaPull('pull'),
   unknown('unknown');
 
   const DeltaKind(this.wire);

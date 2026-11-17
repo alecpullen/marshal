@@ -17,7 +17,9 @@ const _fixtures = [
   'budgets',
   'clients',
   'connections',
+  'drafts',
   'environments',
+  'factory',
   'finish',
   'inbox',
   'intake',
@@ -26,8 +28,11 @@ const _fixtures = [
   'models',
   'network',
   'notifications',
+  'planner',
+  'projectsettings',
   'projects',
   'recipes',
+  'runs',
   'schedules',
   'secrets',
   'session',
@@ -109,6 +114,102 @@ final _codecs = <String, _Codec>{
   'FactoryGrantState': (json) =>
       FactoryGrantState.fromJson(_object(json)).toJson(),
   'PutGrantRequest': (json) => PutGrantRequest.fromJson(_object(json)).toJson(),
+  // factory.json — a work item in each of its four resting states, its parts,
+  // and the command a client posts back.
+  'FactoryItemDraft': (json) => FactoryItem.fromJson(_object(json)).toJson(),
+  'FactoryItemNeedsInput': (json) =>
+      FactoryItem.fromJson(_object(json)).toJson(),
+  'FactoryItemReady': (json) => FactoryItem.fromJson(_object(json)).toJson(),
+  'FactoryItemClosed': (json) => FactoryItem.fromJson(_object(json)).toJson(),
+  'FactoryConfig': (json) => FactoryConfig.fromJson(_object(json)).toJson(),
+  'FactoryCreate': (json) => FactoryCreate.fromJson(_object(json)).toJson(),
+  'FactoryApproval': (json) => FactoryApproval.fromJson(_object(json)).toJson(),
+  'FactoryWorker': (json) => FactoryWorker.fromJson(_object(json)).toJson(),
+  'FactoryPR': (json) => FactoryPR.fromJson(_object(json)).toJson(),
+  'FactoryCheckKey': (json) => FactoryCheckKey.fromJson(_object(json)).toJson(),
+  'FactoryCheck': (json) => FactoryCheck.fromJson(_object(json)).toJson(),
+  'FactoryCI': (json) => FactoryCI.fromJson(_object(json)).toJson(),
+  'FactoryRound': (json) => FactoryRound.fromJson(_object(json)).toJson(),
+  'FactoryReport': (json) => FactoryReport.fromJson(_object(json)).toJson(),
+  'FactoryDecision': (json) => FactoryDecision.fromJson(_object(json)).toJson(),
+  'FactoryEvent': (json) => FactoryEvent.fromJson(_object(json)).toJson(),
+  'FactoryGrant': (json) => FactoryGrant.fromJson(_object(json)).toJson(),
+  'FactoryCompletion': (json) =>
+      FactoryCompletion.fromJson(_object(json)).toJson(),
+  'FactoryCompletionRecord': (json) =>
+      FactoryCompletionRecord.fromJson(_object(json)).toJson(),
+  'FactoryAssessment': (json) =>
+      FactoryAssessment.fromJson(_object(json)).toJson(),
+  'FactoryPRLink': (json) => FactoryPRLink.fromJson(_object(json)).toJson(),
+  'FactoryMergeBatch': (json) =>
+      FactoryMergeBatch.fromJson(_object(json)).toJson(),
+  'FactoryMergeStep': (json) =>
+      FactoryMergeStep.fromJson(_object(json)).toJson(),
+  'FactorySubagentSettings': (json) =>
+      FactorySubagentSettings.fromJson(_object(json)).toJson(),
+  'FactorySubagentOverrides': (json) =>
+      FactorySubagentOverrides.fromJson(_object(json)).toJson(),
+  'EditSnapshot': (json) => EditSnapshot.fromJson(_object(json)).toJson(),
+  'SelectedFile': (json) => SelectedFile.fromJson(_object(json)).toJson(),
+  'ReviewFinding': (json) => ReviewFinding.fromJson(_object(json)).toJson(),
+  'FactoryRevisionAssessment': (json) =>
+      FactoryRevisionAssessment.fromJson(_object(json)).toJson(),
+  'FactoryRevisionProposal': (json) =>
+      FactoryRevisionProposal.fromJson(_object(json)).toJson(),
+  'FactoryRevisionCommand': (json) =>
+      FactoryRevisionCommand.fromJson(_object(json)).toJson(),
+  'FactoryCompletionPR': (json) =>
+      FactoryCompletionPR.fromJson(_object(json)).toJson(),
+  'FactoryCompletionCommand': (json) =>
+      FactoryCompletionCommand.fromJson(_object(json)).toJson(),
+  'FactoryCommand': (json) => FactoryCommand.fromJson(_object(json)).toJson(),
+  // planner.json — the planning thread, its snapshots and its briefing.
+  'PlannerOccupancy': (json) => PlannerOccupancy.fromWire(json! as String).wire,
+  'WorkerCapabilities': (json) =>
+      WorkerCapabilities.fromJson(_object(json)).toJson(),
+  'PlannerArtifact': (json) => PlannerArtifact.fromJson(_object(json)).toJson(),
+  'PlannerTurn': (json) => PlannerTurn.fromJson(_object(json)).toJson(),
+  'PlannerDecision': (json) => PlannerDecision.fromJson(_object(json)).toJson(),
+  'PlannerView': (json) => PlannerView.fromJson(_object(json)).toJson(),
+  'PlannerCreateRequest': (json) =>
+      PlannerCreateRequest.fromJson(_object(json)).toJson(),
+  'PlannerPromptRequest': (json) =>
+      PlannerPromptRequest.fromJson(_object(json)).toJson(),
+  'PlannerAnswerRequest': (json) =>
+      PlannerAnswerRequest.fromJson(_object(json)).toJson(),
+  'PlannerTurnReply': (json) =>
+      PlannerTurnReply.fromJson(_object(json)).toJson(),
+  'PlannerEvent': (json) => PlannerEvent.fromJson(_object(json)).toJson(),
+  'PlannerSnapshotArtifact': (json) =>
+      PlannerSnapshotArtifact.fromJson(_object(json)).toJson(),
+  'PlannerSnapshotRequest': (json) =>
+      PlannerSnapshotRequest.fromJson(_object(json)).toJson(),
+  'PlannerRejection': (json) =>
+      PlannerRejection.fromJson(_object(json)).toJson(),
+  'PlannerSnapshotFile': (json) =>
+      PlannerSnapshotFile.fromJson(_object(json)).toJson(),
+  'PlannerSnapshotView': (json) =>
+      PlannerSnapshotView.fromJson(_object(json)).toJson(),
+  'PlannerSnapshotReply': (json) =>
+      PlannerSnapshotReply.fromJson(_object(json)).toJson(),
+  'PlannerContextArtifact': (json) =>
+      PlannerContextArtifact.fromJson(_object(json)).toJson(),
+  'PlannerContextDecision': (json) =>
+      PlannerContextDecision.fromJson(_object(json)).toJson(),
+  'PlannerContextQuestion': (json) =>
+      PlannerContextQuestion.fromJson(_object(json)).toJson(),
+  'PlannerContextView': (json) =>
+      PlannerContextView.fromJson(_object(json)).toJson(),
+  // drafts.json — an unfinished handoff and its versioned writes.
+  'WorkingDraft': (json) => WorkingDraft.fromJson(_object(json)).toJson(),
+  'WorkingDraftContent': (json) =>
+      WorkingDraftContent.fromJson(_object(json)).toJson(),
+  'WorkingDraftCreateRequest': (json) =>
+      WorkingDraftCreateRequest.fromJson(_object(json)).toJson(),
+  'WorkingDraftSaveRequest': (json) =>
+      WorkingDraftSaveRequest.fromJson(_object(json)).toJson(),
+  'WorkingDraftDeleteRequest': (json) =>
+      WorkingDraftDeleteRequest.fromJson(_object(json)).toJson(),
   // library.json
   'SkillEntry': (json) => SkillEntry.fromJson(_object(json)).toJson(),
   'SkillPreview': (json) => SkillPreview.fromJson(_object(json)).toJson(),
@@ -181,6 +282,32 @@ final _codecs = <String, _Codec>{
   'WireTask': (json) => WireTask.fromJson(_object(json)).toJson(),
   'WireBandEntity': (json) => WireBandEntity.fromJson(_object(json)).toJson(),
   'WireReceipt': (json) => WireReceipt.fromJson(_object(json)).toJson(),
+  // runs.json — a plan run, its tasks and the list entry.
+  'SDDRun': (json) => SDDRun.fromJson(_object(json)).toJson(),
+  'RunTask': (json) => RunTask.fromJson(_object(json)).toJson(),
+  'RunStage': (json) => RunStage.fromJson(_object(json)).toJson(),
+  'RunCommit': (json) => RunCommit.fromJson(_object(json)).toJson(),
+  'RunGate': (json) => RunGate.fromJson(_object(json)).toJson(),
+  'RunListEntry': (json) => RunListEntry.fromJson(_object(json)).toJson(),
+  // projectsettings.json — settings, health and discovery.
+  'ProjectIntake': (json) => ProjectIntake.fromJson(_object(json)).toJson(),
+  'FactoryDefaults': (json) => FactoryDefaults.fromJson(_object(json)).toJson(),
+  'ProjectSettings': (json) => ProjectSettings.fromJson(_object(json)).toJson(),
+  'MirrorHealth': (json) => MirrorHealth.fromJson(_object(json)).toJson(),
+  'WorkspaceHealth': (json) => WorkspaceHealth.fromJson(_object(json)).toJson(),
+  'VerifyCommands': (json) => VerifyCommands.fromJson(_object(json)).toJson(),
+  'ProjectHealth': (json) => ProjectHealth.fromJson(_object(json)).toJson(),
+  'DiscoveryCapabilityState': (json) =>
+      DiscoveryCapabilityState.fromWire(json! as String).wire,
+  'DiscoveryCapability': (json) =>
+      DiscoveryCapability.fromJson(_object(json)).toJson(),
+  'DiscoveryFact': (json) => DiscoveryFact.fromJson(_object(json)).toJson(),
+  'DiscoveryRecommendation': (json) =>
+      DiscoveryRecommendation.fromJson(_object(json)).toJson(),
+  'DiscoveryGap': (json) => DiscoveryGap.fromJson(_object(json)).toJson(),
+  'DiscoveryWorktree': (json) =>
+      DiscoveryWorktree.fromJson(_object(json)).toJson(),
+  'DiscoveryReport': (json) => DiscoveryReport.fromJson(_object(json)).toJson(),
   // stream.json
   'BudgetDelta': (json) => BudgetDelta.fromJson(_object(json)).toJson(),
   'BudgetScope': (json) => BudgetScope.fromWire(json! as String).wire,

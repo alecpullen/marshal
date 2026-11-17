@@ -223,14 +223,19 @@ void main() {
     model.dispose();
   });
 
-  test('a planned kind is refused and cannot start', () {
-    final model = _Routes().model();
+  test('every kind is startable, and a work item posts nothing', () async {
+    final routes = _Routes();
+    final model = routes.model();
     model.prefill('Do the work');
 
     model.selectKind(NewWorkKind.workItem);
 
-    expect(model.kind, NewWorkKind.agent, reason: 'F6 brings the work item');
+    // F6 decision 9: "Work item" opens the handoff review, so it is a live
+    // kind that spawns nothing of its own.
+    expect(model.kind, NewWorkKind.workItem);
     expect(model.canStart, isTrue);
+    await model.start();
+    expect(model.started, isNull);
     model.dispose();
   });
 

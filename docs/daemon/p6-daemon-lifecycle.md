@@ -1020,6 +1020,45 @@ claims it passed. The end-to-end tests above are the half that ran.
 - `cd app && flutter test test/boundary_test.dart` passed, nine rules, with
   Flutter installed (`command -v flutter` found 3.50.0).
 
+**The review round.** Three reviewer subagents read the branch before it left
+draft (the wire and CLI surface, the sweep's concurrency, and the plan's own
+test list). One major and two minor findings against the sweep were acted on
+in `46e3fba5`, which is after the six task commits:
+
+- **The marker outlived its child.** `recycleProjectChild` installed the
+  recycling marker *before* checking that the entry still had a child, so a
+  stop landing between the sweep's checks and its note (a session-less
+  child's linger firing, or a failed start's cleanup) left a channel nothing
+  would ever close: the sweep skips that entry forever and every later attach
+  waits on it until its own context ends. The marker is now installed only
+  under the lock that reads the child, and the gone-child path returns with
+  nothing opened.
+- **The marker was not bound to a generation.** A crash during the sweep's
+  checks could have its handshake in flight when the marker went up; that
+  handshake is on the generation `Recycle` then ends, so its failure closed
+  the marker and the sweep read a restart that had not happened, bypassing
+  decision 7's give-up. The sweep records the generation it meant to end and
+  counts the restart only when the counter is past it.
+- **A refusal's sentence was dropped.** `Refused` was copied from
+  `pc.restart`, so a sweep that saw the child current in between cleared it
+  and the next stale sweep published a pending restart that neither said why
+  it was refused nor would run. The text now lives beside the refused file's
+  identity (`refusedText`).
+- **The marker wait ignored `ctx`.** It now selects on it, so a shutdown is
+  not trailed by up to `recycleTimeout` per restarted child.
+- Two record nits: the e2e tests cover the status's *data* rather than the
+  command, and the literal busy-check mutation is caught by
+  `TestABuildThatGoesBusyWaits`.
+
+`TestAChildThatGoesAwayBeforeTheRestartLeavesNoMarker` pins the first. What
+the reviewers found sound is also part of the record: the wire change is
+additive with `StatusSchema` still 1, the Dart mirror is generated and
+currently checked, `Child.Recycle` cannot kill a replacement generation,
+`announceRestart` serialises per relay and skips closed clients, and no path
+holds `pc.mu` across a wait. One NIT was left: `daemonRestartLines` prints
+nothing for a marker with reasons but no waiting-for, a shape no producer can
+make.
+
 ### Plan 6 — a wake with no screen, and the two P4 warnings
 
 Executed on Linux at `5a7aa4ab` on branch `p6-6-wake-warnings`, one commit per

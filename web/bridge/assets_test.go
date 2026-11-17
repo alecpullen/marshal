@@ -8,19 +8,20 @@ import (
 	"testing"
 )
 
-// TestRootServesFlutter pins the swap (F8 decision 1): `/` is the Flutter
-// Studio's index, never cached, so a reload of the root opens it.
-func TestRootServesFlutter(t *testing.T) {
+// TestRootServesSvelte pins the deferred cutover (F8 decision 1, revised
+// 2026-11-17): `/` is still the Svelte Studio's index, never cached, so a
+// reload of the root opens it.
+func TestRootServesSvelte(t *testing.T) {
 	for _, p := range []string{"/", "/index.html"} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, p, nil)
-		studioHandler().ServeHTTP(rec, req)
+		svelteHandler().ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET %s: status = %d, want 200", p, rec.Code)
 		}
-		if body := rec.Body.String(); !strings.Contains(body, "Marshal Studio") {
-			t.Errorf("GET %s: body is not the Studio's index; got %q", p, body)
+		if body := rec.Body.String(); !strings.Contains(body, "Marshal Web UI") {
+			t.Errorf("GET %s: body is not the Svelte index; got %q", p, body)
 		}
 		if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
 			t.Errorf("GET %s: cache-control = %q, want no-cache", p, cc)
@@ -28,31 +29,13 @@ func TestRootServesFlutter(t *testing.T) {
 	}
 }
 
-// TestRootFallsBackToIndex pins the Studio's own routing: a place in the URL
-// is not a file on disk, so the index answers and the Studio renders it.
+// TestRootFallsBackToIndex pins the Svelte Studio's fallback: a path that is
+// not a file on disk answers with its index, which reads the hash route.
 func TestRootFallsBackToIndex(t *testing.T) {
 	for _, p := range []string{"/inbox", "/thread/local/a-1", "/settings/secrets"} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, p, nil)
-		studioHandler().ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("GET %s: status = %d, want 200", p, rec.Code)
-		}
-		if body := rec.Body.String(); !strings.Contains(body, "Marshal Studio") {
-			t.Errorf("GET %s: body missing the Studio's index; got %q", p, body)
-		}
-	}
-}
-
-// TestClassicServesSvelte pins the trial's fallback (F8 decision 1): the
-// Svelte Studio answers under /classic/, so a link to it during the trial
-// release still works.
-func TestClassicServesSvelte(t *testing.T) {
-	for _, p := range []string{"/classic", "/classic/", "/classic/index.html"} {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, p, nil)
-		classicHandler().ServeHTTP(rec, req)
+		svelteHandler().ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET %s: status = %d, want 200", p, rec.Code)
@@ -63,48 +46,77 @@ func TestClassicServesSvelte(t *testing.T) {
 	}
 }
 
-// TestClassicServesItsAssets pins the prefix stripping: the Svelte build is
-// made with `--base=/classic/`, so its asset URLs carry the prefix and the
-// handler reads them from the tree rooted at `static`.
-func TestClassicServesItsAssets(t *testing.T) {
-	name := hashedAssetName(t, classicRoot)
+// TestNextServesFlutter pins the Flutter Studio's prefix (F8 decision 1,
+// revised 2026-11-17): the trial build lives at /next/, never cached, so a
+// reload opens it.
+func TestNextServesFlutter(t *testing.T) {
+	for _, p := range []string{"/next/", "/next/index.html"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		flutterHandler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200", p, rec.Code)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "Marshal Studio") {
+			t.Errorf("GET %s: body missing the Flutter index; got %q", p, body)
+		}
+		if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
+			t.Errorf("GET %s: cache-control = %q, want no-cache", p, cc)
+		}
+	}
+}
+
+// TestNextFallsBackToIndex pins the Flutter Studio's own routing: a place in
+// the URL is not an asset on disk, so the index answers and the Studio renders
+// the place.
+func TestNextFallsBackToIndex(t *testing.T) {
+	for _, p := range []string{"/next/inbox", "/next/thread/local/a-1", "/next/settings/secrets"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		flutterHandler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200", p, rec.Code)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "Marshal Studio") {
+			t.Errorf("GET %s: body missing the Flutter index; got %q", p, body)
+		}
+	}
+}
+
+// TestNextBarePrefixRedirects pins the trailing slash: the Flutter build's
+// base href is /next/, so serving its index at /next would resolve every
+// relative asset URL a level too high.
+func TestNextBarePrefixRedirects(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, nextPrefix, nil)
+	flutterHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Errorf("GET %s: status = %d, want 308", nextPrefix, rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != nextPrefix+"/" {
+		t.Errorf("GET %s: Location = %q, want %q", nextPrefix, got, nextPrefix+"/")
+	}
+}
+
+// TestRootServesItsAssets pins the un-prefixed asset path: the Svelte build is
+// made with the default base, so its asset URLs are rooted at `/`.
+func TestRootServesItsAssets(t *testing.T) {
+	name := hashedAssetName(t, svelteRoot)
 	if name == "" {
 		t.Skip("no hashed asset in the embedded Svelte tree")
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, classicPrefix+"/"+name, nil)
-	classicHandler().ServeHTTP(rec, req)
+	req := httptest.NewRequest(http.MethodGet, "/"+name, nil)
+	svelteHandler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET %s/%s: status = %d, want 200", classicPrefix, name, rec.Code)
+		t.Fatalf("GET /%s: status = %d, want 200", name, rec.Code)
 	}
 	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "immutable") {
 		t.Errorf("cache-control for %s = %q, want immutable", name, cc)
-	}
-}
-
-// TestNextRedirectsToRoot pins the permanent redirect (F8 decision 2): a
-// bookmark made while the Studio lived under /next/ opens the same place at
-// the root, query and all.
-func TestNextRedirectsToRoot(t *testing.T) {
-	cases := []struct{ from, to string }{
-		{"/next", "/"},
-		{"/next/", "/"},
-		{"/next/inbox", "/inbox"},
-		{"/next/thread/local/a-1", "/thread/local/a-1"},
-		{"/next/settings/secrets?tab=models", "/settings/secrets?tab=models"},
-	}
-	for _, tc := range cases {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, tc.from, nil)
-		redirectNext(rec, req)
-
-		if rec.Code != http.StatusMovedPermanently {
-			t.Errorf("GET %s: status = %d, want 301", tc.from, rec.Code)
-		}
-		if got := rec.Header().Get("Location"); got != tc.to {
-			t.Errorf("GET %s: Location = %q, want %q", tc.from, got, tc.to)
-		}
 	}
 }
 
@@ -116,8 +128,8 @@ func TestNoAPIRouteIsShadowed(t *testing.T) {
 		h    http.Handler
 		path string
 	}{
-		{"studio", studioHandler(), "/api/agents"},
-		{"classic", classicHandler(), "/classic/api/agents"},
+		{"svelte", svelteHandler(), "/api/agents"},
+		{"flutter", flutterHandler(), "/next/api/agents"},
 	} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
@@ -133,22 +145,7 @@ func TestNoAPIRouteIsShadowed(t *testing.T) {
 	}
 }
 
-// TestIsClassicPath pins the prefix the router matches on: /classic and
-// everything under it, and nothing that merely starts with the same letters.
-func TestIsClassicPath(t *testing.T) {
-	for _, p := range []string{"/classic", "/classic/", "/classic/assets/index-x.js"} {
-		if !isClassicPath(p) {
-			t.Errorf("isClassicPath(%q) = false, want true", p)
-		}
-	}
-	for _, p := range []string{"/", "/classical", "/api/agents", "/next"} {
-		if isClassicPath(p) {
-			t.Errorf("isClassicPath(%q) = true, want false", p)
-		}
-	}
-}
-
-// TestIsNextPath pins the old prefix the router redirects on.
+// TestIsNextPath pins the prefix the router matches on.
 func TestIsNextPath(t *testing.T) {
 	for _, p := range []string{"/next", "/next/", "/next/inbox", "/next/thread/local/a-1"} {
 		if !isNextPath(p) {

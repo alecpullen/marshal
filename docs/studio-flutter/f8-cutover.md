@@ -41,15 +41,22 @@ is not part of either Studio.
 
 ## Decisions
 
-1. **A trial period first.** Before anything is removed, one release ships
-   with the roles swapped: Flutter at `/`, Svelte at `/classic/`. Removal
-   follows in the next release, unless a defect that blocks work is open
-   against the Flutter Studio.
+1. **The cutover is deferred (revised 2026-11-17).** The trial build's first
+   load is 6.9× the Svelte Studio's raw and 8.3× gzipped, against the 3×
+   ceiling decision 6 sets, and 7.4 MB of it is the CanvasKit engine alone:
+   the gate cannot pass while the Flutter Studio is the one at `/`. So the
+   Svelte Studio keeps `/` and the Flutter Studio stays at `/next/`. Both
+   builds are served by the same bridge; nothing is removed. What *is*
+   adopted from this phase: the old-link translation (decision 2), and the
+   engine being served by the bridge rather than a CDN — the build passes
+   `--no-web-resources-cdn`, without which a private network that cannot
+   reach gstatic never starts the Studio at all.
 2. **Old links keep working.** The Svelte Studio's hash routes — `#chat/…`,
    `#factory/…`, `#projects/…`, `#runs/…`, `#settings/…` and the rest in
    `lib/routes.ts` — are translated to the new places by the Flutter
    Studio's router, from a table with a test per route. A hash it does not
-   know opens Overview with a one-line notice. `/next/…` redirects to `/…`.
+   know opens Overview with a one-line notice. `/next` redirects to `/next/`
+   so the build's base href resolves its assets.
 3. **What is removed.** `web/ui/` entirely; the Svelte build in
    `web/bridge/static`; `tsgen` and `contract.ts`; the CI web job; the
    browser checks that drive Svelte; the Node setup in every workflow; the
@@ -86,8 +93,10 @@ is not part of either Studio.
 Suggested pull requests, in order.
 
 1. **Route translation.** The table, the router change, the tests.
-2. **Swap.** Flutter at `/`, Svelte at `/classic/`, `/next/` redirecting;
-   the measurements in decision 6; release.
+2. **Swap — deferred.** The measurements in decision 6 were taken and the
+   swap was implemented, then reverted by the revised decision 1: Svelte
+   stays at `/`, Flutter at `/next/`, the engine served locally. Swapping is
+   what a later release does once the ceiling is met (see Open questions).
 3. **End-to-end migration.** The table in decision 5 and the re-expressed
    checks.
 4. **Removal.** Everything in decision 3, the build command and CI in
@@ -98,17 +107,20 @@ Suggested pull requests, in order.
 
 - `app/test/model/route_translation_test.dart`: every route in the Svelte
   `routes.ts` at the time of the swap.
-- `web/bridge`: `/` serves the Flutter index; `/classic/` serves Svelte
-  during the trial and is gone after; `/next/` redirects; no API route is
-  shadowed.
+- `web/bridge`: `/` serves the Svelte index; `/next/` serves the Flutter
+  one and falls back to it for a place; `/next` redirects to `/next/`; no
+  API route is shadowed by either Studio.
 - The migrated end-to-end checks.
 - CI fails if a `package.json` or a `.svelte` file exists anywhere in the
   repository after removal.
 
 ## Trial measurements
 
-Taken on the trial build (Flutter at `/`, Svelte at `/classic/`), 2026-11-17,
-on the development host. First load is each Studio's `index.html` plus every
+Taken on the trial build with the roles swapped (Flutter at `/`, Svelte at
+`/classic/`), 2026-11-17, on the development host — the numbers that deferred
+the cutover (revised decision 1). With the roles as they now stand, the
+Flutter rows are what `/next/` serves and the Svelte rows are what `/` serves;
+no row changed. First load is each Studio's `index.html` plus every
 byte it fetches before its first screen. **The bridge compresses nothing** —
 there is no `Content-Encoding` on any route in `web/bridge` — so the browser
 receives these bytes raw; the gzip column is what a compressing proxy would
@@ -162,43 +174,40 @@ Time to first usable screen **on a phone was not measured**: this host has no
 browser and no phone (see the environment-blocked list). The byte counts stand
 in for it until one does.
 
-## Owed debt: end-to-end checks still aimed at Svelte
+## End-to-end checks: valid again
 
-Task 3 (end-to-end migration) has not started — the gate in decision 6 stopped
-the phase at the swap. Two end-to-end surfaces therefore still describe the
-Studio that used to be at `/`, and **neither is evidence about the Flutter
-Studio until Task 3 re-expresses it**:
+The swap created a debt this phase could not pay: with the Flutter Studio at
+`/`, the checks that drive the Svelte document there stopped being evidence
+about the Studio a browser actually loads. The revised decision 1 removes the
+debt rather than paying it — the Svelte Studio is back at `/`, so
+`scripts/e2e/checks_spa.py`'s group I and the Playwright specs drive the
+Studio that is served there and are valid as written.
 
-- **`scripts/e2e/checks_spa.py`, group I ("spa and auth").** Its premise is the
-  Svelte document at `/`: `_asset_paths` collects the same-origin `<script
-  src>` and `.css` paths the document names, and the bundle checks then grep
-  those files for the client's token handling. The Flutter Studio's index names
-  only `<script src="flutter_bootstrap.js">` — relative, so the same-origin
-  filter drops it — and the app's own `main.dart.js` is injected by that loader
-  at run time, so it is never in the collected set. "the shell is served and
-  names its assets" therefore reports that the document names no script
-  bundle; "the served bundle normalizes a pasted token", "… bounds prompt
-  declines" and "… stops on a rejected token" have nothing to inspect and
-  skip; and "content-hashed assets are immutable" skips too, because Flutter
-  emits unhashed names. A green run here would say nothing about the Studio a
-  browser now loads. The group's HTTP checks — `/api` 404s, the bearer
-  requirement, `/mcp`, previews — still tell the truth, because they exercise
-  the bridge rather than the Studio.
+Kept for the release that does take the cutover, because it names what has to
+be re-expressed then:
+
+- **`scripts/e2e/checks_spa.py`, group I ("spa and auth").** Its premise is a
+  document at `/` that names its own same-origin `<script src>` and `.css`
+  paths; `_asset_paths` collects them and the bundle checks grep those files
+  for the client's token handling. The Flutter document names only
+  `<script src="flutter_bootstrap.js">` — relative, so the same-origin filter
+  drops it — and injects `main.dart.js` at run time, so it never lands in the
+  collected set: "the shell is served and names its assets" would report that
+  the document names no script bundle, and the three bundle checks and the
+  content-hashed-asset check would skip (Flutter emits unhashed names). The
+  group's HTTP checks — `/api` 404s, the bearer requirement, `/mcp`,
+  previews — are the bridge's rather than the Studio's, so they stay as they
+  are.
 - **`scripts/e2e/run_browser_checks.sh` and `web/ui/playwright.config.ts`.**
-  The script builds the Svelte Studio into `web/bridge/static` and runs the
-  `*.pw.ts` specs with `baseURL` at the root. That build now lands under
-  `/classic/`, while `/` serves the Flutter Studio, whose DOM is a CanvasKit
-  canvas rather than the elements the specs address (the shell's routes, deep
-  links, roadmap, and the project and factory settings surfaces). Every spec —
-  `studio-shell.pw.ts`, `project-settings.pw.ts`, `studio-fleet.pw.ts`,
-  `factory-item.pw.ts`, `factory-handoff.pw.ts` — is aimed at the wrong
-  Studio, and the fixture it builds no longer reaches the page under test.
+  They build the Svelte Studio into `web/bridge/static` and run the `*.pw.ts`
+  specs with `baseURL` at the root. If the Flutter Studio held `/`, those
+  specs would address a DOM that is a CanvasKit canvas rather than the
+  elements they query (the shell's routes, deep links, roadmap, and the
+  project and factory settings surfaces), and the fixture the script builds
+  would no longer reach the page under test.
 
-Task 3 owes both: the group I checks re-expressed against the Flutter document
-and its `main.dart.js`, and the Playwright specs re-expressed against the
-Flutter Studio or shown to be covered by a phase's own suite, in the table
-decision 5 requires. Nothing here is repaired in this task; it is written down
-so that the gap is not mistaken for coverage.
+Task 3 of the plan (end-to-end migration) therefore stays unstarted: there is
+nothing to migrate while the Svelte Studio holds `/`.
 
 ## Done when
 

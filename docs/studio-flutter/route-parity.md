@@ -1,15 +1,19 @@
 # Route parity
 
-Every route the Svelte client calls, and where it lands in the app: the
+Every route either client calls, and where it lands in the app: the
 `BridgeClient` method that calls it (`app/lib/src/client/bridge_client.dart`),
 or `dropped:` and why it has no Dart caller.
 
-Sources: `web/ui/src/lib/api.ts`, `factory.ts`, `planner.ts`,
-`working-drafts.ts` and `sse.ts`. A templated segment is written `X`.
+The Svelte client's routes come from `web/ui/src/lib/api.ts`, `factory.ts`,
+`planner.ts`, `working-drafts.ts` and `sse.ts`; the app's own — the terminal,
+pull, planner and factory routes the Svelte client never grew — are read from
+`bridge_client.dart` itself. A templated segment is written `X`, and a query
+string is dropped before a route is compared.
 
-`app/test/route_parity_test.dart` reads this table: a row with neither a
-method nor a `dropped:` reason fails it, and so does a method that is not in
-`bridge_client.dart`.
+`app/test/route_parity_test.dart` reads this table in both directions: a row
+with neither a method nor a `dropped:` reason fails it, so does a method that
+is not in `bridge_client.dart`, so does a `dropped:` row the client actually
+issues, and so does a route the client issues that has no row.
 
 | Method | Path | BridgeClient | Note |
 |---|---|---|---|
@@ -23,16 +27,28 @@ method nor a `dropped:` reason fails it, and so does a method that is not in
 | GET | `/api/agents/X/file` | file |  |
 | GET | `/api/agents/X/files` | files |  |
 | GET | `/api/agents/X/gate` | gate |  |
-| POST | `/api/agents/X/merge` | — | dropped: the app ships through exit; a separate merge route has no caller |
+| POST | `/api/agents/X/merge` | mergeAgent |  |
+| GET | `/api/agents/X/patch` | patch |  |
 | POST | `/api/agents/X/preview/X` | preview |  |
 | GET | `/api/agents/X/review/comments` | reviewComments |  |
 | POST | `/api/agents/X/review/comments` | addReviewComment |  |
 | POST | `/api/agents/X/review/comments/X/resolve` | resolveReviewComment |  |
+| POST | `/api/agents/X/terminal` | openTerminal |  |
+| DELETE | `/api/agents/X/terminal/X` | closeTerminal |  |
+| GET | `/api/agents/X/terminal/X/events` | terminalEvents |  |
+| POST | `/api/agents/X/terminal/X/input` | terminalInput |  |
+| POST | `/api/agents/X/terminal/X/release` | terminalRelease |  |
+| POST | `/api/agents/X/terminal/X/resize` | terminalResize |  |
 | POST | `/api/agents/X/verify` | verify |  |
 | GET | `/api/audit` | audit |  |
 | GET | `/api/automations/ci/history` | ciHistory |  |
 | GET | `/api/automations/ci/history/X` | ciHistoryEntry |  |
 | GET | `/api/automations/review/drafts` | reviewDrafts |  |
+| GET | `/api/automations/review/drafts/X` | reviewDraft |  |
+| PUT | `/api/automations/review/drafts/X` | editReviewDraft |  |
+| POST | `/api/automations/review/drafts/X/discard` | discardReviewDraft |  |
+| POST | `/api/automations/review/drafts/X/post` | postReviewDraft |  |
+| POST | `/api/automations/review/drafts/X/send-to-author` | sendDraftToAuthor |  |
 | POST | `/api/automations/review/run` | runReviewBot |  |
 | GET | `/api/budgets` | budgets |  |
 | PUT | `/api/budgets` | saveBudgets |  |
@@ -45,15 +61,20 @@ method nor a `dropped:` reason fails it, and so does a method that is not in
 | GET | `/api/credentials` | credentials |  |
 | POST | `/api/credentials` | putCredential |  |
 | DELETE | `/api/credentials/X` | deleteCredential |  |
+| GET | `/api/daemon` | daemon |  |
 | GET | `/api/disk` | disk |  |
-| GET | `/api/factory/items` | — | dropped: the factory screens are F6’s; nothing in the app calls the factory routes yet |
-| POST | `/api/factory/items` | — | dropped: the factory screens are F6’s; nothing in the app calls the factory routes yet |
-| GET | `/api/factory/items/X` | — | dropped: the factory screens are F6’s; nothing in the app calls the factory routes yet |
-| POST | `/api/factory/items/X/commands` | — | dropped: the factory screens are F6’s; nothing in the app calls the factory routes yet |
-| GET | `/api/factory/settings-version` | — | dropped: the factory screens are F6’s; nothing in the app calls the factory routes yet |
-| GET | `/api/factory/working-drafts` | — | dropped: the factory screens are F6’s; nothing in the app calls the factory routes yet |
-| POST | `/api/factory/working-drafts` | — | dropped: the factory screens are F6’s; nothing in the app calls the factory routes yet |
-| GET | `/api/factory/working-drafts/installation` | — | dropped: the factory screens are F6’s; nothing in the app calls the factory routes yet |
+| GET | `/api/events` | fleetEvents | sessionEvents streams it too |
+| GET | `/api/factory/items` | factoryItems |  |
+| POST | `/api/factory/items` | createFactoryItem |  |
+| GET | `/api/factory/items/X` | factoryItem |  |
+| POST | `/api/factory/items/X/commands` | factoryCommand |  |
+| GET | `/api/factory/settings-version` | — | dropped: no screen compares a draft against the settings version it was written under |
+| GET | `/api/factory/working-drafts` | workingDrafts |  |
+| POST | `/api/factory/working-drafts` | createWorkingDraft |  |
+| GET | `/api/factory/working-drafts/X` | workingDraft |  |
+| PUT | `/api/factory/working-drafts/X` | saveWorkingDraft |  |
+| DELETE | `/api/factory/working-drafts/X` | deleteWorkingDraft |  |
+| GET | `/api/factory/working-drafts/installation` | — | dropped: the installation draft is the web client’s onboarding; the app has no onboarding screen |
 | GET | `/api/inbox` | inbox |  |
 | GET | `/api/library/memory` | memory |  |
 | DELETE | `/api/library/memory/X` | deleteMemory |  |
@@ -70,10 +91,10 @@ method nor a `dropped:` reason fails it, and so does a method that is not in
 | POST | `/api/library/skills/confirm` | confirmSkill |  |
 | POST | `/api/library/skills/discard` | discardSkill |  |
 | POST | `/api/library/skills/preview` | previewSkill |  |
-| GET | `/api/marshal/access?host=…` | — | dropped: the Studio has no access-selection screen; the web client stores that choice itself |
-| PUT | `/api/marshal/access/default` | — | dropped: the Studio has no access-selection screen; the web client stores that choice itself |
-| PUT | `/api/marshal/access/override` | — | dropped: the Studio has no access-selection screen; the web client stores that choice itself |
-| PUT | `/api/marshal/access/selection` | — | dropped: the Studio has no access-selection screen; the web client stores that choice itself |
+| GET | `/api/marshal/access?host=…` | — | dropped: nothing in the app sets the marshal-wide access choice; the web client stores it itself |
+| PUT | `/api/marshal/access/default` | — | dropped: nothing in the app sets the marshal-wide access choice; the web client stores it itself |
+| PUT | `/api/marshal/access/override` | — | dropped: nothing in the app sets the marshal-wide access choice; the web client stores it itself |
+| PUT | `/api/marshal/access/selection` | — | dropped: nothing in the app sets the marshal-wide access choice; the web client stores it itself |
 | GET | `/api/models` | models |  |
 | PUT | `/api/models/presets` | setPresets |  |
 | POST | `/api/models/probe` | probeProvider |  |
@@ -90,15 +111,26 @@ method nor a `dropped:` reason fails it, and so does a method that is not in
 | POST | `/api/pending/X/approve` | approveIntake |  |
 | POST | `/api/pending/X/deny` | denyIntake |  |
 | POST | `/api/permissions/X` | answerPermission |  |
-| POST | `/api/planners` | — | dropped: planner delegation is configured through project settings; no screen calls it |
+| POST | `/api/planners` | createPlanner |  |
+| GET | `/api/planners/X` | planner |  |
+| POST | `/api/planners/X/cancel` | cancelPlanner |  |
+| GET | `/api/planners/X/events` | plannerEvents |  |
+| POST | `/api/planners/X/prompt` | promptPlanner |  |
+| POST | `/api/planners/X/requests/X` | answerPlanner |  |
+| POST | `/api/planners/X/snapshots` | createPlannerSnapshot |  |
+| GET | `/api/planners/X/snapshots/X` | plannerSnapshot |  |
 | DELETE | `/api/projects` | — | dropped: projects are discovered by the daemon, never created from the app |
 | GET | `/api/projects` | projects |  |
 | POST | `/api/projects` | — | dropped: projects are discovered by the daemon, never created from the app |
-| GET | `/api/projects/health` | — | dropped: the connection check reads each host’s reach, not a health document |
-| GET | `/api/projects/settings` | projectAutomations |  |
-| PUT | `/api/projects/settings` | — | dropped: project settings are written by the web client; the app’s editing surfaces save to the user config |
+| GET | `/api/projects/health` | projectHealth |  |
+| GET | `/api/projects/settings` | projectSettings |  |
+| PUT | `/api/projects/settings` | putProjectSettings |  |
 | GET | `/api/prompts/recent` | recentPrompts |  |
 | POST | `/api/prune` | prune |  |
+| GET | `/api/pulls` | pulls |  |
+| GET | `/api/pulls/X` | pull |  |
+| POST | `/api/pulls/X/fix` | fixPull |  |
+| POST | `/api/pulls/X/fix/stop` | stopPullFix |  |
 | POST | `/api/questions/X` | answerQuestion |  |
 | GET | `/api/recipes` | recipes |  |
 | DELETE | `/api/recipes/X` | deleteRecipe |  |
@@ -109,17 +141,19 @@ method nor a `dropped:` reason fails it, and so does a method that is not in
 | GET | `/api/repos` | repos |  |
 | POST | `/api/repos` | registerRepo |  |
 | DELETE | `/api/repos/X` | removeRepo |  |
+| POST | `/api/repos/X/discover` | discoverRepo |  |
 | GET | `/api/repos/X/issues` | issues |  |
 | POST | `/api/repos/X/issues/X/spawn` | — | dropped: the new-work dialog starts an agent through spawn; the issue shortcut has no caller |
-| GET | `/api/repos/X/preview-environments?ref=…` | — | dropped: preview environments are F5’s; no screen reads them yet |
+| GET | `/api/repos/X/preview-environments?ref=…` | — | dropped: no screen reads preview environments; a preview is opened through the agent’s own /preview route |
 | POST | `/api/repos/X/webhook-secret` | — | dropped: issuing a webhook secret is the web client’s forge setup |
 | POST | `/api/reroutes/X/undo` | undoReroute |  |
-| GET | `/api/runs` | — | dropped: the Runs screen is F6’s; the transcript reaches a run through its thread |
-| POST | `/api/runs` | — | dropped: the Runs screen is F6’s; the transcript reaches a run through its thread |
-| GET | `/api/runs/X` | — | dropped: the Runs screen is F6’s; the transcript reaches a run through its thread |
-| POST | `/api/runs/X/answer` | — | dropped: the Runs screen is F6’s; the transcript reaches a run through its thread |
+| GET | `/api/runs` | runs |  |
+| POST | `/api/runs` | — | dropped: the app lists a run and answers the question it stopped on; it never starts one |
+| GET | `/api/runs/X` | — | dropped: a run is reached through its thread and its list entry’s digest; reading one by id has no caller |
+| POST | `/api/runs/X/answer` | answerRun |  |
 | GET | `/api/schedules` | schedules |  |
 | POST | `/api/schedules` | saveSchedule |  |
+| GET | `/api/schedules/X` | saveSchedule |  |
 | DELETE | `/api/schedules/X` | deleteSchedule |  |
 | PUT | `/api/schedules/X` | saveSchedule |  |
 | POST | `/api/schedules/X/run` | runSchedule |  |
@@ -138,7 +172,7 @@ method nor a `dropped:` reason fails it, and so does a method that is not in
 | POST | `/api/sessions/X/mode` | setMode |  |
 | GET | `/api/sessions/X/nodes/X` | node |  |
 | POST | `/api/sessions/X/prompt` | prompt |  |
-| GET | `/api/sessions/X/roster` | — | dropped: the token roster is the fleet screen’s; no screen reads it |
+| GET | `/api/sessions/X/roster` | — | dropped: no screen reads the token roster; the generated Roster type has no caller |
 | GET | `/api/sessions/X/stack` | stack |  |
 | POST | `/api/sessions/X/steer` | steer |  |
 | GET | `/api/sessions/X/step-diffs` | stepDiffs |  |
@@ -152,12 +186,13 @@ method nor a `dropped:` reason fails it, and so does a method that is not in
 | GET | `/api/workspaces` | environments |  |
 | POST | `/api/workspaces` | createEnvironment |  |
 | GET | `/api/workspaces/X?version=…` | environment |  |
+| DELETE | `/api/workspaces/X` | deleteEnvironment |  |
 | GET | `/api/workspaces/X/builds` | environmentBuilds |  |
 | POST | `/api/workspaces/X/builds` | startEnvironmentBuild |  |
+| GET | `/api/workspaces/X/builds/X/events` | environmentBuildLog |  |
 | POST | `/api/workspaces/X/ca/rotate` | — | dropped: rotating a template’s certificate is not built |
 | GET | `/api/workspaces/X/diff` | — | dropped: a version-to-version diff is not built; the designer shows the source |
 | PUT | `/api/workspaces/X/draft` | saveEnvironmentDraft |  |
 | POST | `/api/workspaces/X/patch` | — | dropped: the designer saves the whole source; the layer-patch route has no caller |
 | PUT | `/api/workspaces/X/pool` | — | dropped: the panel reports the warm pool; sizing it is not built |
 | POST | `/api/workspaces/X/publish` | publishEnvironment |  |
-

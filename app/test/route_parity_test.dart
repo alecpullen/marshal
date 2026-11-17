@@ -2,8 +2,10 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-/// One row of `docs/studio-flutter/route-parity.md`: a route the Svelte client
-/// calls, and the `BridgeClient` method that calls it — or why it does not.
+import 'support/route_source.dart';
+
+/// One row of `docs/studio-flutter/route-parity.md`: a route a client calls,
+/// and the `BridgeClient` method that calls it — or why it does not.
 class _Row {
   _Row(this.method, this.path, this.client, this.note);
 
@@ -15,19 +17,26 @@ class _Row {
   final String note;
 
   bool get dropped => client == '—' || client.isEmpty;
+
+  /// The route as the client writes it: the method and the path, without the
+  /// query string the table spells out for a reader.
+  String get route => '$method ${path.split('?').first}';
 }
 
-/// F7's parity check: nothing the Svelte client calls is unmapped.
+/// Route parity, in both directions.
 ///
 /// It reads the checked-in table and fails:
 ///
 /// - when a row has neither a `BridgeClient` method nor a `dropped:` reason,
 /// - when a row names a method that is not declared in `bridge_client.dart`,
+/// - when a row marked `dropped:` is a route the client issues,
+/// - when the client issues a route no row lists,
 /// - when the table stops naming the files it is a parity of, or loses rows.
 ///
-/// The table is generated from those files and reviewed by hand: a route the
-/// Dart client cannot reach says so, and why, rather than going quietly
-/// missing.
+/// The first two keep the table from describing a method that is gone. The
+/// last two are the pair that matters: a route drifts from `dropped:` to
+/// called when a later phase lands and the table is not revisited, and a new
+/// call can land with no row at all. Both now fail rather than going quiet.
 void main() {
   final table = File('../docs/studio-flutter/route-parity.md');
   final client = File('lib/src/client/bridge_client.dart');
@@ -72,7 +81,7 @@ void main() {
     expect(
       rows(text).length,
       greaterThanOrEqualTo(100),
-      reason: 'the table lost rows: it is the parity of five client files',
+      reason: 'the table lost rows: it is the parity of two clients',
     );
   });
 
@@ -114,5 +123,37 @@ void main() {
         reason: '${row.method} ${row.path} says only "${row.note}"',
       );
     }
+  });
+
+  test('a dropped route is not one the client issues', () {
+    final issued = issuedRoutes(client.readAsStringSync());
+    final wrong = [
+      for (final row in rows(table.readAsStringSync()))
+        if (row.dropped && issued.contains(row.route)) row.route,
+    ]..sort();
+    expect(
+      wrong,
+      isEmpty,
+      reason:
+          'these routes are marked dropped and the client issues them; '
+          'map each to its BridgeClient method:\n${wrong.join('\n')}',
+    );
+  });
+
+  test('the table lists every route the client issues', () {
+    final listed = {
+      for (final row in rows(table.readAsStringSync())) row.route,
+    };
+    final missing = [
+      for (final route in issuedRoutes(client.readAsStringSync()))
+        if (!listed.contains(route)) route,
+    ]..sort();
+    expect(
+      missing,
+      isEmpty,
+      reason:
+          'the client issues these routes and no row lists one; add them '
+          'to the table:\n${missing.join('\n')}',
+    );
   });
 }

@@ -67,6 +67,11 @@ func (b *darwinBackend) shoot(ctx context.Context, args ...string) ([]byte, erro
 		}
 		return nil, fmt.Errorf("capture: reading screencapture output: %w", err)
 	}
+	if len(data) == 0 {
+		// A zero-byte file is the same decline as no file at all: the bytes
+		// are what the caller wants, and there are none.
+		return nil, tccError()
+	}
 	return data, nil
 }
 
@@ -84,16 +89,8 @@ func (b *darwinBackend) activeWindowID(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-// helperError maps a failed helper call. macOS declines a capture by withholding
-// Screen Recording, and the helper says so on stderr; anything else keeps the
-// helper's own failure, wrapped with its name.
-func helperError(helper string, err error) error {
-	if isTCCDenial(err.Error()) {
-		return tccError()
-	}
-	return fmt.Errorf("capture: %s: %w", helper, err)
-}
-
+// isTCCDenial reports whether a helper's stderr reads as macOS withholding
+// Screen Recording from this process.
 func isTCCDenial(text string) bool {
 	lower := strings.ToLower(text)
 	return strings.Contains(lower, "not authorized") || strings.Contains(lower, "screen recording")

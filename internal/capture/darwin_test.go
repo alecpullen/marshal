@@ -123,4 +123,19 @@ func TestDarwinTCCDeniedMapsToErrPermission(t *testing.T) {
 			t.Fatalf("err = %v, want ErrPermission", err)
 		}
 	})
+
+	// A file with no bytes in it is the same decline as no file: screencapture
+	// creates the target and then writes nothing when TCC withholds the frame.
+	t.Run("helper writes an empty file", func(t *testing.T) {
+		r := &fakeRunner{shots: map[string][]byte{"screencapture": {}}}
+		b := &darwinBackend{run: r.run}
+
+		_, err := b.Capture(context.Background(), TargetScreen)
+		if !errors.Is(err, ErrPermission) {
+			t.Fatalf("err = %v, want ErrPermission", err)
+		}
+		if _, err := os.Stat(r.shotPath); !os.IsNotExist(err) {
+			t.Errorf("temp file %s outlived the capture (stat err = %v)", r.shotPath, err)
+		}
+	})
 }

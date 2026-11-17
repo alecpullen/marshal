@@ -144,7 +144,7 @@ and the variables it looked for. No guessing and no X11 fallback.
 
 | | active window | whole screen |
 |---|---|---|
-| sway | `swaymsg -t get_tree -r`, walk to the node with `"focused": true`, take its absolute `rect` (sum of parent origins) → `grim -g "<x>,<y> <w>x<h>" -` | `grim -` |
+| sway | `swaymsg -t get_tree -r`, walk to the node with `"focused": true` that is a view (`window` or `pid` set), take its `rect` — sway emits absolute coordinates, so no ancestor origin is added → `grim -g "<x>,<y> <w>x<h>" -` | `grim -` |
 | Hyprland | `hyprctl -j activewindow` → `at:[x,y]`, `size:[w,h]`, `class`, `title` → `grim -g "<x>,<y> <w>x<h>" -` | `grim -` |
 | macOS | frontmost app's pid via `osascript -l JavaScript` (`CGWindowListCopyWindowInfo`, layer 0) → `screencapture -x -l<windowid> -t png <tmp>` | `screencapture -x -t png <tmp>` |
 
@@ -223,7 +223,7 @@ Config, beside `[images]`:
 [capture]
 enabled = false   # default off: this surface is privacy-sensitive
 backend = ""      # "" = detect; "sway" | "hyprland" | "darwin"
-timeout = "10s"   # per helper command; grim on a large layout is not instant
+timeout = "10s"   # per capture, not per command; grim on a large layout is not instant
 ```
 
 ### 2.3 `browser.*` — the render path
@@ -276,9 +276,11 @@ re-fetched. `SetViewport` is `page.SetViewportSize` in the standalone backend
 survive and reflow) and the same call in `AttachBackend` for a CDP-attached
 page. `DeviceScaleFactor` is a **context** option, so it is honoured only when
 the session creates the page; when a screenshot asks for a DSF the existing page
-cannot provide, the session recreates the page and re-navigates to its
-`LastURL`. The tool summary says which happened (`viewport applied in place` /
-`page recreated at <url>`).
+cannot provide, the session recreates the page and re-navigates to the URL that
+page is actually showing — read from the live page before it is closed, falling
+back to `LastURL`. The tool summary reports the requested viewport; it does not
+claim whether the page was resized in place or recreated, because `Session.Page`
+does not report that.
 
 **Settle.** `Screenshot` evaluates `document.fonts.ready`, sleeps `SettleMS`
 (default 150 ms), then captures. This is the webfont / one-frame-layout fix;
@@ -388,9 +390,11 @@ is a new ceiling concept and a different piece of work.
 
 Session approvals today are shell command strings: `State.AddSessionRule(prefix)`
 appends to `sessionRules` and `matchSessionRule` parses them with
-`mvdan.cc/sh`. A tool grant has no command to parse, and `sessionRule(call)` in
-`internal/acp/service/answers.go` would append `""`. So capture adds a parallel,
-typed list:
+`mvdan.cc/sh`. A tool grant has no command to parse, so capture adds a parallel,
+typed list. The answer path routes on the call's permission rather than on an
+empty command: `requestApproval` fills `Command` with the tool's own name when
+the tool supplies none, so a command-shaped rule can never match a command-less
+tool:
 
 - **`internal/app/session`** — the grant type is session-owned, because
   `internal/permissions` already imports `internal/app/session`
@@ -459,8 +463,8 @@ typed list:
   separate lists, so a config edit cannot drop a grant and a new session cannot
   inherit one.
 - **`internal/acp/service/answers.go`** — `sessionRule` adds a
-  `session.PermissionGrant` when `call.Command == ""` and keeps the
-  command-prefix behaviour otherwise; `alwaysRule` already saves
+  `session.PermissionGrant` for every call whose `PermissionForTool` is not
+  `shell` (a shell call keeps the command-prefix behaviour); `alwaysRule` already saves
   `{PermissionForTool, PatternForApproval, allow}` to the user config, which for
   capture is exactly `image.capture` / `active_window`. Only its save-failure
   fallback changes, from `AddSessionRule(call.Command)` to
@@ -490,9 +494,11 @@ not in the audit log.
 
 ### 3.6 Failure behaviour
 
-- **Helper missing** — registration fails at startup: `capture: grim not found
-  (install grim for sway/Hyprland); set [capture] enabled = false to turn
-  capture off`. Loud once, not a mystery per call.
+- **Helper missing** — the first capture fails with `ErrHelperMissing` and the
+  message names the helper: `capture: grim not found (install grim for
+  sway/Hyprland); set [capture] enabled = false to turn capture off`. Detection
+  is lazy by design: a registration-time probe would have to inspect PATH, and
+  would refuse a session that could still capture once the helper is installed.
 - **No compositor visible** — e.g. a systemd-managed daemon child without the
   session environment → `ErrNoBackend` naming exactly what was looked for:
   `SWAYSOCK`, `HYPRLAND_INSTANCE_SIGNATURE`, `GOOS=darwin`.
@@ -576,8 +582,8 @@ is passed in.
 - **`internal/app/session`:** `AddSessionPermissionRule` bumps the access
   revision (a pre-grant authorization is then stale), and
   `SessionPermissionRules()` returns a copy.
-- **`internal/acp/service`:** `ApprovalSession` adds a typed rule when
-  `call.Command == ""` and keeps the command-prefix path for shell;
+- **`internal/acp/service`:** `ApprovalSession` adds a typed rule for every
+  non-shell tool and keeps the command-prefix path for shell;
   `ApprovalAlways` writes `{image.capture, active_window, allow}` to the user
   config path, and its save-failure fallback lands on the typed session rule.
 - **Sheet/telemetry:** `Rules` and `Permissions` both populate; if

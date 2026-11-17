@@ -73,32 +73,119 @@ func envWithout() Env {
 	return Env{GOOS: "linux", Getenv: func(string) string { return "" }}
 }
 
-// sway focused-window tree: a workspace, a container at x=1440, a nested
-// container, and the focused view below them.
+// swayTreeFocused mirrors a real `swaymsg -t get_tree -r` dump: every node's
+// rect is absolute, so the workspace below the 26px top bar, the container
+// inside it and the focused leaf all carry their own layout coordinates rather
+// than parent-relative ones.
 const swayTreeFocused = `{
+  "name": "root",
+  "pid": null,
+  "window": null,
+  "rect": {"x": 0, "y": 0, "width": 2880, "height": 1826},
   "nodes": [
     {
-      "name": "DP-1",
-      "rect": {"x": 0, "y": 0, "width": 2880, "height": 1800},
+      "name": "eDP-1",
+      "type": "output",
+      "pid": null,
+      "window": null,
+      "rect": {"x": 0, "y": 0, "width": 2880, "height": 1826},
       "nodes": [
         {
           "name": "1",
-          "rect": {"x": 1440, "y": 0, "width": 1440, "height": 900},
+          "type": "workspace",
+          "pid": null,
+          "window": null,
+          "rect": {"x": 0, "y": 26, "width": 2880, "height": 1800},
           "nodes": [
             {
               "name": "H[kitty]",
-              "rect": {"x": 0, "y": 0, "width": 1440, "height": 900},
+              "type": "con",
+              "pid": null,
+              "window": null,
+              "rect": {"x": 0, "y": 26, "width": 1440, "height": 900},
               "nodes": [
                 {
                   "name": "~/src/marshal",
                   "app_id": "kitty",
+                  "type": "con",
+                  "pid": 4242,
                   "window": 4194315,
                   "focused": true,
-                  "rect": {"x": 0, "y": 0, "width": 1440, "height": 900}
+                  "rect": {"x": 10, "y": 36, "width": 1440, "height": 900}
                 }
               ]
             }
           ]
+        }
+      ]
+    }
+  ]
+}`
+
+// swayTreeSecondOutput is the same shape on a monitor whose output begins at
+// x=2560. The workspace already carries that origin, so an accumulated
+// ancestor offset would crop thousands of pixels to the right.
+const swayTreeSecondOutput = `{
+  "nodes": [
+    {
+      "name": "DP-3",
+      "type": "output",
+      "pid": null,
+      "window": null,
+      "rect": {"x": 2560, "y": 0, "width": 2560, "height": 1440},
+      "nodes": [
+        {
+          "name": "2",
+          "type": "workspace",
+          "pid": null,
+          "window": null,
+          "rect": {"x": 2560, "y": 26, "width": 2560, "height": 1414},
+          "nodes": [
+            {
+              "name": "H[alacritty]",
+              "type": "con",
+              "pid": null,
+              "window": null,
+              "rect": {"x": 2560, "y": 26, "width": 1440, "height": 900},
+              "nodes": [
+                {
+                  "name": "~/src/marshal",
+                  "app_id": "Alacritty",
+                  "type": "con",
+                  "pid": 4242,
+                  "window": null,
+                  "focused": true,
+                  "rect": {"x": 2570, "y": 36, "width": 1440, "height": 900}
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}`
+
+// swayTreeFloating is a floating view: sway lists it under floating_nodes on
+// the workspace, not under nodes.
+const swayTreeFloating = `{
+  "nodes": [
+    {
+      "name": "1",
+      "type": "workspace",
+      "pid": null,
+      "window": null,
+      "rect": {"x": 0, "y": 26, "width": 2880, "height": 1800},
+      "nodes": [],
+      "floating_nodes": [
+        {
+          "name": "~/src/marshal",
+          "app_id": "kitty",
+          "type": "floating_con",
+          "pid": 4242,
+          "window": 4194315,
+          "focused": true,
+          "rect": {"x": 200, "y": 300, "width": 800, "height": 600}
         }
       ]
     }
@@ -123,7 +210,88 @@ func TestSwayActiveWindowGeometry(t *testing.T) {
 	if got, want := img.Label, "window: kitty — ~/src/marshal"; got != want {
 		t.Errorf("Label = %q, want %q", got, want)
 	}
-	r.assertCalls(t, "swaymsg -t get_tree -r", "grim -g 1440,0 1440x900 -")
+	r.assertCalls(t, "swaymsg -t get_tree -r", "grim -g 10,36 1440x900 -")
+}
+
+// TestSwaySecondOutputAddsNoOrigin proves the focused node's absolute rect is
+// used as-is: adding the output's or the workspace's origin would crop far off
+// screen.
+func TestSwaySecondOutputAddsNoOrigin(t *testing.T) {
+	png := []byte("\x89PNG sway")
+	r := &fakeRunner{outputs: map[string][]byte{"swaymsg": []byte(swayTreeSecondOutput), "grim": png}}
+	b := &wlrootsBackend{kind: "sway", run: r.run, env: envWithout()}
+
+	if _, err := b.Capture(context.Background(), TargetActiveWindow); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	r.assertCalls(t, "swaymsg -t get_tree -r", "grim -g 2570,36 1440x900 -")
+}
+
+func TestSwayFocusedFloatingNode(t *testing.T) {
+	png := []byte("\x89PNG sway")
+	r := &fakeRunner{outputs: map[string][]byte{"swaymsg": []byte(swayTreeFloating), "grim": png}}
+	b := &wlrootsBackend{kind: "sway", run: r.run, env: envWithout()}
+
+	img, err := b.Capture(context.Background(), TargetActiveWindow)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if got, want := img.Label, "window: kitty — ~/src/marshal"; got != want {
+		t.Errorf("Label = %q, want %q", got, want)
+	}
+	r.assertCalls(t, "swaymsg -t get_tree -r", "grim -g 200,300 800x600 -")
+}
+
+// swayTreeNativeWayland is what sway emits for a native Wayland view: "window"
+// is JSON null and only "pid" identifies the view, which is the common case.
+const swayTreeNativeWayland = `{
+  "nodes": [
+    {
+      "name": "eDP-1",
+      "type": "output",
+      "pid": null,
+      "window": null,
+      "rect": {"x": 0, "y": 0, "width": 2880, "height": 1826},
+      "nodes": [
+        {
+          "name": "1",
+          "type": "workspace",
+          "pid": null,
+          "window": null,
+          "rect": {"x": 0, "y": 26, "width": 2880, "height": 1800},
+          "nodes": [
+            {
+              "name": "~/src/marshal",
+              "app_id": "Alacritty",
+              "type": "con",
+              "pid": 4242,
+              "window": null,
+              "focused": true,
+              "rect": {"x": 0, "y": 26, "width": 2880, "height": 1800}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}`
+
+func TestSwayNativeWaylandViewIsCaptured(t *testing.T) {
+	png := []byte("\x89PNG sway")
+	r := &fakeRunner{outputs: map[string][]byte{"swaymsg": []byte(swayTreeNativeWayland), "grim": png}}
+	b := &wlrootsBackend{kind: "sway", run: r.run, env: envWithout()}
+
+	img, err := b.Capture(context.Background(), TargetActiveWindow)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if got, want := string(img.PNG), string(png); got != want {
+		t.Errorf("PNG = %q, want %q", got, want)
+	}
+	if got, want := img.Label, "window: Alacritty — ~/src/marshal"; got != want {
+		t.Errorf("Label = %q, want %q", got, want)
+	}
+	r.assertCalls(t, "swaymsg -t get_tree -r", "grim -g 0,26 2880x1800 -")
 }
 
 func TestHyprlandActiveWindowGeometry(t *testing.T) {
@@ -174,12 +342,15 @@ func TestScreenCaptureUsesNoGeometry(t *testing.T) {
 }
 
 func TestSwayNoFocusedWindow(t *testing.T) {
+	// A focused workspace (pid null, window null) above an unfocused view: no
+	// view carries the focus, so there is no window to capture.
 	tree := []byte(`{
       "nodes": [
-        {"name": "1", "rect": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+        {"name": "1", "type": "workspace", "pid": null, "window": null, "focused": true,
+         "rect": {"x": 0, "y": 26, "width": 1920, "height": 1080},
          "nodes": [
-           {"name": "~/src/marshal", "app_id": "kitty", "window": 4194315, "focused": false,
-            "rect": {"x": 0, "y": 0, "width": 1920, "height": 1080}}
+           {"name": "~/src/marshal", "app_id": "kitty", "type": "con", "pid": 4242, "window": 4194315, "focused": false,
+            "rect": {"x": 0, "y": 26, "width": 1920, "height": 1080}}
          ]}
       ]
     }`)
@@ -217,6 +388,48 @@ func TestGrimMissingMapsToErrHelperMissing(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "install grim") {
 		t.Errorf("err = %v, want the install hint", err)
+	}
+}
+
+// Every helper folds a missing binary the same way, so a caller can tell "not
+// installed" from "ran and failed" whichever command came first.
+func TestCompositorHelperMissingMapsToErrHelperMissing(t *testing.T) {
+	tests := []struct {
+		kind, helper string
+	}{
+		{kind: "sway", helper: "swaymsg"},
+		{kind: "hyprland", helper: "hyprctl"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.helper, func(t *testing.T) {
+			r := &fakeRunner{errs: map[string]error{
+				tc.helper: &exec.Error{Name: tc.helper, Err: exec.ErrNotFound},
+			}}
+			b := &wlrootsBackend{kind: tc.kind, run: r.run, env: envWithout()}
+
+			_, err := b.Capture(context.Background(), TargetActiveWindow)
+			if !errors.Is(err, ErrHelperMissing) {
+				t.Fatalf("err = %v, want ErrHelperMissing", err)
+			}
+			if !strings.Contains(err.Error(), tc.helper) {
+				t.Errorf("err = %v, want the helper's name", err)
+			}
+		})
+	}
+}
+
+// A compositor that refuses the capture says so in prose; that reads as a
+// permission failure, not as a broken helper.
+func TestCompositorRefusalMapsToErrPermission(t *testing.T) {
+	r := &fakeRunner{errs: map[string]error{
+		"swaymsg": errors.New("swaymsg -t get_tree -r: exit status 1: " +
+			"swaymsg: permission denied (is the IPC socket readable?)"),
+	}}
+	b := &wlrootsBackend{kind: "sway", run: r.run, env: envWithout()}
+
+	_, err := b.Capture(context.Background(), TargetActiveWindow)
+	if !errors.Is(err, ErrPermission) {
+		t.Fatalf("err = %v, want ErrPermission", err)
 	}
 }
 
@@ -315,5 +528,5 @@ func TestDetectWithRunnerUsesTheSuppliedRunner(t *testing.T) {
 	if img.Backend != "sway" {
 		t.Errorf("backend = %q, want sway", img.Backend)
 	}
-	r.assertCalls(t, "swaymsg -t get_tree -r", "grim -g 1440,0 1440x900 -")
+	r.assertCalls(t, "swaymsg -t get_tree -r", "grim -g 10,36 1440x900 -")
 }

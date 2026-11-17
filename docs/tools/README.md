@@ -98,7 +98,7 @@ it could only fail.
 [capture]
 enabled = false   # the tool registers only when true
 backend = ""      # "" detects the session; or "sway", "hyprland", "darwin"
-timeout = "10s"   # per helper command
+timeout = "10s"   # per capture, around every helper the capture runs
 ```
 
 Two targets (`target`, an enum):
@@ -110,9 +110,13 @@ Two targets (`target`, an enum):
 
 With `backend = ""` the session decides: `SWAYSOCK`, then
 `HYPRLAND_INSTANCE_SIGNATURE`, then `GOOS=darwin`, else `ErrNoBackend` saying
-which ones were looked for. A missing helper is `ErrHelperMissing`, a refused
-macOS Screen Recording permission is `ErrPermission` naming the System Settings
-pane, and an empty focus is `ErrNoFocused`; none of them is a generic failure.
+which ones were looked for. A helper that is not installed is
+`ErrHelperMissing` whichever of `grim`, `swaymsg`, `hyprctl`, `osascript` or
+`screencapture` it is; one that runs and fails keeps its own error, wrapped
+with the helper's name. A capture the session refuses — the compositor declining
+permission, or macOS withholding Screen Recording, which names the System
+Settings pane — is `ErrPermission`, and an empty focus is `ErrNoFocused`; none
+of them is a generic failure.
 
 The risk is `read_only` and the workspace effect `session_only`, but a
 screenshot leaves the workspace and shows the whole machine, so the built-in

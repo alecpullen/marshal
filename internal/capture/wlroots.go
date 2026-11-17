@@ -44,18 +44,47 @@ func (b *wlrootsBackend) Capture(ctx context.Context, t Target) (Image, error) {
 	}
 }
 
-// grim runs grim with extra args and folds a missing-binary failure into
-// ErrHelperMissing.
+// grim runs grim with extra args and folds a failed call through helperError.
 func (b *wlrootsBackend) grim(ctx context.Context, args ...string) ([]byte, error) {
 	out, err := b.run(ctx, "grim", append(args, "-")...)
 	if err != nil {
-		var execErr *exec.Error
-		if errors.As(err, &execErr) {
-			return nil, fmt.Errorf("%w: grim (install grim, or set [capture] enabled = false): %v", ErrHelperMissing, err)
-		}
-		return nil, err
+		return nil, helperError("grim", err)
 	}
 	return out, nil
+}
+
+// helperError folds a failed helper into the package's error space: a binary
+// that is not installed is ErrHelperMissing, macOS withholding Screen Recording
+// or a compositor refusing the capture is ErrPermission, and anything else
+// keeps the helper's own failure under its name.
+func helperError(helper string, err error) error {
+	var execErr *exec.Error
+	if errors.As(err, &execErr) {
+		return fmt.Errorf("%w: %s%s: %v", ErrHelperMissing, helper, helperHint(helper), err)
+	}
+	if isTCCDenial(err.Error()) {
+		return tccError()
+	}
+	if isCaptureRefusal(err.Error()) {
+		return fmt.Errorf("%w: %s refused the capture: %v", ErrPermission, helper, err)
+	}
+	return fmt.Errorf("capture: %s: %w", helper, err)
+}
+
+// helperHint is the extra advice a missing helper needs, if any.
+func helperHint(helper string) string {
+	if helper == "grim" {
+		return " (install grim, or set [capture] enabled = false)"
+	}
+	return ""
+}
+
+// isCaptureRefusal reports whether a helper's error reads as a refusal to
+// capture rather than a failure to run it. The check stays narrow: the text is
+// a compositor's prose, not a contract.
+func isCaptureRefusal(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "permission") || strings.Contains(lower, "denied")
 }
 
 type windowRect struct {
@@ -81,6 +110,7 @@ type swayNode struct {
 	Name          string     `json:"name"`
 	AppID         string     `json:"app_id"`
 	Window        int        `json:"window"`
+	PID           int        `json:"pid"`
 	Focused       bool       `json:"focused"`
 	Rect          swayRect   `json:"rect"`
 	Nodes         []swayNode `json:"nodes"`
@@ -97,40 +127,45 @@ type swayRect struct {
 func (b *wlrootsBackend) swayActiveWindow(ctx context.Context) (windowRect, error) {
 	out, err := b.run(ctx, "swaymsg", "-t", "get_tree", "-r")
 	if err != nil {
-		return windowRect{}, err
+		return windowRect{}, helperError("swaymsg", err)
 	}
 	var tree swayTree
 	if err := json.Unmarshal(out, &tree); err != nil {
 		return windowRect{}, fmt.Errorf("capture: decoding sway tree: %w", err)
 	}
-	if win, ok := walkSway(tree.Nodes, 0, 0); ok {
+	if win, ok := walkSway(tree.Nodes); ok {
 		return win, nil
 	}
-	if win, ok := walkSway(tree.FloatingNodes, 0, 0); ok {
+	if win, ok := walkSway(tree.FloatingNodes); ok {
 		return win, nil
 	}
 	return windowRect{}, ErrNoFocused
 }
 
-// walkSway descends the tree accumulating the parent containers' origin, and
-// returns the first focused view that actually carries a window.
-func walkSway(nodes []swayNode, ox, oy int) (windowRect, bool) {
+// walkSway returns the first focused view below nodes. Sway reports every
+// node's rect in absolute layout coordinates — a workspace or a container
+// repeats the coordinates of its children, and a node already carries its
+// output's origin — so the focused node's rect is the window's geometry as it
+// stands, and no ancestor origin is added.
+func walkSway(nodes []swayNode) (windowRect, bool) {
 	for _, n := range nodes {
-		x, y := ox+n.Rect.X, oy+n.Rect.Y
-		if n.Focused && n.Window != 0 {
+		// pid is set for every view and null for outputs, workspaces and
+		// containers; window is an integer only for Xwayland views, so
+		// requiring it alone would miss every native Wayland window.
+		if n.Focused && (n.Window != 0 || n.PID != 0) {
 			return windowRect{
-				x:     x,
-				y:     y,
+				x:     n.Rect.X,
+				y:     n.Rect.Y,
 				w:     n.Rect.Width,
 				h:     n.Rect.Height,
 				class: n.AppID,
 				title: n.Name,
 			}, true
 		}
-		if win, ok := walkSway(n.Nodes, x, y); ok {
+		if win, ok := walkSway(n.Nodes); ok {
 			return win, true
 		}
-		if win, ok := walkSway(n.FloatingNodes, x, y); ok {
+		if win, ok := walkSway(n.FloatingNodes); ok {
 			return win, true
 		}
 	}
@@ -148,7 +183,7 @@ type hyprWindow struct {
 func (b *wlrootsBackend) hyprlandActiveWindow(ctx context.Context) (windowRect, error) {
 	out, err := b.run(ctx, "hyprctl", "-j", "activewindow")
 	if err != nil {
-		return windowRect{}, err
+		return windowRect{}, helperError("hyprctl", err)
 	}
 	if strings.TrimSpace(string(out)) == "" {
 		return windowRect{}, ErrNoFocused

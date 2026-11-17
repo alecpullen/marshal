@@ -10,10 +10,12 @@ pull, planner and factory routes the Svelte client never grew — are read from
 `bridge_client.dart` itself. A templated segment is written `X`, and a query
 string is dropped before a route is compared.
 
-`app/test/route_parity_test.dart` reads this table in both directions: a row
-with neither a method nor a `dropped:` reason fails it, so does a method that
-is not in `bridge_client.dart`, so does a `dropped:` row the client actually
-issues, and so does a route the client issues that has no row.
+`app/test/route_parity_test.dart` checks the table against both clients. From
+the Dart side: a row with neither a method nor a `dropped:` reason fails it, so
+does a method that is not in `bridge_client.dart`, so does a `dropped:` row the
+client actually issues, and so does a route the client issues that has no row.
+From the Svelte side: a route the Svelte sources name and no row lists fails
+it, so a capability cannot be lost by neither client being asked about it.
 
 | Method | Path | BridgeClient | Note |
 |---|---|---|---|
@@ -196,3 +198,4 @@ issues, and so does a route the client issues that has no row.
 | POST | `/api/workspaces/X/patch` | — | dropped: the designer saves the whole source; the layer-patch route has no caller |
 | PUT | `/api/workspaces/X/pool` | — | dropped: the panel reports the warm pool; sizing it is not built |
 | POST | `/api/workspaces/X/publish` | publishEnvironment |  |
+| POST | `/api/workspaces/X/shell` | — | dropped: the Svelte client opened a test shell in a workspace’s container, and the app’s terminal is an agent’s (`openTerminal` takes an agent id), so neither this nor the shell’s events, input, resize and close routes have a caller |

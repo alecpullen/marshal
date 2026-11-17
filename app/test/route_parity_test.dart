@@ -4,6 +4,15 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'support/route_source.dart';
 
+/// The Svelte client's route sources, relative to `app/`.
+const _svelteSources = [
+  'api.ts',
+  'factory.ts',
+  'planner.ts',
+  'working-drafts.ts',
+  'sse.ts',
+];
+
 /// One row of `docs/studio-flutter/route-parity.md`: a route a client calls,
 /// and the `BridgeClient` method that calls it — or why it does not.
 class _Row {
@@ -154,6 +163,35 @@ void main() {
       reason:
           'the client issues these routes and no row lists one; add them '
           'to the table:\n${missing.join('\n')}',
+    );
+  });
+
+  test('the table lists every route the Svelte client calls', () {
+    final listed = {
+      for (final row in rows(table.readAsStringSync()))
+        row.path.split('?').first,
+    };
+    final missing = <String>[];
+    for (final name in _svelteSources) {
+      final source = File('../web/ui/src/lib/$name');
+      expect(
+        source.existsSync(),
+        isTrue,
+        reason:
+            'missing ${source.path}: the table is a parity of this client, so '
+            'a renamed source silently stops being checked',
+      );
+      for (final path in svelteRoutePaths(source.readAsStringSync())) {
+        if (!listed.contains(path)) missing.add('$path  ($name)');
+      }
+    }
+    missing.sort();
+    expect(
+      missing,
+      isEmpty,
+      reason:
+          'the Svelte client calls these routes and no row lists one; add '
+          'them to the table:\n${missing.join('\n')}',
     );
   });
 }

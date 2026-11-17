@@ -185,6 +185,62 @@ export function adoptTokenFromURL(): void {
   if (token) setToken(token)
 }
 
+/**
+ * Redeem the single-use code `marshal studio` put after the page's `#`.
+ *
+ * The daemon mints the code on its peer-checked unix socket and hands over
+ * `/#code=<code>`. A fragment never leaves the browser, so the code reaches no
+ * request line and no access log; this posts it once to /api/studio/session,
+ * which answers the bearer token, and then takes the code out of the address
+ * bar. It is good for one exchange and two minutes, so a code recovered from
+ * scrollback afterwards is worthless.
+ *
+ * A refused or unreachable exchange leaves the page signed out, where the
+ * ordinary token prompt is the honest answer. The URL is cleaned either way: a
+ * dead code in history helps nobody.
+ */
+export async function adoptCodeFromURL(): Promise<void> {
+  let url: URL
+  try {
+    url = new URL(window.location.href)
+  } catch {
+    return
+  }
+  const fragment = url.hash.startsWith('#') ? url.hash.slice(1) : url.hash
+  if (!fragment) return
+  const params = new URLSearchParams(fragment)
+  const code = params.get('code')
+  if (code === null) return
+  params.delete('code')
+  const rest = params.toString()
+  url.hash = rest ? `#${rest}` : ''
+  try {
+    window.history.replaceState(null, '', url.toString())
+  } catch {
+    // A sandboxed frame can refuse the rewrite; the exchange below is the part
+    // that matters.
+  }
+  try {
+    const response = await fetch('/api/studio/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    })
+    if (!response.ok) return
+    const body: unknown = await response.json()
+    if (
+      body !== null &&
+      typeof body === 'object' &&
+      'token' in body &&
+      typeof body.token === 'string'
+    ) {
+      setToken(body.token)
+    }
+  } catch {
+    // A network failure reaches the same place as a refusal: the prompt.
+  }
+}
+
 /** Drop the token from memory and storage, so the next call prompts again. */
 export function clearToken(): void {
   memoryToken = null

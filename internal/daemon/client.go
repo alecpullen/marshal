@@ -210,6 +210,57 @@ func (c *Client) Info(ctx context.Context) (Info, error) {
 	return info, nil
 }
 
+// StudioCode is one single-use Studio sign-in code (POST /api/studio/code).
+type StudioCode struct {
+	Code      string `json:"code"`
+	ExpiresAt int64  `json:"expiresAt"` // Unix milliseconds
+}
+
+// studioCodePath is the socket route that mints a Studio sign-in code. It is
+// served by the socket only (web/bridge/studio_access.go), which is why the
+// daemon client can call it with no bearer token.
+const studioCodePath = "/api/studio/code"
+
+// MintStudioCode asks the daemon for a single-use code, bounded by ctx.
+//
+// It goes over the socket, which is peer-checked by user ID and needs no
+// bearer token, so the token itself never crosses a TCP port on this path: a
+// Studio page exchanges the code for it on the loopback listener
+// (web/bridge/studio_access.go).
+func (c *Client) MintStudioCode(ctx context.Context) (StudioCode, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://daemon"+studioCodePath, nil)
+	if err != nil {
+		return StudioCode{}, fmt.Errorf("daemon request: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return StudioCode{}, fmt.Errorf("daemon at %s: %w", c.socket, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return StudioCode{}, fmt.Errorf("read daemon answer: %w", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		var refused struct {
+			Error string `json:"error"`
+		}
+		detail := strings.TrimSpace(string(body))
+		if json.Unmarshal(body, &refused) == nil && refused.Error != "" {
+			detail = refused.Error
+		}
+		return StudioCode{}, fmt.Errorf("daemon answered %s: %s", resp.Status, detail)
+	}
+
+	var code StudioCode
+	if err := json.Unmarshal(body, &code); err != nil {
+		return StudioCode{}, fmt.Errorf("decode daemon answer: %w", err)
+	}
+	return code, nil
+}
+
 // Pin pins or unpins root on the daemon, bounded by ctx.
 func (c *Client) Pin(ctx context.Context, root string, pinned bool) (PinState, error) {
 	body, err := json.Marshal(struct {

@@ -551,6 +551,15 @@ export interface DaemonInfo {
   startedAt: number;
   socket: string;
   /**
+   * StudioAddr is the address the Studio listener actually bound, and
+   * StudioError is why it bound nothing when it could not. `marshal
+   * studio` reads both over the socket: the address is the truth (a
+   * configured port 0 names its own once bound), and the error is what
+   * makes a busy port a named failure instead of "nothing is serving".
+   */
+  studioAddr?: string;
+  studioError?: string;
+  /**
    * filled per request
    */
   projects: string[];

@@ -2,15 +2,22 @@ package contract
 
 // DaemonInfo is what GET /api/daemon answers about the local daemon.
 type DaemonInfo struct {
-	Version   string         `json:"version"`
-	Profile   string         `json:"profile"`
-	PID       int            `json:"pid"`
-	StartedAt int64          `json:"startedAt"` // Unix milliseconds
-	Socket    string         `json:"socket"`
-	Projects  []string       `json:"projects"`          // filled per request
-	Pinned    []string       `json:"pinned"`            // filled per request
-	Children  []DaemonChild  `json:"children"`          // filled per request
-	Refresh   *DaemonRefresh `json:"refresh,omitempty"` // filled per request
+	Version   string `json:"version"`
+	Profile   string `json:"profile"`
+	PID       int    `json:"pid"`
+	StartedAt int64  `json:"startedAt"` // Unix milliseconds
+	Socket    string `json:"socket"`
+	// StudioAddr is the address the Studio listener actually bound, and
+	// StudioError is why it bound nothing when it could not. `marshal
+	// studio` reads both over the socket: the address is the truth (a
+	// configured port 0 names its own once bound), and the error is what
+	// makes a busy port a named failure instead of "nothing is serving".
+	StudioAddr  string         `json:"studioAddr,omitempty"`
+	StudioError string         `json:"studioError,omitempty"`
+	Projects    []string       `json:"projects"`          // filled per request
+	Pinned      []string       `json:"pinned"`            // filled per request
+	Children    []DaemonChild  `json:"children"`          // filled per request
+	Refresh     *DaemonRefresh `json:"refresh,omitempty"` // filled per request
 }
 
 // DaemonRefresh is the refresh helper as GET /api/daemon reports it.

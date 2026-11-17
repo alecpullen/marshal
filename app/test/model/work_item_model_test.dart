@@ -151,7 +151,7 @@ void main() {
     'expectedHead': 'head-1',
     'expectedBase': 'base-1',
     'createdAt': '2026-11-17T09:10:00Z',
-    if (outcome != null) 'outcome': outcome,
+    'outcome': ?outcome,
   });
 
   Map<String, Object?> outcome({String error = '', String outcome = ''}) => {

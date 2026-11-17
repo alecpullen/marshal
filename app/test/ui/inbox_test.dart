@@ -4,6 +4,7 @@ import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/model/pulls_model.dart';
+import 'package:marshal_app/src/model/source_state.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 
@@ -26,6 +27,8 @@ void main() {
     List<model.AskQuestion> questions = const [],
     model.AskState state = model.AskState.waiting,
     String? error,
+    String? title,
+    bool withThread = true,
     Map<String, Object?>? params,
     model.AskSource source = model.AskSource.fleet,
     String project = '',
@@ -34,17 +37,21 @@ void main() {
     host: 'local',
     id: id,
     kind: kind,
-    thread: model.ThreadRef(
-      host: 'local',
-      id: 'a-1',
-      project: '/home/u/marshal',
-      title: 'Reliable session recovery',
-      kind: model.ThreadKind.agent,
-      status: model.ThreadStatus.needsYou,
-      headline: '',
-      lastActive: shellNow,
-    ),
-    title: kind == model.AskKind.question ? 'Which branch?' : 'git push',
+    thread: withThread
+        ? model.ThreadRef(
+            host: 'local',
+            id: 'a-1',
+            project: '/home/u/marshal',
+            title: 'Reliable session recovery',
+            kind: model.ThreadKind.agent,
+            status: model.ThreadStatus.needsYou,
+            headline: '',
+            lastActive: shellNow,
+          )
+        : null,
+    title:
+        title ??
+        (kind == model.AskKind.question ? 'Which branch?' : 'git push'),
     body: '',
     actions:
         askActions ??
@@ -74,6 +81,8 @@ void main() {
   Widget show(
     List<model.Ask> asks, {
     StateKind? state,
+    List<SourceState> sources = const [],
+    List<PullView>? pulls,
     void Function(Place)? onSelect,
   }) => EmberApp(
     brightness: Brightness.light,
@@ -81,6 +90,8 @@ void main() {
       asks: asks,
       now: shellNow,
       state: state,
+      sources: sources,
+      pulls: pulls ?? const [],
       onSelect: onSelect ?? (_) {},
       onAnswer: (ask, action, {reply, answers}) {
         posted.add('${ask.id}:${action.label}');
@@ -310,7 +321,12 @@ void main() {
           (model.AskKind.recovery, 'Continue'),
           (model.AskKind.completion, 'Merge and complete'),
         ])
-          ask(id: 'item-1:${kind.name}', kind: kind, actions: [label]),
+          ask(
+            id: 'item-1:${kind.name}',
+            kind: kind,
+            actions: [label],
+            source: model.AskSource.factory,
+          ),
       ], onSelect: opened.add),
     );
 
@@ -332,10 +348,168 @@ void main() {
     }
 
     // The source line is the way to the thread they are answered in.
-    await tester.tap(
-      find.text('marshal \u203a Reliable session recovery').first,
-    );
+    await tester.tap(find.text('Factory · Everyone').first);
     await tester.pump();
     expect(opened.single.id, 'a-1');
+  });
+
+  testWidgets(
+    'every ask has a source line, including the ones with no thread',
+    (tester) async {
+      await tester.pumpWidget(
+        show([
+          ask(
+            id: 's-1',
+            kind: model.AskKind.intake,
+            actions: ['Start', 'Decline'],
+            withThread: false,
+          ),
+          ask(
+            id: 'r-1',
+            kind: model.AskKind.reviewDraft,
+            actions: ['Approve'],
+            source: model.AskSource.review,
+            withThread: false,
+          ),
+          ask(
+            id: 'n-1',
+            kind: model.AskKind.network,
+            actions: ['Allow once'],
+            source: model.AskSource.network,
+            withThread: false,
+          ),
+          ask(
+            id: 'p-1',
+            kind: model.AskKind.pull,
+            actions: ['Fix it'],
+            project: '/home/u/marshal',
+            withThread: false,
+          ),
+        ]),
+      );
+
+      // Each feed's entry says which feed it came from, and its scope.
+      expect(find.text('Fleet · Everyone'), findsOneWidget);
+      expect(find.text('Review bot · Everyone'), findsOneWidget);
+      expect(find.text('Network · Everyone'), findsOneWidget);
+      expect(find.text('Fleet · marshal · Everyone'), findsOneWidget);
+      // None is drawn with a blank source line, thread or no thread.
+      for (final card in tester.widgetList<AskCard>(find.byType(AskCard))) {
+        expect(card.source, isNotNull);
+        expect(card.source, isNotEmpty);
+      }
+    },
+  );
+
+  testWidgets('the blocking filter counts what the model calls blocking', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      show([
+        ask(
+          id: 'tc-1',
+          kind: model.AskKind.approval,
+          actions: ['Approve once', 'Deny'],
+        ),
+        ask(
+          id: 'item-1:completion',
+          kind: model.AskKind.completion,
+          actions: const [],
+          title: 'Merge and complete',
+          source: model.AskSource.factory,
+        ),
+      ]),
+    );
+
+    // The tab counts agree with how the model splits the two.
+    final tabs = tester.widget<Tabs>(find.byType(Tabs)).tabs;
+    expect(tabs.firstWhere((tab) => tab.label == 'Blocking').count, 1);
+    expect(tabs.firstWhere((tab) => tab.label == 'To look at').count, 1);
+
+    await tester.tap(find.text('Blocking'));
+    await tester.pump();
+    expect(find.byType(AskCard), findsOneWidget);
+    expect(find.text('git push'), findsOneWidget);
+
+    // A completion does not block work: it waits to be looked at.
+    await tester.tap(find.text('To look at'));
+    await tester.pump();
+    expect(find.byType(AskCard), findsOneWidget);
+    expect(find.text('Merge and complete'), findsOneWidget);
+    expect(find.text('git push'), findsNothing);
+  });
+
+  testWidgets('an empty filter says which filter is empty', (tester) async {
+    await tester.pumpWidget(
+      show([
+        ask(
+          id: 's-1',
+          kind: model.AskKind.intake,
+          actions: ['Start', 'Decline'],
+        ),
+      ]),
+    );
+
+    await tester.tap(find.text('Blocking'));
+    await tester.pump();
+    expect(find.text('Nothing is blocking work.'), findsOneWidget);
+    expect(find.byType(AskCard), findsNothing);
+
+    // The way back is one action, not a dead end.
+    await tester.tap(find.text('Show every ask'));
+    await tester.pump();
+    expect(find.byType(AskCard), findsOneWidget);
+    expect(find.text('Start'), findsOneWidget);
+  });
+
+  testWidgets('a stale source is named with its own age', (tester) async {
+    await tester.pumpWidget(
+      show(
+        [
+          ask(
+            id: 'tc-1',
+            kind: model.AskKind.approval,
+            actions: ['Approve once', 'Deny'],
+          ),
+        ],
+        sources: [
+          SourceState(
+            kind: SourceKind.fleet,
+            host: 'local',
+            loaded: true,
+            lastRead: shellNow.subtract(const Duration(minutes: 4)),
+            failure: 'offline',
+          ),
+        ],
+      ),
+    );
+
+    // The row carries the read's own age and the bridge's words, not an
+    // invented one.
+    expect(find.text('Last updated 4m ago'), findsOneWidget);
+    expect(find.textContaining('4m old'), findsOneWidget);
+    expect(find.textContaining('offline'), findsOneWidget);
+    expect(find.text('Last updated now ago'), findsNothing);
+  });
+
+  testWidgets('a ready pull with no checks never reads as passed', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      show(
+        const [],
+        pulls: [
+          pullView(number: 131, title: 'Quiet capture mode', checks: const []),
+        ],
+      ),
+    );
+
+    await tester.tap(find.text('Ready'));
+    await tester.pump();
+    expect(find.byType(PrCard), findsOneWidget);
+    // Nothing pretends a check ran: the card says zero of zero passed,
+    // rather than a summary that reads as every check having passed.
+    expect(find.text('0 of 0 checks passed'), findsOneWidget);
+    expect(find.text('2 of 2 checks passed'), findsNothing);
   });
 }

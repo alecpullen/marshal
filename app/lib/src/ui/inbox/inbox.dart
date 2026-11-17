@@ -2,6 +2,7 @@ import '../../model/age.dart';
 import '../../model/inbox_model.dart' as model;
 import '../../model/place.dart';
 import '../../model/pulls_model.dart';
+import '../../model/source_state.dart';
 import '../kit/kit.dart';
 import '../pulls/pull_facts.dart';
 
@@ -22,6 +23,7 @@ class Inbox extends StatefulWidget {
     required this.now,
     this.pulls = const [],
     this.state,
+    this.sources = const [],
     this.onSelect,
     this.onAnswer,
     this.onRetry,
@@ -39,6 +41,11 @@ class Inbox extends StatefulWidget {
 
   /// The fleet's data state, when it is not ready (§7).
   final StateKind? state;
+
+  /// Each feed's freshness, by host then source: one line per source that is
+  /// not answering, so a dead feed sits beside a healthy one instead of
+  /// replacing it.
+  final List<SourceState> sources;
 
   final void Function(Place place)? onSelect;
 
@@ -118,20 +125,21 @@ class _InboxState extends State<Inbox> {
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
-    if (state != null && state != StateKind.stale) {
+    // A state that would replace the page yields to any source that answered:
+    // a dead feed must not hide the asks a healthy one reported.
+    final anyLoaded = widget.sources.any((source) => source.loaded);
+    if (state != null && state != StateKind.stale && !anyLoaded) {
       return PageBody(title: 'Inbox', children: [_stateMessage(state)]);
     }
     final shown = _shown;
+    final freshness = _freshness();
     return PageBody(
       title: 'Inbox',
       subtitle: _subtitle(),
       width: PageWidth.list,
       children: [
-        if (state == StateKind.stale) ...[
-          StateMessage.stale(
-            age: 'now',
-            detail: 'The fleet has not answered; this is what it last said.',
-          ),
+        if (freshness.isNotEmpty) ...[
+          ...freshness,
           const SizedBox(height: Space.s16),
         ],
         Tabs(
@@ -155,17 +163,71 @@ class _InboxState extends State<Inbox> {
         if (_filter == InboxFilter.ready)
           ..._readyCards()
         else if (shown.isEmpty)
-          StateMessage.empty(
-            message: 'Nothing is waiting on you.',
-            action: StateAction(
-              'Read the fleet again',
-              onTap: widget.onRetry ?? () {},
-            ),
-          )
+          _emptyState()
         else
           for (final ask in shown) _card(ask),
       ],
     );
+  }
+
+  /// What an empty list says: when a filter is what emptied it, it names that
+  /// filter and offers the way back to every ask.
+  Widget _emptyState() {
+    final all = StateAction(
+      'Show every ask',
+      onTap: () => setState(() => _filter = InboxFilter.all),
+    );
+    return switch (_filter) {
+      InboxFilter.blocking => StateMessage.empty(
+        message: 'Nothing is blocking work.',
+        action: all,
+      ),
+      InboxFilter.lookAt => StateMessage.empty(
+        message: 'Nothing is waiting to be looked at.',
+        action: all,
+      ),
+      InboxFilter.all || InboxFilter.ready => StateMessage.empty(
+        message: 'Nothing is waiting on you.',
+        action: StateAction(
+          'Read the fleet again',
+          onTap: widget.onRetry ?? () {},
+        ),
+      ),
+    };
+  }
+
+  /// One row per source that is not well: what is held, how old it is, and
+  /// what did not arrive (§8). A healthy source says nothing here, and one
+  /// still making its first attempt says nothing either.
+  List<Widget> _freshness() {
+    final retry = StateAction(
+      'Read the fleet again',
+      onTap: widget.onRetry ?? () {},
+    );
+    return [
+      for (final source in widget.sources)
+        if (source.stale || source.unavailable)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Space.s12),
+            child: _freshnessRow(source, retry),
+          ),
+    ];
+  }
+
+  /// One source's row, in that source's own words.
+  ///
+  /// A stale source holds a snapshot, so its age is the age of the read that
+  /// made it; a source that never answered holds nothing, so it says so
+  /// rather than carrying an age that would be a guess.
+  Widget _freshnessRow(SourceState source, StateAction retry) {
+    final lastRead = source.lastRead;
+    if (source.stale && lastRead != null) {
+      return StateMessage.stale(
+        age: relativeAge(lastRead, widget.now),
+        detail: source.words(widget.now),
+      );
+    }
+    return StateMessage.error(message: source.words(widget.now), retry: retry);
   }
 
   /// The Ready filter's list: one card per pull request that waits for
@@ -222,7 +284,7 @@ class _InboxState extends State<Inbox> {
             body: ask.body.isEmpty ? null : ask.body,
             waiting: sending ? 'sending…' : relativeAge(ask.since, widget.now),
             waitingSince: ask.since.toLocal().toString(),
-            source: _source(ask),
+            source: ask.provenance,
             onOpenSource: _thread(ask),
             placement: AskPlacement.inbox,
             // A request that asks several questions commits them together,
@@ -438,15 +500,6 @@ class _InboxState extends State<Inbox> {
     widget.onAnswer?.call(ask, action);
   }
 
-  /// Where the ask came from, as the card's source line: its project and its
-  /// thread.
-  String? _source(model.Ask ask) {
-    final thread = ask.thread;
-    if (thread == null) return null;
-    final project = thread.project.split('/').last;
-    return '$project › ${thread.title}';
-  }
-
   VoidCallback? _thread(model.Ask ask) {
     final thread = ask.thread;
     final select = widget.onSelect;
@@ -482,10 +535,14 @@ class _InboxState extends State<Inbox> {
       ),
       StateKind.unavailable => StateMessage.unavailable(
         host: 'The daemon',
-        lastSeen: '4m',
+        // No read has made a snapshot, so there is no age to give: the word
+        // says that rather than inventing one.
+        lastSeen: 'unknown',
         action: retry,
       ),
-      StateKind.stale => StateMessage.stale(age: '4m'),
+      // Unreachable: a stale screen keeps its content and draws each source's
+      // own row (`_freshness`), never a whole-page message.
+      StateKind.stale => const SizedBox.shrink(),
       StateKind.planned => const StateMessage.planned(
         name: 'Inbox',
         note: 'Not built yet',

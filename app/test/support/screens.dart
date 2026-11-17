@@ -397,6 +397,7 @@ Widget _inbox({StateKind? state}) => Inbox(
     ),
   ],
   state: state,
+  sources: const [],
   onRetry: () {},
   onSelect: (_) {},
   onAnswer: (_, _, {reply, answers}) {},

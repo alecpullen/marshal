@@ -16,6 +16,7 @@ import '../../model/place.dart';
 import '../../model/planning_model.dart';
 import '../../model/project_model.dart';
 import '../../model/route_translation.dart';
+import '../../model/source_state.dart';
 import '../../model/pulls_model.dart';
 import '../../model/revision_model.dart';
 import '../../model/run_model.dart';
@@ -576,6 +577,7 @@ class _StudioState extends State<Studio> {
         now: widget.store.now,
         hosts: widget.store.hosts,
         pulls: widget.pulls?.views ?? const [],
+        state: _state(widget.store),
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
@@ -586,6 +588,8 @@ class _StudioState extends State<Studio> {
         asks: widget.inbox.asks,
         pulls: widget.pulls?.views ?? const [],
         now: widget.store.now,
+        state: _state(widget.store),
+        sources: sourceStates(widget.store, factory: widget.factory),
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,

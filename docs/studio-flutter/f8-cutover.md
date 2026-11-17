@@ -117,20 +117,31 @@ send, and is the lower bound.
 | Measure | Svelte raw (gz) | Flutter raw (gz) |
 |---|---|---|
 | `index.html` | 413 (290) | 2,079 (1,041) |
-| App bundle | 1,584,992 (471,374) | 2,940,163 (870,764) |
+| App bundle | 1,584,992 (471,374) | 3,088,278 (911,086) |
 | Styles / bootstrap | 54,591 (11,735) | 14,407 (5,772) |
 | Rendering engine | — | 7,402,483 (2,955,524) |
 | Fonts | 52,528 (52,657) | 1,208,916 (555,856) |
-| **First load** | **1,692,524 (536,056)** | **11,568,048 (4,388,957)** |
+| **First load** | **1,692,524 (536,056)** | **11,716,163 (4,429,279)** |
+
+**The Flutter app-bundle figure was re-measured at the swap's HEAD
+(`02c3b041`).** An earlier draft of this table recorded 2,940,163 raw
+(870,764 gz) for it; that number came from an earlier app state and is not
+what this branch builds. Two `flutter build web --base-href /` runs at HEAD
+produce `main.dart.js` at 3,088,278 bytes (911,086 gz) both times, and every
+other row is unchanged, so the table above is the trial's Studio rather than
+an approximation of it. The correction makes the over-ceiling case slightly
+stronger, never weaker; the decision below does not change.
 
 `webbridge`, built here with both Studios' real output embedded: 66,372,191
 bytes. With the Svelte tree as it ships and the Flutter placeholder, the same
 build is 22,622,960 bytes — the difference is the 42 MB of build output the
 embed takes in, not the swap. The swap itself moves no bytes: the two trees
 keep their sizes and only their prefixes change. Removal (Task 4) is what
-shrinks the binary, by the 2.3 MB Svelte tree.
+shrinks the binary, by the 2.3 MB Svelte tree. That binary figure was taken
+with the earlier app build too; only `main.dart.js` has moved since, and it is
+148,115 bytes larger, so a build today would be about that much bigger.
 
-**First load is 6.8× Svelte's raw (8.2× compressed), over the ceiling in
+**First load is 6.9× Svelte's raw (8.3× compressed), over the ceiling in
 decision 6 (3×)** — raised here, before removal, as the plan requires.
 
 Two facts about that number decide what it means:
@@ -140,7 +151,7 @@ Two facts about that number decide what it means:
   unless it is made with `--no-web-resources-cdn`, and neither workflow passes
   that flag, although `app/web/flutter_bootstrap.js` says they should. So a
   browser that has CanvasKit cached from any other Flutter site fetches none
-  of it, and the app-served figure is 4,165,565 raw (2.46×) — inside the
+  of it, and the app-served figure is 4,313,680 raw (2.55×) — inside the
   ceiling. A first visit is what is over.
 - **The same fact breaks the private-network case.** On a network that cannot
   reach `gstatic.com`, the engine never arrives and the Studio does not start

@@ -560,7 +560,6 @@ class _GalleryState extends State<Gallery> {
   static const _fixChoices = [
     ('Investigate only', 'Report the cause, change nothing'),
     ('Fix with a note', 'Tell the worker what you suspect'),
-    ('Choose the worker', 'Model, and how many attempts'),
     ('Always fix failures in marshal', 'For every pull request here'),
   ];
 

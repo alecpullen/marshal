@@ -133,8 +133,8 @@ failing check on a given pull request to be fixed.
     "A worker is on it" with Watch and Stop.
 12. **One click.** Fix with a worker posts the dispatch with no further
     input. The caret beside it is a `Menu` with exactly: Investigate only;
-    Fix with a note; Choose the worker; Always fix failures automatically
-    in this project. The last changes the setting in decision 7 and says so.
+    Fix with a note; Always fix failures automatically in this project. The
+    last changes the setting in decision 7 and says so.
 13. **The review head.** A thread with a ready pull request opens with it
     at the top of the conversation: title and head, each check by name,
     reviews, the narrated report when there is one, then Review changes,
@@ -331,7 +331,7 @@ draft of the card mapping and it was moved into `PullView`.
   from the model, so one sentence has one spelling. A dispatch in flight reads
   `Sending…` with the primary disabled; a refusal sits above the buttons in
   `err`. `ui/pulls/fix_control.dart` is the one place a card's actions are
-  built, with exactly four caret items.
+  built, with exactly three caret items.
 - **The place.** `PullsPlace` groups in the spec's order, omits empty groups,
   and carries every §7 state. The sidebar row is no longer planned and carries
   the ready count.
@@ -348,10 +348,11 @@ draft of the card mapping and it was moved into `PullView`.
 - **Dismiss.** The bridge has no dismissal route (F5.1), so a pull ask's
   Dismiss is the app's: the ask is hidden until the bridge writes a new one,
   which carries a new `at`. The card says nothing it has not done.
-- **Choose the worker.** The bridge dispatches a fix on the project's routing
-  and ignores `PullFixRequest.Routing`, so the caret's third item opens a sheet
-  that says the choice is planned rather than offering a picker that would
-  change nothing.
+- **Choosing the worker is not offered.** The bridge dispatches a fix on the
+  project's own routing and ignores `PullFixRequest.Routing`, and routing a
+  fix to a chosen worker needs an agent-prompt path the bridge does not have,
+  so the caret does not offer the option at all: three items, every one of
+  which dispatches or changes a setting.
 - **Automatic fixing** is written as a one-way "turn it on" from the caret and
   confirmed in a sheet that says what happens next; turning it off is
   Automations'. The settings document is round-tripped whole, so the other

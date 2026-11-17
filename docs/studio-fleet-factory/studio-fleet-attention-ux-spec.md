@@ -1,7 +1,10 @@
 # Studio Fleet attention and recovery experience
 
-Date: 2026-11-17
-Status: approved specification (2026-11-17); see the [implementation plan](plans/2026-11-17-studio-fleet-attention-ux-plan.md).
+Status: product direction approved 2026-11-17; Flutter port proposed for review 2026-11-18. See the linked implementation plan.
+
+## Flutter port constraints
+
+The target is Flutter `app/`, not the retiring Svelte Studio. Follow the [normative Flutter design system](../studio-flutter/design-system.md), existing kit and UI/model/client boundaries. The implementation plan identifies current screens and tests. Recheck in-flight changes before implementing and preserve already-working behavior; fixture evidence is not a live-service claim.
 
 ## Intent and scope
 
@@ -9,7 +12,7 @@ Make Fleet and Inbox useful when multiple projects have work in different states
 
 ## Attention and readiness
 
-Fleet remains the concise cross-project overview; Inbox remains the detailed queue. Use the existing factory store, fleet inbox snapshot, network decisions and automation results. Include factory draft/decision and ready items in Inbox as well as Fleet, preserving separate identities and sources for a factory decision and any agent approval/question, even if they concern the same worker. Do not collapse them into one implied approval. Keep independent agents distinct from factory-owned workers and preserve the current Mine/Everyone scope for sources that have an owner; where factory ownership is not represented, label scope as project-wide instead of guessing an owner or hiding work.
+Fleet remains the concise cross-project overview; Inbox remains the detailed queue. Use the existing factory store, fleet inbox snapshot, network decisions and automation results. The Flutter `InboxModel` already includes Factory approval-draft, decision, recovery and completion asks. Preserve and improve these existing entries and include source-reported ready items where available, preserving separate identities and sources for a factory decision and any agent approval/question, even if they concern the same worker. Do not collapse them into one implied approval. Keep independent agents distinct from factory-owned workers and preserve the current Mine/Everyone scope for sources that have an owner; where factory ownership is not represented, label scope as project-wide instead of guessing an owner or hiding work.
 
 Each attention entry shows source, project, item/agent name, concise reason and the existing direct action. Ready means the source actually reported ready; unknown checks or an unavailable feed must not appear as passing. Do not claim a work item is complete simply because its delivery is ready or a PR merged. Running and earlier states should use source data and avoid invented percentages or durations. Retain explicit inline agent/network actions where they already exist; new factory entries navigate to their existing item/decision, not issue a new mutation.
 

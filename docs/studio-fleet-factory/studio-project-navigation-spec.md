@@ -1,7 +1,10 @@
 # Studio project settings and navigation
 
-Date: 2026-11-17
-Status: approved implementation specification (2026-11-17). Plan: [project settings and navigation](plans/2026-11-17-studio-project-navigation-plan.md).
+Status: product direction approved 2026-11-17; Flutter port proposed for review 2026-11-18. See the linked implementation plan.
+
+## Flutter port constraints
+
+The target is Flutter `app/`, not the retiring Svelte Studio. Follow the [normative Flutter design system](../studio-flutter/design-system.md), existing kit and UI/model/client boundaries. The implementation plan identifies current screens and tests. Recheck in-flight changes before implementing and preserve already-working behavior; fixture evidence is not a live-service claim.
 
 ## Intent and scope
 
@@ -13,11 +16,11 @@ Make the existing project overview's primary paths—open its factory, create fa
 
 ## CI checks editor
 
-Replace the opaque expected-checks text entry with an accessible structured editor on the existing Factory settings card. Each row shows check type, name/context and GitHub App ID where applicable; explain why check runs include an app identity. Preserve an advanced raw text entry mode for existing power users. Both modes edit the same draft; switching modes must not discard malformed or unrecognized input. Round-trip existing `FactoryCheckKey` values exactly, including case, punctuation, check type and app ID. In raw mode, `commit_status:` consumes the remaining line as its context and `check_run:` uses the last colon to separate the numeric app ID, so names can contain colons. Existing invalid raw input remains visible and blocks saving with a specific error; it must not silently become an empty inherited setting.
+Add an accessible structured expected-checks editor to the existing Factory defaults section. The Flutter defaults screen currently has no expected-checks editor; `ProjectDraft` must retain and serialize the existing setting without loss. Each row shows check type, name/context and GitHub App ID where applicable; explain why check runs include an app identity. Preserve an advanced raw text entry mode for existing power users. Both modes edit the same draft; switching modes must not discard malformed or unrecognized input. Round-trip existing `FactoryCheckKey` values exactly, including case, punctuation, check type and app ID. In raw mode, `commit_status:` consumes the remaining line as its context and `check_run:` uses the last colon to separate the numeric app ID, so names can contain colons. Existing invalid raw input remains visible and blocks saving with a specific error; it must not silently become an empty inherited setting.
 
 Offer optional suggestions only from already available, authorized factory items' recorded CI evidence in the same project and repository. Label these as previously observed at a given revision/time, not as a complete or authoritative list of required checks. Dedupe by `(kind, name, appId)`, preserve same-name checks from different apps as distinct, and make selection explicit. A new project or unavailable factory feed still supports manual entry. No forge call or check discovery backend is added in this slice. Do not auto-select checks, acknowledge no-required-CI, or change settings when a user only views suggestions.
 
-Keep absent defaults distinct from a deliberate choice at handoff: clearing the project field restores the existing follow/inherit behavior; the handoff's existing explicit no-required-CI acknowledgement remains separate. Preserve unavailable saved values and unrelated settings, existing version/ETag checks, route guard, conflict message and current per-section save behavior. A settings refresh or suggestion update never overwrites unsaved input.
+Keep absent defaults distinct from a deliberate choice at handoff: clearing the project field restores the existing follow/inherit behavior; the handoff requires a separate, explicit no-required-CI acknowledgement; the current Flutter model derives it from an empty list, so the port must correct that behavior. Preserve unavailable saved values and unrelated settings, existing version/ETag checks, route guard, conflict message and current per-section save behavior. A settings refresh or suggestion update never overwrites unsaved input.
 
 ## Verification
 

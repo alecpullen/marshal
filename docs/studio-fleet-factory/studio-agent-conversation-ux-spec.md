@@ -1,7 +1,10 @@
 # Studio shared agent conversation experience
 
-Date: 2026-11-17
-Status: approved specification (2026-11-17); see the [implementation plan](plans/2026-11-17-studio-agent-conversation-ux-plan.md).
+Status: product direction approved 2026-11-17; Flutter port proposed for review 2026-11-18. See the linked implementation plan.
+
+## Flutter port constraints
+
+The target is Flutter `app/`, not the retiring Svelte Studio. Follow the [normative Flutter design system](../studio-flutter/design-system.md), existing kit and UI/model/client boundaries. The implementation plan identifies current screens and tests. Recheck in-flight changes before implementing and preserve already-working behavior; fixture evidence is not a live-service claim.
 
 ## Intent and scope
 

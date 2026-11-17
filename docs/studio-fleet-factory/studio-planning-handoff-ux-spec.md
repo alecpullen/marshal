@@ -1,7 +1,10 @@
 # Studio planning, drafts and handoff experience
 
-Date: 2026-11-17
-Status: approved specification (2026-11-17); see the [implementation plan](plans/2026-11-17-studio-planning-handoff-ux-plan.md).
+Status: product direction approved 2026-11-17; Flutter port proposed for review 2026-11-18. See the linked implementation plan.
+
+## Flutter port constraints
+
+The target is Flutter `app/`, not the retiring Svelte Studio. Follow the [normative Flutter design system](../studio-flutter/design-system.md), existing kit and UI/model/client boundaries. The implementation plan identifies current screens and tests. Recheck in-flight changes before implementing and preserve already-working behavior; fixture evidence is not a live-service claim.
 
 ## Intent
 
@@ -17,10 +20,12 @@ In planner sessions, put connection/mode/workspace state and actionable question
 
 ## Handoff review
 
-Present a clear progression from editable plan/specification and optional selected files to capture, review of the frozen snapshot, and create factory draft. No files are selected by default. Show selected file operations and rejected paths, base revision and exact document/file evidence before confirming; the user may inspect details and change the selection by capturing a fresh snapshot. The reviewed snapshot and created draft remain bound to the existing immutable hashes and request IDs. If content or settings change during review, use existing stale/conflict behavior and ask the user to review the refreshed evidence. Capturing or creating a draft never starts factory work: the existing approval and start remain separate actions.
+Present editable plan/specification, any supported optional selected files, capture and frozen evidence clearly. No files are selected by default. Show the operations, rejected paths, base revision and document/file evidence that the current planner snapshot contract actually supplies. A change to reviewed evidence requires a fresh capture. Do not claim unsupported file selection is available; integrate it when the backend supports it.
+
+The current Flutter `HandoffModel.approve()` posts `FactoryCreate`, and the sheet calls its action “Approve and start”; this is not a draft-only action. Verify the bridge's actual resulting state and start semantics and label the action and consequence accurately. Preserve a separate approval when using a backend draft-creation path; do not silently start work from capture or an unapproved draft. Bind the reviewed evidence to the submitted request and preserve existing hashes, versions and request identities. Surface stale/conflict and uncertain outcomes without a blind retry. Link only the item the bridge returns.
 
 Use actual backend states and preserve all existing saved-draft, offline and conflict controls. Do not add a requirement to use a specific planner or create a working draft before handoff. Unsupported or unavailable capabilities should be explained, with existing manual workflows available.
 
 ## Validation
 
-Exercise planner → captured snapshot → reviewed draft, and separately working draft → review/conversion → factory item, at desktop and phone sizes. Test local-only and cross-device saved states, offline and retry, two-editor conflicts including a second conflict, selected and rejected files, stale snapshot, unknown turn and lost conversion response. Assert exact existing API payloads and no automatic approval or duplicate creation. Use isolated fixtures and label mocked presentation; report live planner, cross-device and physical-phone coverage separately.
+Exercise planner → captured snapshot → reviewed handoff, and separately working draft → review/conversion → factory item, at desktop and phone sizes. Test local-only and cross-device saved states, offline and retry, two-editor conflicts including a second conflict, selected and rejected files, stale snapshot, unknown turn and lost conversion response. Assert exact existing API payloads and no automatic approval or duplicate creation. Use isolated fixtures and label mocked presentation; report live planner, cross-device and physical-phone coverage separately.

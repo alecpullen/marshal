@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 
 import '../tokens.dart';
+import 'tip.dart';
 
 /// One entry of a thread's activity: who acted, what they did, and when
 /// (design-system.md §5, F6 decision 4).
@@ -15,6 +16,7 @@ class ActivityRow extends StatelessWidget {
     required this.who,
     required this.text,
     this.age,
+    this.ageTip,
     this.detail,
   });
 
@@ -27,6 +29,10 @@ class ActivityRow extends StatelessWidget {
   /// How long ago, already relative: a row draws it, it does not compute it.
   final String? age;
 
+  /// The exact time behind [age], for its tooltip (design-system.md §8), or
+  /// null when there is no exact time to show.
+  final String? ageTip;
+
   /// The event's own kind, when it is worth naming beside the sentence.
   final String? detail;
 
@@ -34,6 +40,7 @@ class ActivityRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final e = Ember.of(context);
     final at = age;
+    final tip = ageTip;
     final note = detail;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: Space.s6),
@@ -43,7 +50,13 @@ class ActivityRow extends StatelessWidget {
           Row(
             children: [
               Expanded(child: Text(who, style: e.bodyStrong)),
-              if (at != null) Text(at, style: e.monoSmall.tint(e.muted)),
+              if (at != null)
+                tip == null
+                    ? Text(at, style: e.monoSmall.tint(e.muted))
+                    : Tip(
+                        message: tip,
+                        child: Text(at, style: e.monoSmall.tint(e.muted)),
+                      ),
             ],
           ),
           const SizedBox(height: Space.s2),

@@ -209,7 +209,10 @@ void main() {
     await pump(tester, item());
     await openTab(tester, 'Agents');
     expect(find.text('agent-imp'), findsOneWidget);
-    expect(find.text('Working'), findsOneWidget);
+    // The word is the one the item's own effect supports, not "Working" by
+    // default.
+    expect(find.text('Finished'), findsOneWidget);
+    expect(find.text('Working'), findsNothing);
   });
 
   testWidgets('the Checks tab shows the observed checks and the review', (

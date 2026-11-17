@@ -36,7 +36,7 @@ class AgentsTab extends StatelessWidget {
           for (final worker in item.workers)
             RowItem(
               name: worker.words,
-              description: worker.parked ? 'Parked' : 'Working',
+              description: worker.stateWords,
               value: worker.agentID,
               mono: true,
               onTap: open == null ? null : () => open(worker),

@@ -251,16 +251,25 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
             if (index > 0) const Hairline(),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: Space.s16),
-              child: ActivityRow(
-                who: entry.who,
-                text: entry.text,
-                age: relativeAge(entry.at, _now),
-                detail: entry.detail,
-              ),
+              child: _activityRow(entry),
             ),
           ],
         ],
       ),
+    );
+  }
+
+  /// One entry, with its age relative to now and the exact time behind it.
+  /// A time this build cannot read says so rather than claiming an epoch.
+  Widget _activityRow(ActivityEntry entry) {
+    final at = entry.at;
+    final age = at == null ? 'Unknown' : relativeAge(at, _now);
+    return ActivityRow(
+      who: entry.who,
+      text: entry.text,
+      age: age,
+      ageTip: at == null ? null : exactTimeLabel(at),
+      detail: entry.detail,
     );
   }
 

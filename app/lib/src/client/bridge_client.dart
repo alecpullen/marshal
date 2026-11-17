@@ -353,6 +353,28 @@ class BridgeClient {
   Future<List<WatchInfo>> watches() =>
       _listOf('/api/watches', WatchInfo.fromJson);
 
+  /// POST /api/watches: starts a watch on an agent's session, or on the
+  /// bridge's own control session when the request names no agent. A reroute
+  /// is allowed only on a Studio watch: it rewrites user-global config, which
+  /// no single agent's watch should be able to do.
+  Future<WatchStarted> createWatch(WatchCreate request) => _objectOf(
+    '/api/watches',
+    WatchStarted.fromJson,
+    method: 'POST',
+    body: request,
+  );
+
+  /// DELETE /api/watches/{owner}/{id}: stops one. [owner] is the watch's agent
+  /// id, or `studio` for the bridge's own control session.
+  Future<void> stopWatch(String owner, String id) => _send(
+    Request(
+      method: 'DELETE',
+      path:
+          '/api/watches/${Uri.encodeComponent(owner)}/'
+          '${Uri.encodeComponent(id)}',
+    ),
+  );
+
   /// POST /api/reroutes/{id}/undo: puts back the binding a tripped watch
   /// changed. [id] is the reroute record's id.
   Future<void> undoReroute(String id) =>
@@ -445,6 +467,18 @@ class BridgeClient {
     '/api/automations/ci/history/${Uri.encodeComponent(id)}',
     CIHistory.fromJson,
   );
+
+  /// POST /api/repos/{id}/webhook-secret: issues the secret the forge signs
+  /// its deliveries with, and answers it the one time it is shown. Without a
+  /// secret the bridge polls for changes instead.
+  Future<String> issueWebhookSecret(String repoID) async {
+    final answer = await _objectOf(
+      '/api/repos/${Uri.encodeComponent(repoID)}/webhook-secret',
+      WebhookSecret.fromJson,
+      method: 'POST',
+    );
+    return answer.secret;
+  }
 
   // Library: skills, plugins and memory (F7).
 
@@ -920,6 +954,13 @@ class BridgeClient {
     AccessState.fromJson,
   );
 
+  /// GET /api/sessions/{id}/roster: every role's live model binding, plus the
+  /// swarm and SDD budgets.
+  Future<Roster> sessionRoster(String sessionId) => _objectOf(
+    '/api/sessions/${Uri.encodeComponent(sessionId)}/roster',
+    Roster.fromJson,
+  );
+
   /// POST /api/agents: starts an agent, which is a new thread.
   Future<SpawnResult> spawn(SpawnRequest request) async {
     final response = await _send(
@@ -1172,6 +1213,20 @@ class BridgeClient {
       body: command,
     );
     return FactoryItem.fromJson(body['item'] as Map<String, dynamic>);
+  }
+
+  /// GET /api/factory/settings-version?projectRoot=…: the combined version a
+  /// factory approval checks against, composed from the project's settings and
+  /// the control session's reported defaults. It is served from the same
+  /// method an approval uses, so a client never builds a version the bridge
+  /// would compare differently.
+  Future<String> factorySettingsVersion(String projectRoot) async {
+    final answer = await _objectOf(
+      '/api/factory/settings-version',
+      FactorySettingsVersion.fromJson,
+      query: {'projectRoot': projectRoot},
+    );
+    return answer.settingsVersion;
   }
 
   // A project's settings, its health and its discovery report (F6).

@@ -88,6 +88,10 @@ class _HandoffFormState extends State<HandoffForm> {
   void initState() {
     super.initState();
     widget.model.addListener(_changed);
+    // The settings a review is bound to move without this page reloading, so
+    // the version is read here and read again at approval: an approval that
+    // would freeze settings nobody read is a conflict, not a failure.
+    unawaited(widget.model.checkSettings());
   }
 
   @override

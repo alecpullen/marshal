@@ -15,6 +15,25 @@
     "role": "implementer",
     "preset": "local"
   },
+  "WatchCreate": {
+    "agentId": "studio",
+    "spec": {
+      "name": "the gate",
+      "kind": "command",
+      "command": "go test ./...",
+      "condition": "exit != 0",
+      "mode": "repeat",
+      "intervalMs": 5000,
+      "notify": true,
+      "resume": false
+    },
+    "onTrip": {
+      "reroute": {
+        "role": "implementer",
+        "preset": "local"
+      }
+    }
+  },
   "WatchInfo": {
     "agentId": "a-1",
     "id": "w-1",
@@ -55,5 +74,20 @@
     "at": 1763352600000,
     "value": 1,
     "tripped": true
+  },
+  "WatchSpec": {
+    "name": "the gate",
+    "kind": "command",
+    "command": "go test ./...",
+    "condition": "exit != 0",
+    "mode": "repeat",
+    "intervalMs": 5000,
+    "notify": true,
+    "resume": false
+  },
+  "WatchStarted": {
+    "id": "w-1",
+    "name": "the gate",
+    "agentId": "studio"
   }
 }

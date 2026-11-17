@@ -3,13 +3,14 @@ import '../../model/watches_model.dart';
 import '../kit/kit.dart';
 import '../sections/section_page.dart';
 import 'automations_place.dart' show AutomationsTabs;
+import 'confirm_action.dart';
+import 'watch_form.dart';
 
 /// The Watches tab of Automations (F7 decision 4): what is watched, on what
 /// condition, a day's readings, the action on trip and the state.
 ///
-/// A watch is started by an agent or by the bridge, so its detail is read
-/// only: it says what the watch watches, what its last trip did, and — where
-/// the action was a reroute — whether that can be undone.
+/// A watch is started here, by an agent through the same route, and stopped
+/// from its detail; what the detail never does is edit one in place.
 class WatchesTab extends StatelessWidget {
   const WatchesTab({super.key, required this.model, this.tabs, this.state});
 
@@ -32,6 +33,7 @@ class WatchesTab extends StatelessWidget {
       onTab: tabs?.onChanged,
       state: state,
       readOnly: true,
+      actions: [Btn('New watch', onTap: () => showWatchForm(context, model))],
       detailTitle: (watch) => watch.name,
       emptyMessage:
           'A watch an agent starts — a command, a job or a file — is listed '
@@ -98,6 +100,11 @@ class _WatchDetailState extends State<_WatchDetail> {
   /// while the list still holds the row it was opened from.
   bool _undone = false;
 
+  /// Whether the stop confirmation is showing, and whether it has been
+  /// carried out for the row this detail was opened from.
+  bool _confirmingStop = false;
+  bool _stopped = false;
+
   /// The reroute the watch's rule plans, when it still carries one. It is
   /// what the trip will do, not a record anything can undo.
   RerouteRule? get _reroute => widget.watch.onTrip?.reroute;
@@ -124,6 +131,31 @@ class _WatchDetailState extends State<_WatchDetail> {
       _undone = true;
       _note =
           'Undone: the role the trip rebound is back on its earlier binding.';
+    });
+  }
+
+  /// DELETE /api/watches/{owner}/{id}: stops the watch on the session that
+  /// started it, so its engine lets go of it.
+  Future<void> _stop() async {
+    if (_stopped) return;
+    setState(() {
+      _note = null;
+      _error = null;
+    });
+    try {
+      await widget.model.stop(widget.watch);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _confirmingStop = false;
+        _error = describeFailure(error);
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _stopped = true;
+      _confirmingStop = false;
     });
   }
 
@@ -203,6 +235,36 @@ class _WatchDetailState extends State<_WatchDetail> {
             'There is nothing to undo: the bridge records a reroute only when '
             'a trip makes one.',
             style: e.small.tint(e.muted),
+          ),
+        ],
+        if (_stopped) ...[
+          const SizedBox(height: Space.s20),
+          Text(
+            'Stopped: its engine has let go of it.',
+            style: e.small.tint(e.muted),
+          ),
+        ] else if (_confirmingStop) ...[
+          const SizedBox(height: Space.s20),
+          ConfirmAction(
+            question: 'Stop ${watch.name}?',
+            loss:
+                'Its readings end and it will not trip again. A watch an agent '
+                'started is stopped for that agent too.',
+            confirmLabel: 'Stop it',
+            onConfirm: _stop,
+            onCancel: () => setState(() => _confirmingStop = false),
+          ),
+        ] else ...[
+          const SizedBox(height: Space.s20),
+          Btn(
+            'Stop this watch',
+            onTap: () {
+              setState(() {
+                _note = null;
+                _error = null;
+                _confirmingStop = true;
+              });
+            },
           ),
         ],
         if (_note != null) ...[

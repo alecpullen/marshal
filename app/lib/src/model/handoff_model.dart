@@ -178,10 +178,14 @@ class HandoffModel extends ChangeNotifier {
     List<String> repositories = const [],
     DraftsModel? drafts,
     String? hostID,
+    String? settingsVersion,
+    Future<String> Function(String projectRoot)? readSettingsVersion,
   }) : _create = create,
        repositories = List.unmodifiable(repositories),
        drafts = drafts,
        hostID = hostID ?? defaults.hostID,
+       _reviewed = settingsVersion,
+       _readVersion = readSettingsVersion,
        _overrides = {};
 
   /// The project's factory defaults: what every unset field inherits.
@@ -217,11 +221,63 @@ class HandoffModel extends ChangeNotifier {
   FactoryItem? _created;
   int _requests = 0;
 
+  /// The settings version this review is bound to, and the one in force when
+  /// an approval last checked. [settingsConflict] is worded from the two.
+  String? _reviewed;
+  String? _current;
+  bool _moved = false;
+
+  /// Reads the combined settings version; null when the caller supplied none,
+  /// which leaves the review unbound rather than blocking it.
+  final Future<String> Function(String projectRoot)? _readVersion;
+
   /// Why the last approval failed, in the bridge's words.
   String? get failure => _failure;
 
   /// The item the last [approve] created, if it created one.
   FactoryItem? get created => _created;
+
+  /// The settings-version conflict, in the words the sheet needs: the version
+  /// this review displayed and the one now in force. Null when they agree, or
+  /// when the bridge could not answer either.
+  ///
+  /// It is never worded as a generic failure: nothing failed. The settings the
+  /// review would freeze moved, so approving this page would freeze settings
+  /// nobody read.
+  String? get settingsConflict {
+    if (!_moved) return null;
+    final reviewed = _reviewed ?? 'unversioned';
+    final current = _current ?? 'unversioned';
+    return 'The settings moved after this review was opened (reviewed '
+        '$reviewed, now $current). Reopen the review to read the current '
+        'settings; approving this page would freeze settings nobody read.';
+  }
+
+  /// Reads the settings version again and binds this review to it the first
+  /// time. It answers false when the settings moved, so an approval refuses
+  /// rather than freezing a version nobody read.
+  ///
+  /// A version the bridge cannot answer is stated, never guessed: the review
+  /// proceeds unbound, exactly as it did before this check existed, rather
+  /// than blocking on a settings read the bridge refused.
+  Future<bool> checkSettings() async {
+    final read = _readVersion;
+    if (read == null) return true;
+    final String current;
+    try {
+      current = await read(projectRoot);
+    } catch (_) {
+      _current = null;
+      _moved = false;
+      notifyListeners();
+      return true;
+    }
+    _current = current;
+    _reviewed ??= current;
+    _moved = _reviewed != null && _reviewed != current;
+    notifyListeners();
+    return !_moved;
+  }
 
   /// Where [field]'s value came from.
   FieldSource sourceOf(String field) => _overrides.containsKey(field)
@@ -308,6 +364,7 @@ class HandoffModel extends ChangeNotifier {
     if (plan.trim().isEmpty) 'There is no plan text to hand over.',
     if (_rounds < 1) 'The round allowance must be at least one.',
     if (title.trim().isEmpty) 'Give the work a name.',
+    ?settingsConflict,
   ]);
 
   /// Whether every field the bridge needs is stated.
@@ -357,10 +414,17 @@ class HandoffModel extends ChangeNotifier {
       '${_requests++}';
 
   /// Posts the draft and keeps the item it made. It refuses while a blocker
-  /// stands, so a screen cannot post what it is showing as blocked.
+  /// stands, so a screen cannot post what it is showing as blocked, and it
+  /// reads the settings version once more first: an approval that would
+  /// freeze settings nobody read is refused, not posted.
   Future<FactoryItem?> approve() async {
     if (!canApprove) {
       _failure = blockers.first;
+      notifyListeners();
+      return null;
+    }
+    if (!await checkSettings()) {
+      _failure = settingsConflict;
       notifyListeners();
       return null;
     }

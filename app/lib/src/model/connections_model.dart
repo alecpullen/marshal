@@ -197,6 +197,39 @@ class ConnectionsModel extends SectionModel<Connection> {
     }
   }
 
+  /// Whether the bridge already holds the secret [repoID]'s forge signs its
+  /// deliveries with (F7's webhook setup, ported from the Svelte client).
+  ///
+  /// The answer is `true` or `false`, or `null` when the secrets backend
+  /// cannot say — it may be switched off, and that is not an error the person
+  /// made. It never throws for that case: the section says the state is
+  /// unknown and Create secret reports why if issuing one fails.
+  Future<bool?> webhookSecretSet(String repoID) async {
+    final client = _client;
+    if (client == null) return null;
+    try {
+      final refs = await client.secrets(prefix: 'hooks/');
+      final wanted = 'hooks/$repoID';
+      return refs.any((ref) {
+        final bare = ref.startsWith('vault:') ? ref.substring(6) : ref;
+        return bare == wanted;
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Issues the secret [repoID]'s forge signs its deliveries with, and answers
+  /// it the one time the bridge shows it. Without a secret the bridge polls
+  /// for changes instead.
+  Future<String> createWebhookSecret(String repoID) async {
+    final client = _client;
+    if (client == null) {
+      throw StateError('No bridge is connected, so no secret can be issued');
+    }
+    return client.issueWebhookSecret(repoID);
+  }
+
   /// What a provider's health says in one line: where its key comes from and
   /// what its last probe found.
   String _health(String name, ProviderView provider) {

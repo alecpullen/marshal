@@ -2,6 +2,7 @@ import '../../model/connections_model.dart';
 import '../../model/fleet_store.dart' show describeFailure;
 import '../kit/kit.dart';
 import '../sections/section_page.dart';
+import 'webhook_setup.dart';
 
 /// Settings' Connections section (F7 decision 7): the forges Marshal pushes
 /// to, with the credential's kind and what it permits, and the model
@@ -83,6 +84,12 @@ class _ConnectionDetailState extends State<_ConnectionDetail> {
             )
           else
             _Fact(term, meaning),
+        if (!connection.isProvider) ...[
+          const SizedBox(height: Space.s16),
+          Text('Webhook', style: e.small.tint(e.muted)),
+          const SizedBox(height: Space.s8),
+          WebhookSetup(model: widget.model, repoID: connection.id),
+        ],
         if (connection.isProvider) ...[
           const SizedBox(height: Space.s16),
           if (probe != null) _ProbeAnswer(probe),

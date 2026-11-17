@@ -6,6 +6,10 @@ import '../client/contract.g.dart';
 // has no private named parameter.
 // ignore_for_file: prefer_initializing_formals
 
+// The roster reaches the run screen through the model, so `ui/` reads
+// `model/` and never `client/` (test/boundary_test.dart).
+export '../client/contract.g.dart' show Roster, RosterBudget, RosterRole;
+
 /// The three views of one run (F6 decision 11): the same run's tasks as lanes,
 /// as a dependency graph, or as a timeline of the roles.
 enum RunView { lanes, graph, timeline }
@@ -288,9 +292,11 @@ class RunModel extends ChangeNotifier {
     required this.agentID,
     required SDDRun run,
     Future<void> Function(String answer)? answer,
+    Future<Roster> Function()? roster,
     RunView view = RunView.lanes,
   }) : _run = run,
        _answer = answer,
+       _roster = roster,
        _view = view;
 
   /// A model over the run digest a list carried (F6 decision 12), for a run a
@@ -299,11 +305,13 @@ class RunModel extends ChangeNotifier {
     String agentID,
     Map<String, dynamic> digest, {
     Future<void> Function(String answer)? answer,
+    Future<Roster> Function()? roster,
     RunView view = RunView.lanes,
   }) => RunModel(
     agentID: agentID,
     run: SDDRun.fromJson(digest),
     answer: answer,
+    roster: roster,
     view: view,
   );
 
@@ -311,6 +319,17 @@ class RunModel extends ChangeNotifier {
   final String agentID;
 
   final Future<void> Function(String answer)? _answer;
+
+  /// Reads the session's roster (GET /api/sessions/{id}/roster): every role's
+  /// live model binding. Null when the app wired no reader, which leaves the
+  /// lanes without a roles strip rather than drawing bindings it invented.
+  final Future<Roster> Function()? _roster;
+
+  Roster? _rosterValue;
+  bool _readingRoster = false;
+  bool _rosterRead = false;
+  String? _rosterFailure;
+
   SDDRun _run;
   RunView _view;
   String? _selectedCell;
@@ -381,6 +400,54 @@ class RunModel extends ChangeNotifier {
 
   /// Why the last answer failed, in the bridge's words.
   String? get failure => _failure;
+
+  /// Whether the app wired a way to read the session roster. Null leaves the
+  /// lanes without a roles strip rather than drawing bindings nobody read.
+  bool get canReadRoster => _roster != null;
+
+  /// Every role's live model binding, or null before the roster was read.
+  Roster? get roster => _rosterValue;
+
+  /// Why the roster could not be read, in the bridge's words.
+  String? get rosterFailure => _rosterFailure;
+
+  /// Whether the roster read has finished, so the strip can wait quietly
+  /// rather than flashing "no roles" while the read is in flight.
+  bool get rosterSettled => _rosterRead;
+
+  /// The roles the lanes view names under the grid: the SDD roles and the
+  /// implementer and reviewer, exactly as the bridge resolves them
+  /// (web/ui/src/lib/runs/Lanes.svelte).
+  List<RosterRole> get rosterRoles {
+    final roles = _rosterValue?.roles ?? const <RosterRole>[];
+    return List.unmodifiable([
+      for (final role in roles)
+        if (role.role.startsWith('sdd') ||
+            role.role == 'implementer' ||
+            role.role == 'reviewer')
+          role,
+    ]);
+  }
+
+  /// Reads the roster once (GET /api/sessions/{id}/roster). A failure is
+  /// stated, never hidden: the lanes then draw without the roles strip and
+  /// the screen says why.
+  Future<void> loadRoster() async {
+    final read = _roster;
+    if (read == null || _readingRoster) return;
+    _readingRoster = true;
+    _rosterFailure = null;
+    notifyListeners();
+    try {
+      _rosterValue = await read();
+      _rosterRead = true;
+    } catch (error) {
+      _rosterFailure = '$error';
+    } finally {
+      _readingRoster = false;
+      notifyListeners();
+    }
+  }
 
   /// Whether an answer is in flight.
   bool get answering => _answering;

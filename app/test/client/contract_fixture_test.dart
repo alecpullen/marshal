@@ -140,6 +140,8 @@ final _codecs = <String, _Codec>{
       FactoryCompletionRecord.fromJson(_object(json)).toJson(),
   'FactoryAssessment': (json) =>
       FactoryAssessment.fromJson(_object(json)).toJson(),
+  'FactorySettingsVersion': (json) =>
+      FactorySettingsVersion.fromJson(_object(json)).toJson(),
   'FactoryPRLink': (json) => FactoryPRLink.fromJson(_object(json)).toJson(),
   'FactoryMergeBatch': (json) =>
       FactoryMergeBatch.fromJson(_object(json)).toJson(),
@@ -245,12 +247,16 @@ final _codecs = <String, _Codec>{
   'ReviewBotSettings': (json) =>
       ReviewBotSettings.fromJson(_object(json)).toJson(),
   'ReviewDraft': (json) => ReviewDraft.fromJson(_object(json)).toJson(),
+  'WebhookSecret': (json) => WebhookSecret.fromJson(_object(json)).toJson(),
   // watches.json
   'LastReroute': (json) => LastReroute.fromJson(_object(json)).toJson(),
   'OnTrip': (json) => OnTrip.fromJson(_object(json)).toJson(),
   'RerouteRule': (json) => RerouteRule.fromJson(_object(json)).toJson(),
+  'WatchCreate': (json) => WatchCreate.fromJson(_object(json)).toJson(),
   'WatchInfo': (json) => WatchInfo.fromJson(_object(json)).toJson(),
   'WatchSample': (json) => WatchSample.fromJson(_object(json)).toJson(),
+  'WatchSpec': (json) => WatchSpec.fromJson(_object(json)).toJson(),
+  'WatchStarted': (json) => WatchStarted.fromJson(_object(json)).toJson(),
   // session.json
   'SessionSummary': (json) => SessionSummary.fromJson(_object(json)).toJson(),
   'SessionList': (json) => SessionList.fromJson(_object(json)).toJson(),

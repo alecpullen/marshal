@@ -100,5 +100,8 @@
     "summary": "One blocking finding.",
     "status": "draft",
     "createdAt": "2026-11-17T03:10:00Z"
+  },
+  "WebhookSecret": {
+    "secret": "9f2c1d7a4b6e8035"
   }
 }

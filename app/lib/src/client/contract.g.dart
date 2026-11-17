@@ -659,6 +659,28 @@ class RecentPrompts {
   }
 }
 
+/// WebhookSecret is POST /api/repos/{id}/webhook-secret's answer. The secret
+/// is returned once, and the forge must be given it before it is lost.
+class WebhookSecret {
+  const WebhookSecret({
+    required this.secret,
+  });
+
+  final String secret;
+
+  factory WebhookSecret.fromJson(Map<String, dynamic> json) {
+    return WebhookSecret(
+      secret: json['secret'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['secret'] = secret;
+    return json;
+  }
+}
+
 /// Automations is a project's forge automation settings
 /// (web/bridge/automation.go).
 class Automations {
@@ -4690,6 +4712,31 @@ class FactoryCommand {
     if (settingsVersion != null) {
       json['settingsVersion'] = settingsVersion;
     }
+    return json;
+  }
+}
+
+/// FactorySettingsVersion is GET /api/factory/settings-version's answer: the
+/// combined version a factory approval checks against, composed from the
+/// project's settings and the control session's reported defaults. It is
+/// served from the same method an approval uses, so a client never builds a
+/// version the bridge would compare differently.
+class FactorySettingsVersion {
+  const FactorySettingsVersion({
+    required this.settingsVersion,
+  });
+
+  final String settingsVersion;
+
+  factory FactorySettingsVersion.fromJson(Map<String, dynamic> json) {
+    return FactorySettingsVersion(
+      settingsVersion: json['settingsVersion'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['settingsVersion'] = settingsVersion;
     return json;
   }
 }
@@ -15287,6 +15334,154 @@ class WatchInfo {
     }
     if (lastReroute != null) {
       json['lastReroute'] = lastReroute!.toJson();
+    }
+    return json;
+  }
+}
+
+/// WatchSpec is what a watch watches: POST /api/watches' `spec`, which the
+/// agent's session hands to its watch engine unchanged. Exactly one of
+/// Command, JobID and Path carries the source, chosen by Kind.
+class WatchSpec {
+  const WatchSpec({
+    required this.name,
+    required this.kind,
+    this.command,
+    this.jobID,
+    this.path,
+    this.condition,
+    required this.mode,
+    required this.intervalMs,
+    this.notify,
+    this.resume,
+  });
+
+  final String name;
+  /// command, job or file
+  final String kind;
+  final String? command;
+  final String? jobID;
+  final String? path;
+  final String? condition;
+  /// once or repeat
+  final String mode;
+  final int intervalMs;
+  final bool? notify;
+  final bool? resume;
+
+  factory WatchSpec.fromJson(Map<String, dynamic> json) {
+    return WatchSpec(
+      name: json['name'] as String,
+      kind: json['kind'] as String,
+      command: json['command'] as String?,
+      jobID: json['jobId'] as String?,
+      path: json['path'] as String?,
+      condition: json['condition'] as String?,
+      mode: json['mode'] as String,
+      intervalMs: (json['intervalMs'] as num).toInt(),
+      notify: json['notify'] as bool?,
+      resume: json['resume'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['kind'] = kind;
+    if (command != null) {
+      json['command'] = command;
+    }
+    if (jobID != null) {
+      json['jobId'] = jobID;
+    }
+    if (path != null) {
+      json['path'] = path;
+    }
+    if (condition != null) {
+      json['condition'] = condition;
+    }
+    json['mode'] = mode;
+    json['intervalMs'] = intervalMs;
+    if (notify != null) {
+      json['notify'] = notify;
+    }
+    if (resume != null) {
+      json['resume'] = resume;
+    }
+    return json;
+  }
+}
+
+/// WatchCreate is POST /api/watches' body: the spec, the agent whose session
+/// starts it (absent means the bridge's own control session), and the action
+/// on trip. A reroute is allowed only on a Studio watch: it rewrites
+/// user-global config, which no single agent's watch should be able to do.
+class WatchCreate {
+  const WatchCreate({
+    this.agentID,
+    required this.spec,
+    this.onTrip,
+  });
+
+  final String? agentID;
+  final WatchSpec spec;
+  final OnTrip? onTrip;
+
+  factory WatchCreate.fromJson(Map<String, dynamic> json) {
+    return WatchCreate(
+      agentID: json['agentId'] as String?,
+      spec: _object(
+        json['spec'],
+        WatchSpec.fromJson,
+      ),
+      onTrip: _objectOrNull(
+        json['onTrip'],
+        OnTrip.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (agentID != null) {
+      json['agentId'] = agentID;
+    }
+    json['spec'] = spec.toJson();
+    if (onTrip != null) {
+      json['onTrip'] = onTrip!.toJson();
+    }
+    return json;
+  }
+}
+
+/// WatchStarted is POST /api/watches' answer: what the engine made.
+class WatchStarted {
+  const WatchStarted({
+    required this.id,
+    this.name,
+    this.agentID,
+  });
+
+  final String id;
+  final String? name;
+  final String? agentID;
+
+  factory WatchStarted.fromJson(Map<String, dynamic> json) {
+    return WatchStarted(
+      id: json['id'] as String,
+      name: json['name'] as String?,
+      agentID: json['agentId'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    if (name != null) {
+      json['name'] = name;
+    }
+    if (agentID != null) {
+      json['agentId'] = agentID;
     }
     return json;
   }

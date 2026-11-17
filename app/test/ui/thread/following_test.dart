@@ -1,6 +1,9 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:marshal_app/src/client/contract.g.dart';
+import 'package:marshal_app/src/model/composer_model.dart';
 import 'package:marshal_app/src/model/thread_view_state.dart';
+import 'package:marshal_app/src/ui/thread/thread_composer.dart';
 
 import 'support.dart';
 
@@ -118,6 +121,56 @@ void main() {
 
     expect(view.following, isTrue);
 
+    store.dispose();
+    view.dispose();
+  });
+
+  testWidgets('a failed send while reading older messages moves nothing', (
+    tester,
+  ) async {
+    final store = fixtureStore(steps: 40);
+    final view = ThreadViewState();
+    var prompts = 0;
+    final composer = ComposerModel(
+      prompt: (text) async {
+        prompts++;
+        throw Exception('the bridge went away');
+      },
+      steer: (text) async {},
+      cancel: () async {},
+      setMode: (mode) async {},
+      access: () async =>
+          AccessState(mode: 'act', auto: false, system: false, revision: 1),
+      view: view,
+      model: 'qwen3-coder',
+    );
+    await pumpThread(
+      tester,
+      store: store,
+      view: view,
+      composer: ThreadComposer(model: composer, view: view),
+    );
+
+    await tester.drag(find.byType(ListView), const Offset(0, 300));
+    await tester.pumpAndSettle();
+    expect(view.following, isFalse);
+    final reading = _position(tester).pixels;
+
+    await tester.enterText(find.byType(EditableText), 'one more thing');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Send'));
+    await tester.pumpAndSettle();
+
+    // The send was refused, so it neither moved the reader to the live end nor
+    // took the text: reading older messages is not interrupted by a failure.
+    expect(prompts, 1);
+    expect(composer.failure, isNotNull);
+    expect(_position(tester).pixels, reading);
+    expect(view.following, isFalse);
+    expect(find.textContaining('Jump to live'), findsOneWidget);
+    expect(view.draft, 'one more thing');
+
+    composer.dispose();
     store.dispose();
     view.dispose();
   });

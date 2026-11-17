@@ -1,8 +1,11 @@
 import 'package:flutter/foundation.dart';
 
+import '../client/contract.g.dart';
+import 'factory_store.dart';
 import 'fleet_store.dart';
 import 'place.dart';
 import 'thread_ref.dart';
+import 'work_item_model.dart' show threadOfItem;
 
 /// The fixed places that sit above the projects in the sidebar; the rest of
 /// [NavModel.fixed] sits below them, as the mock's sidebar does (Overview,
@@ -114,7 +117,16 @@ bool isEarlier(ThreadRef thread, DateTime now) =>
 /// [pullsReady] is how many pull requests wait for review: the Pull requests
 /// row carries it (F5 decision 14), and the row is no longer planned — the
 /// place exists.
-NavModel buildNavModel(Place place, FleetStore store, {int pullsReady = 0}) {
+///
+/// [factory] is the work items, when the app holds them: they appear under
+/// their project, and the agents that work them are left out of the agent rows
+/// (F6 decision 13).
+NavModel buildNavModel(
+  Place place,
+  FleetStore store, {
+  int pullsReady = 0,
+  FactoryStore? factory,
+}) {
   final now = store.now;
   final inboxCount = store.inbox().length;
   final fixed = [
@@ -152,16 +164,37 @@ NavModel buildNavModel(Place place, FleetStore store, {int pullsReady = 0}) {
 
   // A project live on two hosts is one row: the app is one fleet, and each
   // thread carries the host it belongs to.
+  //
+  // A factory worker is not an independent agent (F6 decision 13): every agent
+  // that is a worker of any item, current or historical, is left out here and
+  // reached through the item's thread instead.
+  final workerIds = factory?.workerAgentIds ?? const <String>{};
   final byProject = <String, _ProjectBuilder>{};
   for (final host in store.hosts) {
+    final items = [
+      for (final item
+          in factory?.items(host: host.name) ?? const <FactoryItem>[])
+        threadOfItem(host.name, item),
+    ];
     final threads = [
       for (final agent in store.agents(host: host.name))
-        threadFor(host.name, agent),
+        if (!workerIds.contains(agent.id)) threadFor(host.name, agent),
+      ...items,
     ];
+    final grouped = <String>{};
     for (final project in store.projects(host: host.name)) {
+      grouped.add(project.root);
       byProject
           .putIfAbsent(project.root, () => _ProjectBuilder(project.root))
           .add(threads.where((thread) => thread.project == project.root));
+    }
+    // A work item whose project the host has not listed still belongs to it:
+    // an item nothing shows is work nobody can find.
+    for (final thread in items) {
+      if (grouped.contains(thread.project)) continue;
+      byProject
+          .putIfAbsent(thread.project, () => _ProjectBuilder(thread.project))
+          .add([thread]);
     }
   }
 

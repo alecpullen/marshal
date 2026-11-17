@@ -181,6 +181,8 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Label` | An uppercase section label | Optional count and one trailing link |
 | `Tabs` | Underlined text tabs | Views of one object. Never used for navigation between objects |
 | `Segments` | Progress as steps | Done is `ok`, current is the status colour, pending is `border` |
+| `StageStrip` | A work item's four stages, the one it is at marked | The stages as a `Segments` bar and as words; a stage the item left is `muted` and one ahead is `faint`. Never a fifth stage: an item that is ending says so in one word beside it |
+| `ActivityRow` | One entry of a thread's activity | Who acted, in words, and what they did, with the event's own kind small beneath it and its age at the right. A timeline, not a transcript |
 | `Meter` | A labelled bar | Capacity and quota. Bar is `muted` unless it reports a fault |
 | `Spark` | A small line | One series, `fg`, no axes |
 | `CheckStrip` | One block per CI check | Order is the forge's order; tooltip names each check |
@@ -235,6 +237,16 @@ cannot make draws Merge disabled under a `Tip` that names what brings it
 (`PrActions.mergeNote`), never as a button that would fail. `AskKind.pull` is
 the ask a fix that could not finish leaves: the pull request and the check,
 what was tried, and Open, Try again and Dismiss.
+
+Added in F6: `StageStrip` and `ActivityRow`, the work item's thread. The strip
+is a fact, not a control, and it has four stages and no fifth: an item that is
+stopping, stopped or closed says so in one word beside it. The activity row is
+the item's history, one entry per thing that happened, attributed to the
+planner, the implementer, the reviewer or the user in words. A work item's
+four asks — a draft awaiting approval, a decision, a recovery and a completion
+assessment — are drawn with the kit's existing `AskCard` kinds: the card's
+title and body say what is being decided, and a new kind for each would be a
+kind name that says nothing the title does not.
 
 Supporting pieces, shared by the components and exported with them by
 `kit.dart`. None is drawn on its own, and none has variants:

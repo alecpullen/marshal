@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'place.dart';
+import 'thread_ref.dart';
 
 /// The inspector's three widths (f4-inspector.md decision 3).
 enum InspectorWidth {
@@ -20,7 +21,40 @@ enum InspectorWidth {
 ///
 /// The set is the thread kind's: F6 adds the work item's and the plan run's,
 /// which is why a widget reads the set rather than assuming these five.
-enum InspectorTab { changes, files, terminal, preview, inspect }
+enum InspectorTab {
+  changes,
+  files,
+  terminal,
+  preview,
+  inspect,
+  plan,
+  agents,
+  checks,
+  pulls,
+}
+
+/// The tabs a thread kind shows, in order (f4-inspector.md decision 2, F6
+/// decision 6).
+///
+/// A work item's are its own five: its plan, its workers, its checks, the
+/// change on its branch and its pull requests. Every other kind keeps the
+/// agent's set, which is what a thread without a work item is.
+List<InspectorTab> tabsForThread(ThreadKind kind) => switch (kind) {
+  ThreadKind.workItem => const [
+    InspectorTab.plan,
+    InspectorTab.agents,
+    InspectorTab.checks,
+    InspectorTab.changes,
+    InspectorTab.pulls,
+  ],
+  ThreadKind.agent || ThreadKind.planRun => const [
+    InspectorTab.changes,
+    InspectorTab.files,
+    InspectorTab.terminal,
+    InspectorTab.preview,
+    InspectorTab.inspect,
+  ],
+};
 
 /// The inspector's view state: how wide it is, which tab is showing, whether
 /// that tab is pinned, and the node it is following.

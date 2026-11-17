@@ -40,6 +40,7 @@ import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/model/thread_view_state.dart';
 import 'package:marshal_app/src/model/watches_model.dart';
+import 'package:marshal_app/src/model/work_item_model.dart' as wmodel;
 import 'package:marshal_app/src/ui/automations/automations_place.dart';
 import 'package:marshal_app/src/ui/automations/bots_tab.dart';
 import 'package:marshal_app/src/ui/automations/recipes_tab.dart';
@@ -63,6 +64,7 @@ import 'package:marshal_app/src/ui/overview/overview.dart';
 import 'package:marshal_app/src/ui/pulls/pulls_place.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
+import 'package:marshal_app/src/ui/factory/work_item_screen.dart';
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
 
 /// One screen the enforcement tests pump: its ready state with fixture data,
@@ -799,6 +801,14 @@ final screens = <ScreenCase>[
     },
   ),
   ScreenCase(
+    name: 'work item',
+    ready: () => _workItemScreen(),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _workItemScreen(state: kind),
+    },
+  ),
+  ScreenCase(
     name: 'shell',
     ready: () => _shell(),
     states: {
@@ -1139,4 +1149,138 @@ Widget _threadScreen({
   inspector: inspector,
   pull: pull,
   state: state,
+);
+
+/// One work item as the enforcement tests pump it: a decision pending, one
+/// worker, a round with a passing check and a review finding, and its history.
+contract.FactoryItem _workItem() => contract.FactoryItem.fromJson({
+  'id': 'item-8',
+  'title': 'Work item thread',
+  'state': 'needs_input',
+  'stage': 'implement',
+  'repoId': 'repo-1',
+  'projectRoot': '/home/u/alpha',
+  'hostId': 'local',
+  'branch': 'factory/item-8',
+  'baseSha': 'base-1',
+  'version': 4,
+  'draft': {
+    'requestId': 'req-1',
+    'title': 'Work item thread',
+    'plan': '## Task 1\nRead the item.\n## Task 2\nApprove it.\n',
+    'spec': 'Ship the work item thread.',
+    'config': {
+      'repoId': 'repo-1',
+      'projectRoot': '/home/u/alpha',
+      'hostId': 'local',
+      'targetBranch': 'main',
+      'workspace': '',
+      'native': true,
+      'implementerRouting': null,
+      'reviewerRouting': null,
+      'reviewerInstructions': '',
+      'implementerAuto': true,
+      'expectedChecks': <Object?>[],
+      'noRequiredCiAcknowledged': true,
+      'maxRounds': 3,
+      'ciPollSeconds': 30,
+      'ciWaitSeconds': 900,
+    },
+  },
+  'approvals': <Object?>[],
+  'grants': <Object?>[],
+  'rounds': <Object?>[
+    {
+      'number': 1,
+      'approvalRevision': 1,
+      'implementEffectId': 'effect-implementer',
+      'baseSha': 'base-1',
+      'headSha': 'head-1',
+      'treeSha': 'tree-1',
+      'ci': {
+        'headSha': 'head-1',
+        'checks': <Object?>[
+          {
+            'key': {'kind': 'check_run', 'name': 'test', 'appId': 7},
+            'id': 'check-test',
+            'sha': 'head-1',
+            'status': 'completed',
+            'conclusion': 'success',
+            'url': '',
+            'logTail': '',
+            'observedAt': '2026-11-17T04:00:00Z',
+          },
+        ],
+        'complete': true,
+        'observedAt': '2026-11-17T04:00:00Z',
+      },
+      'implementation': null,
+      'review': {
+        'operationId': 'effect-reviewer',
+        'outcome': 'approved',
+        'summary': 'One finding.',
+        'question': '',
+        'reason': '',
+        'baseSha': 'base-1',
+        'headSha': 'head-1',
+        'inputsAccessible': true,
+        'findings': <Object?>[
+          {
+            'severity': 'minor',
+            'path': 'app/lib/src/ui/factory/work_item_screen.dart',
+            'line': 42,
+            'title': 'Name the stage in words',
+          },
+        ],
+      },
+      'startedAt': '2026-11-17T03:50:00Z',
+      'finishedAt': '2026-11-17T04:00:00Z',
+    },
+  ],
+  'workers': <Object?>[
+    {
+      'agentId': 'agent-imp',
+      'sessionId': 'sess-imp',
+      'role': 'implementer',
+      'spawnEffectId': 'effect-implementer',
+      'parked': false,
+      'subagents': {'enabled': false, 'concurrency': 0},
+    },
+  ],
+  'prs': <Object?>[],
+  'effects': <Object?>[],
+  'decision': {
+    'id': 'decision-1',
+    'kind': 'scope',
+    'question': 'Which inspection does the inspector show?',
+    'reason': 'the plan names both',
+    'effectId': 'effect-implementer',
+    'createdAt': '2026-11-17T04:05:00Z',
+  },
+  'history': <Object?>[
+    {
+      'sequence': 1,
+      'at': '2026-11-17T03:40:00Z',
+      'kind': 'created',
+      'message': 'the draft was created',
+      'effectId': '',
+    },
+    {
+      'sequence': 2,
+      'at': '2026-11-17T03:50:00Z',
+      'kind': 'implement_started',
+      'message': 'the implementer started',
+      'effectId': 'effect-implementer',
+    },
+  ],
+  'createdAt': '2026-11-17T03:40:00Z',
+  'approvedAt': '2026-11-17T03:45:00Z',
+  'updatedAt': '2026-11-17T04:05:00Z',
+});
+
+/// The work item's thread, or one of its §7 states.
+Widget _workItemScreen({StateKind? state}) => WorkItemScreen(
+  item: wmodel.WorkItemView.of('local', _workItem()),
+  state: state,
+  now: shellNow,
 );

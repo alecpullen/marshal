@@ -374,15 +374,25 @@ draft of the card mapping and it was moved into `PullView`.
 ### Unfinished, and what could not be verified
 
 - **Merge** is the agent's own route when an agent shipped the pull request.
-  A factory item's merge is **not offered**: the factory's `merge_and_complete`
-  names the pull request's reviewed node id, the bridge refuses a blank one
-  (400) and refuses a missing run choice (409), and `contract.PullRecord`
-  carries no node id — so the request the app could build is one the bridge
-  always answers. The earlier build sent exactly that (`'nodeId': ''`), which
-  no test covered and no bridge accepts. Merge is therefore drawn disabled,
-  with a tooltip saying the work item's merge arrives with work items (F6),
-  and `PullsModel.merge` refuses the call rather than posting it. The agent
-  route posts unchanged, and `test/model/pulls_model_test.dart` pins both.
+  A factory item's merge is **not offered on the pull request surfaces**: the
+  factory's `merge_and_complete` names the pull request's reviewed node id, the
+  bridge refuses a blank one (400) and refuses a missing run choice (409), and
+  `contract.PullRecord` carries no node id — so the request those surfaces could
+  build is one the bridge always answers. The earlier build sent exactly that
+  (`'nodeId': ''`), which no test covered and no bridge accepts. Merge is
+  therefore drawn disabled on the card and the review head, with a tooltip
+  saying where the merge lives, and `PullsModel.merge` refuses the call rather
+  than posting it. The agent route posts unchanged, and
+  `test/model/pulls_model_test.dart` pins both.
+- **A work item's merge is performed from its thread** (F6). The item's own
+  record of the reviewed pull request — `FactoryItem.PRs[].NodeID` with its
+  repo, number, reviewed head and base — is the only reviewed identity the app
+  holds, so `FactoryStore.mergeAndComplete` resolves it there and sends it with
+  the run choice the bridge requires while the item's run is active. The thread
+  draws Merge and complete disabled, with the reason, when the item links no
+  open pull request, rather than posting a command the bridge would refuse.
+  `test/ui/factory/item_asks_test.dart` pins the posted node id, the run choice,
+  and the disabled control.
 - **The integration flow** (`app/integration_test/f5_test.dart`) needs a device
   with a display and a Linux CMake/GTK3 toolchain, which this environment does
   not have: `flutter test integration_test -d linux` and

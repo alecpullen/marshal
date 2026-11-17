@@ -281,20 +281,24 @@ class PullsModel extends ChangeNotifier {
   /// the pull request and its base branch is the screen's, because a merge
   /// cannot be undone.
   ///
-  /// A factory item's merge is not offered at all. The factory's own
+  /// A factory item's merge is not offered here. The factory's own
   /// `merge_and_complete` names the pull request's reviewed node id
   /// (web/bridge/factory_completion_batch.go refuses a blank one), and
-  /// `contract.PullRecord` carries none, so the app has no reviewed identity
-  /// to send. The card draws Merge disabled and says which phase supplies it;
-  /// this refuses the same call rather than posting a command the bridge would
-  /// answer 400.
+  /// `contract.PullRecord` carries none, so this surface has no reviewed
+  /// identity to send. The card draws Merge disabled and says where the merge
+  /// lives; this refuses the same call rather than posting a command the
+  /// bridge would answer 400. A work item's own thread holds that identity and
+  /// offers the merge (F6).
   Future<void> merge(PullView pull) async {
     final host = _hostOf(pull.id);
     if (host == null) {
       throw StateError('no host holds ${pull.id}');
     }
     if (pull.fromFactoryItem) {
-      throw StateError('a work item’s merge arrives with work items (F6)');
+      throw StateError(
+        'merge this from its work item: only it holds the reviewed pull '
+        'request’s identity',
+      );
     }
     final bridge = client(host);
     final agent = (pull.record.agentID ?? pull.thread?.id) ?? '';

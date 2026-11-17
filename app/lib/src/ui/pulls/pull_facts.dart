@@ -3,16 +3,19 @@ import '../../model/pulls_model.dart';
 import '../../model/thread_ref.dart' as model;
 import '../kit/kit.dart';
 
-/// Why a factory-origin pull request's Merge is drawn disabled.
+/// Why a factory-origin pull request's Merge is drawn disabled here.
 ///
 /// The factory's own `merge_and_complete` command names the pull request's
 /// reviewed node id, and the bridge refuses a blank one
 /// (web/bridge/factory_completion_batch.go); a [PullView] carries no node id,
-/// because `contract.PullRecord` has none to carry. So the app does not offer
-/// the merge until the work item that holds the reviewed identity exists
-/// (F6). One sentence, used by the card and by the thread's review head.
+/// because `contract.PullRecord` has none to carry. The reviewed identity lives
+/// on the work item, so the merge is performed from its thread (F6), and this
+/// card says where rather than offering a button that would fail. One sentence,
+/// used by the card and by the thread's review head.
+/// `test/ui/factory/item_asks_test.dart` covers the thread's own merge.
 const workItemMergeNote =
-    'Merging a work item’s pull request arrives with work items (F6)';
+    'Merge this from its work item: only the work item holds the reviewed '
+    'pull request’s identity';
 
 /// One pull request as a [PrCard] draws it: the facts a view holds, in the
 /// kit's vocabulary.

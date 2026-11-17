@@ -525,6 +525,720 @@ export interface PinState {
 }
 
 /**
+ * FactorySubagentOverrides is one role's subagent settings as a draft or a
+ * project's factory defaults state them. Every field is a pointer because the
+ * resolution chain distinguishes "unset" from "stated": a missing override
+ * inherits the next source, and an explicit false or an explicit empty model
+ * is a choice that is preserved.
+ *
+ * A nil Model or a Model pointing at "" both mean normal child routing: only
+ * an explicit override is ever written here, so an empty string is a stated
+ * choice rather than an absence.
+ */
+export interface FactorySubagentOverrides {
+  enabled?: boolean;
+  model?: string;
+  concurrency?: number;
+}
+
+/**
+ * FactorySubagentSettings is one role's resolved subagent settings. It is what
+ * the resolution chain produced for a draft, and what an approval revision
+ * freezes: a later default change cannot reach an active revision through it.
+ *
+ * An approval journalled before subagent settings existed carries the zero
+ * value, which is why a zero Concurrency means "no snapshot" rather than a
+ * cap of zero.
+ */
+export interface FactorySubagentSettings {
+  enabled: boolean;
+  model?: string;
+  concurrency: number;
+}
+
+/**
+ * SelectedFile is one repository-relative file a snapshot captured. Path is a
+ * slash path relative to the planner's workspace root, never a host path, and
+ * Operation is exactly create, modify or delete.
+ */
+export interface SelectedFile {
+  path: string;
+  operation: string;
+  baseSha256?: string;
+  contentSha256?: string;
+  executable: boolean;
+}
+
+/**
+ * EditSnapshot is the hashed core of a snapshot: the base commit it was taken
+ * against and the files it froze, in the order the caller selected them. Its
+ * SHA256 is the digest of exactly those two fields, so the same capture always
+ * hashes the same way, whatever else the record carries.
+ */
+export interface EditSnapshot {
+  baseCommit: string;
+  files: SelectedFile[];
+  sha256: string;
+}
+
+/**
+ * ReviewFinding is one finding of a review-findings result.
+ */
+export interface ReviewFinding {
+  severity: string;
+  path?: string;
+  line?: number;
+  title: string;
+  body?: string;
+  stepNode?: string;
+}
+
+export interface FactoryConfig {
+  repoId: string;
+  projectRoot: string;
+  hostId: string;
+  targetBranch: string;
+  workspace: string;
+  native: boolean;
+  implementerRouting: unknown;
+  reviewerRouting: unknown;
+  reviewerInstructions: string;
+  implementerAuto: boolean;
+  expectedChecks: FactoryCheckKey[];
+  /**
+   * The tag's spelling is pre-move and load-bearing; see factory_tags_test.go.
+   */
+  noRequiredCiAcknowledged: boolean;
+  maxRounds: number;
+  ciPollSeconds: number;
+  ciWaitSeconds: number;
+  /**
+   * ImplementerSubagents and ReviewerSubagents hold only the work item's
+   * explicit subagent overrides: nil means inherit. Nothing is copied onto
+   * the draft from the project's defaults, so a draft follows a project
+   * default it never stated while an override it does state stays fixed.
+   * They are omitted when nil, so a journal written before they existed
+   * keeps its bytes.
+   */
+  implementerSubagents?: FactorySubagentOverrides;
+  reviewerSubagents?: FactorySubagentOverrides;
+}
+
+export interface FactoryCreate {
+  requestId: string;
+  title: string;
+  plan: string;
+  spec: string;
+  config: FactoryConfig;
+  /**
+   * EditSnapshot is the reviewed selection a planner handoff bound to this
+   * draft. It is optional and absent on every draft a Studio surface creates,
+   * so those journals keep their bytes. The field is a pointer because
+   * "no selection" and "an empty selection" are different approvals.
+   */
+  editSnapshot?: EditSnapshot;
+}
+
+export interface FactoryApproval {
+  revision: number;
+  plan: string;
+  spec: string;
+  /**
+   * PlanHash binds the exact plan, spec and selection this revision was
+   * approved with (see factoryApprovalHash). An approval without a snapshot
+   * holds the digest it always has.
+   */
+  planHash: string;
+  config: FactoryConfig;
+  editSnapshot?: EditSnapshot;
+  /**
+   * ImplementerSubagents and ReviewerSubagents are the subagent settings
+   * this revision froze: runtime defaults, then the project's override, then
+   * the draft's override, resolved when the approval was written. They are
+   * values, not pointers, because an approval states what was approved.
+   * An approval journalled before they existed carries the zero value and
+   * keeps its bytes; nothing re-derives them for it.
+   */
+  implementerSubagents: FactorySubagentSettings;
+  reviewerSubagents: FactorySubagentSettings;
+  approvedAt: string;
+}
+
+export interface FactoryGrant {
+  id: string;
+  reason: string;
+  additionalRounds: number;
+  at: string;
+}
+
+export interface FactoryWorker {
+  agentId: string;
+  sessionId: string;
+  role: string;
+  spawnEffectId: string;
+  parked: boolean;
+  /**
+   * ApprovalRevision and Subagents bind the snapshot this worker was started
+   * with: the approval revision it came from and that revision's settings for
+   * this worker's own role. A worker started before they existed carries the
+   * zero value for both, and FactoryWorker's marshalling keeps that worker's
+   * record byte-identical so an older journal still replays.
+   */
+  approvalRevision?: number;
+  subagents: FactorySubagentSettings;
+}
+
+export interface FactoryPR {
+  number: number;
+  url: string;
+  nodeId: string;
+  headRef: string;
+  baseRef: string;
+  headSha: string;
+  baseSha: string;
+  state: string;
+  draft: boolean;
+}
+
+export interface FactoryCheckKey {
+  kind: string;
+  name: string;
+  appId: number;
+}
+
+export interface FactoryCheck {
+  key: FactoryCheckKey;
+  id: string;
+  sha: string;
+  status: string;
+  conclusion: string;
+  url: string;
+  logTail: string;
+  observedAt: string;
+}
+
+export interface FactoryCI {
+  headSha: string;
+  checks: FactoryCheck[];
+  complete: boolean;
+  observedAt: string;
+}
+
+export interface FactoryReport {
+  operationId: string;
+  outcome: string;
+  summary: string;
+  question: string;
+  reason: string;
+  baseSha: string;
+  headSha: string;
+  inputsAccessible: boolean;
+  findings: ReviewFinding[];
+  narration?: FactoryNarration;
+}
+
+/**
+ * FactoryNarration is the engineer's account of the change: the issue and the
+ * proposed solution, the reasoning behind the implementation, and the
+ * verification that backs it.
+ *
+ * The sections are the approved list. Constraints are narrated inside the
+ * approach and the implementation choice, because they are the reasons those
+ * two sections take the shape they do.
+ */
+export interface FactoryNarration {
+  issue: string;
+  approach: string;
+  existingBehaviour: string;
+  alternatives: string;
+  tradeoffs: string;
+  choice: string;
+  verification: string;
+  limitations: string;
+  excerpts?: FactoryExcerpt[];
+}
+
+/**
+ * FactoryExcerpt is a selected piece of code that supports the narration. It
+ * is a selection, not a diff: the narration avoids narrating every changed
+ * line.
+ */
+export interface FactoryExcerpt {
+  path: string;
+  lang?: string;
+  code: string;
+}
+
+export interface FactoryRound {
+  number: number;
+  approvalRevision: number;
+  implementEffectId: string;
+  baseSha: string;
+  headSha: string;
+  treeSha: string;
+  ci: FactoryCI | null;
+  implementation: FactoryReport | null;
+  review: FactoryReport | null;
+  startedAt: string;
+  finishedAt: string;
+}
+
+/**
+ * FactoryDelegatedTurn is one worker turn's delegated child work: the children
+ * the turn launched, and how far they have been proven. It is journalled beside
+ * the effect that dispatched the turn, so the item keeps the effect and the
+ * candidate identity it was dispatched with until its children are settled.
+ * The waiting state is not an outcome: the report the turn wrote before those
+ * children settled is early, and is never the effect's result.
+ */
+export interface FactoryDelegatedTurn {
+  effectId: string;
+  workerId: string;
+  sessionId: string;
+  parentTurnId: string;
+  childIds: number[];
+  continuationId?: string;
+  /**
+   * waiting, prepared, dispatched, settled, uncertain
+   */
+  state: string;
+}
+
+export interface FactoryEffect {
+  /**
+   * Outcome retains accepted stop reasons and confirmed adapter evidence.
+   */
+  outcome: FactoryOutcome | null;
+  id: string;
+  kind: string;
+  status: string;
+  workerRole: string;
+  round: number;
+  approvalRevision: number;
+  worker: FactoryWorker | null;
+  expectedHead: string;
+  expectedBase: string;
+  createdAt: string;
+  /**
+   * Delegated is the turn's launched child work while it is not proven
+   * settled, and the waiting state Studio shows beside the effect's status.
+   * It is omitted when nil, so a record journalled before delegated turns
+   * existed keeps its bytes.
+   */
+  delegated?: FactoryDelegatedTurn;
+}
+
+export interface FactoryOutcome {
+  effectId: string;
+  stopReason: string;
+  error: string;
+  headSha: string;
+  treeSha: string;
+  baseSha: string;
+  worker: FactoryWorker | null;
+  pr: FactoryPR | null;
+  report: FactoryReport | null;
+  confirmed: boolean;
+  /**
+   * Delegated is the waiting turn a worker effect hands back instead of a
+   * result: the turn launched children it did not prove settled, so the report
+   * it wrote before they settled is early and is never applied. It is omitted
+   * when nil, so a completed outcome keeps the bytes it always wrote.
+   */
+  delegated?: FactoryDelegatedTurn;
+}
+
+export interface FactoryDecision {
+  id: string;
+  kind: string;
+  question: string;
+  reason: string;
+  effectId: string;
+  createdAt: string;
+}
+
+/**
+ * FactoryProvenance attributes one journaled factory mutation to the MCP
+ * client that caused it. It is optional: an entry written before provenance
+ * existed still replays, and an ordinary Studio mutation records none.
+ *
+ * Action is the capability the mutation was admitted under, RequestID is the
+ * client's own request identity (the journal's is namespaced), and Authority
+ * is the grant's approvalAuthority or the answer mode the client claimed. It
+ * records what the server accepted, which for a user-directed action is a
+ * client assertion rather than a verified human instruction.
+ */
+export interface FactoryProvenance {
+  clientId: string;
+  projectId: string;
+  action: string;
+  requestId: string;
+  authority?: string;
+  decisionId?: string;
+  /**
+   * The authenticated built-in principal, when the mutation came from a
+   * session association rather than an MCP client. Every field is optional
+   * and appended last, so a record written before session principals existed
+   * — and a client's own provenance — marshals byte for byte as it always
+   * did. AuthorityOrigin says where Authority came from; it is never claimed
+   * by a caller.
+   */
+  instanceId?: string;
+  sessionId?: string;
+  workerId?: string;
+  role?: string;
+  authorityOrigin?: string;
+}
+
+export interface FactoryEvent {
+  sequence: number;
+  at: string;
+  kind: string;
+  message: string;
+  effectId: string;
+  /**
+   * Provenance is absent from every entry the Studio surfaces write, and
+   * from every record journalled before it existed, so those bytes are
+   * unchanged.
+   */
+  provenance?: FactoryProvenance;
+}
+
+export interface FactoryItem {
+  id: string;
+  title: string;
+  state: string;
+  stage: string;
+  repoId: string;
+  projectRoot: string;
+  hostId: string;
+  branch: string;
+  baseSha: string;
+  version: number;
+  draft: FactoryCreate;
+  approvals: FactoryApproval[];
+  /**
+   * Proposals is the append-only history of plan/specification revisions
+   * proposed against this item. It is optional, so an item journalled
+   * before proposals existed replays unchanged.
+   */
+  proposals?: FactoryRevisionProposal[];
+  grants: FactoryGrant[];
+  rounds: FactoryRound[];
+  workers: FactoryWorker[];
+  prs: FactoryPR[];
+  effects: FactoryEffect[];
+  decision: FactoryDecision | null;
+  history: FactoryEvent[];
+  /**
+   * Completion is the durable business completion status, which is
+   * independent of State: the work counts as done as far as the user is
+   * concerned, whatever the run happens to be doing. It is optional, so an
+   * item journalled before completion existed replays unchanged, and a nil
+   * record (or one whose status is empty) is open.
+   */
+  completion?: FactoryCompletion;
+  createdAt: string;
+  approvedAt: string;
+  updatedAt: string;
+}
+
+export interface FactoryCommand {
+  requestId: string;
+  kind: string;
+  decisionId: string;
+  answer: string;
+  reason: string;
+  expectedVersion: number;
+  additionalRounds: number;
+  replacement: FactoryCreate | null;
+  implementerRouting: unknown;
+  reviewerRouting: unknown;
+  confirmPreviousWorkerStopped: boolean;
+  /**
+   * Revision is the structured payload of a plan-revision command:
+   * revision_propose, revision_supersede, revision_reject,
+   * revision_assess_request, revision_assess_claim, revision_assess_result,
+   * revision_assess_retry, revision_authorize, revision_delivery_choice and
+   * revision_follow_up_confirm read it, and every other kind leaves it nil,
+   * so a command those kinds do not carry marshals as it always did.
+   */
+  revision?: FactoryRevisionCommand;
+  /**
+   * Completion is the structured payload of the completion commands:
+   * link_pr reads the pull request it names, refresh_pr_evidence carries
+   * nothing of its own, and the merge kinds read the reviewed set, the
+   * strategy, the completion intent and the run choice. Every other kind
+   * leaves it nil, so a command those kinds do not carry marshals as it
+   * always did.
+   */
+  completion?: FactoryCompletionCommand;
+  /**
+   * SettingsVersion is the settings version the review surface displayed:
+   * the project's settings ETag and the session's reported defaults digest,
+   * as one string. An approval that carries it is refused when either side
+   * has changed since review; an approval that omits it — a legacy client,
+   * or a command replayed from an older journal — proceeds as it always did.
+   */
+  settingsVersion?: string;
+}
+
+/**
+ * FactoryRevisionAssessment is a planner's recorded judgement about one
+ * proposed revision. It is advisory: it names the classification it asserts,
+ * the work it believes is affected, the routing it recommends and whether the
+ * proposal can wait for a safe boundary or needs the running turn interrupted.
+ *
+ * Classification and strategy are assertions by a trusted planner, not proofs:
+ * the journal records what was claimed, and authorization rechecks who may act
+ * on it.
+ */
+export interface FactoryRevisionAssessment {
+  /**
+   * routine_clarification | scope_change | needs_user
+   */
+  classification: string;
+  reason: string;
+  affectedEffectId?: string;
+  affectedWorkerId?: string;
+  /**
+   * amend | follow_up
+   */
+  recommendation: string;
+  /**
+   * wait_safe | interrupt | hold
+   */
+  strategy: string;
+  assessorId: string;
+  candidateHash: string;
+  baseRevision: number;
+}
+
+/**
+ * FactoryRevisionDelivery is the recorded intent and evidence for handing an
+ * authorized revision to the worker that is running, or will run, the item.
+ *
+ * It is evidence, not a request log: a state here was observed, or the outcome
+ * of the attempt is explicitly unknown. "delivered" means the runtime accepted
+ * the input, never that the agent followed it.
+ */
+export interface FactoryRevisionDelivery {
+  /**
+   * wait_safe | interrupt | hold
+   */
+  strategy: string;
+  /**
+   * pending | dispatching | accepted | interrupting | waiting_safe_boundary | waiting_for_resume | delivered | undelivered | uncertain
+   */
+  state: string;
+  sessionId?: string;
+  turnId?: string;
+  requestId?: string;
+  candidateHash: string;
+}
+
+/**
+ * FactoryRevisionProposal is one immutable plan/specification revision
+ * proposed against an approved factory revision.
+ *
+ * The candidate bytes, the base it was proposed against, its hash and its
+ * creator are journal history: an edit is a new proposal, and replacing an
+ * unresolved one explicitly supersedes it rather than rewriting it. Only
+ * state, assessment, authority and delivery move afterwards, and every one of
+ * those moves bumps Version so a caller writing from a stale read is refused.
+ *
+ * While an amendment is authorized but not yet activated, the item's active
+ * approval stays the last entry of FactoryItem.Approvals: an in-flight worker
+ * keeps the revision it was started under.
+ */
+export interface FactoryRevisionProposal {
+  id: string;
+  version: number;
+  baseRevision: number;
+  baseHash: string;
+  plan: string;
+  spec: string;
+  candidateHash: string;
+  createdBy: string;
+  autoAssess: boolean;
+  /**
+   * proposed | awaiting_authorization | authorized | activated | rejected | superseded | follow_up_pending | followed_up
+   */
+  status: string;
+  /**
+   * not_requested | pending | assessing | assessed | unavailable | uncertain | failed
+   */
+  assessmentState: string;
+  assessmentAttemptId?: string;
+  assessment?: FactoryRevisionAssessment;
+  authorizedBy?: string;
+  authority?: string;
+  /**
+   * amend | follow_up
+   */
+  routing?: string;
+  /**
+   * requested | stopping | paused | uncertain
+   */
+  pauseState?: string;
+  pauseRequestId?: string;
+  delivery?: FactoryRevisionDelivery;
+  followUpRequestId?: string;
+  followUpItemId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * FactoryRevisionCommand is one plan-revision command's structured payload.
+ *
+ * A candidate is named by its exact bytes and the hash that binds them, and
+ * every mutation names the proposal and the version the caller read, so a
+ * stale command conflicts instead of silently rebasing. BaseRevision and
+ * BaseHash name the approved revision the candidate was written against.
+ */
+export interface FactoryRevisionCommand {
+  proposalId?: string;
+  proposalVersion?: number;
+  baseRevision?: number;
+  baseHash?: string;
+  plan?: string;
+  spec?: string;
+  candidateHash?: string;
+  attemptId?: string;
+  assessment?: FactoryRevisionAssessment;
+  routing?: string;
+  strategy?: string;
+  followUp?: FactoryCreate;
+}
+
+/**
+ * FactoryCompletionCommand is the structured payload of the completion
+ * commands. Each kind reads only the fields it needs, so a command those
+ * kinds do not carry marshals as it always did.
+ */
+export interface FactoryCompletionCommand {
+  /**
+   * Link is the pull request a link_pr command names: a number or a URL.
+   */
+  link?: string;
+  /**
+   * PRs is the reviewed, ordered set a merge_pr or merge_and_complete
+   * command authorizes.
+   */
+  prs?: FactoryCompletionPR[];
+  /**
+   * Strategy is the reviewed merge strategy.
+   */
+  strategy?: string;
+  /**
+   * CompleteAfter completes the item once every reviewed merge confirms.
+   */
+  completeAfter?: boolean;
+  /**
+   * RunChoice is continue or request_stop when the item's own run is
+   * active or its state cannot be established.
+   */
+  runChoice?: string;
+}
+
+/**
+ * FactoryCompletionPR is one pull request a user reviewed for a merge batch.
+ */
+export interface FactoryCompletionPR {
+  repoId: string;
+  number: number;
+  nodeId: string;
+  headSha: string;
+  baseRef: string;
+}
+
+export interface FactoryPRLink {
+  repoId: string;
+  pr: FactoryPR;
+  /**
+   * factory or user
+   */
+  origin: string;
+  observedAt: string;
+  fresh: boolean;
+}
+
+export interface FactoryAssessment {
+  /**
+   * pending, available, failed, unavailable
+   */
+  status: string;
+  summary?: string;
+  source?: string;
+  inputDigest: string;
+  observedAt: string;
+  /**
+   * Fresh is derived, never stored: the server recomputes it on every item
+   * it serves by comparing InputDigest with the item's current input digest,
+   * so a result computed against inputs that have since moved is shown with
+   * its summary intact and fresh false. The journalled value is never
+   * trusted on read.
+   */
+  fresh: boolean;
+}
+
+export interface FactoryCompletionRecord {
+  id: string;
+  at: string;
+  actor: string;
+  goal: string;
+  criteria: string;
+  assessment?: FactoryAssessment;
+  links: FactoryPRLink[];
+  /**
+   * continue or request_stop
+   */
+  runChoice?: string;
+}
+
+export interface FactoryMergeStep {
+  repoId: string;
+  number: number;
+  nodeId: string;
+  headSha: string;
+  baseRef: string;
+  strategy: string;
+  /**
+   * unattempted, prepared, dispatched, confirmed, failed, uncertain
+   */
+  state: string;
+  result?: string;
+}
+
+export interface FactoryMergeBatch {
+  id: string;
+  requestId: string;
+  /**
+   * active, stopped, complete
+   */
+  state: string;
+  completeAfter: boolean;
+  runChoice?: string;
+  steps: FactoryMergeStep[];
+}
+
+export interface FactoryCompletion {
+  /**
+   * open or complete; empty means open
+   */
+  status: string;
+  links?: FactoryPRLink[];
+  assessment?: FactoryAssessment;
+  records?: FactoryCompletionRecord[];
+  batch?: FactoryMergeBatch;
+  /**
+   * requested, stopped, failed, unknown
+   */
+  stopState?: string;
+}
+
+/**
  * FileEntry is one directory entry.
  */
 export interface FileEntry {

@@ -57,6 +57,10 @@ class Inspector extends StatelessWidget {
     InspectorTab.terminal => 'Terminal',
     InspectorTab.preview => 'Preview',
     InspectorTab.inspect => 'Inspect',
+    InspectorTab.plan => 'Plan',
+    InspectorTab.agents => 'Agents',
+    InspectorTab.checks => 'Checks',
+    InspectorTab.pulls => 'Pull requests',
   };
 
   void _cycle() => (onCycleWidth ?? state.cycleWidth)();

@@ -813,6 +813,43 @@ class BridgeClient {
     );
   }
 
+  // Factory work items (F6).
+
+  /// GET /api/factory/items: every work item the bridge holds, in the order it
+  /// keeps them. The route answers `{"items": [...]}`.
+  Future<List<FactoryItem>> factoryItems() async {
+    final body = await _objectOf<Map<String, dynamic>>(
+      '/api/factory/items',
+      (json) => json,
+    );
+    return List.unmodifiable([
+      for (final value in (body['items'] as List<dynamic>? ?? const []))
+        FactoryItem.fromJson(value as Map<String, dynamic>),
+    ]);
+  }
+
+  /// GET /api/factory/items/{id}: one item, with the evidence the list leaves
+  /// out. The route answers `{"item": {...}}`.
+  Future<FactoryItem> factoryItem(String id) async {
+    final body = await _objectOf<Map<String, dynamic>>(
+      '/api/factory/items/${Uri.encodeComponent(id)}',
+      (json) => json,
+    );
+    return FactoryItem.fromJson(body['item'] as Map<String, dynamic>);
+  }
+
+  /// POST /api/factory/items/{id}/commands: everything a person does to an
+  /// item. The answer is the item as the command left it.
+  Future<FactoryItem> factoryCommand(String id, FactoryCommand command) async {
+    final body = await _objectOf<Map<String, dynamic>>(
+      '/api/factory/items/${Uri.encodeComponent(id)}/commands',
+      (json) => json,
+      method: 'POST',
+      body: command,
+    );
+    return FactoryItem.fromJson(body['item'] as Map<String, dynamic>);
+  }
+
   Future<Response> _send(Request request) async {
     final response = await _transport.send(request);
     if (!response.ok) {

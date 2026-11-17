@@ -4,6 +4,7 @@ import 'src/client/host_discovery_stub.dart'
     if (dart.library.io) 'src/client/host_discovery_io.dart';
 import 'src/menu/desktop_stub.dart'
     if (dart.library.io) 'src/menu/desktop.dart';
+import 'src/model/factory_store.dart';
 import 'src/model/fleet_store.dart';
 import 'src/model/composer_model.dart';
 import 'src/model/inbox_model.dart';
@@ -25,10 +26,13 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final hosts = HostRegistry(discovery: discoverHosts);
   final store = FleetStore(hosts);
+  // The work items: the one poller of the factory's list (F6 decision 14).
+  final factory = FactoryStore(hosts);
   final inbox = InboxModel(
     store,
     client: (name) =>
         hosts.hosts.firstWhere((host) => host.name == name).client,
+    factory: factory,
   );
   // The pull requests read the same hosts, follow the same fleet streams, and
   // post through the same clients (F5).
@@ -43,6 +47,7 @@ Future<void> main() async {
         store: store,
         inbox: inbox,
         pulls: pulls,
+        factory: factory,
         read: hosts.discover,
         // A thread place opens its own session's transcript on the client
         // that reaches its host (F3): the same client the inbox answers with.
@@ -73,5 +78,6 @@ Future<void> main() async {
       ),
     ),
   );
+  factory.start();
   await startTray();
 }

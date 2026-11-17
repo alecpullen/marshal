@@ -109,8 +109,8 @@ void main() {
     // A merge the app has no reviewed identity for is not offered as a button
     // that would fail: it is drawn disabled with the phase that supplies it.
     const note =
-        'Merging a work item’s pull request arrives with work items '
-        '(F6)';
+        'Merge this from its work item: only the work item holds the '
+        'reviewed pull request’s identity';
     await pump(
       tester,
       PrState.ready,

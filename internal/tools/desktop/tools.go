@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/imagepayload"
 	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/registry"
 )
@@ -19,6 +20,8 @@ type toolSet struct {
 	session        *browser.Session
 	sessionMu      sync.Mutex
 	sessionState   *session.State
+	WorkspaceRoot  string
+	ImageStore     *imagepayload.Store
 }
 
 func (ts *toolSet) getSession(ctx context.Context) (*browser.Session, error) {
@@ -95,6 +98,8 @@ func RegisterAll(reg *registry.Registry, opts Options) (func(), error) {
 		cfg:            opts.Config,
 		backendFactory: opts.BackendFactory,
 		sessionState:   opts.SessionState,
+		WorkspaceRoot:  opts.WorkspaceRoot,
+		ImageStore:     opts.ImageStore,
 	}
 	tools := []registry.Tool{
 		ts.navigateTool(),
@@ -135,7 +140,7 @@ func (ts *toolSet) navigateTool() registry.Tool {
 		if err := decodeArgs(tool, call.Args, &args); err != nil {
 			return registry.ToolResult{}, err
 		}
-		if err := urlAllowed(args.URL, ts.cfg.URLAllowlist, ts.cfg.URLDenylist); err != nil {
+		if err := urlAllowed(args.URL, ts.cfg.URLAllowlist, ts.cfg.URLDenylist, ts.WorkspaceRoot); err != nil {
 			return registry.ToolResult{}, err
 		}
 		return ts.withPage(ctx, "browser.navigate", func(page browser.PageHandle) (registry.ToolResult, error) {

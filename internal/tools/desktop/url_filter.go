@@ -3,24 +3,26 @@ package desktop
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strings"
+
+	"marshal/internal/permissions"
 )
 
-func urlAllowed(rawURL string, allowlist, denylist []string) error {
+func urlAllowed(rawURL string, allowlist, denylist []string, workspaceRoot string) error {
 	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Host == "" {
+	if err != nil {
 		return fmt.Errorf("navigation blocked: invalid URL %q", rawURL)
 	}
-	// Scheme allowlist: only http, https, and file are permitted.
-	// Blocks javascript:, data:, vbscript:, and other schemes that could
-	// execute scripts in the browser context. This is defense-in-depth:
-	// javascript://example.com/alert(1) parses with a non-empty host and
-	// would otherwise pass the host check below.
 	switch parsed.Scheme {
-	case "http", "https", "file":
-		// proceed to host check
+	case "file":
+		return fileAllowed(parsed, denylist, workspaceRoot)
+	case "http", "https":
 	default:
 		return fmt.Errorf("navigation blocked: scheme %q not allowed for %q", parsed.Scheme, rawURL)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("navigation blocked: invalid URL %q", rawURL)
 	}
 	host := parsed.Hostname()
 	path := parsed.Path
@@ -41,6 +43,37 @@ func urlAllowed(rawURL string, allowlist, denylist []string) error {
 		}
 	}
 	return fmt.Errorf("navigation blocked by policy (not in allowlist): %s", rawURL)
+}
+
+// fileAllowed confines file: navigation to the workspace. The allowlist does
+// not apply: it names network destinations, and a configured allowlist must
+// not become a second way to deny local rendering.
+func fileAllowed(u *url.URL, denylist []string, workspaceRoot string) error {
+	if u.Host != "" {
+		return fmt.Errorf("navigation blocked: remote file URL %q", u.String())
+	}
+	if workspaceRoot == "" {
+		return fmt.Errorf("navigation blocked: no workspace root for %q", u.String())
+	}
+	path := filepath.FromSlash(u.Path)
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("navigation blocked: %q does not resolve: %w", u.String(), err)
+	}
+	root, err := filepath.EvalSymlinks(workspaceRoot)
+	if err != nil {
+		return fmt.Errorf("navigation blocked: workspace root %q does not resolve: %w", workspaceRoot, err)
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("navigation blocked: %q is outside the workspace", u.String())
+	}
+	for _, entry := range denylist {
+		if permissions.Matches(entry, resolved) {
+			return fmt.Errorf("navigation blocked by policy (denylist): %s", u.String())
+		}
+	}
+	return nil
 }
 
 func matchHostPath(host, path, entry string) bool {

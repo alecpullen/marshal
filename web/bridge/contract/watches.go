@@ -22,6 +22,14 @@ type OnTrip struct {
 	Reroute *RerouteRule `json:"reroute,omitempty"`
 }
 
+// LastReroute names the reroute a watch's most recent trip made, so a client
+// can undo it (POST /api/reroutes/{id}/undo). The bridge holds reroutes in
+// memory only, so a watch whose trip predates a bridge restart carries none.
+type LastReroute struct {
+	ID string `json:"id"`
+	At int64  `json:"at"`
+}
+
 // WatchInfo is one watch as GET /api/watches answers it: what the engine
 // reports about it, the agent that started it, and what it does on trip
 // (web/bridge/watches.go, internal/acp/watch.go). Times are Unix
@@ -45,8 +53,11 @@ type WatchInfo struct {
 	LastFiredAt int64         `json:"lastFiredAt,omitempty"`
 	Samples     []WatchSample `json:"samples"`
 	// OnTrip, Notify and Resume are held by the bridge, so they appear only
-	// on watches it started.
-	OnTrip *OnTrip `json:"onTrip,omitempty"`
-	Notify *bool   `json:"notify,omitempty"`
-	Resume *bool   `json:"resume,omitempty"`
+	// on watches it started. LastReroute is also the bridge's: it is the
+	// record of the watch's last trip that a reroute can still be undone
+	// from, and absent when that trip made no reroute or it was undone.
+	OnTrip      *OnTrip      `json:"onTrip,omitempty"`
+	Notify      *bool        `json:"notify,omitempty"`
+	Resume      *bool        `json:"resume,omitempty"`
+	LastReroute *LastReroute `json:"lastReroute,omitempty"`
 }

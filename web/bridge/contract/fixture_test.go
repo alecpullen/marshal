@@ -168,6 +168,7 @@ var fixtureTypes = map[string]reflect.Type{
 	// schedules.go — cron entries the bridge holds.
 	"Schedule": reflect.TypeOf(Schedule{}),
 	// watches.go — what trips a watch and what it did.
+	"LastReroute": reflect.TypeOf(LastReroute{}),
 	"OnTrip":      reflect.TypeOf(OnTrip{}),
 	"RerouteRule": reflect.TypeOf(RerouteRule{}),
 	"WatchInfo":   reflect.TypeOf(WatchInfo{}),

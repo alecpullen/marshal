@@ -14,7 +14,7 @@ import '../../support/fake_bridge.dart';
 /// The one click (F5 decision 12) and what the card says while it happens
 /// (decision 15): a dispatch posts with no further input, shows as sending
 /// until the bridge answers, and shows as accepted — being fixed — not as
-/// fixed. The caret holds exactly four variations.
+/// fixed. The caret holds exactly three variations.
 ///
 /// The dispatch runs inside `runAsync`: the fake bridge is a real socket, and
 /// a widget test's own clock never drives one. What a tap does is pinned by
@@ -273,7 +273,7 @@ void main() {
     expect(find.text('Fix with a worker'), findsOneWidget);
   });
 
-  testWidgets('the caret has exactly four items', (tester) async {
+  testWidgets('the caret has exactly three items', (tester) async {
     final (_, model) = await modelFor(tester, [record()]);
     await pumpCard(tester, model);
 
@@ -283,7 +283,6 @@ void main() {
 
     expect(find.text('Investigate only'), findsOneWidget);
     expect(find.text('Fix with a note'), findsOneWidget);
-    expect(find.text('Choose the worker'), findsOneWidget);
     expect(
       find.text('Always fix failures automatically in marshal'),
       findsOneWidget,
@@ -295,8 +294,8 @@ void main() {
     );
     expect(
       actionsOf(tester).fixChoices,
-      hasLength(4),
-      reason: 'exactly four, no more and no fewer',
+      hasLength(3),
+      reason: 'exactly three, no more and no fewer',
     );
   });
 

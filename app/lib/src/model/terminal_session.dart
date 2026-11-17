@@ -14,6 +14,11 @@ import '../client/event_stream.dart';
 /// keystroke pauses it, and it resumes on [handBack] or after [idleLimit]
 /// without input. Time is injected as [wait], so a test advances it instead
 /// of sleeping.
+///
+/// Keystrokes go through one queue: a keystroke typed before the shell has an
+/// id is held and sent once it does, and a second keystroke is never posted
+/// while the first is in flight, so two bodies cannot reach the pty out of
+/// order (findings/terminal.md, "Fit with the bridge's terminal routes").
 class TerminalSession extends ChangeNotifier {
   TerminalSession(
     this._client, {
@@ -23,8 +28,11 @@ class TerminalSession extends ChangeNotifier {
   }) : _wait = wait ?? ((duration) => Future<void>.delayed(duration));
 
   /// A session with no bridge: what a fixture or the gallery draws.
-  TerminalSession.seeded({this.agentId = ''})
+  /// [shellError] is why a shell failed to start, so a fixture can show that
+  /// state (a named parameter cannot be the private field itself).
+  TerminalSession.seeded({this.agentId = '', String? shellError})
     : _client = null,
+      _error = shellError,
       idleLimit = const Duration(minutes: 2),
       _wait = ((duration) => Future<void>.delayed(duration));
 
@@ -34,6 +42,18 @@ class TerminalSession extends ChangeNotifier {
 
   /// How long the agent may stay held without input.
   final Duration idleLimit;
+
+  /// The largest piece of one keystroke body, in bytes: the wire accepts
+  /// 64 KiB, and the web client sends 16 KiB at a time. Pastes are cut here.
+  static const inputChunk = 16 * 1024;
+
+  /// Keystrokes not yet sent, oldest first: typed before the shell had an id,
+  /// or queued behind one already in flight.
+  final _pending = <String>[];
+
+  /// The one request at a time the keystrokes are sent through. Each send is
+  /// chained onto it, so the pty sees them in the order they were typed.
+  Future<void> _queue = Future<void>.value();
 
   final _output = StreamController<String>.broadcast();
   StreamSubscription<StreamEvent>? _subscription;
@@ -47,6 +67,7 @@ class TerminalSession extends ChangeNotifier {
   bool _running = false;
   int _generation = 0;
   String? _exit;
+  String? _error;
   bool _disposed = false;
 
   /// The shell's output, as text.
@@ -66,6 +87,10 @@ class TerminalSession extends ChangeNotifier {
   /// The shell's exit code, once it has one.
   String? get exit => _exit;
 
+  /// Why the shell never started, when the bridge said so on the chunk that
+  /// ended its stream. Null while it is running, or when it exited cleanly.
+  String? get error => _error;
+
   /// Opens the shell and follows its stream.
   Future<void> open({int cols = 80, int rows = 24}) async {
     final client = _client;
@@ -78,23 +103,94 @@ class TerminalSession extends ChangeNotifier {
     _stream = stream;
     _subscription = stream.events.listen(_onEvent);
     stream.start();
+    // Keys typed while the shell was opening waited for this id.
+    _flush();
+  }
+
+  /// Opens the shell again after it failed to start: the old stream is
+  /// dropped, its id forgotten, and a fresh terminal asked for.
+  Future<void> reopen({int cols = 80, int rows = 24}) async {
+    if (_client == null) return;
+    await _subscription?.cancel();
+    _subscription = null;
+    _stream?.stop();
+    _stream = null;
+    _terminalId = null;
+    _running = false;
+    _exit = null;
+    _error = null;
+    _pending.clear();
+    notifyListeners();
+    await open(cols: cols, rows: rows);
   }
 
   /// Sends keystrokes. The first one holds the agent.
+  ///
+  /// A keystroke typed before the shell has an id is held, not dropped, and
+  /// sent once it arrives; each body is posted only when the one before it has
+  /// been answered.
   void input(String data) {
     if (data.isEmpty) return;
-    final client = _client;
-    final id = _terminalId;
-    if (client == null || id == null) return;
+    if (_client == null) return;
     if (!_paused) {
       _paused = true;
       notifyListeners();
     }
-    // The wire carries keystrokes base64-encoded; the bridge decodes them.
-    unawaited(
-      client.terminalInput(agentId, id, base64Encode(utf8.encode(data))),
-    );
+    _pending.addAll(chunks(data));
+    _flush();
     _scheduleIdle();
+  }
+
+  /// Posts what is pending, one body at a time, through [inputChunk] pieces.
+  ///
+  /// Everything is chained onto [_queue], so the pty sees the keystrokes in
+  /// the order they were typed even while an earlier request is in flight.
+  void _flush() {
+    final client = _client;
+    if (client == null) return;
+    _queue = _queue.then((_) async {
+      final id = _terminalId;
+      // Still opening: [open] flushes again when the id arrives.
+      if (id == null) return;
+      while (_pending.isNotEmpty) {
+        final chunk = _pending.removeAt(0);
+        try {
+          // The wire carries keystrokes base64-encoded; the bridge decodes
+          // them. A refused keystroke is dropped: the shell's own failure
+          // arrives on its stream, where it is shown.
+          await client.terminalInput(
+            agentId,
+            id,
+            base64Encode(utf8.encode(chunk)),
+          );
+        } catch (_) {
+          // Nothing to retry: keystrokes are text that has already been
+          // typed, and re-sending it out of order is worse than losing it.
+        }
+      }
+    });
+  }
+
+  /// [data] cut into pieces of at most [inputChunk] UTF-8 bytes, on character
+  /// boundaries so a multi-byte character is never split across two bodies.
+  static List<String> chunks(String data) {
+    if (utf8.encode(data).length <= inputChunk) return [data];
+    final out = <String>[];
+    final piece = StringBuffer();
+    var size = 0;
+    for (final rune in data.runes) {
+      final char = String.fromCharCode(rune);
+      final length = utf8.encode(char).length;
+      if (size + length > inputChunk) {
+        out.add(piece.toString());
+        piece.clear();
+        size = 0;
+      }
+      piece.write(char);
+      size += length;
+    }
+    if (piece.isNotEmpty) out.add(piece.toString());
+    return out;
   }
 
   /// Tells the shell its size.
@@ -121,6 +217,8 @@ class TerminalSession extends ChangeNotifier {
   Future<void> close() async {
     final client = _client;
     final id = _terminalId;
+    // Keystrokes typed for a shell that is closing have nowhere to go.
+    _pending.clear();
     await _subscription?.cancel();
     _subscription = null;
     _stream?.stop();
@@ -160,6 +258,14 @@ class TerminalSession extends ChangeNotifier {
       } on FormatException {
         // A chunk the bridge did not base64 is not output.
       }
+    }
+    // Why the shell never started, on the chunk that ends its stream: a
+    // shell that failed this way ends silently unless the reason is kept.
+    final error = json['error'];
+    if (error is String && error.isNotEmpty) {
+      _error = error;
+      _running = false;
+      notifyListeners();
     }
     final exit = json['exit'];
     if (exit is int) {

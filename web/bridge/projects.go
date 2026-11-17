@@ -71,6 +71,27 @@ func (w *Workspace) ProjectRootByRepo(repoID string) string {
 	return ""
 }
 
+// projectRepoID is the registered repo a project's issues come from: the repo
+// its settings' intake names. That link is the mapping the Studio's new-work
+// dialog needs — `GET /api/repos/{id}/issues` is keyed by a repo id, and a
+// project entry is what the dialog starts from.
+//
+// It is only reported while the repo it names is still registered. A settings
+// write validates the id against the registry, but a repo can be removed
+// afterwards (removal refuses only when an agent uses it), and a stale id
+// would send the dialog to a route that answers 404. A project that names
+// none reports none, which the dialog shows as "no registered repo".
+func (f *Fleet) projectRepoID(root string) string {
+	id := f.ws.ProjectSettingsFor(root).Intake.RepoID
+	if id == "" {
+		return ""
+	}
+	if _, ok := f.ws.Repo(id); !ok {
+		return ""
+	}
+	return id
+}
+
 // workspaceRoots is where an agent's repo template is read and whose
 // trust governs it: a local agent's project for both, a git agent's
 // prepared checkout and the registered project that names its repo.

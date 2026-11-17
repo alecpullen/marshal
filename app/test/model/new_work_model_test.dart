@@ -272,10 +272,17 @@ void main() {
             '"isolation":"available"}]',
       ),
     });
+    // A project linked to a registered repo: `GET /api/projects` reports the
+    // id as `repoId`, and that is the id the issues route is keyed by.
     final model = NewWorkModel.forProject(
-      _project,
+      const ProjectStatus(
+        root: '/home/u/marshal',
+        available: true,
+        trust: TrustState.trustTrusted,
+        isolation: 'available',
+        repoID: 'owner/name',
+      ),
       BridgeClient(transport),
-      repoId: 'owner/name',
     );
 
     await model.load();
@@ -308,8 +315,8 @@ void main() {
       transport.paths,
       isNot(contains(startsWith('/api/repos/'))),
       reason:
-          'an issue belongs to a repo, and no route names this '
-          'project\'s repo',
+          'an issue belongs to a repo, and this project names none: '
+          '`repoId` is omitted rather than guessed',
     );
     expect(model.issues, isEmpty);
     expect(

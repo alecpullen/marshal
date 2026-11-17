@@ -25,6 +25,13 @@ type ProjectStatus struct {
 	// given. It is optional so a bridge that has not minted one yet keeps the
 	// response it always had.
 	MCPProjectID string `json:"mcpProjectId,omitempty"`
+	// RepoID names the registered repo this project's work comes from: the
+	// repo its settings' intake names, while that repo is still registered.
+	// It is what `GET /api/repos/{id}/issues` is keyed by, so it is what lets
+	// a client ask a project for its issues at all. Omitted for a project
+	// that names none — a local checkout with no remote, which has no issues
+	// to serve — rather than an id the bridge made up.
+	RepoID string `json:"repoId,omitempty"`
 	// OrphanWorktrees are worktrees under this project that no known agent
 	// claims. Reported, never deleted — they may hold uncommitted work.
 	OrphanWorktrees []string `json:"orphanWorktrees,omitempty"`

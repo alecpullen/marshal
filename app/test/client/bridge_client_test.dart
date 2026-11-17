@@ -246,6 +246,36 @@ void main() {
     expect(fake.requests.single.uri, '/api/recipes');
   });
 
+  test('preview reads the URL the route answers', () async {
+    fake.reply(
+      'POST',
+      '/api/agents/a-1/preview/5173',
+      const FakeReply(
+        200,
+        body: '{"url":"http://127.0.0.1:5173/preview/t-1/"}',
+      ),
+    );
+
+    final url = await client.preview('a-1', 5173);
+
+    expect(url, 'http://127.0.0.1:5173/preview/t-1/');
+    expect(fake.requests.single.method, 'POST');
+    expect(fake.requests.single.uri, '/api/agents/a-1/preview/5173');
+  });
+
+  test('a preview answer that names no url yields no URL', () async {
+    // The route answers {"url": …} and nothing else (web/bridge/preview.go):
+    // a body that names some other key is not a URL this client can use, so
+    // it must not be read as one.
+    fake.reply(
+      'POST',
+      '/api/agents/a-1/preview/5173',
+      const FakeReply(200, body: '{"previewUrl":"http://stale.example/"}'),
+    );
+
+    expect(await client.preview('a-1', 5173), '');
+  });
+
   test('issues asks the repo route, escaping the id', () async {
     fake.reply(
       'GET',

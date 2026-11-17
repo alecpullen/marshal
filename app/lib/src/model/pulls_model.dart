@@ -275,30 +275,32 @@ class PullsModel extends ChangeNotifier {
     }
   }
 
-  /// Merges [pull] (F5 decision 13): the agent's own merge route when an
-  /// agent shipped it, the factory's `merge_and_complete` command when a work
-  /// item did.
+  /// Merges [pull] (F5 decision 13): the agent's own merge route.
   ///
   /// It is the only thing behind the Merge button; the confirmation that names
   /// the pull request and its base branch is the screen's, because a merge
   /// cannot be undone.
+  ///
+  /// A factory item's merge is not offered here. The factory's own
+  /// `merge_and_complete` names the pull request's reviewed node id
+  /// (web/bridge/factory_completion_batch.go refuses a blank one), and
+  /// `contract.PullRecord` carries none, so this surface has no reviewed
+  /// identity to send. The card draws Merge disabled and says where the merge
+  /// lives; this refuses the same call rather than posting a command the
+  /// bridge would answer 400. A work item's own thread holds that identity and
+  /// offers the merge (F6).
   Future<void> merge(PullView pull) async {
     final host = _hostOf(pull.id);
     if (host == null) {
       throw StateError('no host holds ${pull.id}');
     }
-    final bridge = client(host);
-    final item = pull.record.factoryItem ?? '';
-    if (pull.fromFactoryItem && item.isNotEmpty) {
-      await bridge.mergeFactoryItem(
-        item,
-        repoID: pull.repo,
-        number: pull.number,
-        headSHA: pull.record.headSHA,
-        baseRef: pull.base,
+    if (pull.fromFactoryItem) {
+      throw StateError(
+        'merge this from its work item: only it holds the reviewed pull '
+        'request’s identity',
       );
-      return;
     }
+    final bridge = client(host);
     final agent = (pull.record.agentID ?? pull.thread?.id) ?? '';
     if (agent.isEmpty) {
       throw StateError('this pull request was not shipped by an agent');

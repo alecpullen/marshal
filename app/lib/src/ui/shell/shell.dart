@@ -845,10 +845,13 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
   }
 
   /// Merges the pull request, after the confirmation that names it.
+  ///
+  /// A factory item's merge is not offered: it needs the reviewed identity a
+  /// pull record does not carry (F6). The review head draws it disabled.
   VoidCallback? _mergeFor(BuildContext context) {
     final pull = _pull;
     final pulls = widget.pulls;
-    if (pull == null || pulls == null) return null;
+    if (pull == null || pulls == null || pull.fromFactoryItem) return null;
     return () => unawaited(confirmMerge(context, pull: pull, model: pulls));
   }
 
@@ -1027,7 +1030,7 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
         ),
       ),
       onComplete: () => _command(() => store.complete(host, item.id)),
-      onMergeAndComplete: () => _merge(host, item.id, pulls),
+      onMergeAndComplete: () => _merge(host, item.id),
       onReopen: () => _command(() => store.reopen(host, item.id)),
       onStop: () => _command(() => store.stopItem(host, item.id)),
       pullActionsFor: widget.pulls == null
@@ -1076,25 +1079,10 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
   }
 
   /// Merges the reviewed pull request and completes the item. The identity is
-  /// the card's own, so nothing the surface assembled can be merged.
-  Future<void> _merge(String host, String id, List<PullView> pulls) async {
-    if (pulls.isEmpty) {
-      if (mounted) {
-        setState(() => _error = 'There is no pull request to merge yet.');
-      }
-      return;
-    }
-    final pull = pulls.first.record;
-    await _command(
-      () => widget.factory.mergeAndComplete(
-        host,
-        id,
-        repoID: pull.repoID,
-        number: pull.number,
-        headSHA: pull.headSHA,
-        baseRef: pull.baseRef,
-      ),
-    );
+  /// the item's own record of the reviewed pull request, resolved inside the
+  /// store, so nothing the surface assembled can be merged (F6 decision 5).
+  Future<void> _merge(String host, String id) async {
+    await _command(() => widget.factory.mergeAndComplete(host, id));
   }
 
   /// The item until the store has it: loading while the first read is in

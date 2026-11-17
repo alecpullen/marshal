@@ -194,7 +194,12 @@ class ReviewHead extends StatelessWidget {
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
         Btn.primary('Review changes', onTap: onReviewChanges),
-        Btn('Merge', onTap: onMerge),
+        // The same rule the card follows: a factory item's merge needs the
+        // reviewed identity F6's work items carry, so it is not offered.
+        if (pull.fromFactoryItem)
+          Tip(message: workItemMergeNote, child: const Btn('Merge'))
+        else
+          Btn('Merge', onTap: onMerge),
         Btn('Open on forge', icon: Glyphs.arrow_up_right, onTap: onOpenOnForge),
         if (sendBack == null)
           Tip(

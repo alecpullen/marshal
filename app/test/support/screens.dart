@@ -1238,7 +1238,7 @@ contract.FactoryItem _workItem() => contract.FactoryItem.fromJson({
       'reviewerInstructions': '',
       'implementerAuto': true,
       'expectedChecks': <Object?>[],
-      'noRequiredCIAcknowledged': true,
+      'noRequiredCiAcknowledged': true,
       'maxRounds': 3,
       'ciPollSeconds': 30,
       'ciWaitSeconds': 900,

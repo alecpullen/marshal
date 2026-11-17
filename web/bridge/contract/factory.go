@@ -91,21 +91,22 @@ type ReviewFinding struct {
 }
 
 type FactoryConfig struct {
-	RepoID                   string            `json:"repoId"`
-	ProjectRoot              string            `json:"projectRoot"`
-	HostID                   string            `json:"hostId"`
-	TargetBranch             string            `json:"targetBranch"`
-	Workspace                string            `json:"workspace"`
-	Native                   bool              `json:"native"`
-	ImplementerRouting       json.RawMessage   `json:"implementerRouting"`
-	ReviewerRouting          json.RawMessage   `json:"reviewerRouting"`
-	ReviewerInstructions     string            `json:"reviewerInstructions"`
-	ImplementerAuto          bool              `json:"implementerAuto"`
-	ExpectedChecks           []FactoryCheckKey `json:"expectedChecks"`
-	NoRequiredCIAcknowledged bool              `json:"noRequiredCIAcknowledged"`
-	MaxRounds                int               `json:"maxRounds"`
-	CIPollSeconds            int               `json:"ciPollSeconds"`
-	CIWaitSeconds            int               `json:"ciWaitSeconds"`
+	RepoID               string            `json:"repoId"`
+	ProjectRoot          string            `json:"projectRoot"`
+	HostID               string            `json:"hostId"`
+	TargetBranch         string            `json:"targetBranch"`
+	Workspace            string            `json:"workspace"`
+	Native               bool              `json:"native"`
+	ImplementerRouting   json.RawMessage   `json:"implementerRouting"`
+	ReviewerRouting      json.RawMessage   `json:"reviewerRouting"`
+	ReviewerInstructions string            `json:"reviewerInstructions"`
+	ImplementerAuto      bool              `json:"implementerAuto"`
+	ExpectedChecks       []FactoryCheckKey `json:"expectedChecks"`
+	// The tag's spelling is pre-move and load-bearing; see factory_tags_test.go.
+	NoRequiredCIAcknowledged bool `json:"noRequiredCiAcknowledged"`
+	MaxRounds                int  `json:"maxRounds"`
+	CIPollSeconds            int  `json:"ciPollSeconds"`
+	CIWaitSeconds            int  `json:"ciWaitSeconds"`
 	// ImplementerSubagents and ReviewerSubagents hold only the work item's
 	// explicit subagent overrides: nil means inherit. Nothing is copied onto
 	// the draft from the project's defaults, so a draft follows a project

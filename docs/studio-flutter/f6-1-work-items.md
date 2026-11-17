@@ -70,7 +70,15 @@ settled here, the deviations from its letter, and what is not done.
   `FactoryCreate` and `FactoryApproval` carry an `EditSnapshot`, and
   `FactoryReport` carries `ReviewFinding`, so those three types (with
   `SelectedFile`) moved into the contract too, and `planner_types.go` and
-  `reciperun.go` alias them. No field or JSON key changed.
+  `reciperun.go` alias them. No field or JSON key changed: every tag of every
+  moved type keeps its pre-move spelling, and `contract/factory_tags_test.go`
+  now pins them, so a rename fails there before the fixture round trip or the
+  currency tests can regenerate themselves to it. That matters most for
+  `FactoryConfig.NoRequiredCIAcknowledged`, whose tag is
+  `noRequiredCiAcknowledged`: the journal stores the item re-marshalled and
+  `replayRecord` byte-compares it, so renaming the tag would make `webbridge`
+  refuse to start on an upgraded store, and both generated clients post the
+  old key.
 - **The generators skip unexported types.** The contract now holds two
   package-internal legacy forms; `dartgen` and `tsgen` no longer emit a
   declaration for a type the package does not export, which is what keeps the

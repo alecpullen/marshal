@@ -2230,6 +2230,7 @@ class FactoryConfig {
   final String reviewerInstructions;
   final bool implementerAuto;
   final List<FactoryCheckKey> expectedChecks;
+  /// The tag's spelling is pre-move and load-bearing; see factory_tags_test.go.
   final bool noRequiredCIAcknowledged;
   final int maxRounds;
   final int ciPollSeconds;
@@ -2259,7 +2260,7 @@ class FactoryConfig {
         json['expectedChecks'],
         (value) => _object(value, FactoryCheckKey.fromJson),
       ),
-      noRequiredCIAcknowledged: json['noRequiredCIAcknowledged'] as bool,
+      noRequiredCIAcknowledged: json['noRequiredCiAcknowledged'] as bool,
       maxRounds: (json['maxRounds'] as num).toInt(),
       ciPollSeconds: (json['ciPollSeconds'] as num).toInt(),
       ciWaitSeconds: (json['ciWaitSeconds'] as num).toInt(),
@@ -2289,7 +2290,7 @@ class FactoryConfig {
     json['expectedChecks'] = [
       for (final value in expectedChecks) value.toJson(),
     ];
-    json['noRequiredCIAcknowledged'] = noRequiredCIAcknowledged;
+    json['noRequiredCiAcknowledged'] = noRequiredCIAcknowledged;
     json['maxRounds'] = maxRounds;
     json['ciPollSeconds'] = ciPollSeconds;
     json['ciWaitSeconds'] = ciWaitSeconds;

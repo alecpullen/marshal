@@ -579,6 +579,98 @@ void main() {
     expect(posted.single.body, contains('"check":"unit"'));
   });
 
+  test('a retry refused because a fix is already running waits, it does not '
+      'fail', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        queue: [
+          InboxItem(
+            kind: InboxItemKind.inboxItemPull,
+            pull: PullAsk(
+              pull: 'acme/widgets#131',
+              check: 'unit',
+              outcome: 'gave_up',
+              at: now.millisecondsSinceEpoch,
+            ),
+            at: now.subtract(const Duration(minutes: 5)).toIso8601String(),
+          ),
+        ],
+      ),
+    ], now: now);
+    final inbox = await inboxFor(fixture);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/pulls/${Uri.encodeComponent('acme/widgets#131')}/fix',
+      const FakeReply(409, body: '{"error":"a fix is already running"}'),
+    );
+
+    final before = fixture.requests('local').length;
+    final ask = inbox.asks.single;
+    await inbox.answer(ask, ask.actions[1]);
+
+    // A worker is already on the check: the same refusal the card's fix
+    // control reads as "already running". The ask still waits, with no red
+    // error — nothing about it failed.
+    final after = inbox.asks.single;
+    expect(after.state, AskState.waiting);
+    expect(after.error, isNull);
+    expect(
+      [for (final action in after.actions) action.label],
+      contains('Try again'),
+      reason: 'the ask is answerable again, because it is still waiting',
+    );
+
+    // It reads what the bridge holds rather than reporting the refusal: the
+    // running fix shows where the fleet reports it.
+    expect(
+      fixture
+          .requests('local')
+          .skip(before)
+          .where(
+            (request) =>
+                request.method == 'GET' && request.uri.contains('/api/inbox'),
+          ),
+      isNotEmpty,
+      reason: 'the record and the queue are read again after a 409',
+    );
+  });
+
+  test(
+    'a retry refused for any other reason keeps the bridge’s words',
+    () async {
+      final fixture = await ModelFixture.start([
+        FixtureHost(
+          name: 'local',
+          queue: [
+            InboxItem(
+              kind: InboxItemKind.inboxItemPull,
+              pull: PullAsk(
+                pull: 'acme/widgets#131',
+                check: 'unit',
+                outcome: 'gave_up',
+                at: now.millisecondsSinceEpoch,
+              ),
+              at: now.subtract(const Duration(minutes: 5)).toIso8601String(),
+            ),
+          ],
+        ),
+      ], now: now);
+      final inbox = await inboxFor(fixture);
+      fixture.bridges['local']!.reply(
+        'POST',
+        '/api/pulls/${Uri.encodeComponent('acme/widgets#131')}/fix',
+        const FakeReply(500, body: '{"error":"the bridge could not dispatch"}'),
+      );
+
+      final ask = inbox.asks.single;
+      await inbox.answer(ask, ask.actions[1]);
+
+      expect(inbox.asks.single.state, AskState.failed);
+      expect(inbox.asks.single.error, isNotNull);
+    },
+  );
+
   test('dismissing a pull request ask closes it here', () async {
     final fixture = await ModelFixture.start([
       FixtureHost(

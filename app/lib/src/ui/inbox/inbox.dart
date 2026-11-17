@@ -261,7 +261,8 @@ class _InboxState extends State<Inbox> {
     model.AskKind.question ||
     model.AskKind.intake ||
     model.AskKind.reviewDraft ||
-    model.AskKind.pull => false,
+    model.AskKind.pull ||
+    model.AskKind.network => false,
   };
 
   /// The questions of a multi-question ask, one answer each, and the actions

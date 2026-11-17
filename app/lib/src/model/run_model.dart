@@ -298,8 +298,14 @@ class RunModel extends ChangeNotifier {
   factory RunModel.fromDigest(
     String agentID,
     Map<String, dynamic> digest, {
+    Future<void> Function(String answer)? answer,
     RunView view = RunView.lanes,
-  }) => RunModel(agentID: agentID, run: SDDRun.fromJson(digest), view: view);
+  }) => RunModel(
+    agentID: agentID,
+    run: SDDRun.fromJson(digest),
+    answer: answer,
+    view: view,
+  );
 
   /// The agent the run is on: the id its questions are answered through.
   final String agentID;

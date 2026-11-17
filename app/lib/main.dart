@@ -111,6 +111,12 @@ Future<void> main() async {
           spec: spec,
           create: (draft) => factory.create(thread.host, draft),
         ),
+        // Answers a plan run's question, for a run opened from a project
+        // page's list (F6 decision 12).
+        answerRunFor: (host, agentID, answer) => hosts.hosts
+            .firstWhere((owner) => owner.name == host)
+            .client
+            .answerRun(agentID, answer),
         // The project page (F6 decision 12): its settings are one document
         // read with the ETag that names it, so a save that names a tag the
         // bridge no longer holds is refused rather than overwriting a change

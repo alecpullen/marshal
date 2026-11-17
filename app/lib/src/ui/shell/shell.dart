@@ -300,6 +300,7 @@ class Studio extends StatefulWidget {
     this.planningFor,
     this.handoffFor,
     this.runFor,
+    this.answerRunFor,
     this.projectFor,
     this.initialPlace = const Place.overview(),
   });
@@ -349,6 +350,11 @@ class Studio extends StatefulWidget {
   /// Builds a plan run's model for one agent (F6 decision 11). Null leaves a
   /// plan run's place unbuilt rather than drawing an empty run.
   final RunModel Function(String host, String agentID)? runFor;
+
+  /// Answers the question a run stopped on (F6 decision 11). Null leaves a
+  /// run's question as a fact: no action is offered that could not be taken.
+  final Future<void> Function(String host, String agentID, String answer)?
+  answerRunFor;
 
   /// Builds a project's page model for one host and root (F6 decision 12).
   /// Null leaves the project place planned, so a host that wires no settings
@@ -532,11 +538,15 @@ class _StudioState extends State<Studio> {
         final digest = _runDigests[thread.id];
         final build = widget.runFor;
         if (build != null || digest != null) {
+          final answerRun = widget.answerRunFor;
           return _RunPlace(
             key: ValueKey('run/${thread.host}/${thread.id}'),
             thread: thread,
             run: build?.call(thread.host, thread.id),
             digest: digest,
+            answer: answerRun == null
+                ? null
+                : (words) => answerRun(thread.host, thread.id, words),
             now: widget.store.now,
           );
         }
@@ -1272,6 +1282,7 @@ class _RunPlace extends StatefulWidget {
     required this.thread,
     this.run,
     this.digest,
+    this.answer,
     this.now,
   }) : assert(
          run != null || digest != null,
@@ -1281,6 +1292,9 @@ class _RunPlace extends StatefulWidget {
   final model.ThreadRef thread;
   final RunModel? run;
   final Map<String, dynamic>? digest;
+
+  /// Answers the question the run stopped on, when the app can post one.
+  final Future<void> Function(String answer)? answer;
   final DateTime? now;
 
   @override
@@ -1291,7 +1305,12 @@ class _RunPlaceState extends State<_RunPlace> {
   /// The model this place draws: the one it was given, or the one it built
   /// from the digest. It disposes only what it built.
   late final RunModel _model =
-      widget.run ?? RunModel.fromDigest(widget.thread.id, widget.digest!);
+      widget.run ??
+      RunModel.fromDigest(
+        widget.thread.id,
+        widget.digest!,
+        answer: widget.answer,
+      );
 
   bool get _owned => widget.run == null;
 

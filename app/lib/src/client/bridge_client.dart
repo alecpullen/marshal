@@ -917,6 +917,13 @@ class BridgeClient {
   Future<List<RunListEntry>> runs() =>
       _listOf('/api/runs', RunListEntry.fromJson);
 
+  /// POST /api/runs/{agentId}/answer: answers the question a run stopped on.
+  /// The bridge accepts it and the run's next digest carries the outcome.
+  Future<void> answerRun(String agentID, String answer) => _post(
+    '/api/runs/${Uri.encodeComponent(agentID)}/answer',
+    {'answer': answer},
+  );
+
   /// One settings read or write, with the ETag the answer named.
   Future<ProjectSettingsVersion> _settingsOf(
     String path, {

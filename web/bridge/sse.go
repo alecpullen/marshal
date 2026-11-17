@@ -48,6 +48,12 @@ func (l *EventLog) serveSSEKey(w http.ResponseWriter, r *http.Request, key strin
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
+	// A stream with nothing to say yet is silent until its first heartbeat, so
+	// a freshly opened connection looks exactly like one that never answered: a
+	// client counts a line as contact, and the fleet stream replays nothing to a
+	// fresh client. One comment line says the stream is open.
+	fmt.Fprint(w, ": connected\n\n")
+	flusher.Flush()
 
 	// Subscribe before replaying so events appended during the replay
 	// land on the channel; IDs at or below the replayed window are

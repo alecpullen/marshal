@@ -299,6 +299,10 @@ class ModelFixture {
           now: clock.now,
           wait: clock.wait,
           jitter: 0,
+          // The window the store's own tests advance the clock over, named
+          // rather than inherited: the production default outlasts the
+          // bridge's 25s heartbeat.
+          staleAfter: const Duration(seconds: 10),
         );
       },
     );

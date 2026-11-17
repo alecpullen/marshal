@@ -53,7 +53,7 @@ class EventStream {
     DateTime Function()? now,
     Future<void> Function(Duration)? wait,
     this.query = const {},
-    this.staleAfter = const Duration(seconds: 10),
+    this.staleAfter = defaultStaleAfter,
     this.firstBackoff = const Duration(milliseconds: 500),
     this.maxBackoff = const Duration(seconds: 30),
     this.jitter = 0.2,
@@ -72,6 +72,12 @@ class EventStream {
 
   /// How long a live stream may stay silent before it is stale. A heartbeat
   /// counts as contact, so only a dead connection reaches it.
+  ///
+  /// It must outlast the bridge's heartbeat (25s, `HeartbeatInterval` in
+  /// web/bridge/events.go): a window shorter than the beat marks a healthy
+  /// idle stream stale between two of them.
+  static const defaultStaleAfter = Duration(seconds: 35);
+
   final Duration staleAfter;
 
   /// The first retry's delay; each further retry doubles it, up to

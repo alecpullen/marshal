@@ -3,6 +3,15 @@ import 'package:web/web.dart' as web;
 /// The key the browser keeps the bridge token under.
 const tokenStorageKey = 'marshal:bridge-token';
 
+/// The key the Svelte Studio keeps the same bridge's token under
+/// (web/ui/src/lib/api.ts, `TOKEN_KEY`).
+///
+/// The two Studios are served by one bridge, at `/` and `/next/`, so a browser
+/// already signed in to the Svelte one holds a token that opens the Flutter
+/// one. Reading it is what saves pasting the token a second time; a token
+/// typed into this Studio is still kept under [tokenStorageKey].
+const svelteTokenStorageKey = 'marshal:token';
+
 /// Reduces what a user actually pastes to the bare token, as the web UI does
 /// (web/ui/src/lib/api.ts): a leading `Authorization:` header name and a
 /// `Bearer` scheme are stripped, in either order, so a copied header line and
@@ -30,8 +39,14 @@ class TokenStoreWeb {
   const TokenStoreWeb();
 
   /// The stored token, normalised, or null when none is stored.
+  ///
+  /// This Studio's own key wins; the Svelte Studio's is read when that key
+  /// holds nothing, because one bridge serves both
+  /// ([svelteTokenStorageKey]).
   String? read() {
-    final raw = web.window.localStorage.getItem(tokenStorageKey);
+    final raw =
+        web.window.localStorage.getItem(tokenStorageKey) ??
+        web.window.localStorage.getItem(svelteTokenStorageKey);
     if (raw == null) return null;
     final token = normalizeToken(raw);
     return token.isEmpty ? null : token;

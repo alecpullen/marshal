@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart'
     show ProjectSettingsVersion;
@@ -23,43 +24,48 @@ final _now = DateTime.utc(2026, 11, 17, 4, 12);
 
 /// A project's settings with a repository to discover and a factory default
 /// block, and health and runs beside them.
-ProjectModel _model() => ProjectModel(
-  root: '/home/u/alpha',
-  name: 'alpha',
-  now: () => _now,
-  read: () async => ProjectSettingsVersion(
-    settings: contract.ProjectSettings.fromJson({
-      'routing': {'profile': 'balanced'},
-      'mode': 'act',
-      'intake': {'repoId': 'repo-1'},
-      'factoryDefaults': {'targetBranch': 'main', 'maxRounds': 3},
-    }),
-    etag: 'v1',
-  ),
-  write: (next, etag) async =>
-      ProjectSettingsVersion(settings: next, etag: 'v2'),
-  readHealth: () async => contract.ProjectHealth.fromJson({
-    'gateRunnable': 'yes',
-    'mirrorFresh': <Object?>[],
-    'orphanWorktrees': <Object?>[],
-    'trust': 'trusted',
-    'verify': {'build': 'go build ./...', 'test': ''},
-  }),
-  readRuns: () async => const <contract.RunListEntry>[],
-  discover: (repoID) async => contract.DiscoveryReport.fromJson({
-    'repoId': repoID,
-    'forge': 'github',
-    'status': 'ok',
-    'branch': 'main',
-    'revision': 'abc1234f',
-    'capabilities': [
-      {'key': 'forge_metadata', 'state': 'supported', 'detail': 'It answered'},
-    ],
-    'facts': <Object?>[],
-    'recommended': <Object?>[],
-    'gaps': <Object?>[],
-  }),
-);
+ProjectModel _model({String root = '/home/u/alpha', String name = 'alpha'}) =>
+    ProjectModel(
+      root: root,
+      name: name,
+      now: () => _now,
+      read: () async => ProjectSettingsVersion(
+        settings: contract.ProjectSettings.fromJson({
+          'routing': {'profile': 'balanced'},
+          'mode': 'act',
+          'intake': {'repoId': 'repo-1'},
+          'factoryDefaults': {'targetBranch': 'main', 'maxRounds': 3},
+        }),
+        etag: 'v1',
+      ),
+      write: (next, etag) async =>
+          ProjectSettingsVersion(settings: next, etag: 'v2'),
+      readHealth: () async => contract.ProjectHealth.fromJson({
+        'gateRunnable': 'yes',
+        'mirrorFresh': <Object?>[],
+        'orphanWorktrees': <Object?>[],
+        'trust': 'trusted',
+        'verify': {'build': 'go build ./...', 'test': ''},
+      }),
+      readRuns: () async => const <contract.RunListEntry>[],
+      discover: (repoID) async => contract.DiscoveryReport.fromJson({
+        'repoId': repoID,
+        'forge': 'github',
+        'status': 'ok',
+        'branch': 'main',
+        'revision': 'abc1234f',
+        'capabilities': [
+          {
+            'key': 'forge_metadata',
+            'state': 'supported',
+            'detail': 'It answered',
+          },
+        ],
+        'facts': <Object?>[],
+        'recommended': <Object?>[],
+        'gaps': <Object?>[],
+      }),
+    );
 
 /// A page tall enough that its discovery action is on screen.
 Future<void> _pumpTall(WidgetTester tester, Widget page) async {
@@ -368,5 +374,197 @@ void main() {
     expect(find.text('DISCOVERY REPORT'), findsOneWidget);
     expect(find.text('forge_metadata'), findsOneWidget);
     expect(find.text('supported'), findsOneWidget);
+  });
+
+  testWidgets('the page names the project and its section, wide and narrow', (
+    tester,
+  ) async {
+    Future<void> pumpNarrow(Widget page) async {
+      tester.view.physicalSize = const Size(420, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        EmberApp(brightness: Brightness.light, home: page),
+      );
+      await tester.pump();
+    }
+
+    final model = _model();
+    for (final narrow in [true, false]) {
+      final page = ProjectPage(model: model, now: _now);
+      if (narrow) {
+        await pumpNarrow(page);
+      } else {
+        await _pumpTall(tester, page);
+      }
+      final within = find.byType(ProjectPage);
+      final identity = find.byKey(const ValueKey('identity'));
+      expect(identity, findsOneWidget, reason: narrow ? 'narrow' : 'wide');
+      expect(
+        find.descendant(of: identity, matching: find.text('alpha')),
+        findsOneWidget,
+        reason: 'the project\'s name, ${narrow ? 'narrow' : 'wide'}',
+      );
+      expect(
+        find.descendant(of: identity, matching: find.text('/home/u/alpha')),
+        findsOneWidget,
+        reason: 'the root tells two same-named projects apart',
+      );
+      for (final label in ['Work', 'Automations', 'Defaults', 'Health']) {
+        expect(
+          find.descendant(of: within, matching: find.text(label)),
+          findsOneWidget,
+          reason: 'a $label tab, ${narrow ? 'narrow' : 'wide'}',
+        );
+      }
+      expect(
+        find.descendant(
+          of: within,
+          matching: find.text(
+            'The project\'s work items, its agents and its plan runs',
+          ),
+        ),
+        findsOneWidget,
+        reason: 'the open section\'s line, ${narrow ? 'narrow' : 'wide'}',
+      );
+    }
+  });
+
+  testWidgets('a project whose id holds special characters opens its page', (
+    tester,
+  ) async {
+    const root = '/srv/old one #2/';
+    await _pumpTall(
+      tester,
+      ProjectPage(
+        model: _model(root: root, name: 'old one #2'),
+        now: _now,
+      ),
+    );
+    await tester.pump();
+
+    // The identity line names it, machine path and all.
+    final identity = find.byKey(const ValueKey('identity'));
+    expect(
+      find.descendant(of: identity, matching: find.text('old one #2')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: identity, matching: find.text(root)),
+      findsOneWidget,
+    );
+
+    // All four sections open.
+    for (final (label, mark) in const [
+      ('Automations', 'No forge automation is configured for this project.'),
+      ('Defaults', 'Model profile'),
+      ('Health', 'Run discovery'),
+      ('Work', 'No agent is running in this project.'),
+    ]) {
+      await tester.tap(find.text(label));
+      await tester.pump();
+      expect(
+        find.descendant(
+          of: find.byType(ProjectPage),
+          matching: find.text(mark),
+        ),
+        findsOneWidget,
+        reason: '$label opens',
+      );
+    }
+  });
+
+  testWidgets('an unsaved edit survives switching sections', (tester) async {
+    final model = _model();
+    await _pumpTall(
+      tester,
+      ProjectPage(model: model, initialTab: 2, now: _now),
+    );
+    await tester.pump();
+
+    // The draft lives in the model, so the edit is the page's, not one
+    // tab's.
+    model.setRounds('7');
+    await tester.pump();
+    expect(find.text('7'), findsOneWidget, reason: 'the row shows the edit');
+
+    await tester.tap(find.text('Health'));
+    await tester.pump();
+    await tester.tap(find.text('Defaults'));
+    await tester.pump();
+
+    expect(
+      find.text('7'),
+      findsOneWidget,
+      reason: 'switching sections keeps the unsaved edit',
+    );
+    expect(model.draft!.rounds, '7');
+    expect(model.dirty, isTrue);
+  });
+
+  testWidgets('an unreachable project is called out once, on any section', (
+    tester,
+  ) async {
+    await _pumpTall(
+      tester,
+      ProjectPage(model: _model(), state: StateKind.unavailable, now: _now),
+    );
+    await tester.pump();
+
+    // One call-out, above the sections; the Work tab beneath draws its
+    // content, not a second copy.
+    expect(find.text('alpha is unreachable'), findsOneWidget);
+    expect(find.text('Last seen now ago'), findsOneWidget);
+    expect(
+      find.text('No agent is running in this project.'),
+      findsOneWidget,
+      reason: 'the Work tab keeps its content beside the call-out',
+    );
+
+    // The same one call-out stands on a section that is not Work.
+    await tester.tap(find.text('Automations'));
+    await tester.pump();
+    expect(find.text('alpha is unreachable'), findsOneWidget);
+    expect(
+      find.text('No forge automation is configured for this project.'),
+      findsOneWidget,
+      reason: 'the Automations tab keeps its content too',
+    );
+  });
+
+  testWidgets('the keyboard moves between sections', (tester) async {
+    await _pumpTall(
+      tester,
+      ProjectPage(model: _model(), initialTab: 3, now: _now),
+    );
+    await tester.pump();
+
+    // The first tab stop is the Work tab: Enter opens it, and the line
+    // under the tabs follows.
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(
+      find.text('The project\'s work items, its agents and its plan runs'),
+      findsOneWidget,
+      reason: 'the line names the section the keyboard opened',
+    );
+
+    // The next stop is Automations: Enter opens it too.
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(
+      find.text('The forge automations configured for this project'),
+      findsOneWidget,
+      reason: 'the line follows the keyboard again',
+    );
+    expect(
+      find.text('No forge automation is configured for this project.'),
+      findsOneWidget,
+      reason: 'Enter opened the section',
+    );
   });
 }

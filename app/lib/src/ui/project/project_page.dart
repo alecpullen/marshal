@@ -20,6 +20,11 @@ import 'status.dart';
 /// conditional write the bridge requires, asking before leaving an unsaved
 /// edit. Health reports what the bridge can see and offers discovery.
 ///
+/// The line above the sections names where the person is — the project's
+/// name with its root, so two same-named projects are told apart — and a
+/// project that cannot be reached is called out once, above the sections,
+/// whatever one is open.
+///
 /// The page takes the model and the views the shell holds and never fetches:
 /// the factory store is the one reader of the item list (F6 decision 14), and
 /// the model reads settings, health and runs behind its own interface (§5).
@@ -75,6 +80,15 @@ class ProjectPage extends StatefulWidget {
 class _ProjectPageState extends State<ProjectPage> {
   static const _labels = ['Work', 'Automations', 'Defaults', 'Health'];
 
+  /// What the line under the tab bar says about the section shown: one
+  /// short line per label, in the design's own words (§8).
+  static const _descriptions = [
+    'The project\'s work items, its agents and its plan runs',
+    'The forge automations configured for this project',
+    'What new agents of this project run as, and what a handoff inherits',
+    'What the bridge can see about this project, and the discovery it offers',
+  ];
+
   late int _tab = _clamped(widget.initialTab);
 
   static int _clamped(int tab) =>
@@ -104,12 +118,33 @@ class _ProjectPageState extends State<ProjectPage> {
   @override
   Widget build(BuildContext context) {
     final model = widget.model;
+    final e = Ember.of(context);
     return PageBody(
       title: model.name,
       subtitle: model.root,
       width: PageWidth.full,
       actions: _actions(),
       children: [
+        // Where the person is, without reading a machine path: the
+        // project's name beside its root, so two same-named projects are
+        // told apart. Wrap, with its default alignment: the roles differ
+        // in size, and the row wraps on a narrow width.
+        Wrap(
+          key: const ValueKey('identity'),
+          spacing: Space.s8,
+          children: [
+            Text(model.name, style: e.bodyStrong),
+            Text(model.root, style: e.monoSmall.tint(e.muted)),
+          ],
+        ),
+        const SizedBox(height: Space.s16),
+        if (widget.state == StateKind.unavailable) ...[
+          // An unreachable project is called out once, above the sections
+          // and whatever one of them is showing; the tabs beneath draw
+          // their content, never a second copy.
+          _stateMessage(StateKind.unavailable),
+          const SizedBox(height: Space.s12),
+        ],
         Tabs(
           tabs: [
             TabItem('Work', count: widget.items.length),
@@ -120,6 +155,8 @@ class _ProjectPageState extends State<ProjectPage> {
           index: _tab,
           onChanged: (index) => setState(() => _tab = index),
         ),
+        const SizedBox(height: Space.s8),
+        Text(_descriptions[_tab], style: e.small.tint(e.muted)),
         const SizedBox(height: Space.s20),
         // A tab is a page of its own: a fresh subtree per tab keeps one tab's
         // open sheet and half-typed edit off the next.
@@ -157,7 +194,11 @@ class _ProjectPageState extends State<ProjectPage> {
   /// Work: the factory's board, then the project's agents and its plan runs.
   Widget _work(BuildContext context) {
     final state = widget.state;
-    if (state != null && state != StateKind.stale) {
+    // Unavailable is the page's one call-out above the tabs; the tab draws
+    // its content, never a second copy.
+    if (state != null &&
+        state != StateKind.stale &&
+        state != StateKind.unavailable) {
       return _stateMessage(state);
     }
     final e = Ember.of(context);
@@ -239,7 +280,11 @@ class _ProjectPageState extends State<ProjectPage> {
   /// what the project links to.
   Widget _automations(BuildContext context) {
     final state = widget.state;
-    if (state != null && state != StateKind.stale) {
+    // Unavailable is the page's one call-out above the tabs; the tab draws
+    // its content, never a second copy.
+    if (state != null &&
+        state != StateKind.stale &&
+        state != StateKind.unavailable) {
       return _stateMessage(state);
     }
     final e = Ember.of(context);

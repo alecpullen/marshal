@@ -298,6 +298,10 @@ void main() {
   });
 
   test('fleetEvents streams the bridge events', () async {
+    // The fake keys a stream by path, so the query is asserted on the recorded
+    // request below: the fleet stream is the query-selected view of this route,
+    // and without `stream=fleet` the bridge reads it as a session's stream and
+    // refuses it.
     final frames = fake.stream('GET', '/api/events');
     frames.write('id: 9\n');
     frames.write('data: {"kind":"activity"}\n');
@@ -314,7 +318,7 @@ void main() {
     final event = await first.future.timeout(const Duration(seconds: 5));
     expect(event.id, 9);
     expect(event.data, '{"kind":"activity"}');
-    expect(fake.requests.last.uri, '/api/events');
+    expect(fake.requests.last.uri, '/api/events?stream=fleet');
   });
 
   test('an automatic-fixing write names the ETag it read', () async {

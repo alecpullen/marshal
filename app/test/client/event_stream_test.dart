@@ -27,6 +27,9 @@ void main() {
       now: clock.now,
       wait: clock.wait,
       jitter: 0,
+      // The window this test advances the clock over, named rather than
+      // inherited: the production default outlasts the bridge's 25s heartbeat.
+      staleAfter: const Duration(seconds: 10),
     );
     stream.events.listen(events.add);
     stream.gaps.listen(gaps.add);

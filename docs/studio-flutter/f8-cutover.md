@@ -222,3 +222,44 @@ nothing to migrate while the Svelte Studio holds `/`.
 ## Open questions
 
 - How long the trial period should be. Recommended: one release.
+
+## Fixed while the trial was running: the browser Studio reached nothing
+
+Serving the Flutter build at `/next/` was not enough to use it. Opening it
+showed the Studio's background and no fleet: five defects, none of them in the
+build that F8 changed, all of them on the path a page takes to its bridge. They
+were found by driving a headless browser at the served page and reading what it
+rendered, since nothing in the app's own tests crossed them (each is a
+platform-conditional seam or a request shape a fake accepted).
+
+- **Discovery found no host.** `host_discovery_stub.dart` returned `const []`
+  with a comment saying the browser reaches the bridge that served the page
+  "which F2 wires up". Nothing wired it, so a browser had no host, no fleet and
+  no rows. The stub now answers the page's own origin as one `HostKind.server`
+  host, and nothing for a page no bridge served.
+- **The token was read from the wrong key.** `TokenStoreWeb` reads
+  `marshal:bridge-token`; the Svelte Studio at `/` stores the same bridge's
+  token under `marshal:token` (`web/ui/src/lib/api.ts`). A browser already
+  signed in at `/` therefore sent no bearer token at `/next/` and every
+  `/api/` route answered 401. The Svelte key is now read as the fallback.
+- **The fleet stream asked for the wrong route.** `fleetEvents()` requested
+  `/api/events`; the bridge reads that as a session's stream and refuses it
+  without a `sessionId` (400). The stream is the query-selected
+  `?stream=fleet` view.
+- **An open stream was silent, so an idle host never read as live.** The fleet
+  stream replays nothing to a fresh client and heartbeats every 25s, so a
+  healthy connection sent nothing at all for 25s; the client counts a line as
+  contact, so it reported `unreachable`. `ServeSSEKey` now writes one
+  `: connected` comment line before its first flush.
+- **The staleness window was shorter than the heartbeat.** `staleAfter`
+  defaulted to 10s against a 25s beat, so even after the first heartbeat a live
+  idle stream was declared stale between beats. The default is now 35s
+  (`EventStream.defaultStaleAfter`), and the tests that advance a fake clock
+  over a shorter window name it themselves.
+
+Verified by serving the built bundle from a bridge and loading it in headless
+Chromium with the Svelte Studio's token in storage: every `/api/` route 200s,
+the accessibility tree carries the shell (places, the `marshal` project, the
+Overview's counts), the host reads `live`, and there are no console errors.
+Not covered: a real phone on a private network, and the token-prompt path when
+neither key holds one (the host then reads `unauthorized`, honestly).

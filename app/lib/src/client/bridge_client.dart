@@ -147,8 +147,13 @@ class BridgeClient {
     RepoIssue.fromJson,
   );
 
-  /// GET /api/events: the fleet stream, which the caller starts.
-  EventStream fleetEvents() => EventStream(_transport, '/api/events');
+  /// GET /api/events?stream=fleet: the fleet stream, which the caller starts.
+  ///
+  /// The stream is a query-selected view of one route: without `stream=fleet`
+  /// the bridge reads the request as a session's stream and refuses it for
+  /// naming no `sessionId` (web/bridge/http.go, serveEvents).
+  EventStream fleetEvents() =>
+      EventStream(_transport, '/api/events', query: const {'stream': 'fleet'});
 
   // Pull requests (F5).
 

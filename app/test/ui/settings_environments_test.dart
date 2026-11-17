@@ -245,8 +245,9 @@ void main() {
     );
 
     // Closing the sheet stops the stream; draining its watchdog leaves the
-    // test with no pending timer.
+    // test with no pending timer. The wait outlasts the stream's staleness
+    // window (EventStream.defaultStaleAfter, 35s) so the watchdog has fired.
     await tester.pumpWidget(const SizedBox());
-    await tester.pump(const Duration(seconds: 11));
+    await tester.pump(const Duration(seconds: 36));
   });
 }

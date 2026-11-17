@@ -26,13 +26,15 @@ void main() {
           client: BridgeClient(transport),
         ),
       ],
-      // The stream a host follows, with this test's clock and connection.
+      // The stream a host follows, with this test's clock and connection. The
+      // staleness window is named because this test advances the clock over it.
       fleetFor: (client) => EventStream(
         transport,
         '/api/events',
         now: clock.now,
         wait: clock.wait,
         jitter: 0,
+        staleAfter: const Duration(seconds: 10),
       ),
     );
     addTearDown(registry.dispose);

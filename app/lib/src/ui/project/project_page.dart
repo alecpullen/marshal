@@ -145,9 +145,9 @@ class _ProjectPageState extends State<ProjectPage> {
         ),
         const SizedBox(height: Space.s16),
         if (widget.state == StateKind.unavailable) ...[
-          // An unreachable project is called out once, above the sections
-          // and whatever one of them is showing; the tabs beneath draw
-          // their content, never a second copy.
+          // An unreachable project is called out once, above the sections,
+          // whichever one is open (§7: unavailable replaces the content, so
+          // there is no second copy beneath and nothing half-read).
           _stateMessage(StateKind.unavailable),
           const SizedBox(height: Space.s12),
         ],
@@ -165,20 +165,28 @@ class _ProjectPageState extends State<ProjectPage> {
         Text(_descriptions[_tab], style: e.small.tint(e.muted)),
         const SizedBox(height: Space.s20),
         // A tab is a page of its own: a fresh subtree per tab keeps one tab's
-        // open sheet and half-typed edit off the next.
+        // open sheet and half-typed edit off the next. An unreachable project
+        // shows the call-out above and nothing beneath it: the sections read
+        // that project, so what they would draw is not what is there.
         KeyedSubtree(
           key: ValueKey(_tab),
-          child: switch (_tab) {
-            0 => _work(context),
-            1 => _automations(context),
-            2 => DefaultsTab(
-              model: model,
-              state: widget.state,
-              now: widget.now,
-              observedChecks: widget.observedChecks,
-            ),
-            _ => HealthTab(model: model, state: widget.state, now: widget.now),
-          },
+          child: widget.state == StateKind.unavailable
+              ? const SizedBox.shrink()
+              : switch (_tab) {
+                  0 => _work(context),
+                  1 => _automations(context),
+                  2 => DefaultsTab(
+                    model: model,
+                    state: widget.state,
+                    now: widget.now,
+                    observedChecks: widget.observedChecks,
+                  ),
+                  _ => HealthTab(
+                    model: model,
+                    state: widget.state,
+                    now: widget.now,
+                  ),
+                },
         ),
       ],
     );

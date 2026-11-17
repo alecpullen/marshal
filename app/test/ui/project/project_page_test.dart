@@ -552,14 +552,14 @@ void main() {
     );
     await tester.pump();
 
-    // One call-out, above the sections; the Work tab beneath draws its
-    // content, not a second copy.
+    // One call-out, above the sections. Unavailable replaces the content
+    // (§7), so no section draws what it cannot read beneath it.
     expect(find.text('alpha is unreachable'), findsOneWidget);
     expect(find.text('Last seen now ago'), findsOneWidget);
     expect(
       find.text('No agent is running in this project.'),
-      findsOneWidget,
-      reason: 'the Work tab keeps its content beside the call-out',
+      findsNothing,
+      reason: 'unavailable replaces the Work tab content, not sits beside it',
     );
 
     // The same one call-out stands on a section that is not Work.
@@ -568,8 +568,8 @@ void main() {
     expect(find.text('alpha is unreachable'), findsOneWidget);
     expect(
       find.text('No forge automation is configured for this project.'),
-      findsOneWidget,
-      reason: 'the Automations tab keeps its content too',
+      findsNothing,
+      reason: 'unavailable replaces the Automations content too',
     );
   });
 

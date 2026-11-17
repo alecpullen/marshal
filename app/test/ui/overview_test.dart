@@ -54,6 +54,8 @@ void main() {
           ask('tc-$index', 'ask $index', age),
       ],
       running: const [],
+      needsYouTotal: 5,
+      sources: const [],
       projects: const [],
       capacity: const [],
       spend: null,
@@ -73,6 +75,8 @@ void main() {
     final overview = OverviewModel(
       needsYou: const [],
       running: [thread('a-1', 'Reliable session recovery')],
+      needsYouTotal: 0,
+      sources: const [],
       projects: const [],
       capacity: const [],
       spend: null,
@@ -89,6 +93,8 @@ void main() {
     final overview = OverviewModel(
       needsYou: const [],
       running: const [],
+      needsYouTotal: 0,
+      sources: const [],
       projects: const [],
       capacity: [
         HostCapacity(
@@ -110,6 +116,8 @@ void main() {
     const overview = OverviewModel(
       needsYou: [],
       running: [],
+      needsYouTotal: 0,
+      sources: [],
       projects: [],
       capacity: [],
       spend: null,
@@ -134,6 +142,8 @@ void main() {
           overview: const OverviewModel(
             needsYou: [],
             running: [],
+            needsYouTotal: 0,
+            sources: [],
             projects: [],
             capacity: [],
             spend: null,

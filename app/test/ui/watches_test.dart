@@ -257,6 +257,8 @@ void main() {
         overview: OverviewModel(
           needsYou: const [],
           running: const [],
+          needsYouTotal: 0,
+          sources: const [],
           projects: const [],
           capacity: const [],
           spend: null,

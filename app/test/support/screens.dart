@@ -325,6 +325,8 @@ OverviewModel _overviewModel() => OverviewModel(
       model.ThreadStatus.running,
     ),
   ],
+  needsYouTotal: 2,
+  sources: const [],
   projects: const [
     ProjectSummary(
       id: '/home/u/marshal',

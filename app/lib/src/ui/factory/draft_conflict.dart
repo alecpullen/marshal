@@ -130,3 +130,78 @@ class DraftConflictBar extends StatelessWidget {
     );
   }
 }
+
+/// The persistence line a draft editor shows while it edits (F6 decision 10):
+/// whether the text on screen is on the bridge, and therefore whether another
+/// device can see it.
+///
+/// It is a glyph and the model's own words, never colour alone
+/// (design-system.md §2), and it follows a save as it happens. Under a
+/// conflict [DraftConflictBar] draws the two versions and the choices; this
+/// line only names the state, so a screen shows both.
+class DraftPersistenceLine extends StatelessWidget {
+  const DraftPersistenceLine({super.key, required this.drafts});
+
+  final DraftsModel drafts;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: drafts,
+      builder: (context, _) => _line(context, drafts.persistence),
+    );
+  }
+
+  Widget _line(BuildContext context, DraftPersistence state) {
+    final e = Ember.of(context);
+    final failure = drafts.failure;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: Space.s2),
+          child: Icon(
+            _glyph(state),
+            size: Sizes.iconInline,
+            color: _ink(e, state),
+          ),
+        ),
+        const SizedBox(width: Space.s8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(drafts.persistenceLabel, style: e.bodyStrong),
+              const SizedBox(height: Space.s2),
+              Text(drafts.persistenceConsequence, style: e.small.tint(e.muted)),
+              if (state == DraftPersistence.failed && failure != null) ...[
+                const SizedBox(height: Space.s4),
+                Text(failure, style: e.monoSmall.tint(e.muted)),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// The glyph beside the words: saved is done, failed failed, a conflict
+  /// needs the person, and the rest are neutral marks.
+  IconData _glyph(DraftPersistence state) => switch (state) {
+    DraftPersistence.localEdits => Glyphs.pencil,
+    DraftPersistence.saving => Glyphs.arrow_clockwise,
+    DraftPersistence.saved => Glyphs.checkmark_circle_fill,
+    DraftPersistence.failed => Glyphs.xmark_circle_fill,
+    DraftPersistence.conflict => Glyphs.exclamationmark_circle,
+    DraftPersistence.readOnly => Glyphs.lock,
+  };
+
+  /// The glyph's ink. Colour marks the status (§2) and never carries it: the
+  /// words say the same thing.
+  Color _ink(Ember e, DraftPersistence state) => switch (state) {
+    DraftPersistence.saved => e.ok,
+    DraftPersistence.failed => e.err,
+    DraftPersistence.conflict => e.warn,
+    _ => e.muted,
+  };
+}

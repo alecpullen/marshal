@@ -33,6 +33,15 @@ type DaemonChild struct {
 	EnvWarning string          `json:"envWarning,omitempty"`
 	Pinned     bool            `json:"pinned,omitempty"`
 	Sessions   []DaemonSession `json:"sessions"`
+	Restart    *DaemonRestart  `json:"restart,omitempty"` // nil while the child is current
+}
+
+// DaemonRestart is a restart the daemon is holding, as GET /api/daemon
+// reports it (P6 B4).
+type DaemonRestart struct {
+	Reasons    []string `json:"reasons"`
+	WaitingFor string   `json:"waitingFor,omitempty"` // "" when nothing holds it
+	Refused    string   `json:"refused,omitempty"`    // the new build's failure; "" when none
 }
 
 // DaemonSession is one tracked session as GET /api/daemon reports it.

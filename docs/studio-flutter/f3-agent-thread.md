@@ -239,17 +239,26 @@ The recorder test was deleted after it wrote the files.
   (`web/bridge/forge.go`'s `Issue` carries no struct tags, so they are the Go
   field names) — `TestListRepoIssuesAnswerIsContractRepoIssue` in
   `web/bridge` holds the two together.
-- **Issues need a repo id the app cannot yet name.** An issue belongs to a
+- **Issues come from the repo the project names.** An issue belongs to a
   registered remote repo (`GET /api/repos` reports ids such as
-  `owner/name`), while a project is a local checkout: no bridge route maps a
-  project root to a repo id, and `GET /api/projects` carries none. So
-  `NewWorkModel.forProject` takes an optional `repoId` and wires the route
-  when it is given one; with none it asks nothing, and the dialog says "No
-  registered repo for this project" rather than "No issues for this project"
-  (`NewWorkModel.issuesFromRepo`). Disclosed, not papered over: the app gets
-  the mapping with the project settings surface that names a project's repo
-  (F6's project defaults, F7's repositories), and the client method and
-  contract type are already in place for it.
+  `owner/name`), while a project is a local checkout. The link between the
+  two already existed: a project's settings name the repo its work comes from
+  in `intake.repoId`, validated against the registry on every write
+  (`web/bridge/projects.go`'s `validateProjectSettings`), and the orchestrator
+  already follows it (`ProjectRootByRepo`, `settingsForAgent`). It was simply
+  never reported to a client. So `GET /api/projects` now carries it as the
+  entry's `repoId`, attached beside `mcpProjectId` in
+  `Server.projectsWithFactoryIDs` (`web/bridge/http.go`), and
+  `NewWorkModel.forProject` reads that field to ask
+  `GET /api/repos/{id}/issues` — no caller passes an id, so none can be made
+  up. It is reported only while the repo it names is still registered: a
+  settings write validates the id, but a repo can be removed afterwards
+  (removal refuses only when an agent uses it), and a stale id would send the
+  dialog to a route answering 404. A project that names none — a local
+  checkout with no remote — is `omitempty`, asks nothing, and the dialog says
+  "No registered repo for this project" rather than "No issues for this
+  project" (`NewWorkModel.issuesFromRepo`). `TestProjectsListNamesTheProjectRepo`
+  holds the wire both ways.
 - The dialog's chips each show what they really are (decision 11 promises a
   menu per chip; a menu whose only entry is the value already set changes
   nothing, so it is not drawn). What opens a menu is what a route or a fixed

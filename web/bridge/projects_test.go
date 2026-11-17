@@ -915,3 +915,53 @@ func TestProjectSettingsLegacyPut(t *testing.T) {
 		t.Fatalf("conditional put after a legacy one = %d %s", rec.Code, rec.Body)
 	}
 }
+
+// TestProjectsListNamesTheProjectRepo checks the mapping the Studio's new-work
+// dialog reads: `GET /api/projects` names the registered repo a project's work
+// comes from, because `GET /api/repos/{id}/issues` is keyed by a repo id and a
+// dialog starts from a project. A project that names none reports none — the
+// key is omitted, not empty — rather than an id a client could not use.
+func TestProjectsListNamesTheProjectRepo(t *testing.T) {
+	e, s, root := projectEnv(t)
+	if err := e.f.ws.PutRepo(Repo{ID: "owner/name", URL: "https://github.com/owner/name.git", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+
+	// entry is one project's wire object from GET /api/projects.
+	entry := func(root string) map[string]any {
+		t.Helper()
+		var list []map[string]any
+		decodeBody(t, doReq(t, s, http.MethodGet, "/api/projects", nil, nil), &list)
+		for _, item := range list {
+			if item["root"] == root {
+				return item
+			}
+		}
+		t.Fatalf("GET /api/projects has no entry for %s: %v", root, list)
+		return nil
+	}
+
+	// A project whose settings name no repo reports no repoId at all: that is
+	// what the app reads as "no registered repo for this project".
+	if got, ok := entry(root)["repoId"]; ok {
+		t.Fatalf("a project with no intake reported repoId %v", got)
+	}
+
+	// The repo its intake names is the repo its issues come from.
+	if code := putSettings(t, s, root, ProjectSettings{Intake: ProjectIntake{RepoID: "owner/name"}}); code != http.StatusOK {
+		t.Fatalf("put settings = %d", code)
+	}
+	if got := entry(root)["repoId"]; got != "owner/name" {
+		t.Fatalf("repoId = %v, want owner/name", got)
+	}
+
+	// A repo removed after the settings named it leaves the project naming
+	// none: reporting the stale id would send the dialog to a route that
+	// answers 404.
+	if err := e.f.ws.RemoveRepo("owner/name"); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := entry(root)["repoId"]; ok {
+		t.Fatalf("a removed repo was still reported as %v", got)
+	}
+}

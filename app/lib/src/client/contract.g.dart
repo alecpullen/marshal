@@ -4455,6 +4455,7 @@ class ProjectStatus {
     required this.trust,
     required this.isolation,
     this.mcpProjectID,
+    this.repoID,
     this.orphanWorktrees,
     this.rawEnums = const {},
   });
@@ -4472,6 +4473,13 @@ class ProjectStatus {
   /// given. It is optional so a bridge that has not minted one yet keeps the
   /// response it always had.
   final String? mcpProjectID;
+  /// RepoID names the registered repo this project's work comes from: the
+  /// repo its settings' intake names, while that repo is still registered.
+  /// It is what `GET /api/repos/{id}/issues` is keyed by, so it is what lets
+  /// a client ask a project for its issues at all. Omitted for a project
+  /// that names none — a local checkout with no remote, which has no issues
+  /// to serve — rather than an id the bridge made up.
+  final String? repoID;
   /// OrphanWorktrees are worktrees under this project that no known agent
   /// claims. Reported, never deleted — they may hold uncommitted work.
   final List<String>? orphanWorktrees;
@@ -4494,6 +4502,7 @@ class ProjectStatus {
       trust: trust,
       isolation: json['isolation'] as String,
       mcpProjectID: json['mcpProjectId'] as String?,
+      repoID: json['repoId'] as String?,
       orphanWorktrees: _listOrNull(
         json['orphanWorktrees'],
         (value) => value as String,
@@ -4513,6 +4522,9 @@ class ProjectStatus {
     json['isolation'] = isolation;
     if (mcpProjectID != null) {
       json['mcpProjectId'] = mcpProjectID;
+    }
+    if (repoID != null) {
+      json['repoId'] = repoID;
     }
     if (orphanWorktrees != null) {
       json['orphanWorktrees'] = orphanWorktrees!;
@@ -7792,6 +7804,33 @@ class OnTrip {
   }
 }
 
+/// LastReroute names the reroute a watch's most recent trip made, so a client
+/// can undo it (POST /api/reroutes/{id}/undo). The bridge holds reroutes in
+/// memory only, so a watch whose trip predates a bridge restart carries none.
+class LastReroute {
+  const LastReroute({
+    required this.id,
+    required this.at,
+  });
+
+  final String id;
+  final int at;
+
+  factory LastReroute.fromJson(Map<String, dynamic> json) {
+    return LastReroute(
+      id: json['id'] as String,
+      at: (json['at'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['at'] = at;
+    return json;
+  }
+}
+
 /// WatchInfo is one watch as GET /api/watches answers it: what the engine
 /// reports about it, the agent that started it, and what it does on trip
 /// (web/bridge/watches.go, internal/acp/watch.go). Times are Unix
@@ -7816,6 +7855,7 @@ class WatchInfo {
     this.onTrip,
     this.notify,
     this.resume,
+    this.lastReroute,
   });
 
   /// AgentID is the agent whose session started the watch, or `studio` for
@@ -7836,10 +7876,13 @@ class WatchInfo {
   final int? lastFiredAt;
   final List<WatchSample> samples;
   /// OnTrip, Notify and Resume are held by the bridge, so they appear only
-  /// on watches it started.
+  /// on watches it started. LastReroute is also the bridge's: it is the
+  /// record of the watch's last trip that a reroute can still be undone
+  /// from, and absent when that trip made no reroute or it was undone.
   final OnTrip? onTrip;
   final bool? notify;
   final bool? resume;
+  final LastReroute? lastReroute;
 
   factory WatchInfo.fromJson(Map<String, dynamic> json) {
     return WatchInfo(
@@ -7867,6 +7910,10 @@ class WatchInfo {
       ),
       notify: json['notify'] as bool?,
       resume: json['resume'] as bool?,
+      lastReroute: _objectOrNull(
+        json['lastReroute'],
+        LastReroute.fromJson,
+      ),
     );
   }
 
@@ -7907,6 +7954,9 @@ class WatchInfo {
     }
     if (resume != null) {
       json['resume'] = resume;
+    }
+    if (lastReroute != null) {
+      json['lastReroute'] = lastReroute!.toJson();
     }
     return json;
   }

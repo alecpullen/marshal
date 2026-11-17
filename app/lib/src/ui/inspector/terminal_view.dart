@@ -3,6 +3,14 @@ import 'package:xterm/xterm.dart';
 
 import '../tokens.dart';
 
+/// The terminal a tab drives (f4-inspector.md decision 9): `xterm`'s buffer,
+/// capped at the scrollback the finding measured (findings/terminal.md).
+///
+/// It is built here rather than in the tab so that this file is the only one
+/// that imports `xterm`: a tab hands its keystrokes and its size to the object
+/// it was given, and names no type from the package.
+Terminal newTerminal() => Terminal(maxLines: 3000);
+
 /// The terminal (f4-inspector.md decision 9): `xterm`, themed from the tokens.
 ///
 /// It is the one file that imports `xterm`, and the one place the

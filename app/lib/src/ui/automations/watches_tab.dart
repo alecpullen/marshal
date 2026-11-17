@@ -1,3 +1,4 @@
+import '../../model/fleet_store.dart' show describeFailure;
 import '../../model/watches_model.dart';
 import '../kit/kit.dart';
 import '../sections/section_page.dart';
@@ -93,11 +94,38 @@ class _WatchDetailState extends State<_WatchDetail> {
   String? _note;
   String? _error;
 
-  /// The reroute the last trip made, when the row says it made one. The
-  /// bridge does not report the reroute record's id, so nothing here can
-  /// undo it yet; the note says so rather than offering a button that cannot
-  /// work.
+  /// The reroute this detail has undone, so the action is not offered twice
+  /// while the list still holds the row it was opened from.
+  bool _undone = false;
+
+  /// The reroute the watch's rule plans, when it still carries one. It is
+  /// what the trip will do, not a record anything can undo.
   RerouteRule? get _reroute => widget.watch.onTrip?.reroute;
+
+  /// POST /api/reroutes/{id}/undo for the record the last trip made: the
+  /// bridge puts the record's id on the watch row while it still holds it
+  /// (lastReroute).
+  Future<void> _undo() async {
+    final reroute = widget.watch.lastReroute;
+    if (reroute == null || _undone) return;
+    setState(() {
+      _note = null;
+      _error = null;
+    });
+    try {
+      await widget.model.undoReroute(reroute.id);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _error = describeFailure(error));
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _undone = true;
+      _note =
+          'Undone: the role the trip rebound is back on its earlier binding.';
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -157,14 +185,23 @@ class _WatchDetailState extends State<_WatchDetail> {
           const SizedBox(height: Space.s12),
           Text(lastError, style: e.small.tint(e.err)),
         ],
-        if (_reroute case final reroute?) ...[
+        if (widget.watch.lastReroute case final reroute?) ...[
+          const SizedBox(height: Space.s20),
+          Btn('Undo the reroute', onTap: _undone ? null : _undo),
+          const SizedBox(height: Space.s4),
+          Text(
+            _undone
+                ? 'Its record is spent: the bridge will not undo it again.'
+                : _rerouteAbout(reroute),
+            style: e.small.tint(e.muted),
+          ),
+        ] else if (_reroute != null) ...[
           const SizedBox(height: Space.s20),
           Btn('Undo the reroute', onTap: null),
           const SizedBox(height: Space.s4),
           Text(
-            'The bridge does not report which reroute ${reroute.role} → '
-            '${reroute.preset} belongs to, so it cannot be undone from here '
-            'yet.',
+            'There is nothing to undo: the bridge records a reroute only when '
+            'a trip makes one.',
             style: e.small.tint(e.muted),
           ),
         ],
@@ -181,6 +218,14 @@ class _WatchDetailState extends State<_WatchDetail> {
   }
 
   static String _action(WatchInfo watch) => WatchesModel.describeOnTrip(watch);
+
+  /// What the undo does, and when the trip that made the record happened.
+  String _rerouteAbout(LastReroute reroute) {
+    final age = widget.model.ageLabel(reroute.at);
+    return age == 'now'
+        ? 'Puts back the binding the trip changed just now.'
+        : 'Puts back the binding the trip changed $age ago.';
+  }
 
   /// A duration in the words §8 asks for: "5s", "2m", "1h".
   static String _duration(int millis) {

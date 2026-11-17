@@ -215,14 +215,21 @@ predates this branch.
 ### Blocked
 
 - **Undo a trip's reroute.** `POST /api/reroutes/{id}/undo` takes the id of
-  the reroute record a trip made, and nothing on the watch wire carries it:
-  the engine's watch row (`internal/acp/watch.go`) and the bridge's merge
-  (`web/bridge/watches.go`) report the rule, not the record. The route,
-  `BridgeClient.undoReroute` and `WatchesModel.undoReroute` are written and
-  tested (`undo posts the reroute undo`), and the watch detail draws
-  `Undo the reroute` disabled with one line saying why. It needs a decision:
-  add `rerouteId` to the bridge's watch row (a wire change), or a
-  `GET /api/reroutes?watch=…` route that lists a watch's records.
+  the reroute record a trip made, and the wire now carries it: a watch row
+  with a reroute still to undo holds `lastReroute` (`{ "id", "at" }`,
+  `contract.LastReroute`), which the bridge's merge fills in from its
+  in-memory reroute log while the record exists and an undo is still
+  possible. `internal/acp/watch.go` is untouched: the record is the bridge's,
+  so the merge adds it as the row is listed. An untripped watch, one whose
+  record is gone (a bridge restart), or one already undone has no
+  `lastReroute`, and the detail keeps `Undo the reroute` disabled with a line
+  saying there is nothing to undo. When it is present the button is enabled
+  and wired to `WatchesModel.undoReroute`, pinned by
+  `the detail undoes the reroute the watch carries` and
+  `the undo stays disabled for a watch with no reroute record`
+  (`app/test/ui/watches_test.dart`), and by
+  `TestWatchesListCarriesTheRerouteItsUndoNeeds` (`web/bridge/watches_test.go`),
+  which follows the listed id through the undo route.
 - **Task 4's automatic-fixing switch.** F5 plan 1 is not in this branch, so
   the CI fixer's detail draws the planned row the plan asks for. It is a
   one-line swap for the switch when F5 lands.

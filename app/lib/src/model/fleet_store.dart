@@ -95,6 +95,7 @@ class FleetStore extends ChangeNotifier {
     if (owner == null) return;
     final state = _state(host);
     final generation = ++state.generation;
+    final agentsRead = ++state.agentsReads;
     final since = state.deltaSeq;
     try {
       final agents = await owner.client.agents();
@@ -103,11 +104,19 @@ class FleetStore extends ChangeNotifier {
       final budgets = await _budgets(owner.client, state);
       if (_disposed || generation != state.generation) return;
       state
-        ..agents = _agentsFrom(agents, state, since)
         ..projects = _projectsFrom(projects, state, since)
         ..queue = _queueFrom(inbox.queue, state, since)
         ..budgets = budgets
         ..failure = null;
+      // The rows only while no read of them was asked for after this one: a
+      // delta that names an unknown agent re-reads them itself (see
+      // [_applyInbox]), and that later answer is the newer list. This
+      // snapshot, asked for before the delta, must not put the older one back
+      // over it — every other route here still applies, since it answers for
+      // a different list.
+      if (agentsRead == state.agentsReads) {
+        state.agents = _agentsFrom(agents, state, since);
+      }
       notifyListeners();
     } catch (error) {
       if (_disposed || generation != state.generation) return;
@@ -306,6 +315,11 @@ class FleetStore extends ChangeNotifier {
         // yet: the thread's gate and run screens arrive in F3. Accepted and
         // set aside, never guessed at.
         return;
+      case DeltaKind.deltaPull:
+        // A pull's record and the state of its checks have no place in
+        // `AgentStatus` either: the pull it names is the recorded store's, and
+        // the rows that read it arrive with F5.2. Accepted and set aside.
+        return;
       case DeltaKind.deltaWatch:
       case DeltaKind.deltaBudget:
       case DeltaKind.deltaProjectRemoved:
@@ -438,9 +452,14 @@ class FleetStore extends ChangeNotifier {
     Set<String> from,
   ) async {
     final since = state.deltaSeq;
+    final read = ++state.agentsReads;
     try {
       final agents = await owner.client.agents();
       if (_disposed) return;
+      // A read of the rows asked for after this one owns the list: this
+      // answer is the older one, so it is dropped rather than put back over
+      // it (a snapshot refresh can be in flight while the delta re-reads).
+      if (read != state.agentsReads) return;
       final current = {for (final agent in state.agents) agent.id: agent};
       final removed = state.removedAfter(since);
       state.agents = List.unmodifiable([
@@ -508,6 +527,11 @@ class _HostState {
   /// Bumped by each budget read, so a slower earlier read cannot overwrite a
   /// newer report.
   int budgetReads = 0;
+
+  /// Bumped by each read of the agent rows. Two reads feed that one list — the
+  /// snapshot refresh and a delta's re-read — so the answer asked for last is
+  /// the one that stands, however late an earlier answer arrives.
+  int agentsReads = 0;
 
   /// A pending delta's re-read is in flight.
   bool agentsRefetching = false;

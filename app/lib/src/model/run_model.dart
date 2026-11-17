@@ -385,6 +385,12 @@ class RunModel extends ChangeNotifier {
   /// Whether an answer is in flight.
   bool get answering => _answering;
 
+  /// Whether the app wired a way to post the run's answer. A run a project
+  /// page lists is opened with the app's `answerRunFor` seam; one opened
+  /// without it can be read but not answered, and its gate says so rather
+  /// than offering a control that would do nothing.
+  bool get canAnswer => _answer != null;
+
   /// Whether the run is still doing something.
   bool get running => _run.active && !_run.finished;
 

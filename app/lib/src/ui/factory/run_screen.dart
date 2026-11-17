@@ -134,6 +134,10 @@ class _RunScreenState extends State<RunScreen> {
   }
 
   /// The question the run stopped on, as the kit's ask card.
+  ///
+  /// A run opened without the app's answer seam can be read but not answered,
+  /// so its action is drawn disabled with the reason (§9) rather than as a tap
+  /// that would open a sheet and post nothing.
   Widget _gate(RunModel model) => AskCard(
     kind: AskKind.question,
     title: model.gateQuestion.isEmpty
@@ -142,7 +146,16 @@ class _RunScreenState extends State<RunScreen> {
     body: 'Task ${model.gateTask}',
     waiting: relativeAge(_lastActive(model), _now),
     placement: AskPlacement.thread,
-    actions: [AskAction('Answer', onTap: () => unawaited(_answer(model)))],
+    actions: [
+      AskAction(
+        'Answer',
+        onTap: model.canAnswer ? () => unawaited(_answer(model)) : null,
+        note: model.canAnswer
+            ? null
+            : 'This run was opened without the app’s answer route, so it can '
+                  'be read here but not answered.',
+      ),
+    ],
   );
 
   /// Asks the person the gate's answer, through the kit's sheet.

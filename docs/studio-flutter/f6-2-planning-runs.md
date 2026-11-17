@@ -43,7 +43,10 @@ settled here, the deviations from its letter, and what is not done.
   forge, and runs discovery into a report.
 - **The run from a list.** A run a project page lists opens its own thread: the
   digest the list carried builds the run's lanes, graph and timeline, and the
-  question it stopped on is answered through the app's `answerRunFor` seam.
+  question it stopped on is answered through the app's `answerRunFor` seam. A
+  run place the app builds without that seam is still readable, and its gate's
+  one action is drawn disabled with the reason rather than as a tap that would
+  post nothing (§9).
 - **The end-to-end.** `test/ui/factory/f6_2_e2e_test.dart` drives a plan through
   the planner's journal and a frozen snapshot, one review sheet, an approval
   posted over the fixture bridge, and the item the store opens as a work item's

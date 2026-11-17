@@ -306,10 +306,13 @@ type State struct {
 	steps        []Step
 	nextStepSeq  int64
 	sessionRules []string
-	auditLog     []registry.AuditEvent
-	thinkingLog  []ThinkingEntry
-	lastBackup   []BackupFile
-	contextPack  contextpack.Pack
+	// sessionPermissionRules are the session-scoped grants an approval answer
+	// of "session" creates. They carry no action: a session can only grant.
+	sessionPermissionRules []PermissionGrant
+	auditLog               []registry.AuditEvent
+	thinkingLog            []ThinkingEntry
+	lastBackup             []BackupFile
+	contextPack            contextpack.Pack
 	// requestInspection is the bounded snapshot of the last conversation
 	// attempt Marshal submitted to its provider adapter. It is in-memory only
 	// (see request_inspection.go): nothing persists it, and it is never logged.
@@ -3956,6 +3959,35 @@ func (s *State) SessionRules() []string {
 	rules := make([]string, len(s.sessionRules))
 	copy(rules, s.sessionRules)
 	return rules
+}
+
+// PermissionGrant is a session-scoped allow for one tool permission and one
+// pattern. It carries no action: a session can only grant, never deny.
+type PermissionGrant struct {
+	Permission string
+	Pattern    string
+}
+
+// AddSessionPermissionRule grants one tool permission for the rest of the
+// session. It runs the same owner transaction as AddSessionRule: the grant and
+// the access revision move together so a stale admission cannot cross it.
+func (s *State) AddSessionPermissionRule(g PermissionGrant) {
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+	s.mu.Lock()
+	s.sessionPermissionRules = append(s.sessionPermissionRules, g)
+	s.mu.Unlock()
+	s.access.Revision++
+	s.signalInteractionLocked()
+}
+
+// SessionPermissionRules returns a copy of the session's permission grants.
+func (s *State) SessionPermissionRules() []PermissionGrant {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	grants := make([]PermissionGrant, len(s.sessionPermissionRules))
+	copy(grants, s.sessionPermissionRules)
+	return grants
 }
 
 func (s *State) LogToolCall(event registry.AuditEvent) {

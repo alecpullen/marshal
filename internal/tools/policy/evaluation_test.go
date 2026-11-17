@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/interaction"
+	"marshal/internal/permissions"
 )
 
 func evalShell(t *testing.T, pe *PolicyEngine, state interaction.State, cmd string) Evaluation {
@@ -199,10 +201,10 @@ func TestClonedEngineReadsCurrentConfigSource(t *testing.T) {
 	cfg := config.Default()
 	pe := NewEngine(&cfg, nil)
 	rev := uint64(1)
-	pe.SetConfigSource(func() (config.Config, []string, uint64) { return cfg, nil, rev })
+	pe.SetConfigSource(func() (config.Config, []string, []session.PermissionGrant, uint64) { return cfg, nil, nil, rev })
 	clone := pe.Clone()
 	rev = 2
-	_, _, got := clone.snapshot()
+	_, _, _, got := clone.snapshot()
 	if got != 2 {
 		t.Fatalf("clone source revision = %d, want 2", got)
 	}
@@ -211,7 +213,7 @@ func TestClonedEngineReadsCurrentConfigSource(t *testing.T) {
 func TestEvaluationRejectsMismatchedSourceRevision(t *testing.T) {
 	cfg := config.Default()
 	pe := NewEngine(&cfg, nil)
-	pe.SetConfigSource(func() (config.Config, []string, uint64) { return cfg, nil, 2 })
+	pe.SetConfigSource(func() (config.Config, []string, []session.PermissionGrant, uint64) { return cfg, nil, nil, 2 })
 	a, err := AnalyzeShell(ShellInput{Command: "cat x", WorkspaceRoot: "/repo", Dir: "/repo"})
 	if err != nil {
 		t.Fatalf("AnalyzeShell: %v", err)
@@ -350,5 +352,71 @@ func TestShellPolicyGitConfigMutationsFailClosed(t *testing.T) {
 
 	if ev := evalShell(t, pe, act, "git config --global user.name x"); ev.Decision == DecisionAllow || !ev.Required.System {
 		t.Fatalf("global git config in Act = %+v, want a System requirement", ev)
+	}
+}
+
+// captureAskRules is the configured rule an approval answer of "session" can
+// lift: every capture target asks first.
+func captureAskRules() []permissions.Rule {
+	return []permissions.Rule{{Permission: "image.capture", Pattern: "*", Action: permissions.ActionAsk}}
+}
+
+// TestGrantLiftsConfiguredAsk covers the point of a session grant: the
+// configured ask becomes an allow for the granted target only.
+func TestGrantLiftsConfiguredAsk(t *testing.T) {
+	grants := []session.PermissionGrant{{Permission: "image.capture", Pattern: "active_window"}}
+
+	if got, matched := evaluateSubjects(captureAskRules(), grants, "image.capture", []string{"active_window"}); !matched || got != DecisionAllow {
+		t.Fatalf("granted target = (%q, %v), want (allow, true)", got, matched)
+	}
+	if got, matched := evaluateSubjects(captureAskRules(), grants, "image.capture", []string{"screen"}); !matched || got != DecisionConfirm {
+		t.Fatalf("ungranted target = (%q, %v), want (confirm, true)", got, matched)
+	}
+}
+
+// TestConfigDenyBeatsGrant confirms the precedence rule: a session can grant,
+// never deny, so a configured deny is untouched by any grant.
+func TestConfigDenyBeatsGrant(t *testing.T) {
+	rules := []permissions.Rule{{Permission: "image.capture", Pattern: "screen", Action: permissions.ActionDeny}}
+	grants := []session.PermissionGrant{{Permission: "image.capture", Pattern: "screen"}}
+
+	if got, matched := evaluateSubjects(rules, grants, "image.capture", []string{"screen"}); !matched || got != DecisionDeny {
+		t.Fatalf("denied target = (%q, %v), want (deny, true)", got, matched)
+	}
+}
+
+// TestGrantAloneAllows covers a target no rule mentions at all: the grant is
+// the only reason the tool does not fall through to the secure default.
+func TestGrantAloneAllows(t *testing.T) {
+	grants := []session.PermissionGrant{{Permission: "image.capture", Pattern: "active_window"}}
+
+	if got, matched := evaluateSubjects(nil, grants, "image.capture", []string{"active_window"}); !matched || got != DecisionAllow {
+		t.Fatalf("grant alone = (%q, %v), want (allow, true)", got, matched)
+	}
+	if got, matched := evaluateSubjects(nil, grants, "image.capture", []string{"screen"}); matched {
+		t.Fatalf("no rule for an ungranted target = (%q, true), want no match", got)
+	}
+}
+
+// TestNoGrantKeepsConfirm is the unchanged behaviour: an ask stays a confirm.
+func TestNoGrantKeepsConfirm(t *testing.T) {
+	if got, matched := evaluateSubjects(captureAskRules(), nil, "image.capture", []string{"active_window"}); !matched || got != DecisionConfirm {
+		t.Fatalf("ask without a grant = (%q, %v), want (confirm, true)", got, matched)
+	}
+}
+
+// TestDefaultCaptureRuleConfirmsBothTargets records that the shipped default
+// prompts for every capture target until a session grant lifts it.
+func TestDefaultCaptureRuleConfirmsBothTargets(t *testing.T) {
+	cfg := config.Default()
+	pe := NewEngine(&cfg, nil)
+	pe.mu.RLock()
+	rules := pe.rules
+	pe.mu.RUnlock()
+
+	for _, target := range []string{"active_window", "screen"} {
+		if got, matched := evaluateSubjects(rules, nil, "image.capture", []string{target}); !matched || got != DecisionConfirm {
+			t.Fatalf("default rule for %q = (%q, %v), want (confirm, true)", target, got, matched)
+		}
 	}
 }

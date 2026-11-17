@@ -117,6 +117,12 @@ func Evaluate(rules []Rule, permissionName, subject string) (Action, bool) {
 	return matched, found
 }
 
+// PermissionMatches reports whether a rule's permission name governs a tool's
+// permission name, using the same relation permissionMatches implements.
+func PermissionMatches(rulePermission, toolPermission string) bool {
+	return permissionMatches(rulePermission, toolPermission)
+}
+
 func permissionMatches(rulePermission, toolPermission string) bool {
 	if rulePermission == toolPermission {
 		return true

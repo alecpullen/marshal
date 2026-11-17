@@ -85,7 +85,7 @@ func (b *AttachBackend) ensureConnected(ctx context.Context) error {
 	}
 }
 
-func (b *AttachBackend) NewPage(ctx context.Context) (PageHandle, error) {
+func (b *AttachBackend) NewPage(ctx context.Context, opts PageOptions) (PageHandle, error) {
 	if err := b.ensureConnected(ctx); err != nil {
 		return nil, err
 	}
@@ -102,7 +102,18 @@ func (b *AttachBackend) NewPage(ctx context.Context) (PageHandle, error) {
 		}
 		isNewCtx = true
 	}
-	return newPage(pwCtx, isNewCtx, b.timeout)
+	page, err := newPage(pwCtx, isNewCtx, b.timeout, nil)
+	if err != nil {
+		return nil, err
+	}
+	// An attached browser's context is not this process's to configure — the
+	// user's session may already be running in it — so a requested viewport is
+	// resized in place, best-effort: a context that refuses the size leaves the
+	// page on the size the browser already had rather than failing creation.
+	if opts.Viewport != nil && opts.Viewport.Width > 0 && opts.Viewport.Height > 0 {
+		_ = page.SetViewport(ctx, *opts.Viewport)
+	}
+	return page, nil
 }
 
 func (b *AttachBackend) Close() error {

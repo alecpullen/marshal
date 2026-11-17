@@ -58,7 +58,7 @@ func TestAttachBackendNewPageRequiresRunningBrowser(t *testing.T) {
 		t.Fatalf("NewAttachBackend: %v", err)
 	}
 	defer b.Close()
-	_, err = b.NewPage(context.Background())
+	_, err = b.NewPage(context.Background(), PageOptions{})
 	if err == nil {
 		t.Fatal("expected error connecting to non-existent CDP endpoint")
 	}

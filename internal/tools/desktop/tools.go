@@ -61,7 +61,7 @@ func (ts *toolSet) withPage(ctx context.Context, toolName string, fn func(page b
 	if err != nil {
 		return registry.ToolResult{}, err
 	}
-	page, err := sess.Page(ctx)
+	page, err := sess.Page(ctx, browser.PageOptions{})
 	if err != nil {
 		return registry.ToolResult{}, err
 	}
@@ -140,7 +140,13 @@ func (ts *toolSet) navigateTool() registry.Tool {
 		}
 		return ts.withPage(ctx, "browser.navigate", func(page browser.PageHandle) (registry.ToolResult, error) {
 			ts.setLocation(args.URL, "")
-			if err := page.Navigate(ctx, args.URL); err != nil {
+			sess, err := ts.getSession(ctx)
+			if err != nil {
+				return registry.ToolResult{}, err
+			}
+			// Through the session, not the page: the session records the URL so
+			// a page it recreates for a new viewport comes back to it.
+			if err := sess.Navigate(ctx, args.URL); err != nil {
 				return registry.ToolResult{}, fmt.Errorf("navigate: %w", err)
 			}
 			title, _ := page.Title(ctx)

@@ -34,6 +34,11 @@ void main() {
     ('#factory', Place.overview()),
     ('#factory?filter=needs-you', Place.overview()),
     ('#projects/$encodedAlpha/factory', Place(PlaceKind.project, id: alpha)),
+    // The project's list with a filter on it is still that project's list.
+    (
+      '#projects/$encodedAlpha/factory?filter=needs-you',
+      Place(PlaceKind.project, id: alpha),
+    ),
     ('#factory/drafts', Place.overview()),
     (
       '#factory/drafts?project=$encodedAlpha',
@@ -75,6 +80,11 @@ void main() {
 
     // Library. Recipes is an Automations section in this app (F7 decision 4).
     ('#library', Place(PlaceKind.library, section: 'skills')),
+    // A project scope on the Library link does not change the tab it names.
+    (
+      '#library?project=$encodedAlpha',
+      Place(PlaceKind.library, section: 'skills'),
+    ),
     ('#library/skills', Place(PlaceKind.library, section: 'skills')),
     ('#library/plugins', Place(PlaceKind.library, section: 'plugins')),
     ('#library/mcp', Place(PlaceKind.library, section: 'mcp')),

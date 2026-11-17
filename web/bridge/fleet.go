@@ -386,6 +386,12 @@ type Fleet struct {
 	// before serving.
 	idleTimeout time.Duration
 
+	// checkBuild runs a new binary's --version; tests replace it. Nil runs
+	// the binary.
+	checkBuild func(ctx context.Context, bin string) (version string, err error)
+	// sweepMu keeps one restart sweep at a time.
+	sweepMu sync.Mutex
+
 	// pruneMu serializes prune callers against each other: the HTTP
 	// prune endpoint and the spawn-path enforceDisk prune both call
 	// Prune, and a removeTree racing itself on an already-vanished

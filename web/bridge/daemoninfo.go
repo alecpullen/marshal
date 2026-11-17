@@ -94,7 +94,7 @@ func (f *Fleet) projectChildren() []DaemonChild {
 	out := make([]DaemonChild, 0, len(children))
 	for _, pc := range children {
 		pc.mu.Lock()
-		version, envWarning, reg := pc.version, pc.envWarning, pc.reg
+		version, envWarning, reg, restart := pc.version, pc.envWarning, pc.reg, pc.restart
 		pc.mu.Unlock()
 		child := DaemonChild{
 			Root:       pc.root,
@@ -102,6 +102,7 @@ func (f *Fleet) projectChildren() []DaemonChild {
 			EnvWarning: envWarning,
 			Pinned:     f.pinned(pc.root),
 			Sessions:   []DaemonSession{},
+			Restart:    restart,
 		}
 		if reg != nil {
 			child.Sessions = reg.summaries()

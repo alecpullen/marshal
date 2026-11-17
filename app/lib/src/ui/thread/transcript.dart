@@ -184,6 +184,18 @@ class _TranscriptState extends State<Transcript> {
     ].where((ask) => ask.since.isBefore(now)).toList();
   }
 
+  /// Every ask, for a transcript with no row to pin one to: with nothing to
+  /// attach a card to, all of them are shown, including one whose request
+  /// names a step this tree does not hold. What is waiting on the person is
+  /// never dropped because the transcript is still empty.
+  List<model.Ask> get _allAsks {
+    final now = widget.now ?? DateTime.now();
+    return [
+      for (final ask in widget.asks)
+        if (ask.since.isBefore(now)) ask,
+    ];
+  }
+
   /// The live headline a "Jump to live" control carries: the newest row's
   /// first line, which is what the agent is doing now.
   String get _liveHeadline {
@@ -226,48 +238,83 @@ class _TranscriptState extends State<Transcript> {
             store: widget.store,
             order: [for (final row in _rows) row.id],
             controller: _controller,
-            child: ListView.builder(
-              controller: _controller,
-              padding: const EdgeInsets.symmetric(
-                horizontal: Layout.pageSide,
-                vertical: Space.s12,
-              ),
-              itemCount: _rows.length,
-              itemBuilder: (context, index) {
-                final row = _rows[index];
-                final pinned = _asksFor(row.id, index == _rows.length - 1);
-                return Align(
-                  alignment: Alignment.topCenter,
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: Layout.reading),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        SelectableRow(
-                          nodeId: row.id,
-                          child: _Row(
-                            nodeId: row.id,
-                            index: index,
-                            depth: row.depth,
-                            store: widget.store,
-                            view: widget.view,
-                            onOpen: widget.onOpenNode,
+            child: _rows.isEmpty
+                ? _asksAlone()
+                : ListView.builder(
+                    controller: _controller,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: Layout.pageSide,
+                      vertical: Space.s12,
+                    ),
+                    itemCount: _rows.length,
+                    itemBuilder: (context, index) {
+                      final row = _rows[index];
+                      final pinned = _asksFor(
+                        row.id,
+                        index == _rows.length - 1,
+                      );
+                      return Align(
+                        alignment: Alignment.topCenter,
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(
+                            maxWidth: Layout.reading,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              SelectableRow(
+                                nodeId: row.id,
+                                child: _Row(
+                                  nodeId: row.id,
+                                  index: index,
+                                  depth: row.depth,
+                                  store: widget.store,
+                                  view: widget.view,
+                                  onOpen: widget.onOpenNode,
+                                ),
+                              ),
+                              for (final ask in pinned)
+                                _PinnedAsk(
+                                  ask: ask,
+                                  now: widget.now,
+                                  onAnswer: widget.onAnswer,
+                                ),
+                            ],
                           ),
                         ),
-                        for (final ask in pinned)
-                          _PinnedAsk(
-                            ask: ask,
-                            now: widget.now,
-                            onAnswer: widget.onAnswer,
-                          ),
-                      ],
-                    ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
         ),
+      ],
+    );
+  }
+
+  /// The asks alone, when the transcript has no row to pin them to: the same
+  /// [_PinnedAsk] the rows carry, so a thread that has not happened yet still
+  /// offers what is waiting on the person.
+  Widget _asksAlone() {
+    final asks = _allAsks;
+    return ListView(
+      controller: _controller,
+      padding: const EdgeInsets.symmetric(
+        horizontal: Layout.pageSide,
+        vertical: Space.s12,
+      ),
+      children: [
+        for (final ask in asks)
+          Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: Layout.reading),
+              child: _PinnedAsk(
+                ask: ask,
+                now: widget.now,
+                onAnswer: widget.onAnswer,
+              ),
+            ),
+          ),
       ],
     );
   }

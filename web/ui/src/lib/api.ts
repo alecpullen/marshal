@@ -130,6 +130,40 @@ export function setToken(token: string): void {
   }
 }
 
+/**
+ * Adopt a token handed over in the URL, and take it back out of the address
+ * bar.
+ *
+ * `marshal studio` opens the local daemon's Studio as `/?token=<token>`, so the
+ * page starts authenticated against the daemon the TUI talks to, with nothing
+ * typed and no prompt. The query is rewritten before the app mounts, so a
+ * reload still finds the token in sessionStorage and the URL left in history —
+ * the one a user might copy — carries no credential.
+ *
+ * A token that is present but unusable (an empty `?token=`) is still removed
+ * from the URL: leaving it would keep a blank credential in history for no
+ * benefit.
+ */
+export function adoptTokenFromURL(): void {
+  let url: URL
+  try {
+    url = new URL(window.location.href)
+  } catch {
+    return
+  }
+  const raw = url.searchParams.get('token')
+  if (raw === null) return
+  url.searchParams.delete('token')
+  try {
+    window.history.replaceState(null, '', url.toString())
+  } catch {
+    // A sandboxed frame can refuse the rewrite; the token is adopted either
+    // way, which is the part that matters.
+  }
+  const token = normalizeToken(raw)
+  if (token) setToken(token)
+}
+
 /** Drop the token from memory and storage, so the next call prompts again. */
 export function clearToken(): void {
   memoryToken = null

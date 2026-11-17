@@ -334,6 +334,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	if cfg.Daemon != def.Daemon {
 		file.Daemon = &fileDaemon{
 			IdleSessionTimeout: strutil.Ptr(cfg.Daemon.IdleSessionTimeout.String()),
+			StudioAddr:         strutil.Ptr(cfg.Daemon.StudioAddr),
 		}
 	}
 	if cfg.Web != def.Web {

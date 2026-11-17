@@ -221,8 +221,13 @@ func TestDaemonInstallPassesExplicitPaths(t *testing.T) {
 			paths.Socket,
 			paths.StateDir,
 			paths.Registry,
+			// The Studio listener is the browser's door onto this daemon:
+			// the loopback address from the user config, and the token file
+			// the bridge reads or mints 0600, so the page starts signed in.
 			"<string>--addr</string>",
-			"<string>off</string>",
+			"<string>127.0.0.1:7788</string>",
+			"<string>--token-file</string>",
+			"<string>" + paths.Token + "</string>",
 			"<string>--marshal-bin</string>",
 			// The installed daemon always refreshes (decision 5), so the
 			// flag is written into the unit rather than configured.

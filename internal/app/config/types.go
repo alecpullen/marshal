@@ -438,6 +438,11 @@ type DaemonConfig struct {
 	// IdleSessionTimeout ends a daemon session with no viewer and no run
 	// after this long; zero never ends one. Default 30m.
 	IdleSessionTimeout time.Duration `toml:"idle_session_timeout"`
+	// StudioAddr is the loopback address the daemon serves the web Studio
+	// on, so the browser drives this daemon's own agents instead of a
+	// separate container fleet. Empty or "off" serves none. Default
+	// 127.0.0.1:7788.
+	StudioAddr string `toml:"studio_addr"`
 }
 
 type DesktopConfig struct {

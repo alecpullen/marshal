@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -238,8 +239,9 @@ func daemonLingerLine(ctx context.Context, m *daemon.Manager) (string, bool) {
 }
 
 // daemonUnitSpec is decision 10's unit: the webbridge, the resolved marshal,
-// the paths internal/daemon resolves, the location environment, and the idle
-// session timeout the user config gives.
+// the paths internal/daemon resolves, the location environment, the idle
+// session timeout the user config gives, and the loopback address the Studio
+// is served on.
 func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 	webbridge, err := daemon.FindWebbridge(webbridgeOverride)
 	if err != nil {
@@ -256,13 +258,61 @@ func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 	if err != nil {
 		return daemon.UnitSpec{}, fmt.Errorf("read the user config: %w", err)
 	}
+	studioAddr, err := daemonStudioAddr(cfg.Daemon.StudioAddr)
+	if err != nil {
+		return daemon.UnitSpec{}, err
+	}
 	return daemon.UnitSpec{
 		Webbridge:          webbridge,
 		Marshal:            marshal,
 		Paths:              daemon.PathsFor(home),
 		Env:                daemonEnv(),
 		IdleSessionTimeout: cfg.Daemon.IdleSessionTimeout,
+		StudioAddr:         studioAddr,
 	}, nil
+}
+
+// daemonStudioAddr validates daemon.studio_addr and returns the address to
+// serve on, or "" for none.
+//
+// The Studio is the daemon's own HTTP face, so it is loopback-only: this
+// daemon runs host processes with the user's full authority and has no
+// authentication but a bearer token in a 0600 file. Binding it to a routable
+// address would publish that authority, so an address that is not loopback is
+// refused here rather than written into the unit and discovered later.
+func daemonStudioAddr(setting string) (string, error) {
+	addr := strings.TrimSpace(setting)
+	switch addr {
+	case "", "off", "none":
+		return "", nil
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("daemon.studio_addr %q: %w", setting, err)
+	}
+	if port == "" {
+		return "", fmt.Errorf("daemon.studio_addr %q: a port is required", setting)
+	}
+	if host == "" {
+		return "", fmt.Errorf("daemon.studio_addr %q: the Studio is loopback-only; give an address like 127.0.0.1:7788", setting)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		resolved, err := net.LookupIP(host)
+		if err != nil {
+			return "", fmt.Errorf("daemon.studio_addr %q: %w", setting, err)
+		}
+		for _, candidate := range resolved {
+			if !candidate.IsLoopback() {
+				return "", fmt.Errorf("daemon.studio_addr %q: the Studio is loopback-only; %s resolves to %s", setting, host, candidate)
+			}
+		}
+		return addr, nil
+	}
+	if !ip.IsLoopback() {
+		return "", fmt.Errorf("daemon.studio_addr %q: the Studio is loopback-only", setting)
+	}
+	return addr, nil
 }
 
 // resolvedExecutable is the running marshal with symlinks resolved and made

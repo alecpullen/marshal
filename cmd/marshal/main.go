@@ -170,6 +170,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if len(args) > 0 && args[0] == "fleet" {
 		return runFleet(ctx, args[1:], stdin, stdout, stderr, *embeddedFlag)
 	}
+	if len(args) > 0 && args[0] == "studio" {
+		return runStudio(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) > 0 {
 		return fmt.Errorf("unknown argument %q", args[0])
 	}

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:marshal_app/src/model/attention.dart' as model;
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/thread_view_state.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
@@ -21,6 +22,8 @@ model.Ask _ask({String? step}) => model.Ask(
     model.AskAction('Deny'),
   ],
   since: _asked,
+  source: model.AskSource.fleet,
+  scope: model.AskScope.everyone,
   step: step,
 );
 

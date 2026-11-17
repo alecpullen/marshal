@@ -46,6 +46,7 @@ import 'package:marshal_app/src/client/contract.g.dart'
         WireStep,
         WireTool;
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
+import 'package:marshal_app/src/model/attention.dart';
 import 'package:marshal_app/src/model/bots_model.dart';
 import 'package:marshal_app/src/model/clients_model.dart';
 import 'package:marshal_app/src/model/connections_model.dart';
@@ -282,8 +283,10 @@ model.Ask _overviewAsk(
   String id,
   String title,
   model.AskKind kind,
-  Duration age,
-) => model.Ask(
+  Duration age, {
+  AskSource source = AskSource.fleet,
+  AskScope scope = AskScope.everyone,
+}) => model.Ask(
   host: 'local',
   id: id,
   kind: kind,
@@ -299,6 +302,8 @@ model.Ask _overviewAsk(
     model.AskAction('Deny'),
   ],
   since: shellNow.subtract(age),
+  source: source,
+  scope: scope,
 );
 
 /// The Overview's fixture: two asks, one running thread, one project, two

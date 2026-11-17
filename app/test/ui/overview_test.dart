@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:marshal_app/src/model/attention.dart' as model;
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/place.dart';
@@ -23,6 +24,8 @@ void main() {
     body: '',
     actions: const [model.AskAction('Approve once', primary: true)],
     since: shellNow.subtract(Duration(minutes: ageMinutes)),
+    source: model.AskSource.fleet,
+    scope: model.AskScope.everyone,
   );
 
   model.ThreadRef thread(String id, String title) => model.ThreadRef(

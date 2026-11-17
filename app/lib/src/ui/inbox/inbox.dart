@@ -100,8 +100,6 @@ class _InboxState extends State<Inbox> {
     super.dispose();
   }
 
-  bool _blocking(model.Ask ask) => ask.kind != model.AskKind.intake;
-
   /// The pull requests the Ready filter lists: the ready ones only, whatever
   /// the host hands over.
   List<PullView> get _ready => [
@@ -111,8 +109,8 @@ class _InboxState extends State<Inbox> {
 
   List<model.Ask> get _shown => switch (_filter) {
     InboxFilter.all => widget.asks,
-    InboxFilter.blocking => widget.asks.where(_blocking).toList(),
-    InboxFilter.lookAt => widget.asks.where((ask) => !_blocking(ask)).toList(),
+    InboxFilter.blocking => widget.asks.where((ask) => ask.blocking).toList(),
+    InboxFilter.lookAt => widget.asks.where((ask) => !ask.blocking).toList(),
     // The Ready filter is not about asks: [build] draws pull requests for it.
     InboxFilter.ready => const [],
   };
@@ -142,10 +140,13 @@ class _InboxState extends State<Inbox> {
               setState(() => _filter = InboxFilter.values[index]),
           tabs: [
             TabItem('All', count: widget.asks.length),
-            TabItem('Blocking', count: widget.asks.where(_blocking).length),
+            TabItem(
+              'Blocking',
+              count: widget.asks.where((ask) => ask.blocking).length,
+            ),
             TabItem(
               'To look at',
-              count: widget.asks.where((ask) => !_blocking(ask)).length,
+              count: widget.asks.where((ask) => !ask.blocking).length,
             ),
             TabItem('Ready', count: _ready.length),
           ],
@@ -230,7 +231,7 @@ class _InboxState extends State<Inbox> {
             // item's own thread — they carry its version and its reviewed
             // identity — so the list shows them without offering a control
             // that would do nothing; the source line opens the thread.
-            actions: many || _threadOnly(ask.kind)
+            actions: many || ask.answeredInThread
                 ? const []
                 : [
                     for (final action in ask.actions)
@@ -244,26 +245,6 @@ class _InboxState extends State<Inbox> {
       ),
     );
   }
-
-  /// Whether an ask is answered only in the item's own thread (F6 decision 5).
-  ///
-  /// A work item's draft, decision, recovery and completion all name the item's
-  /// version and its reviewed identity, so the model declines to answer them
-  /// from the list ([InboxModel.answer] returns early). The card draws no action
-  /// row for them rather than buttons that would do nothing; its source line
-  /// opens the thread they are answered in.
-  static bool _threadOnly(model.AskKind kind) => switch (kind) {
-    model.AskKind.approvalDraft ||
-    model.AskKind.decision ||
-    model.AskKind.recovery ||
-    model.AskKind.completion => true,
-    model.AskKind.approval ||
-    model.AskKind.question ||
-    model.AskKind.intake ||
-    model.AskKind.reviewDraft ||
-    model.AskKind.network ||
-    model.AskKind.pull => false,
-  };
 
   /// The questions of a multi-question ask, one answer each, and the actions
   /// that post them all.
@@ -478,7 +459,7 @@ class _InboxState extends State<Inbox> {
   String _subtitle() {
     final waiting = widget.asks.length;
     if (waiting == 0) return 'Nothing is waiting on you';
-    final blocking = widget.asks.where(_blocking).length;
+    final blocking = widget.asks.where((ask) => ask.blocking).length;
     final noun = waiting == 1 ? 'ask' : 'asks';
     if (blocking == 0) return '$waiting $noun to look at';
     return '$waiting $noun · $blocking blocking work';

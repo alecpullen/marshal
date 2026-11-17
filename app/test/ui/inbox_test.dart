@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:marshal_app/src/model/attention.dart' as model;
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
@@ -26,6 +27,9 @@ void main() {
     model.AskState state = model.AskState.waiting,
     String? error,
     Map<String, Object?>? params,
+    model.AskSource source = model.AskSource.fleet,
+    String project = '',
+    model.AskScope scope = model.AskScope.everyone,
   }) => model.Ask(
     host: 'local',
     id: id,
@@ -56,6 +60,9 @@ void main() {
         ],
     questions: questions,
     since: shellNow.subtract(const Duration(minutes: 12)),
+    source: source,
+    project: project,
+    scope: scope,
     state: state,
     error: error,
   );

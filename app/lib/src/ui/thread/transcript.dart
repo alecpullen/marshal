@@ -173,13 +173,19 @@ class _TranscriptState extends State<Transcript> {
   }
 
   /// The asks pinned after one row: those whose step is this row, and — after
-  /// the last row — those whose request named no step.
+  /// the last row — those whose request named no step, or a step this tree
+  /// does not hold (a folded or pruned row cannot strand a pending ask).
   List<model.Ask> _asksFor(String rowId, bool last) {
     final now = widget.now ?? DateTime.now();
+    final held = <String>{};
+    for (final row in _rows) {
+      final at = row.id.lastIndexOf('step:');
+      if (at >= 0) held.add(row.id.substring(at + 'step:'.length));
+    }
     return [
       for (final ask in widget.asks)
         if ((ask.step != null && rowId.endsWith('step:${ask.step}')) ||
-            (ask.step == null && last))
+            (last && (ask.step == null || !held.contains(ask.step))))
           ask,
     ].where((ask) => ask.since.isBefore(now)).toList();
   }
@@ -506,7 +512,7 @@ class _Row extends StatelessWidget {
       case 'runEvent':
         final event = node.runEvent;
         if (event == null) return const SizedBox.shrink();
-        // The kind leads the row: delegated work must not read as the agent
+        // The kind leads the row, so a run event does not read as the agent
         // narrating its own steps. Title, body (full density only) and detail
         // keep their order beneath it.
         final head = [
@@ -514,7 +520,7 @@ class _Row extends StatelessWidget {
           if (event.title != null) event.title!,
         ].join(' · ');
         final text = [
-          head,
+          if (head.isNotEmpty) head,
           if (full && event.body != null) event.body!,
           if (event.detail != null) event.detail!,
         ].join('\n');

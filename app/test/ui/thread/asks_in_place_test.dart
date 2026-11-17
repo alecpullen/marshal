@@ -334,4 +334,60 @@ void main() {
     store.dispose();
     view.dispose();
   });
+
+  testWidgets('an ask whose step the tree does not hold is still pinned', (
+    tester,
+  ) async {
+    final store = fixtureStore();
+    final view = ThreadViewState();
+    final answered = <String>[];
+    await pumpThread(
+      tester,
+      store: store,
+      view: view,
+      // The request names a step this tree does not hold: it is pinned after
+      // the last row rather than dropped.
+      asks: [_ask(step: '99', id: 'orphan-1')],
+      now: _now,
+      onAnswer: (ask, action) => answered.add('${ask.id}:${action.label}'),
+    );
+
+    expect(find.byType(AskCard), findsOneWidget);
+    final lastY = tester.getTopLeft(find.textContaining('4 steps')).dy;
+    final cardY = tester.getTopLeft(find.byType(AskCard)).dy;
+    expect(cardY, greaterThan(lastY));
+
+    await tester.tap(find.text('Approve once'));
+    await tester.pumpAndSettle();
+    expect(answered, ['orphan-1:Approve once']);
+
+    store.dispose();
+    view.dispose();
+  });
+
+  testWidgets('an ask from after the screen\'s clock is not shown yet', (
+    tester,
+  ) async {
+    final store = _emptyStore();
+    final view = ThreadViewState();
+    await pumpThread(
+      tester,
+      store: store,
+      view: view,
+      asks: [_ask(step: '1')],
+      // The screen's clock is before the request was made.
+      now: _asked.subtract(const Duration(minutes: 1)),
+    );
+
+    // Nothing is waiting as of this clock, so the empty message is the honest
+    // state rather than a blank transcript.
+    expect(
+      find.text('Nothing has happened in this thread yet.'),
+      findsOneWidget,
+    );
+    expect(find.byType(AskCard), findsNothing);
+
+    store.dispose();
+    view.dispose();
+  });
 }

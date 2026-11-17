@@ -236,6 +236,17 @@ void main() {
       reason: 'the identity line is not readable in full',
     );
     expect(tips, contains(title));
+
+    // The tooltip exists because the line is elided: the header still draws
+    // one line of each, so the full text is what the tooltip adds.
+    final elided = tester.widgetList<Text>(
+      find.descendant(of: find.byType(Tip), matching: find.byType(Text)),
+    );
+    expect(elided, hasLength(2));
+    for (final text in elided) {
+      expect(text.maxLines, 1);
+      expect(text.overflow, TextOverflow.ellipsis);
+    }
     expect(tester.takeException(), isNull);
 
     store.dispose();
@@ -290,7 +301,7 @@ void main() {
     view.dispose();
   });
 
-  testWidgets('a delegated run event leads with its kind', (tester) async {
+  testWidgets('a run event leads with its kind', (tester) async {
     final store = StackStore.seeded(
       StackSnapshot(
         sessionID: 's-1',
@@ -303,9 +314,9 @@ void main() {
             kind: 'runEvent',
             parent: 'turn:1',
             runEvent: WireRunEvent(
-              kind: 'delegate',
-              title: 'Spawned the review agent',
-              body: 'The worker read four files.',
+              kind: 'review',
+              title: 'Reviewed task 3',
+              body: 'The reviewer read four files.',
               detail: 'task 3 of 4',
             ),
           ),
@@ -316,19 +327,19 @@ void main() {
     await pumpThread(tester, store: store, view: view);
 
     expect(find.byType(Narration), findsOneWidget);
-    // The kind is the row's leading word, so delegated work does not read as
-    // the agent narrating its own steps.
-    expect(
-      find.textContaining('delegate · Spawned the review agent'),
-      findsOneWidget,
-    );
+    // The kind is the row's leading word, so a run event does not read as the
+    // agent narrating its own steps.
+    expect(find.textContaining('review · Reviewed task 3'), findsOneWidget);
     expect(find.textContaining('task 3 of 4'), findsOneWidget);
     // Body stays the full-density addition it was.
-    expect(find.textContaining('The worker read four files.'), findsNothing);
+    expect(find.textContaining('The reviewer read four files.'), findsNothing);
 
     view.density = Density.full;
     await tester.pumpAndSettle();
-    expect(find.textContaining('The worker read four files.'), findsOneWidget);
+    expect(
+      find.textContaining('The reviewer read four files.'),
+      findsOneWidget,
+    );
 
     store.dispose();
     view.dispose();

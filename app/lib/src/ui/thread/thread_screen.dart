@@ -466,7 +466,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
         // An empty transcript with something waiting on the person is not
         // empty: the transcript still draws, so its pinned-ask path shows
         // what the Inbox holds. Only a thread with neither says so.
-        child: _rowsOf(store).isEmpty && widget.asks.isEmpty
+        child: _rowsOf(store).isEmpty && !_hasVisibleAsks
             ? StateMessage.empty(
                 message: 'Nothing has happened in this thread yet.',
                 action: StateAction(
@@ -487,6 +487,14 @@ class _ThreadScreenState extends State<ThreadScreen> {
       _composer(),
     ],
   );
+
+  /// Whether an ask is waiting as of the screen's clock. The transcript
+  /// filters its asks by the same rule, so the empty message is shown only
+  /// when there is truly nothing to draw.
+  bool get _hasVisibleAsks {
+    final now = widget.now ?? DateTime.now();
+    return widget.asks.any((ask) => ask.since.isBefore(now));
+  }
 
   /// The conversation narrowed to step headlines, what an expanded inspector
   /// leaves beside it (decision 3). Selecting one inspects it.

@@ -11,6 +11,7 @@ class _Routes {
   int cancels = 0;
   String accessMode = 'act';
   bool fail = false;
+  bool failCancel = false;
 
   Future<void> prompt(String text) async {
     if (fail) throw Exception('refused');
@@ -24,6 +25,7 @@ class _Routes {
 
   Future<void> cancel() async {
     cancels++;
+    if (failCancel) throw Exception('refused');
   }
 
   Future<void> setMode(String mode) async {
@@ -109,6 +111,38 @@ void main() {
     expect(model.running, isTrue);
 
     // The session's own report is the confirmation.
+    model.setRunning(false);
+    expect(model.cancellationRequested, isFalse);
+    expect(model.running, isFalse);
+    model.dispose();
+  });
+
+  test(
+    'a refused cancel leaves the turn running with no request recorded',
+    () async {
+      final model = routes.model(view, running: true);
+      routes.failCancel = true;
+
+      await model.stop();
+
+      expect(routes.cancels, 1);
+      expect(model.failure, contains('refused'));
+      expect(model.cancellationRequested, isFalse);
+      expect(model.running, isTrue);
+      model.dispose();
+    },
+  );
+
+  test('a still-running report does not confirm the stop', () async {
+    final model = routes.model(view, running: true);
+    await model.stop();
+    expect(model.cancellationRequested, isTrue);
+
+    // The session says the turn is still running: that is not the stop the
+    // composer asked for, so the request stands.
+    model.setRunning(true);
+    expect(model.cancellationRequested, isTrue);
+
     model.setRunning(false);
     expect(model.cancellationRequested, isFalse);
     expect(model.running, isFalse);

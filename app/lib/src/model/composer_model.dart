@@ -106,9 +106,12 @@ class ComposerModel extends ChangeNotifier {
   /// This is the only confirmation of a stop: taking the session's report
   /// clears any cancellation the composer asked for.
   void setRunning(bool running) {
-    if (_running == running && !_cancellationRequested) return;
+    // A report that the turn is still running does not confirm a stop: only
+    // the session saying it ended clears the request. An unchanged false
+    // report may still be that confirmation, so it is not short-circuited.
+    if (_running == running && (running || !_cancellationRequested)) return;
     _running = running;
-    _cancellationRequested = false;
+    if (!running) _cancellationRequested = false;
     notifyListeners();
   }
 
@@ -126,6 +129,8 @@ class ComposerModel extends ChangeNotifier {
       } else {
         await _prompt(message);
         _running = true;
+        // A new turn is not the cancelled one: no request is pending on it.
+        _cancellationRequested = false;
       }
       view.draft = '';
     } catch (error) {

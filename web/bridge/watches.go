@@ -11,6 +11,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // studioOwner owns watches started on the control agent, and tags their
@@ -92,6 +94,25 @@ func (l *rerouteLog) releaseUndo(id string) {
 	if r := l.byID[id]; r != nil {
 		r.Undone = false
 	}
+}
+
+// lastForWatch returns the most recent reroute a watch made that can still be
+// undone, so its list row can offer the undo. An undone reroute is skipped:
+// undoing it again would only be refused.
+func (l *rerouteLog) lastForWatch(watchID string) (Reroute, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var last Reroute
+	found := false
+	for _, r := range l.byID {
+		if r.WatchID != watchID || r.Undone {
+			continue
+		}
+		if !found || r.At.After(last.At) {
+			last, found = *r, true
+		}
+	}
+	return last, found
 }
 
 // watchRuleKey is the workspace key for a watch's rule. Watch ids are only
@@ -338,12 +359,17 @@ func (f *Fleet) watchSources() []watchSource {
 }
 
 // mergeWatchRule adds what the bridge holds about a watch to its list row:
-// the trip actions it was started with. A watch with no stored rule (one
-// started outside the bridge) is left as the engine reported it.
+// the trip actions it was started with, and the reroute its last trip made so
+// a client can undo it. A watch with no stored rule (one started outside the
+// bridge) is left as the engine reported it, apart from that reroute — only a
+// Studio watch can reroute, and its id is the engine's.
 func (f *Fleet) mergeWatchRule(row map[string]json.RawMessage, owner string) {
 	var id string
 	if json.Unmarshal(row["id"], &id) != nil || id == "" {
 		return
+	}
+	if rr, ok := f.reroutes.lastForWatch(id); ok {
+		row["lastReroute"], _ = json.Marshal(contract.LastReroute{ID: rr.ID, At: rr.At.UnixMilli()})
 	}
 	rule, ok := f.ws.WatchRule(watchRuleKey(owner, id))
 	if !ok {

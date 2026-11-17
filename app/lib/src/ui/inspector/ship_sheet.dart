@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 
 import '../../model/changes_model.dart';
@@ -158,19 +160,38 @@ class _ShipState extends State<_Ship> {
   }
 
   /// One view per outcome, each saying what happened and what is next.
-  Widget _outcome(BuildContext context, ShipResult result) =>
-      ShipOutcomeView(result: result, patch: _patch.text);
+  Widget _outcome(BuildContext context, ShipResult result) => ShipOutcomeView(
+    result: result,
+    patch: _patch.text,
+    // The ship did not finish, and the work may already be on the forge: the
+    // form is still there, so trying again is the sheet's own action.
+    onRetry: result.outcome == ShipOutcome.failed
+        ? () {
+            setState(() => _result = null);
+            unawaited(_ship());
+          }
+        : null,
+  );
 }
 
 /// The result of one ship attempt (decision 7): what happened, in that
 /// outcome's own words, and the next step.
 class ShipOutcomeView extends StatelessWidget {
-  const ShipOutcomeView({super.key, required this.result, this.patch = ''});
+  const ShipOutcomeView({
+    super.key,
+    required this.result,
+    this.patch = '',
+    this.onRetry,
+  });
 
   final ShipResult result;
 
   /// The change set's patch text, for the patch outcome.
   final String patch;
+
+  /// What Try again does, for an outcome that can be tried again. Null when
+  /// the outcome is final.
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -196,6 +217,11 @@ class ShipOutcomeView extends StatelessWidget {
         'A patch, not a push',
         'This source is read-only. Copy the patch and apply it where the work '
             'belongs.',
+      ),
+      ShipOutcome.failed => (
+        'The ship did not finish',
+        'The bridge answers after it pushes, so this work may already be on '
+            'the forge. Check the branch before trying again.',
       ),
     };
     final url = result.url;
@@ -230,6 +256,10 @@ class ShipOutcomeView extends StatelessWidget {
         const SizedBox(height: Space.s20),
         Row(
           children: [
+            if (result.outcome == ShipOutcome.failed && onRetry != null) ...[
+              Btn('Try again', onTap: onRetry),
+              const SizedBox(width: Space.s8),
+            ],
             if (result.outcome == ShipOutcome.patch)
               Btn(
                 'Copy patch',

@@ -40,6 +40,7 @@ void main() {
     String state = 'fired',
     int fireCount = 2,
     Map<String, Object?>? onTrip,
+    Map<String, Object?>? lastReroute,
   }) => {
     'agentId': agentID,
     'id': id,
@@ -59,6 +60,7 @@ void main() {
       {'at': 1763352600000, 'value': 1, 'tripped': true},
     ],
     'onTrip': ?onTrip,
+    'lastReroute': ?lastReroute,
   };
 
   Future<void> pump(WidgetTester tester, Widget screen) async {
@@ -118,6 +120,106 @@ void main() {
     await pump(tester, WatchesTab(model: model));
     expect(find.textContaining('Agent a-7'), findsOneWidget);
     expect(find.textContaining('The bridge · command'), findsOneWidget);
+  });
+
+  testWidgets('the detail undoes the reroute the watch carries', (
+    tester,
+  ) async {
+    final transport = _Scripted({
+      'GET /api/watches': Response(
+        status: 200,
+        body: jsonEncode([
+          watchJson(
+            onTrip: {
+              'notify': true,
+              'resume': false,
+              'reroute': {'role': 'implementer', 'preset': 'local'},
+            },
+            lastReroute: {
+              'id': 'rr-1',
+              'at': now.millisecondsSinceEpoch - 4 * 60 * 1000,
+            },
+          ),
+        ]),
+      ),
+      'POST /api/reroutes/rr-1/undo': const Response(status: 200, body: '{}'),
+    });
+    final model = WatchesModel(BridgeClient(transport), now: now);
+    addTearDown(model.dispose);
+    await model.load();
+
+    await pump(tester, WatchesTab(model: model));
+    await tester.tap(find.text('the gate'));
+    await tester.pumpAndSettle();
+
+    final undo = find.text('Undo the reroute');
+    expect(undo, findsOneWidget);
+    expect(
+      find.text('Puts back the binding the trip changed 4m ago.'),
+      findsOneWidget,
+    );
+    await tester.ensureVisible(undo);
+    await tester.tap(undo);
+    await tester.pumpAndSettle();
+
+    expect(
+      transport.requests.where(
+        (request) =>
+            request.method == 'POST' &&
+            request.path == '/api/reroutes/rr-1/undo',
+      ),
+      hasLength(1),
+    );
+    expect(
+      find.text(
+        'Undone: the role the trip rebound is back on its earlier binding.',
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('the undo stays disabled for a watch with no reroute record', (
+    tester,
+  ) async {
+    final transport = _Scripted({
+      'GET /api/watches': Response(
+        status: 200,
+        body: jsonEncode([
+          watchJson(
+            onTrip: {
+              'notify': true,
+              'resume': false,
+              'reroute': {'role': 'implementer', 'preset': 'local'},
+            },
+          ),
+        ]),
+      ),
+    });
+    final model = WatchesModel(BridgeClient(transport), now: now);
+    addTearDown(model.dispose);
+    await model.load();
+
+    await pump(tester, WatchesTab(model: model));
+    await tester.tap(find.text('the gate'));
+    await tester.pumpAndSettle();
+
+    final undo = find.text('Undo the reroute');
+    expect(undo, findsOneWidget);
+    expect(
+      find.text(
+        'There is nothing to undo: the bridge records a reroute only when a '
+        'trip makes one.',
+      ),
+      findsOneWidget,
+    );
+    await tester.ensureVisible(undo);
+    await tester.tap(undo);
+    await tester.pumpAndSettle();
+
+    expect(
+      transport.requests.where((request) => request.method == 'POST'),
+      isEmpty,
+    );
   });
 
   test('undo posts the reroute undo', () async {

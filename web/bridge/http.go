@@ -508,15 +508,18 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.projectsWithFactoryIDs())
 }
 
-// projectsWithFactoryIDs is the project list with each entry's stable factory
-// project ID attached. The ID is what a grant is keyed by and what an MCP
-// client may name; every other field is exactly what the fleet reported.
+// projectsWithFactoryIDs is the project list with each entry's derived ids
+// attached: its stable factory project ID (what a grant is keyed by and what
+// an MCP client may name) and the registered repo its work comes from (what
+// `GET /api/repos/{id}/issues` is keyed by). Every other field is exactly
+// what the fleet reported.
 func (s *Server) projectsWithFactoryIDs() []contract.ProjectStatus {
 	statuses := s.fleet.ProjectStatus()
 	for i := range statuses {
 		if id, ok := s.fleet.ws.ProjectID(statuses[i].Root); ok {
 			statuses[i].MCPProjectID = id
 		}
+		statuses[i].RepoID = s.fleet.projectRepoID(statuses[i].Root)
 	}
 	return statuses
 }

@@ -130,6 +130,43 @@ void main() {
     expect(find.textContaining('no credential'), findsOneWidget);
   });
 
+  testWidgets('a ship that did not finish is not called a refusal', (
+    tester,
+  ) async {
+    // A 5xx or a dropped connection may have pushed already, so this view
+    // must not claim nothing was pushed — and it offers the retry.
+    var retried = 0;
+    await pumpKit(
+      tester,
+      ShipOutcomeView(
+        result: const ShipResult(
+          ShipOutcome.failed,
+          message: 'bridge: child is down',
+        ),
+        onRetry: () => retried++,
+      ),
+    );
+
+    expect(find.text('The ship did not finish'), findsOneWidget);
+    expect(find.textContaining('may already be on the forge'), findsOneWidget);
+    expect(find.textContaining('Nothing was pushed'), findsNothing);
+    expect(find.textContaining('child is down'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(Btn, 'Try again'));
+    await tester.pump();
+    expect(retried, 1);
+  });
+
+  testWidgets('a finished outcome offers no retry', (tester) async {
+    await pumpKit(
+      tester,
+      const ShipOutcomeView(
+        result: ShipResult(ShipOutcome.pushed, message: 'f4-inspector'),
+      ),
+    );
+    expect(find.widgetWithText(Btn, 'Try again'), findsNothing);
+  });
+
   testWidgets('a patch is shown, and copied', (tester) async {
     await pumpKit(
       tester,

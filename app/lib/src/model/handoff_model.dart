@@ -230,6 +230,12 @@ class HandoffModel extends ChangeNotifier {
   /// still followed until they say otherwise.
   bool _noRequiredCIAcknowledged = false;
 
+  /// The expected checks as the person typed them, verbatim, or null while
+  /// they have typed none and the field follows the project. Text the parser
+  /// refuses is kept here rather than replaced by the checks that happened to
+  /// parse (the project editor keeps its own text the same way).
+  String? _checksText;
+
   /// The settings version this review is bound to, and the one in force when
   /// an approval last checked. [settingsConflict] is worded from the two.
   String? _reviewed;
@@ -329,16 +335,34 @@ class HandoffModel extends ChangeNotifier {
   };
 
   /// Sets one field to the person's own value, which marks it overridden.
+  ///
+  /// The expected checks are typed as raw lines, so a set of them is written
+  /// as those lines and kept verbatim.
   void set(String field, Object value) {
     if (!HandoffField.all.contains(field)) return;
+    if (field == HandoffField.checks && value is List<ExpectedCheck>) {
+      setChecksText(formatExpectedChecks(value));
+      return;
+    }
     _overrides[field] = value;
     _autosave();
     notifyListeners();
   }
 
   /// Puts one field back to the project's value.
+  ///
+  /// Resetting the expected checks also takes back the no-checks
+  /// acknowledgement: they cannot both be live, so the project's own checks
+  /// come back with nothing claiming they are unused.
   void reset(String field) {
-    if (_overrides.remove(field) == null) return;
+    final overridden = _overrides.remove(field) != null;
+    final acknowledged =
+        field == HandoffField.checks && _noRequiredCIAcknowledged;
+    if (field == HandoffField.checks) {
+      _checksText = null;
+      _noRequiredCIAcknowledged = false;
+    }
+    if (!overridden && !acknowledged) return;
     _autosave();
     notifyListeners();
   }
@@ -346,8 +370,42 @@ class HandoffModel extends ChangeNotifier {
   /// Records the person's acknowledgement that this work requires no checks,
   /// or takes it back. Like a field edit it autosaves the draft, so the
   /// acknowledgement survives a page that closes.
+  ///
+  /// Acknowledging clears the stated checks: the working draft sends
+  /// `checksMode: 'none'` for an acknowledgement, which drops stated checks,
+  /// so keeping them here would make the draft and the item's config encode
+  /// different work. Taking the acknowledgement back states no checks either;
+  /// the project is followed again until the person states some.
   void setNoRequiredCIAcknowledged(bool acknowledged) {
     _noRequiredCIAcknowledged = acknowledged;
+    if (acknowledged) {
+      _checksText = null;
+      _overrides[HandoffField.checks] = const <ExpectedCheck>[];
+    }
+    _autosave();
+    notifyListeners();
+  }
+
+  /// The expected checks as the person typed them, verbatim: their own raw
+  /// lines, or the project's as canonical lines while they have typed none.
+  String get checksText => _checksText ?? formatExpectedChecks(_checks);
+
+  /// Why the typed checks text cannot be read as checks, in the parser's own
+  /// words — the ones the project editor shows — or null when it can.
+  String? get checksError => parseExpectedChecks(checksText).error;
+
+  /// Types the expected checks as canonical raw lines.
+  ///
+  /// Text that does not parse is kept verbatim, with the checks that did
+  /// parse beside it, so nothing the person typed is rewritten away; the
+  /// [blockers] list refuses approval until it can be read. Stating a check
+  /// also takes back the no-checks acknowledgement, because the two cannot
+  /// both be live.
+  void setChecksText(String text) {
+    final parsed = parseExpectedChecks(text);
+    _checksText = text;
+    _overrides[HandoffField.checks] = parsed.checks;
+    if (parsed.checks.isNotEmpty) _noRequiredCIAcknowledged = false;
     _autosave();
     notifyListeners();
   }
@@ -395,6 +453,10 @@ class HandoffModel extends ChangeNotifier {
     if (plan.trim().isEmpty) 'There is no plan text to hand over.',
     if (_rounds < 1) 'The round allowance must be at least one.',
     if (title.trim().isEmpty) 'Give the work a name.',
+    // Checks text that cannot be read is not approvable: posting it would
+    // drop every line the parser refused, which is exactly what the sheet
+    // shows the person as typed.
+    ?checksError,
     ?settingsConflict,
   ]);
 

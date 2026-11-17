@@ -79,7 +79,12 @@ class _HandoffFormState extends State<HandoffForm> {
     ),
   };
 
+  /// The text a field's controller holds.
+  ///
+  /// The expected checks are shown as the person typed them — text the parser
+  /// refuses included — rather than as the checks that happened to parse.
   String _text(String field) {
+    if (field == HandoffField.checks) return widget.model.checksText;
     final value = widget.model.valueOf(field);
     if (value is List<ExpectedCheck>) return formatExpectedChecks(value);
     return '$value';
@@ -137,7 +142,7 @@ class _HandoffFormState extends State<HandoffForm> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              for (final (index, field) in _fields.entries.indexed)
+              for (final (index, field) in _fields(context).entries.indexed)
                 _row(context, field.key, field.value, first: index == 0),
             ],
           ),
@@ -166,7 +171,7 @@ class _HandoffFormState extends State<HandoffForm> {
 
   /// The fields the sheet states itself: the scope is drawn above, and the
   /// environment and authority are menus rather than typed values.
-  Map<String, Widget> get _fields => {
+  Map<String, Widget> _fields(BuildContext context) => {
     HandoffField.repository: _field(
       HandoffField.repository,
       hint: 'The repository the work lands in',
@@ -183,16 +188,57 @@ class _HandoffFormState extends State<HandoffForm> {
       HandoffField.reviewer,
       hint: 'The project default',
     ),
-    HandoffField.checks: _field(
-      HandoffField.checks,
-      hint: 'One per line, e.g. check_run:build:42',
-    ),
+    HandoffField.checks: _checksField(context),
     HandoffField.rounds: _field(HandoffField.rounds, hint: '3'),
     HandoffField.authority: _menu(
       HandoffField.authority,
       HandoffAuthority.options,
     ),
   };
+
+  /// The expected checks: the raw lines the person types, the parser's own
+  /// words under text it refuses, and the one control that acknowledges the
+  /// work needs no check at all. Text the parser refuses is kept as typed,
+  /// exactly as the project editor keeps it.
+  Widget _checksField(BuildContext context) {
+    final e = Ember.of(context);
+    final model = widget.model;
+    final acknowledged = model.noRequiredCIAcknowledged;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // The checks are a document, one per line, so this is the kit's
+        // multiline field in `mono` — the same field the project editor's raw
+        // mode uses — rather than a single line that would join them.
+        Field.multiline(
+          label: HandoffField.checks,
+          controller: _controllers[HandoffField.checks],
+          hint: 'One per line, e.g. check_run:build:42',
+          mono: true,
+          enabled: !acknowledged,
+          error: model.checksError,
+          onChanged: model.setChecksText,
+        ),
+        const SizedBox(height: Space.s8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Btn(
+            acknowledged
+                ? 'Withdraw the acknowledgement'
+                : 'Acknowledge no check is required',
+            onTap: () => model.setNoRequiredCIAcknowledged(!acknowledged),
+          ),
+        ),
+        if (acknowledged) ...[
+          const SizedBox(height: Space.s4),
+          Text(
+            'This work needs no CI check to pass, so stated checks are unused.',
+            style: e.small.tint(e.muted),
+          ),
+        ],
+      ],
+    );
+  }
 
   /// One row of the sheet: the field's name, its control, and where its value
   /// came from.

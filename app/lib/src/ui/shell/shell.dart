@@ -1379,19 +1379,39 @@ class _ProjectPlaceState extends State<_ProjectPlace> {
   /// The page's model: built once for this project, and disposed with it.
   late final ProjectModel _model = widget.build(widget.host, widget.root);
 
+  /// The repository the evidence beside the editor was last read for.
+  String _repo = '';
+
   @override
   void initState() {
     super.initState();
     widget.factory?.addListener(_changed);
     widget.store.addListener(_changed);
+    // The project's own settings are where its intake repository is, and that
+    // is what the evidence offered beside the editor is filtered by.
+    _model.addListener(_repositoryChanged);
   }
 
   @override
   void dispose() {
     widget.store.removeListener(_changed);
     widget.factory?.removeListener(_changed);
+    _model.removeListener(_repositoryChanged);
     _model.dispose();
     super.dispose();
+  }
+
+  /// Rebuilds when the project names another repository.
+  ///
+  /// Only that changes what the place hands the page: the page reads its own
+  /// model and draws itself, so a draft edit needs no rebuild here. It also
+  /// keeps the first read's notice — which the page posts while the place is
+  /// mounting — from rebuilding the tree mid-build, when nothing has changed
+  /// yet.
+  void _repositoryChanged() {
+    if (!mounted || _model.repoID == _repo) return;
+    _repo = _model.repoID;
+    setState(() {});
   }
 
   void _changed() {
@@ -1427,7 +1447,14 @@ class _ProjectPlaceState extends State<_ProjectPlace> {
       onOpenRun: widget.onOpenRun,
       onOpenAutomations: widget.onOpenAutomations,
       observedChecks:
-          factory?.observedChecks(projectRoot: widget.root) ?? const [],
+          factory?.observedChecks(
+            projectRoot: widget.root,
+            // Evidence comes from the same project *and* repository (F6
+            // decision 12), so the project's intake repository filters it; a
+            // project that names none filters by nothing.
+            repoID: _model.repoID,
+          ) ??
+          const [],
     );
   }
 }

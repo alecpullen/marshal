@@ -6,6 +6,7 @@ import 'package:marshal_app/src/client/bridge_client.dart'
     show ProjectSettingsVersion;
 import 'package:marshal_app/src/client/contract.g.dart' as contract;
 import 'package:marshal_app/src/model/expected_checks.dart';
+import 'package:marshal_app/src/model/factory_store.dart';
 import 'package:marshal_app/src/model/inbox_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/project_model.dart';
@@ -18,7 +19,15 @@ import 'package:marshal_app/src/ui/sections/unsaved_guard.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
 
 import '../../model/support.dart'
-    show FixtureHost, ModelFixture, agent, factoryItem, project;
+    show
+        FixtureHost,
+        ModelFixture,
+        agent,
+        factoryCheck,
+        factoryCI,
+        factoryItem,
+        factoryRound,
+        project;
 import '../../support/fake_bridge.dart' show FakeReply;
 
 /// The moment the page's fixtures are measured against.
@@ -282,6 +291,94 @@ void main() {
         reason: 'the project page has a $label tab',
       );
     }
+  });
+
+  testWidgets('suggestions come from the project\u2019s own repository', (
+    tester,
+  ) async {
+    // The shell is what hands the store the project's intake repository, so
+    // the evidence it offers comes from the same project and the same
+    // repository (F6 decision 12), never from a neighbouring one.
+    final fixture = (await tester.runAsync(
+      () => ModelFixture.start([
+        FixtureHost(
+          name: 'local',
+          projects: [project('/home/u/alpha')],
+          agents: [agent(id: 'a-1', project: '/home/u/alpha')],
+          factoryItems: [
+            factoryItem(
+              id: 'item-1',
+              repo: 'repo-1',
+              rounds: [
+                factoryRound(
+                  ci: factoryCI(
+                    checks: [factoryCheck(name: 'build', appID: 42)],
+                  ),
+                ),
+              ],
+            ),
+            factoryItem(
+              id: 'item-2',
+              repo: 'repo-2',
+              rounds: [
+                factoryRound(
+                  ci: factoryCI(
+                    checks: [factoryCheck(name: 'other', appID: 7)],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ]),
+    ))!;
+    await tester.runAsync(() => fixture.refresh());
+    final factory = FactoryStore(fixture.registry, now: fixture.clock.now);
+    addTearDown(factory.dispose);
+    await tester.runAsync(() => factory.refresh('local'));
+
+    tester.view.physicalSize = const Size(1440, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: InboxModel(fixture.store, client: fixture.clientFor),
+          factory: factory,
+          // The project's intake names repo-1; item-2 was recorded in
+          // repo-2, so its check is not evidence for this project.
+          projectFor: (host, root) => _model(),
+          initialPlace: const Place(PlaceKind.project, id: '/home/u/alpha'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    final page = find.byType(ProjectPage);
+    await tester.tap(
+      find.descendant(of: page, matching: find.text('Defaults')),
+    );
+    await tester.pump();
+    await tester.tap(
+      find.descendant(of: page, matching: find.text('Expected checks')),
+    );
+    // The shell keeps a frame source of its own, so the sheet's opening
+    // animation is pumped past rather than waited out.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Show checks observed in this project'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('build (App 42)'), findsOneWidget);
+    expect(
+      find.text('other (App 7)'),
+      findsNothing,
+      reason: 'a check recorded in another repository is not evidence here',
+    );
   });
 
   testWidgets('the discovery tap asks the bridge and draws its answer', (

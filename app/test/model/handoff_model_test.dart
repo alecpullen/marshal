@@ -330,8 +330,9 @@ void main() {
     model.setNoRequiredCIAcknowledged(false);
     expect(model.draftContent.checksMode, 'inherit');
 
-    // Stated checks do not acknowledge anything by existing, and an
-    // acknowledgement stands even when checks are stated.
+    // Stating a check takes the acknowledgement back, and acknowledging
+    // clears the stated checks: the two are never both live, so the working
+    // draft and the item's config never encode different work.
     model.set(HandoffField.checks, const [
       ExpectedCheck(kind: 'check_run', name: 'build', appID: 42),
     ]);
@@ -342,6 +343,57 @@ void main() {
     model.setNoRequiredCIAcknowledged(true);
     expect(model.draftContent.checksMode, 'none');
     expect(model.draft.config.noRequiredCIAcknowledged, isTrue);
+    expect(
+      model.draft.config.expectedChecks,
+      isEmpty,
+      reason: 'the acknowledgement means no check is required',
+    );
+    expect(model.draftContent.expectedChecksText, '');
+    expect(model.words(HandoffField.checks), 'None required');
+  });
+
+  test('checks text that does not parse is kept as typed', () {
+    // A typo the parser refuses is neither shown away nor rewritten: the
+    // text stays exactly as typed, the parser says what is wrong in its own
+    // words, and nothing is approvable until it is fixed.
+    final model = _handoff(
+      defaults: const ProjectDefaults(repoID: 'repo-1', maxRounds: 3),
+    );
+    addTearDown(model.dispose);
+    const typed = 'check_run:build:42\nbuild without a kind';
+
+    model.setChecksText(typed);
+
+    expect(model.checksText, typed);
+    expect(model.checksError, contains('"build without a kind" is neither'));
+    // What did parse is kept beside the text, never dropped from it.
+    expect(model.draft.config.expectedChecks.map((check) => check.name), [
+      'build',
+    ]);
+    expect(model.canApprove, isFalse);
+    expect(
+      model.blockers.where((blocker) => blocker.contains('is neither')),
+      isNotEmpty,
+    );
+    // The draft states the text as canonical lines rather than the typo,
+    // which cannot be posted as a set of checks.
+    expect(model.draftContent.expectedChecksText, 'check_run:build:42');
+
+    // Fixing the text clears the refusal and the draft follows it again.
+    model.setChecksText('check_run:build:42');
+    expect(model.checksError, isNull);
+    expect(model.canApprove, isTrue);
+    expect(
+      model.draft.config.expectedChecks.map(
+        (check) => (check.kind, check.name, check.appID),
+      ),
+      [('check_run', 'build', 42)],
+    );
+
+    // Putting the field back to the project's value forgets the typed text.
+    model.reset(HandoffField.checks);
+    expect(model.checksText, '');
+    expect(model.draftContent.checksMode, 'inherit');
   });
 
   test('a check the bridge sent is never dropped for having no name', () {

@@ -175,4 +175,208 @@ void main() {
     factory.clearConflict('local', 'item-1');
     expect(factory.conflictOf('local', 'item-1'), isNull);
   });
+
+  group('observedChecks', () {
+    /// A store over one host whose bridge reports [items].
+    Future<FactoryStore> storeOf(List<FactoryItem> items) async {
+      final fixture = await ModelFixture.start([
+        FixtureHost(
+          name: 'local',
+          projects: [project('/home/u/alpha')],
+          factoryItems: items,
+        ),
+      ]);
+      final factory = FactoryStore(fixture.registry, now: fixture.clock.now);
+      addTearDown(factory.dispose);
+      await factory.refresh('local');
+      return factory;
+    }
+
+    test('keeps the greatest observation of each check', () async {
+      final factory = await storeOf([
+        factoryItem(
+          rounds: [
+            factoryRound(
+              number: 1,
+              ci: factoryCI(
+                checks: [factoryCheck(observedAt: '2026-11-17T09:10:00Z')],
+              ),
+            ),
+            factoryRound(
+              number: 2,
+              ci: factoryCI(
+                checks: [factoryCheck(observedAt: '2026-11-17T09:40:00Z')],
+              ),
+            ),
+          ],
+        ),
+      ]);
+
+      final observed = factory.observedChecks(projectRoot: '/home/u/alpha');
+
+      expect(observed, hasLength(1));
+      expect(observed.single.observedAt, '2026-11-17T09:40:00Z');
+      expect(observed.single.revision, 2, reason: 'the round that saw it');
+    });
+
+    test('equal observations keep the one first seen', () async {
+      // The bridge stamps UTC, so RFC3339 sorts as text. Two observations
+      // stamped alike are equal, and the first in bridge order is kept.
+      final factory = await storeOf([
+        factoryItem(
+          id: 'item-1',
+          rounds: [
+            factoryRound(
+              number: 2,
+              ci: factoryCI(
+                checks: [factoryCheck(observedAt: '2026-11-17T09:10:00Z')],
+              ),
+            ),
+          ],
+        ),
+        factoryItem(
+          id: 'item-2',
+          rounds: [
+            factoryRound(
+              number: 5,
+              ci: factoryCI(
+                checks: [factoryCheck(observedAt: '2026-11-17T09:10:00Z')],
+              ),
+            ),
+          ],
+        ),
+      ]);
+
+      final observed = factory.observedChecks(projectRoot: '/home/u/alpha');
+
+      expect(observed, hasLength(1));
+      expect(observed.single.revision, 2);
+    });
+
+    test('the same name under different apps stays distinct', () async {
+      final factory = await storeOf([
+        factoryItem(
+          rounds: [
+            factoryRound(
+              ci: factoryCI(
+                checks: [
+                  factoryCheck(appID: 42),
+                  factoryCheck(appID: 7),
+                  factoryCheck(kind: 'commit_status', appID: 0),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ]);
+
+      final observed = factory.observedChecks(projectRoot: '/home/u/alpha');
+
+      expect(observed, hasLength(3));
+      expect(
+        observed
+            .map((each) => (each.check.kind, each.check.name, each.check.appID))
+            .toSet(),
+        {
+          ('check_run', 'build', 42),
+          ('check_run', 'build', 7),
+          ('commit_status', 'build', 0),
+        },
+      );
+    });
+
+    test('reads only the project asked about', () async {
+      final factory = await storeOf([
+        factoryItem(
+          id: 'item-1',
+          rounds: [
+            factoryRound(
+              ci: factoryCI(checks: [factoryCheck(name: 'build')]),
+            ),
+          ],
+        ),
+        factoryItem(
+          id: 'item-2',
+          project: '/home/u/beta',
+          rounds: [
+            factoryRound(
+              ci: factoryCI(checks: [factoryCheck(name: 'other')]),
+            ),
+          ],
+        ),
+      ]);
+
+      final observed = factory.observedChecks(projectRoot: '/home/u/alpha');
+
+      expect(observed.map((each) => each.check.name), ['build']);
+    });
+
+    test('reads only the repository asked about, or every one', () async {
+      final factory = await storeOf([
+        factoryItem(
+          id: 'item-1',
+          repo: 'repo-1',
+          rounds: [
+            factoryRound(
+              ci: factoryCI(checks: [factoryCheck(name: 'build')]),
+            ),
+          ],
+        ),
+        factoryItem(
+          id: 'item-2',
+          repo: 'repo-2',
+          rounds: [
+            factoryRound(
+              ci: factoryCI(checks: [factoryCheck(name: 'other')]),
+            ),
+          ],
+        ),
+      ]);
+
+      expect(
+        factory
+            .observedChecks(projectRoot: '/home/u/alpha', repoID: 'repo-1')
+            .map((each) => each.check.name),
+        ['build'],
+      );
+      expect(
+        factory
+            .observedChecks(projectRoot: '/home/u/alpha', repoID: 'repo-2')
+            .map((each) => each.check.name),
+        ['other'],
+      );
+      // A project that names no repository has no repository filter to apply.
+      expect(
+        factory
+            .observedChecks(projectRoot: '/home/u/alpha')
+            .map((each) => each.check.name),
+        ['build', 'other'],
+      );
+    });
+
+    test('a round without CI is no evidence, and changes nothing', () async {
+      final factory = await storeOf([
+        factoryItem(
+          rounds: [
+            factoryRound(number: 1),
+            factoryRound(number: 2, ci: factoryCI(checks: const [])),
+          ],
+        ),
+      ]);
+      var notified = 0;
+      factory.addListener(() => notified++);
+      final before = factory.items();
+
+      final observed = factory.observedChecks(projectRoot: '/home/u/alpha');
+
+      expect(observed, isEmpty);
+      expect(notified, 0, reason: 'reading evidence notifies nobody');
+      expect(
+        identical(factory.items().single, before.single),
+        isTrue,
+        reason: 'the items it read are not rebuilt',
+      );
+      expect(factory.byId('local', 'item-1')!.rounds, hasLength(2));
+    });
+  });
 }

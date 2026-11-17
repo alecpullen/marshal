@@ -138,32 +138,126 @@ void main() {
     expect(find.text('Reset'), findsNothing);
   });
 
-  testWidgets('approve creates the item once the blocker is gone', (
+  testWidgets('a checks line the parser refuses is kept as typed', (
     tester,
   ) async {
-    final posts = <FactoryCreate>[];
-    final model = _handoff(posts: posts);
+    final model = _handoff(
+      defaults: const ProjectDefaults(repoID: 'repo-1', maxRounds: 3),
+    );
     addTearDown(model.dispose);
     await tester.pumpWidget(_sheet(model));
     await tester.pump();
 
-    // The repository is the one thing the project did not state.
-    final repo = find.widgetWithText(Field, HandoffField.repository);
+    const typed = 'check_run:build:42\nbuild without a kind';
+    final checks = find.widgetWithText(Field, HandoffField.checks);
     await tester.enterText(
-      find.descendant(of: repo, matching: find.byType(EditableText)),
-      'repo-1',
+      find.descendant(of: checks, matching: find.byType(EditableText)),
+      typed,
     );
     await tester.pump();
 
-    final approve = tester.widget<Btn>(
-      find.widgetWithText(Btn, 'Approve and start'),
+    // The parser's own words sit under the field, as the project editor's do.
+    expect(
+      find.textContaining('"build without a kind" is neither'),
+      findsWidgets,
     );
-    expect(approve.onTap, isNotNull);
 
-    await tester.runAsync(() => model.approve());
+    // Anything else in the sheet notifying — a rebuild — must not rewrite
+    // what was typed with the checks that happened to parse.
+    model.set(HandoffField.rounds, 5);
     await tester.pump();
 
-    expect(posts, hasLength(1));
-    expect(model.created?.id, 'item-9');
+    expect(
+      tester
+          .widget<EditableText>(
+            find.descendant(of: checks, matching: find.byType(EditableText)),
+          )
+          .controller
+          .text,
+      typed,
+    );
+    expect(model.checksText, typed);
   });
+
+  testWidgets('checks text that parses is written exactly as before', (
+    tester,
+  ) async {
+    final model = _handoff(
+      defaults: const ProjectDefaults(repoID: 'repo-1', maxRounds: 3),
+    );
+    addTearDown(model.dispose);
+    await tester.pumpWidget(_sheet(model));
+    await tester.pump();
+
+    final checks = find.widgetWithText(Field, HandoffField.checks);
+    await tester.enterText(
+      find.descendant(of: checks, matching: find.byType(EditableText)),
+      'check_run:build:42',
+    );
+    await tester.pump();
+
+    expect(find.textContaining('is neither'), findsNothing);
+    expect(model.draftContent.checksMode, 'custom');
+    expect(model.draftContent.expectedChecksText, 'check_run:build:42');
+    expect(
+      model.draft.config.expectedChecks.map(
+        (check) => (check.kind, check.name, check.appID),
+      ),
+      [('check_run', 'build', 42)],
+    );
+    expect(model.canApprove, isTrue);
+  });
+
+  testWidgets(
+    'the acknowledgement is the sheet\u2019s, and clears stated checks',
+    (tester) async {
+      final model = _handoff(
+        defaults: const ProjectDefaults(repoID: 'repo-1', maxRounds: 3),
+      );
+      addTearDown(model.dispose);
+      // Tall enough that the checks row's controls are where a hand can reach
+      // them, as they are in a real sheet.
+      tester.view.physicalSize = const Size(1000, 1400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(_sheet(model));
+      await tester.pump();
+
+      // The one control that can state the acknowledgement, in plain words.
+      await tester.tap(find.text('Acknowledge no check is required'));
+      await tester.pump();
+
+      expect(model.noRequiredCIAcknowledged, isTrue);
+      expect(model.draftContent.checksMode, 'none');
+      expect(model.draft.config.noRequiredCIAcknowledged, isTrue);
+      expect(model.draft.config.expectedChecks, isEmpty);
+      expect(model.draftContent.expectedChecksText, '');
+      // The sheet says what the acknowledgement means, and the stated-checks
+      // field is out of play while it stands: no control claims both.
+      expect(
+        find.text(
+          'This work needs no CI check to pass, so stated checks are unused.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<Field>(find.widgetWithText(Field, HandoffField.checks))
+            .enabled,
+        isFalse,
+      );
+
+      await tester.tap(find.text('Withdraw the acknowledgement'));
+      await tester.pump();
+
+      expect(model.noRequiredCIAcknowledged, isFalse);
+      expect(model.draftContent.checksMode, 'inherit');
+      expect(
+        tester
+            .widget<Field>(find.widgetWithText(Field, HandoffField.checks))
+            .enabled,
+        isTrue,
+      );
+    },
+  );
 }

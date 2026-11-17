@@ -79,6 +79,10 @@ class FactoryStore extends ChangeNotifier {
   /// Every check this project's recorded work has observed, newest first and
   /// deduped by (kind, name, appID): the evidence an editor may suggest.
   ///
+  /// The greatest [FactoryCheck.observedAt] of a check wins; two stamped alike
+  /// are equal, and the first one the bridge's order offers is kept, so the
+  /// answer is stable rather than whichever the map happened to see last.
+  ///
   /// The source is the items this store already holds — read when a host was
   /// polled — so it makes no request, asks no forge and changes nothing. An
   /// editor offers what it returns as recorded evidence only: a check that
@@ -101,8 +105,9 @@ class FactoryStore extends ChangeNotifier {
             revision: round.number,
           );
           final held = newest[observed.check];
-          // RFC3339 sorts as text, so the latest observation of a check is
-          // the greatest string and the round that saw it is its own.
+          // The bridge stamps UTC, so an RFC3339 string sorts as text and the
+          // latest observation of a check is the greatest one; an equal stamp
+          // keeps the first seen, which is the bridge's own order.
           if (held == null ||
               held.observedAt.compareTo(observed.observedAt) < 0) {
             newest[observed.check] = observed;

@@ -11,8 +11,9 @@ import 'work_item_model.dart' show asksOf;
 /// What an ask is (F2 decision 7). The fleet contract carries an agent's
 /// approval, an agent's question and an intake submission; F5 adds a pull
 /// request's failed fix; F7 adds the review bot's held draft, which a person
-/// posts, sends to the author's agent or discards, and the network request
-/// the egress proxy held; F6 adds the four things a work item waits on a
+/// posts, sends to the author's agent or discards, and the network request the
+/// egress proxy held, which a person allows for one agent, adds to the
+/// environment, or blocks; F6 adds the four things a work item waits on a
 /// person for.
 enum AskKind {
   approval,
@@ -20,10 +21,6 @@ enum AskKind {
   intake,
   pull,
   reviewDraft,
-
-  /// The egress proxy held a request: a person allows it for one agent, adds
-  /// it to the environment, or blocks it (F7 decision 7).
-  network,
 
   /// A work item's draft is awaiting approval (F6 decision 5).
   approvalDraft,
@@ -37,6 +34,10 @@ enum AskKind {
 
   /// The work reached its pull request, and a person says whether it is done.
   completion,
+
+  /// The egress proxy held a network request, and a person allows it for one
+  /// agent, adds the host to the environment, or blocks it (F7).
+  network,
 }
 
 /// The blocked request a [AskKind.network] ask answers: who was blocked, from
@@ -275,15 +276,15 @@ class InboxModel extends ChangeNotifier {
   /// them.
   final _drafts = <String, List<ReviewDraft>>{};
 
+  /// The egress proxy's blocked requests, by host, as `showPendingBlocks` last
+  /// reported them.
+  final _blocks = <String, List<NetPending>>{};
+
   /// The pull request asks this app closed, by host, pull and the ask's own
   /// time. The bridge has no dismissal route (F5 plan 1), so a dismissal is
   /// the app's: the ask stays gone until the bridge reports a new one, which
   /// carries a new time.
   final _dismissals = <String>{};
-
-  /// The egress proxy's blocked requests, by host, as `showPendingBlocks` last
-  /// reported them.
-  final _blocks = <String, List<NetPending>>{};
   List<Ask> _asks = const [];
 
   /// Every ask, oldest first.
@@ -337,8 +338,8 @@ class InboxModel extends ChangeNotifier {
       case AskKind.question:
       case AskKind.intake:
       case AskKind.reviewDraft:
-      case AskKind.pull:
       case AskKind.network:
+      case AskKind.pull:
         break;
     }
     if (ask.kind == AskKind.pull) {
@@ -579,15 +580,15 @@ class InboxModel extends ChangeNotifier {
         final ask = _askForDraft(host.name, draft);
         if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
       }
+      for (final block in _blocks[host.name] ?? const <NetPending>[]) {
+        final ask = _askForBlock(host.name, block, agents);
+        if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
+      }
       for (final item
           in factory?.items(host: host.name) ?? const <FactoryItem>[]) {
         for (final ask in asksOf(host.name, item)) {
           if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
         }
-      }
-      for (final block in _blocks[host.name] ?? const <NetPending>[]) {
-        final ask = _askForBlock(host.name, block, agents);
-        if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
       }
     }
     asks.sort((a, b) {

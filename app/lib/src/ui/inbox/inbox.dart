@@ -261,8 +261,8 @@ class _InboxState extends State<Inbox> {
     model.AskKind.question ||
     model.AskKind.intake ||
     model.AskKind.reviewDraft ||
-    model.AskKind.pull ||
-    model.AskKind.network => false,
+    model.AskKind.network ||
+    model.AskKind.pull => false,
   };
 
   /// The questions of a multi-question ask, one answer each, and the actions
@@ -518,10 +518,10 @@ class _InboxState extends State<Inbox> {
     model.AskKind.intake => AskKind.intake,
     model.AskKind.pull => AskKind.pull,
     model.AskKind.reviewDraft => AskKind.review,
+    model.AskKind.network => AskKind.network,
     model.AskKind.approvalDraft => AskKind.approval,
     model.AskKind.decision => AskKind.decision,
     model.AskKind.recovery => AskKind.decision,
     model.AskKind.completion => AskKind.decision,
-    model.AskKind.network => AskKind.network,
   };
 }

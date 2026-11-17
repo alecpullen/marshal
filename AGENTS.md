@@ -81,8 +81,10 @@ That currency test fails on a contract change that is not regenerated.
 host processes only, and no container machinery. Each project runs its own
 `marshal acp --viewers` child, started on the first attach and stopped 30s
 after its last session closes; `POST /api/projects/attach` upgrades a marshal
-client onto that child's viewer socket, relaying its frames unchanged. Plain
-`marshal` starts its session on that daemon when one answers, the quit key and
+client onto that child's viewer socket, relaying its frames unchanged. A
+project child whose `marshal` binary or config changed is restarted by the
+daemon at its next idle moment, and its screens reconnect. Plain `marshal`
+starts its session on that daemon when one answers, the quit key and
 `/detach` leave it running, and `marshal attach [id]` comes back to it.
 A session screen whose connection closes reconnects to its session for up to a
 minute, keeping its draft. A watch a client started that fires while no screen is attached

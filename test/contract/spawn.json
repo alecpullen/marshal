@@ -1,0 +1,20 @@
+{
+  "SpawnRequest": {
+    "auto": true,
+    "baseRef": "main",
+    "branch": "fix/login",
+    "isolated": true,
+    "mode": "act",
+    "name": "fix the login bug",
+    "project": "/home/u/src/marshal",
+    "prompt": "fix the login bug",
+    "routing": {
+      "role": "implementer"
+    },
+    "workspace": "workspace"
+  },
+  "SpawnResult": {
+    "agentId": "a-1",
+    "warning": "the project is untrusted"
+  }
+}

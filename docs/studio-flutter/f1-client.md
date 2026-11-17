@@ -168,3 +168,97 @@ Suggested pull requests, in order.
   in one end-to-end test here, or left to F2.
 - Whether `marshal fleet token` should refuse to run when its output is a
   terminal, to keep tokens out of scrollback.
+
+## Implementation record
+
+Implemented on branch `studio/f1-client`, one commit per task, on Linux
+(Fedora 44, Flutter 3.50.0 / Dart 3.14.0), against `main` at `c2f93381`.
+
+- `f1-client: task 1 — goldens on Linux` — `app/test/goldens/*` regenerated
+  on Linux and `goldenHost` flipped to `Platform.isLinux`; the distribution is
+  recorded in `f0-foundations.md`.
+- `f1-client: task 2 — dartgen` — `web/bridge/contract/dartgen`, its
+  `testdata/rules.dart` (the fixture package shared by path with `tsgen`), and
+  `app/lib/src/client/contract.g.dart`.
+- `f1-client: task 3 — shared fixtures` — `test/contract/*.json` and both
+  round-trip tests. Renaming one JSON tag fails both, as the plan requires.
+- `f1-client: task 4 — marshal fleet token and servers` — `FleetServers`,
+  `marshal fleet servers [--json]` and `marshal fleet token NAME`.
+- `f1-client: task 5 — transport and the fake bridge` — `transport.dart`,
+  `transport_io.dart`, `transport_stub.dart`, `test/support/fake_bridge.dart`.
+- `f1-client: task 6 — the event stream` — `event_stream.dart`.
+- `f1-client: task 7 — hosts and typed calls` — `bridge_client.dart`,
+  `host.dart`, `host_discovery_io.dart`.
+- `f1-client: task 8 — browser transport` — `transport_web.dart`,
+  `token_store_web.dart`.
+- `f1-client: task 9 — connection check, docs and full verification` —
+  `lib/src/ui/debug/connection_check.dart`, its registration in
+  `test/support/screens.dart`, the debug entry in `lib/gallery_main.dart`, and
+  this record.
+
+### Decisions the plan left open
+
+- **`pending()` returns `PendingSubmission`.** The plan's Contracts sketch
+  named `PendingRequest`, but GET /api/pending lists the submissions an
+  operator decides on (`web/bridge/intake.go`), which `approveIntake` and
+  `denyIntake` act on. Decoding a submission as a parked agent's request would
+  fail on every field.
+- **Enum constants are lower camel case of the Go constant name**, not of the
+  wire value (`AgentAwaitingApproval` → `agentAwaitingApproval`): the fixture's
+  `Shade` and `Repeat` deliberately give two constants one value, which would
+  collide by value.
+- **A class that holds an enum field also holds `rawEnums`**, the wire text of
+  a value this build does not know, keyed by JSON name. The plan calls it "a
+  `raw` field"; the fixture `rules.Sample` already has a wire field named
+  `raw`, so the map is named `rawEnums` instead.
+- **A named string type with no constants is a `typedef ... = String`**, not an
+  enum with only `unknown`, which could not carry a value.
+- **An enum inside a list or a map is a named error**, as are the constructs
+  `tsgen` rejects: there is nowhere on the containing class to keep the raw
+  text of an element this build does not know.
+- **The generated Dart module carries `// dart format off`.** Its layout is
+  emitted to be read, and without the marker every formatter release would
+  rewrite the file without changing what it says (the currency test compares
+  bytes).
+- **`DaemonInfo` gained `socket`.** The plan reads the daemon's socket from
+  `marshal daemon status --json`, but the tray's model dropped that field; it
+  is now parsed, defaulted, and unused by the tray.
+- **`app/pubspec.yaml` names `web`.** The browser transport uses
+  `package:web`; it was available only transitively before.
+- **`host_discovery_stub.dart`** is the web side of `gallery_main.dart`'s
+  conditional import: a browser has no `marshal` binary to run, so it
+  discovers no host until F2 wires the same-origin bridge.
+- **The connection check is reached with
+  `--dart-define=connection-check=true`** on the gallery entry, so the gallery
+  page itself is unchanged and the shipped `main.dart` never reaches it.
+- **Answers to the open questions.** The fake bridge stays an in-process Dart
+  server for F1, and the real `webbridge` is used end to end from F2.
+  `marshal fleet token` refuses a terminal, as decision 3 says.
+
+### Limitation of the fixture-coverage test
+
+`web/bridge/contract/fixture_test.go` holds `fixtureTypes` and the
+`test/contract/*.json` files to each other in both directions: a fixture value
+whose type is missing from the map fails, and an entry in the map with no
+fixture value fails. Nothing ties the map to the contract package's own
+declarations, so a type added to `web/bridge/contract` and listed in neither
+place is covered by no fixture and fails no test. Closing that needs a check
+that reads the contract source (the reverse direction this plan's file list
+does not include); until then, adding a contract type is a matter of adding it
+to `fixtureTypes` and its fixture by hand.
+
+### Not verified on this machine
+
+- `flutter test --platform chrome test/client/transport_web_test.dart` (Task
+  8 and Task 9). This machine has no browser installed — no Chrome or
+  Chromium on `PATH` and no `CHROME_EXECUTABLE` — so the Chrome platform
+  cannot start. The file is analyzed and type-checks; a Mac or CI machine
+  with Chrome should run it. `flutter build web -t lib/gallery_main.dart`
+  (also Task 8) passes here.
+- The connection check against a running daemon (the "Done when" run): it
+  needs a graphical session and the installed `marshal`. It builds
+  (`flutter build linux --debug`) but was not launched.
+- The macOS run, which the plan already lists under "Needs a Mac".
+- CI's `app` job on `ubuntu-latest` compared against the Linux goldens: the
+  goldens were generated and compared on Linux here, but the runner's own
+  pixels are only proven by that job.

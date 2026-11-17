@@ -15,6 +15,10 @@ dependencies:
   material_ui: ^1.11.0
   cupertino_ui: ^1.1.6
   cupertino_icons: ^2.0.0
+  # The browser APIs the web transport speaks (client/*_web.dart): fetch,
+  # storage. Flutter bundles it for the web build; naming it keeps the
+  # dependency honest rather than relying on a transitive one.
+  web: ^1.1.1
 
 dev_dependencies:
   flutter_test:

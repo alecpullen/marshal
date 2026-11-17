@@ -3,11 +3,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/x/term"
@@ -33,6 +35,22 @@ var fleetServerRunner = launch.ServerFleet
 // replace it.
 var fleetLoginStore fleetprofile.OpenStore = func() (credentials.Store, error) {
 	return credentials.New("marshal")
+}
+
+// fleetTokenStore and fleetTokenRunner resolve a server's token for
+// `marshal fleet token`. They are the pair an attach resolves it with:
+// fleetprofile.Token falls back to the keychain and to /bin/sh when either is
+// nil. A test replaces them, so it never opens the developer's keychain or
+// runs a script of theirs.
+var fleetTokenStore fleetprofile.OpenStore
+var fleetTokenRunner fleetprofile.CommandRunner
+
+// fleetStdoutIsTerminal reports whether a writer is a terminal. `marshal fleet
+// token` refuses one, so a token never reaches scrollback (F1 decision 3). A
+// test replaces it, because a test binary has no terminal to point at.
+var fleetStdoutIsTerminal = func(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(f.Fd())
 }
 
 // notifyOption is launch.WithNotify, indirected so a test can read the flag a
@@ -238,9 +256,15 @@ func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 
 	server := ""
+	jsonOut := false
 	rest := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--json":
+			if jsonOut {
+				return fmt.Errorf("marshal fleet: --json given more than once")
+			}
+			jsonOut = true
 		case args[i] == "--server":
 			// An empty value is refused here as it is after `--server=`: an
 			// empty name is indistinguishable from no flag, and would quietly
@@ -273,15 +297,35 @@ func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return fmt.Errorf("marshal fleet: find home directory: %w", err)
 	}
 
-	// `login NAME` is the one positional form; anything else is refused.
+	// The subcommands name a profile and act on it; anything else is refused.
 	if len(rest) > 0 {
-		if rest[0] != "login" {
-			return fmt.Errorf("marshal fleet: unexpected argument %q", rest[0])
+		switch rest[0] {
+		case "login":
+			if server != "" {
+				return fmt.Errorf("marshal fleet: --server cannot be combined with login: login names its server")
+			}
+			if jsonOut {
+				return fmt.Errorf("marshal fleet: --json is only for servers")
+			}
+			return runFleetLogin(ctx, rest[1:], stdin, stderr, home)
+		case "servers":
+			if server != "" {
+				return fmt.Errorf("marshal fleet: --server cannot be combined with servers: servers lists them")
+			}
+			return runFleetServers(ctx, rest[1:], stdout, home, jsonOut)
+		case "token":
+			if server != "" {
+				return fmt.Errorf("marshal fleet: --server cannot be combined with token: token names its server")
+			}
+			if jsonOut {
+				return fmt.Errorf("marshal fleet: --json is only for servers")
+			}
+			return runFleetToken(ctx, rest[1:], stdout, stderr, home)
 		}
-		if server != "" {
-			return fmt.Errorf("marshal fleet: --server cannot be combined with login: login names its server")
-		}
-		return runFleetLogin(ctx, rest[1:], stdin, stderr, home)
+		return fmt.Errorf("marshal fleet: unexpected argument %q", rest[0])
+	}
+	if jsonOut {
+		return fmt.Errorf("marshal fleet: --json is only for servers")
 	}
 
 	// Decision 9: the file is read once per invocation, and a file that cannot
@@ -298,6 +342,105 @@ func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return fmt.Errorf("marshal fleet: %w", err)
 	}
 	return fleetServerRunner(ctx, stdout, srv, notifyOption(srv.Notify))
+}
+
+// FleetServers is the `marshal fleet servers --json` document (F1): the server
+// profiles fleet.toml names, for a program to read. No form of the command
+// carries a token.
+type FleetServers struct {
+	SchemaVersion int           `json:"schemaVersion"` // 1
+	Servers       []FleetServer `json:"servers"`
+}
+
+// FleetServer is one server profile as that document lists it.
+type FleetServer struct {
+	Name   string `json:"name"`
+	URL    string `json:"url"`
+	CAFile string `json:"caFile,omitempty"`
+}
+
+// runFleetServers is `marshal fleet servers`: it lists the server profiles the
+// fleet file names, one name per line, or the FleetServers document with
+// --json. The token fields are never read, so a token cannot appear in either
+// form.
+func runFleetServers(ctx context.Context, args []string, stdout io.Writer, home string, jsonOut bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(args) > 0 {
+		if strings.HasPrefix(args[0], "-") {
+			return fmt.Errorf("marshal fleet servers: unexpected flag %q", args[0])
+		}
+		return fmt.Errorf("marshal fleet servers: unexpected argument %q", args[0])
+	}
+	file, err := fleetprofile.Load(fleetprofile.Path(home))
+	if err != nil {
+		return fmt.Errorf("marshal fleet servers: %w", err)
+	}
+	names := make([]string, 0, len(file.Servers))
+	for name := range file.Servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	if !jsonOut {
+		for _, name := range names {
+			if _, err := fmt.Fprintln(stdout, name); err != nil {
+				return fmt.Errorf("marshal fleet servers: %w", err)
+			}
+		}
+		return nil
+	}
+
+	doc := FleetServers{SchemaVersion: 1, Servers: make([]FleetServer, 0, len(names))}
+	for _, name := range names {
+		srv := file.Servers[name]
+		doc.Servers = append(doc.Servers, FleetServer{
+			Name:   name,
+			URL:    srv.URL,
+			CAFile: srv.CAFile,
+		})
+	}
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(doc); err != nil {
+		return fmt.Errorf("marshal fleet servers: %w", err)
+	}
+	return nil
+}
+
+// runFleetToken is `marshal fleet token NAME`: it writes the token
+// fleetprofile resolves for that profile and a newline, for a program to read.
+// It refuses a terminal, so a token never reaches scrollback (F1 decision 3).
+func runFleetToken(ctx context.Context, args []string, stdout, stderr io.Writer, home string) error {
+	switch {
+	case len(args) == 0:
+		return fmt.Errorf("marshal fleet token: a server name is required")
+	case len(args) > 1:
+		return fmt.Errorf("marshal fleet token: at most one server name")
+	case strings.HasPrefix(args[0], "-"):
+		return fmt.Errorf("marshal fleet token: unexpected flag %q", args[0])
+	}
+	name := args[0]
+	if fleetStdoutIsTerminal(stdout) {
+		return fmt.Errorf("marshal fleet token: %s's token is for a program, so this refuses to print it to a terminal; pipe or redirect it", name)
+	}
+	file, err := fleetprofile.Load(fleetprofile.Path(home))
+	if err != nil {
+		return fmt.Errorf("marshal fleet token: %w", err)
+	}
+	srv, err := file.Lookup(name)
+	if err != nil {
+		return fmt.Errorf("marshal fleet token: %w", err)
+	}
+	token, err := fleetprofile.Token(ctx, srv, fleetTokenStore, fleetTokenRunner, stderr)
+	if err != nil {
+		return fmt.Errorf("marshal fleet token: %w", err)
+	}
+	if _, err := fmt.Fprintln(stdout, token); err != nil {
+		return fmt.Errorf("marshal fleet token: %w", err)
+	}
+	return nil
 }
 
 // runFleetLogin is `marshal fleet login NAME` (decision 10): it stores a token

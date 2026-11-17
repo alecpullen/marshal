@@ -126,6 +126,16 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Registering the root is what makes it offerable: /api/projects is where
+	// the Studio gets the projects it can spawn into, and it reads the
+	// workspace, which until now only a spawn or an explicit POST filled. An
+	// attach is proof the daemon runs this project, so the TUI opening a
+	// session is enough to list it. Best-effort: a workspace that cannot be
+	// saved must not cost the user their session.
+	if err := s.fleet.ws.AddProject(root); err != nil {
+		slog.Default().Warn("webbridge: register attached project", "root", root, "err", err)
+	}
+
 	// The child and the session are resolved within one handshake budget, as
 	// the control agent's lazy start is: a stuck child must not hold the
 	// request open indefinitely.

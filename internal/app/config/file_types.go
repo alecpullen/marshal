@@ -168,6 +168,7 @@ type fileWeb struct {
 
 type fileDaemon struct {
 	IdleSessionTimeout *string `toml:"idle_session_timeout"`
+	StudioAddr         *string `toml:"studio_addr"`
 }
 
 type fileDesktop struct {

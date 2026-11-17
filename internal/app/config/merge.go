@@ -411,6 +411,9 @@ func merge(cfg *Config, file configFile) error {
 			}
 			cfg.Daemon.IdleSessionTimeout = d
 		}
+		if file.Daemon.StudioAddr != nil && *file.Daemon.StudioAddr != "" {
+			cfg.Daemon.StudioAddr = *file.Daemon.StudioAddr
+		}
 	}
 	if file.Web != nil {
 		set(&cfg.Web.Enabled, file.Web.Enabled)

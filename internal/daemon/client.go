@@ -45,6 +45,12 @@ type Info = contract.DaemonInfo
 // PinState is the contract's PinState; see that declaration.
 type PinState = contract.PinState
 
+// SpawnRequest is the contract's SpawnRequest; see that declaration.
+type SpawnRequest = contract.SpawnRequest
+
+// SpawnResult is the contract's SpawnResult; see that declaration.
+type SpawnResult = contract.SpawnResult
+
 // Client talks HTTP to the daemon over its socket, or to a server-profile
 // bridge over TCP.
 type Client struct {
@@ -249,6 +255,52 @@ func (c *Client) Pin(ctx context.Context, root string, pinned bool) (PinState, e
 		return PinState{}, fmt.Errorf("decode daemon answer: %w", err)
 	}
 	return state, nil
+}
+
+// Spawn starts an agent on the daemon (POST /api/agents), bounded by ctx. The
+// daemon answers 201 with the new agent's ID, and a warning when the agent
+// was minted but something about its start was not fatal.
+func (c *Client) Spawn(ctx context.Context, spawn SpawnRequest) (SpawnResult, error) {
+	body, err := json.Marshal(spawn)
+	if err != nil {
+		return SpawnResult{}, fmt.Errorf("encode spawn request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://daemon/api/agents", bytes.NewReader(body))
+	if err != nil {
+		return SpawnResult{}, fmt.Errorf("daemon request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return SpawnResult{}, fmt.Errorf("daemon at %s: %w", c.socket, err)
+	}
+	defer resp.Body.Close()
+
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return SpawnResult{}, fmt.Errorf("read daemon answer: %w", err)
+	}
+
+	if resp.StatusCode/100 != 2 {
+		// The handler answers {"error": "..."} on a refusal; keep
+		// that text, since it says why better than the status does.
+		var refused struct {
+			Error string `json:"error"`
+		}
+		detail := strings.TrimSpace(string(answer))
+		if json.Unmarshal(answer, &refused) == nil && refused.Error != "" {
+			detail = refused.Error
+		}
+		return SpawnResult{}, fmt.Errorf("daemon answered %s: %s", resp.Status, detail)
+	}
+
+	var res SpawnResult
+	if err := json.Unmarshal(answer, &res); err != nil {
+		return SpawnResult{}, fmt.Errorf("decode daemon answer: %w", err)
+	}
+	return res, nil
 }
 
 // Attachment is an attached session: its ID and the upgraded stream.

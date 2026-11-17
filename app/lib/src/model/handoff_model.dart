@@ -337,7 +337,9 @@ class HandoffModel extends ChangeNotifier {
   /// Sets one field to the person's own value, which marks it overridden.
   ///
   /// The expected checks are typed as raw lines, so a set of them is written
-  /// as those lines and kept verbatim.
+  /// as those lines and kept verbatim. The sheet does not come through here
+  /// for them: its field types through [setChecksText], which is the same
+  /// path with the text the person actually wrote.
   void set(String field, Object value) {
     if (!HandoffField.all.contains(field)) return;
     if (field == HandoffField.checks && value is List<ExpectedCheck>) {
@@ -381,6 +383,8 @@ class HandoffModel extends ChangeNotifier {
     if (acknowledged) {
       _checksText = null;
       _overrides[HandoffField.checks] = const <ExpectedCheck>[];
+    } else {
+      _dropEmptyChecksOverride();
     }
     _autosave();
     notifyListeners();
@@ -400,14 +404,32 @@ class HandoffModel extends ChangeNotifier {
   /// parse beside it, so nothing the person typed is rewritten away; the
   /// [blockers] list refuses approval until it can be read. Stating a check
   /// also takes back the no-checks acknowledgement, because the two cannot
-  /// both be live.
+  /// both be live. A field with no checks in it is not an override at all:
+  /// the project's checks are followed again until the person states some,
+  /// while the field itself stays as empty as they left it.
   void setChecksText(String text) {
     final parsed = parseExpectedChecks(text);
     _checksText = text;
     _overrides[HandoffField.checks] = parsed.checks;
     if (parsed.checks.isNotEmpty) _noRequiredCIAcknowledged = false;
+    _dropEmptyChecksOverride();
     _autosave();
     notifyListeners();
+  }
+
+  /// Forgets a checks override that holds nothing.
+  ///
+  /// An empty override says "overridden to no checks", which is not a choice
+  /// a cleared field makes: the project's checks still apply, so the row reads
+  /// as inherited and the draft encodes `inherit` with it. The one empty
+  /// override that stays is the acknowledgement's own, which is what makes
+  /// the stated checks empty while `checksMode` says `none`.
+  void _dropEmptyChecksOverride() {
+    if (_noRequiredCIAcknowledged) return;
+    final checks = _overrides[HandoffField.checks];
+    if (checks is List<ExpectedCheck> && checks.isEmpty) {
+      _overrides.remove(HandoffField.checks);
+    }
   }
 
   /// Queues the draft the review is, two seconds after the last edit (F6

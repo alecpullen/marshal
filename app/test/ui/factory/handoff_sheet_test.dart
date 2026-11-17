@@ -236,7 +236,8 @@ void main() {
       // field is out of play while it stands: no control claims both.
       expect(
         find.text(
-          'This work needs no CI check to pass, so stated checks are unused.',
+          'This work needs no CI check to pass; acknowledging clears the '
+          'stated checks.',
         ),
         findsOneWidget,
       );

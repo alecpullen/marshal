@@ -232,7 +232,8 @@ class _HandoffFormState extends State<HandoffForm> {
         if (acknowledged) ...[
           const SizedBox(height: Space.s4),
           Text(
-            'This work needs no CI check to pass, so stated checks are unused.',
+            'This work needs no CI check to pass; acknowledging clears the '
+            'stated checks.',
             style: e.small.tint(e.muted),
           ),
         ],
@@ -310,12 +311,13 @@ class _HandoffFormState extends State<HandoffForm> {
     );
   }
 
-  /// The value a typed field means: the round allowance is a number, the
-  /// expected checks are the canonical raw lines parsed, and everything else
-  /// is its own text.
+  /// The value a typed field means: the round allowance is a number, and
+  /// everything else is its own text.
+  ///
+  /// The expected checks are not here: [_checksField] types them through
+  /// [HandoffModel.setChecksText], which keeps the text as typed.
   Object _valueOf(String field, String text) => switch (field) {
     HandoffField.rounds => int.tryParse(text.trim()) ?? 0,
-    HandoffField.checks => parseExpectedChecks(text).checks,
     _ => text.trim(),
   };
 

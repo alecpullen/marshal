@@ -352,6 +352,54 @@ void main() {
     expect(model.words(HandoffField.checks), 'None required');
   });
 
+  test('a cleared checks field follows the project again', () {
+    // Backspacing the field empty states no checks at all: it is not an
+    // override to nothing. The row reads as inherited, and the draft says the
+    // same — `inherit`, the project's checks still applying — rather than two
+    // surfaces disagreeing about which work is being handed over.
+    final model = _handoff(
+      defaults: const ProjectDefaults(repoID: 'repo-1', maxRounds: 3),
+    );
+    addTearDown(model.dispose);
+
+    model.setChecksText('check_run:build:42');
+    expect(model.isOverridden(HandoffField.checks), isTrue);
+    expect(model.draftContent.checksMode, 'custom');
+
+    model.setChecksText('');
+    expect(model.checksText, '', reason: 'the field stays as empty as typed');
+    expect(model.isOverridden(HandoffField.checks), isFalse);
+    expect(model.sourceOf(HandoffField.checks), FieldSource.inherited);
+    expect(model.draftContent.checksMode, 'inherit');
+    expect(model.draft.config.expectedChecks, isEmpty);
+  });
+
+  test('withdrawing the acknowledgement follows the project again', () {
+    // The acknowledgement clears the stated checks; taking it back leaves no
+    // emptied override behind, so the row reads inherited — no Reset button
+    // for a choice nobody made — and the project's own checks are back.
+    final model = _handoff(
+      defaults: const ProjectDefaults(
+        repoID: 'repo-1',
+        maxRounds: 3,
+        expectedChecks: [
+          ExpectedCheck(kind: 'check_run', name: 'build', appID: 42),
+        ],
+      ),
+    );
+    addTearDown(model.dispose);
+
+    model.setNoRequiredCIAcknowledged(true);
+    expect(model.words(HandoffField.checks), 'None required');
+
+    model.setNoRequiredCIAcknowledged(false);
+    expect(model.isOverridden(HandoffField.checks), isFalse);
+    expect(model.sourceOf(HandoffField.checks), FieldSource.inherited);
+    expect(model.words(HandoffField.checks), 'build (App 42)');
+    expect(model.draftContent.expectedChecksText, 'check_run:build:42');
+    expect(model.draftContent.checksMode, isNot('none'));
+  });
+
   test('checks text that does not parse is kept as typed', () {
     // A typo the parser refuses is neither shown away nor rewritten: the
     // text stays exactly as typed, the parser says what is wrong in its own

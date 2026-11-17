@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -230,6 +231,119 @@ func convertTestContent() WorkingDraftContent {
 		Title: "Task", Plan: "do the work", Spec: "notes", RepoID: "repo-1",
 		TargetBranchOverride: "main", ImplementerOverride: "chosen", ReviewerOverride: "chosen",
 		Native: true, ChecksMode: workingDraftChecksNone, NoRequiredCIAcknowledged: true,
+	}
+}
+
+// TestWorkingDraftExpectedChecksReadsCanonicalLines pins the raw-line grammar
+// the spec defines and the Dart parser implements: the first colon names the
+// kind, a commit status' context is the whole remainder of its line, and a
+// check run's app id sits behind the line's last colon. Names and contexts
+// holding colons are therefore legal, and a line that does not parse is
+// refused rather than dropped.
+func TestWorkingDraftExpectedChecksReadsCanonicalLines(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		text string
+		want []FactoryCheckKey
+		fail bool
+	}{
+		{name: "inherit-leaves-nil", mode: "", text: "check_run:build:42", want: nil},
+		{name: "none-is-an-empty-list", mode: workingDraftChecksNone, text: "", want: []FactoryCheckKey{}},
+
+		{
+			name: "commit-status-context-holds-colons",
+			mode: workingDraftChecksCustom, text: "commit_status:ci:lint",
+			want: []FactoryCheckKey{{Kind: "commit_status", Name: "ci:lint"}},
+		},
+		{
+			name: "commit-status-keeps-a-trailing-colon",
+			mode: workingDraftChecksCustom, text: "commit_status:ctx:",
+			want: []FactoryCheckKey{{Kind: "commit_status", Name: "ctx:"}},
+		},
+		{
+			name: "check-run-simple",
+			mode: workingDraftChecksCustom, text: "check_run:build:42",
+			want: []FactoryCheckKey{{Kind: "check_run", Name: "build", AppID: 42}},
+		},
+		{
+			name: "check-run-name-holds-colons",
+			mode: workingDraftChecksCustom, text: "check_run:Windows:Build:1234",
+			want: []FactoryCheckKey{{Kind: "check_run", Name: "Windows:Build", AppID: 1234}},
+		},
+		{
+			name: "blank-lines-skipped-and-mixed-kinds",
+			mode: workingDraftChecksCustom,
+			text: "\n  check_run:Windows:Build:1234 \n\ncommit_status:ci:lint\n\n",
+			want: []FactoryCheckKey{
+				{Kind: "check_run", Name: "Windows:Build", AppID: 1234},
+				{Kind: "commit_status", Name: "ci:lint"},
+			},
+		},
+
+		{name: "refuse-check-run-without-a-name", mode: workingDraftChecksCustom, text: "check_run::42", fail: true},
+		{name: "refuse-check-run-without-an-app-id", mode: workingDraftChecksCustom, text: "check_run:build", fail: true},
+		{name: "refuse-check-run-non-numeric-app-id", mode: workingDraftChecksCustom, text: "check_run:build:abc", fail: true},
+		{name: "refuse-check-run-zero-app-id", mode: workingDraftChecksCustom, text: "check_run:build:0", fail: true},
+		{name: "refuse-check-run-negative-app-id", mode: workingDraftChecksCustom, text: "check_run:build:-1", fail: true},
+		{name: "refuse-unknown-kind", mode: workingDraftChecksCustom, text: "issue:build:42", fail: true},
+		{name: "refuse-bare-commit-status", mode: workingDraftChecksCustom, text: "commit_status:", fail: true},
+		{name: "refuse-a-line-without-a-colon", mode: workingDraftChecksCustom, text: "linux-build: pending", fail: true},
+		{name: "refuse-the-text-not-just-the-bad-line", mode: workingDraftChecksCustom, text: "commit_status:ci:lint\nbuild", fail: true},
+		{name: "refuse-empty-custom-text", mode: workingDraftChecksCustom, text: " \n\n ", fail: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := workingDraftExpectedChecks(tc.mode, tc.text)
+			if tc.fail {
+				if !errors.Is(err, errFactoryInput) {
+					t.Fatalf("workingDraftExpectedChecks(%q) error %v, want errFactoryInput", tc.text, err)
+				}
+				if got != nil {
+					t.Fatalf("a refused line yielded checks %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("workingDraftExpectedChecks(%q): %v", tc.text, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("checks = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWorkingDraftExpectedChecksReadsWhatTheEditorWrote is the correspondence
+// check with the handoff's writer: formatExpectedChecks in
+// app/lib/src/model/expected_checks.dart joins each check's line —
+// `check_run:<name>:<app id>` or `commit_status:<context>` — with a newline, and
+// the converter must read that text back as the same keys the Dart parser
+// (parseExpectedChecks) reads from it. Colons in names and contexts survive the
+// round trip; nothing is collapsed, trimmed away or reinterpreted.
+func TestWorkingDraftExpectedChecksReadsWhatTheEditorWrote(t *testing.T) {
+	want := []FactoryCheckKey{
+		{Kind: "check_run", Name: "build", AppID: 42},
+		{Kind: "check_run", Name: "Windows:Build", AppID: 1234},
+		{Kind: "commit_status", Name: "ci:lint"},
+		{Kind: "commit_status", Name: "ctx:"},
+	}
+	lines := make([]string, 0, len(want))
+	for _, check := range want {
+		if check.Kind == "commit_status" {
+			lines = append(lines, check.Kind+":"+check.Name)
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s:%s:%d", check.Kind, check.Name, check.AppID))
+	}
+	text := strings.Join(lines, "\n")
+
+	got, err := workingDraftExpectedChecks(workingDraftChecksCustom, text)
+	if err != nil {
+		t.Fatalf("workingDraftExpectedChecks(%q): %v", text, err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("checks = %+v, want the editor's own %+v", got, want)
 	}
 }
 

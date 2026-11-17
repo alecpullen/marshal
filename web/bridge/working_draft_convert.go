@@ -404,10 +404,20 @@ func workingDraftFactoryRequest(draft WorkingDraft, requestID string) (FactoryCr
 // workingDraftExpectedChecks maps the editor's checks mode onto the factory
 // configuration the same way FactoryNew's buildConfig does: inherit leaves the
 // list nil so the project's defaults apply, none is a non-nil empty list (an
-// explicit choice that survives resolution), and custom parses the same
-// check_run:name:appId / commit_status:context lines. A line that does not
-// parse is refused rather than dropped, so a conversion can never require fewer
-// checks than the one that was reviewed.
+// explicit choice that survives resolution), and custom parses the canonical
+// raw lines the handoff wrote: `check_run:<name>:<app id>` or
+// `commit_status:<context>`.
+//
+// The split is where the specification puts it, because it is what lets a name
+// or a context hold a colon of its own: the line's first colon names the kind,
+// a commit status' context is the whole remainder of its line, and a check
+// run's app id sits behind the line's last colon with the name in front of it.
+// Splitting on every colon instead would refuse `commit_status:ci:lint` (a
+// context of "ci:lint") and `check_run:Windows:Build:1234` (the name
+// "Windows:Build"), both of which the handoff writes back out in exactly this
+// form, while accepting `commit_status:ctx:` only by silently dropping its last
+// colon. A line that does not parse is refused rather than dropped, so a
+// conversion can never require fewer checks than the one that was reviewed.
 func workingDraftExpectedChecks(mode, text string) ([]FactoryCheckKey, error) {
 	switch strings.TrimSpace(mode) {
 	case "", workingDraftChecksInherit:
@@ -418,33 +428,42 @@ func workingDraftExpectedChecks(mode, text string) ([]FactoryCheckKey, error) {
 	default:
 		return nil, fmt.Errorf("%w: unknown checks mode %q", errFactoryInput, mode)
 	}
+	refuse := fmt.Errorf("%w: each expected check must be check_run:name:appId or commit_status:context", errFactoryInput)
 	var checks []FactoryCheckKey
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		parts := strings.Split(line, ":")
-		if len(parts) == 2 || len(parts) == 3 {
-			kind, name := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-			app := ""
-			if len(parts) == 3 {
-				app = strings.TrimSpace(parts[2])
+		// The first colon names the kind; the rest of the line belongs to the
+		// check and may hold colons of its own.
+		colon := strings.Index(line, ":")
+		if colon < 0 {
+			return nil, refuse
+		}
+		kind, rest := strings.TrimSpace(line[:colon]), line[colon+1:]
+		switch kind {
+		case "commit_status":
+			// The context is the entire remainder, so `commit_status:ci:lint`
+			// states "ci:lint" and `commit_status:ctx:` keeps its last colon.
+			if context := strings.TrimSpace(rest); context != "" {
+				checks = append(checks, FactoryCheckKey{Kind: kind, Name: context})
+				continue
 			}
-			switch kind {
-			case "check_run":
-				if id, err := strconv.ParseInt(app, 10, 64); err == nil && id > 0 && name != "" {
-					checks = append(checks, FactoryCheckKey{Kind: kind, Name: name, AppID: id})
-					continue
-				}
-			case "commit_status":
-				if app == "" && name != "" {
-					checks = append(checks, FactoryCheckKey{Kind: kind, Name: name})
-					continue
-				}
+		case "check_run":
+			// The last colon separates the app id from a name that may itself
+			// contain colons, as `check_run:Windows:Build:1234` does.
+			idStart := strings.LastIndex(rest, ":")
+			if idStart < 0 {
+				return nil, refuse
+			}
+			name := strings.TrimSpace(rest[:idStart])
+			if id, err := strconv.ParseInt(strings.TrimSpace(rest[idStart+1:]), 10, 64); err == nil && id > 0 && name != "" {
+				checks = append(checks, FactoryCheckKey{Kind: kind, Name: name, AppID: id})
+				continue
 			}
 		}
-		return nil, fmt.Errorf("%w: each expected check must be check_run:name:appId or commit_status:context", errFactoryInput)
+		return nil, refuse
 	}
 	if len(checks) == 0 {
 		return nil, fmt.Errorf("%w: enter at least one expected check, or choose no required checks", errFactoryInput)

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // ErrUnknownReviewComment is returned for a comment id the agent doesn't have.
@@ -20,20 +22,13 @@ var errInvalidReview = errors.New("bridge: invalid review comment")
 // maxQuoteLines bounds the quoted diff lines sent to the agent.
 const maxQuoteLines = 6
 
-// ReviewComment is one line comment left on an agent's diff.
-type ReviewComment struct {
-	ID         string    `json:"id"`
-	AgentID    string    `json:"agentId"`
-	Path       string    `json:"path"`
-	Line       int       `json:"line"`
-	Side       string    `json:"side"`
-	Quote      string    `json:"quote"`
-	Body       string    `json:"body"`
-	CreatedAt  time.Time `json:"createdAt"`
-	SentAt     time.Time `json:"sentAt"`
-	ResolvedAt time.Time `json:"resolvedAt,omitzero"`
-	OwnerID    string    `json:"ownerId"`
-}
+// ReviewComment is contract.ReviewComment; see that declaration. A comment
+// travels to the app as the same JSON the bridge has always written.
+type ReviewComment = contract.ReviewComment
+
+// ReviewCommentRequest is contract.ReviewCommentRequest: the fields of a
+// comment the operator supplies.
+type ReviewCommentRequest = contract.ReviewCommentRequest
 
 // reviewMessage is the text the agent receives for a comment.
 func reviewMessage(c ReviewComment) string {
@@ -178,11 +173,13 @@ func (s *Server) listReviewComments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) addReviewComment(w http.ResponseWriter, r *http.Request) {
-	var body ReviewComment
+	var body ReviewCommentRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	c, err := s.fleet.AddReviewComment(r.Context(), r.PathValue("id"), body)
+	c, err := s.fleet.AddReviewComment(r.Context(), r.PathValue("id"), ReviewComment{
+		Path: body.Path, Line: body.Line, Side: body.Side, Quote: body.Quote, Body: body.Body,
+	})
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -205,5 +202,5 @@ func (s *Server) resolveReviewComment(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) recentPrompts(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	writeJSON(w, http.StatusOK, map[string]any{"prompts": s.fleet.RecentPrompts(r.URL.Query().Get("project"), limit)})
+	writeJSON(w, http.StatusOK, contract.RecentPrompts{Prompts: s.fleet.RecentPrompts(r.URL.Query().Get("project"), limit)})
 }

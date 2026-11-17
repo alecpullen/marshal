@@ -78,6 +78,8 @@ type agentRuntime struct {
 	reg   *Registry
 	log   *EventLog
 
+	viewerSocket string // the child's viewer socket: an own child's, or a container's host-side one; "" for a project child
+
 	// sessionID is the ACP session inside this agent, assigned by the
 	// agent itself once session/new returns. Empty until then.
 	sessionID string
@@ -99,6 +101,10 @@ type agentRuntime struct {
 	// a version that differs from the bridge's buildVersion. It is a
 	// warning only — the spawn is never refused on skew.
 	versionWarning bool
+
+	// agentVersion is the version the agent's handshake reported (decision
+	// 4), kept beside versionWarning so the warning can name it.
+	agentVersion string
 
 	// caps are the capability names the agent advertised in initialize.
 	// Set once during startRuntime, before the runtime is published.
@@ -127,9 +133,9 @@ type Fleet struct {
 	gatesMu sync.Mutex
 	gates   map[string]gateRecord
 
-	// buildVersion is the release version of the webbridge binary, stamped
-	// at build time via -ldflags -X. Empty when built from source; the
-	// --version banner reports "dev" in that case.
+	// buildVersion is the bridge's own version, the same value daemonVersion
+	// reports: the release stamp, else the source build's dev+<commit>
+	// (bridge.SourceBuild's rule).
 	buildVersion string
 
 	// runner executes container-runtime commands for derived-image builds.
@@ -213,6 +219,10 @@ type Fleet struct {
 	blockedPending map[string]networkBlockDelta
 	// stateDir is where git mirrors and agent working trees live.
 	stateDir string
+	// workingDrafts is the durable store of incomplete manual factory
+	// handoffs. The factory routes open it beside stateDir and Close
+	// releases it; nil when this fleet has no factory API.
+	workingDrafts *WorkingDraftStore
 	// stateVolume is the name of the shared state volume mounted at
 	// stateDir. Agents mount subpaths of it.
 	stateVolume string
@@ -380,9 +390,32 @@ type Fleet struct {
 	// pruneMu; provMu is a leaf, so that is the only order it is ever
 	// taken in.
 	pruneMu sync.Mutex
+
+	// backfillAgentsOnce and backfillFactoryOnce run the pull request record
+	// backfill once per source: the agents when polling starts, the factory
+	// items when the controller is wired. The factory's runs from
+	// SetFactoryController alone, so a poller that starts before the controller
+	// is wired cannot spend it on a nil controller.
+	//
+	// SetFactoryController must be called before StartPoller starts the pull
+	// request observer: `factory` is written once, there, and read by the
+	// observer goroutine without a lock. cmd/webbridge wires the recovered
+	// controller in openRecoveredFactory, before fleet.StartPoller.
+	backfillAgentsOnce  sync.Once
+	backfillFactoryOnce sync.Once
 }
 
-func (f *Fleet) SetFactoryController(c *FactoryController) { f.factory = c }
+func (f *Fleet) SetFactoryController(c *FactoryController) {
+	f.factory = c
+	if c == nil {
+		return
+	}
+	c.SetPullRecorder(f.recordFactoryPull)
+	// The factory's items may already carry pull requests from before the
+	// bridge kept records; they are added here rather than from the poller's
+	// start, which may already have run with no controller to ask.
+	f.backfillFactoryOnce.Do(f.backfillFactoryPulls)
+}
 
 func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string, projectMounts []ProjectMount, stateVolume string) *Fleet {
 	if stateDir == "" {
@@ -460,6 +493,18 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			// No container runtime: fall back to a host process so a
 			// laptop without docker still works.
 			child := &Child{MarshalBin: marshalBin}
+			// The own child serves viewers on a socket of its own, beside
+			// the project children's (decision 1). The directory is created
+			// before anything listens on it, as buildProjectChild does. A
+			// fleet with no state root has nowhere to put one and starts no
+			// viewers.
+			if f.stateDir != "" {
+				socket := agentViewerSocketPath(f.stateDir, a.ID)
+				if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+					return nil, fmt.Errorf("bridge: create agent viewer socket dir: %w", err)
+				}
+				child.Args = []string{"--viewers", "unix://" + socket}
+			}
 			if proxied {
 				child.Env = os.Environ()
 				for k, v := range wiring.Env {
@@ -472,7 +517,11 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		if err != nil {
 			return nil, err
 		}
-		return &Child{Transport: newContainerTransport(cfg), Containerized: true}, nil
+		// The container is told where to serve viewers through its
+		// environment (buildRunArgs, decision 3), and the host side of that
+		// socket sits beside the control socket's (decision 6).
+		tr := newContainerTransport(cfg)
+		return &Child{Transport: tr, Containerized: true, ViewerSocket: tr.viewerSocketPath()}, nil
 	}
 	return f
 }
@@ -805,6 +854,32 @@ func (f *Fleet) runtimeForAgent(id string) (*agentRuntime, error) {
 	return rt, nil
 }
 
+// attachTargetFor returns the project child and session an agent's session runs
+// on, read in one critical section (P5 F5).
+//
+// The runtime lookup and the read of its fields must not be two critical
+// sections: a Pause between them deletes the runtime, and the attach would then
+// dial a child the fleet has just released. The spawn error is kept separate
+// from the unknown-agent error so the caller can tell "paused" from "failed to
+// start" as runtimeForAgent does.
+func (f *Fleet) attachTargetFor(id string) (*projectChild, string, error) {
+	f.mu.Lock()
+	rt, ok := f.runtimes[id]
+	var pc *projectChild
+	var sessionID string
+	if ok {
+		pc, sessionID = rt.project, rt.sessionID
+	}
+	f.mu.Unlock()
+	if !ok {
+		return nil, "", fmt.Errorf("%w: agent %s", ErrUnknownAgent, id)
+	}
+	if rt.spawnErr != nil {
+		return nil, "", rt.spawnErr
+	}
+	return pc, sessionID, nil
+}
+
 // runtimeForRoot returns any live runtime for a project root. With
 // per-agent runtimes there may be several; callers that need a specific
 // agent should use runtimeForAgent.
@@ -879,7 +954,7 @@ func (f *Fleet) projectRuntime(ctx context.Context, a Agent) (*agentRuntime, err
 
 	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile,
 		child: child, reg: reg, log: log, sourceKind: a.SourceKind,
-		project: pc, caps: caps}
+		project: pc, caps: caps, agentVersion: version}
 	// The child's version is the rule checkAgentVersion applies to a child of
 	// an agent's own: a mismatch is a warning, never a refusal.
 	if versionSkew(version, f.buildVersion) {
@@ -916,6 +991,22 @@ func (f *Fleet) startRuntime(ctx context.Context, a Agent) (*agentRuntime, error
 	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile,
 		child: child, reg: reg, log: log, sourceKind: a.SourceKind,
 		containerized: child.Containerized}
+	// A host process's child serves viewers on a socket of its own: the bridge
+	// clears a stale one before the child starts and keeps the path so
+	// releaseAgent can remove it with the child (decision 1). A container's
+	// child names the host side of the socket the container serves (decision
+	// 6): nothing is removed here, because the transport's start clears it
+	// before the container runs and the agent removes its own again when it
+	// binds. A project child carries its own.
+	if child.Containerized {
+		rt.viewerSocket = child.ViewerSocket
+	} else if f.stateDir != "" {
+		rt.viewerSocket = agentViewerSocketPath(f.stateDir, a.ID)
+		if err := os.Remove(rt.viewerSocket); err != nil && !os.IsNotExist(err) {
+			slog.Default().Warn("webbridge: remove stale agent viewer socket failed",
+				"agent", a.ID, "path", rt.viewerSocket, "err", err)
+		}
+	}
 	f.armWorkspaceTimeout(rt, a)
 	f.attachClassifier(rt)
 
@@ -971,6 +1062,7 @@ func (f *Fleet) checkAgentVersion(ctx context.Context, rt *agentRuntime) {
 	for k := range res.SessionCapabilities {
 		rt.caps[k] = true
 	}
+	rt.agentVersion = res.AgentInfo.Version
 	if versionSkew(res.AgentInfo.Version, f.buildVersion) {
 		rt.versionWarning = true
 		slog.Default().Warn("webbridge: agent version differs from bridge",
@@ -979,8 +1071,9 @@ func (f *Fleet) checkAgentVersion(ctx context.Context, rt *agentRuntime) {
 }
 
 // versionSkew is checkAgentVersion's rule: both versions real and different.
-// Both sides must carry a real version; an empty or "dev" value on either side
-// means a source build, where skew is meaningless.
+// An empty or plain "dev" value on either side means a source build that named
+// no commit, so there is nothing to compare; two dev+<commit> builds carry
+// commits, and different ones are skew.
 func versionSkew(agentVersion, bridgeVersion string) bool {
 	if agentVersion == "" || agentVersion == "dev" ||
 		bridgeVersion == "" || bridgeVersion == "dev" {
@@ -1106,6 +1199,11 @@ type SpawnOptions struct {
 	// Routing selects per-session model routing, forwarded verbatim as
 	// session/new's routing parameter.
 	Routing json.RawMessage
+	// Subagents, when set, is the resolved child-settings snapshot the new
+	// session binds, forwarded as session/new's subagentSettings. Nil sends
+	// nothing, so a spawn that resolved no snapshot keeps the runtime's own
+	// defaults and its frame stays byte-for-byte what it always was.
+	Subagents *FactorySubagentSettings
 	// Workspace is a workspace reference (see ParseWSRef). Empty falls back
 	// to the project's default, then to the profile and devcontainer.
 	Workspace string
@@ -1488,6 +1586,12 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 	if len(opts.Routing) > 0 && string(opts.Routing) != "null" {
 		params["routing"] = opts.Routing
 	}
+	// The resolved child-settings snapshot, when the caller has one, binds to
+	// this session alone. Sending nothing is not the same as sending zeros:
+	// an absent key is what every spawn sent before this field existed.
+	if opts.Subagents != nil {
+		params["subagentSettings"] = *opts.Subagents
+	}
 	// One combined starting policy goes to session/new. The requested tuple
 	// (which the caller already merged over the project's defaults) wins over
 	// the workspace's: a requested mode replaces the pair rather than
@@ -1561,6 +1665,10 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 	// nothing, and on a project child it is what tells the fleet's session
 	// from a client's (P4 D10 decision 1).
 	rt.reg.TrackFleet(out.SessionID, agentCwd)
+	// The agent reports this session's runs from other connections from here
+	// on (P5 F5, plan 4c). An older agent without the method is left as it
+	// was: following never fails a spawn.
+	f.followAgentSession(ctx, rt, out.SessionID)
 	agent := a // copy the resolved agent
 	if out.Workspace != nil {
 		agent.Isolated = true
@@ -1845,6 +1953,47 @@ func (f *Fleet) agentForSession(sessionID string) (string, bool) {
 	return id, ok
 }
 
+// agentOwning is the agent whose session sessionID is: a record naming it,
+// live or paused, or the classifier's live map (decision 2). An empty session
+// id owns nothing.
+func (f *Fleet) agentOwning(sessionID string) (Agent, bool) {
+	if sessionID == "" {
+		return Agent{}, false
+	}
+	if id, ok := f.agentForSession(sessionID); ok {
+		if a, ok := f.ws.Agent(id); ok {
+			return a, true
+		}
+		// A mapped session whose record is gone still names an agent: the id
+		// is what the sentence needs.
+		return Agent{ID: id, SessionID: sessionID}, true
+	}
+	for _, a := range f.ws.Agents() {
+		if a.SessionID == sessionID {
+			return a, true
+		}
+	}
+	return Agent{}, false
+}
+
+// agentDisplayName is an agent as a sentence names it: its Name, else its ID.
+func agentDisplayName(a Agent) string {
+	if a.Name != "" {
+		return a.Name
+	}
+	return a.ID
+}
+
+// finishFromFleet is the refusal's sentence (decision 3), shared by the relay
+// and the session screen.
+//
+// The session screen keeps its own copy (internal/app/tui/model.go), because
+// web/ is standard library only and the TUI cannot import it. Both suites pin
+// the sentence, so the two copies must change together.
+func finishFromFleet(a Agent) string {
+	return "This is agent " + agentDisplayName(a) + "'s session: finish it from the fleet screen."
+}
+
 // installClassifier chains the fleet's classifier onto child's notifications
 // and reg's events, keying each delta by agentOf's answer. It must run before
 // child starts, as Attach must: the hook fields are read unsynchronized by the
@@ -1939,6 +2088,12 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			st.UpdatedAt = a.CreatedAt
 		}
 		if rt, err := f.runtimeForAgent(a.ID); err == nil {
+			// The version warning is a sentence, not a flag (decision 5):
+			// it names both versions, so the screen shows it as it is.
+			if rt.versionWarning {
+				st.VersionWarning = fmt.Sprintf("agent runs marshal %s; the daemon is %s",
+					rt.agentVersion, f.buildVersion)
+			}
 			sid := f.sessionIDFor(rt)
 			// Registry.Pending is the authority on whether anything is
 			// still outstanding; live.pending only supplies the payload.
@@ -2022,6 +2177,14 @@ func (f *Fleet) releaseAgent(id string, destroy bool) {
 	if rt.child != nil {
 		rt.child.Stop()
 	}
+	// The viewer socket goes with the child that served it (decision 1). A
+	// detached child returned above and keeps its own.
+	if rt.viewerSocket != "" {
+		if err := os.Remove(rt.viewerSocket); err != nil && !os.IsNotExist(err) {
+			slog.Default().Warn("webbridge: remove agent viewer socket failed",
+				"agent", id, "path", rt.viewerSocket, "err", err)
+		}
+	}
 	// A pooled agent's tree lives in its pool directory, not work/<id>.
 	if poolRoot := filepath.Join(f.stateDir, "pool") + string(filepath.Separator); strings.HasPrefix(rt.root, poolRoot) {
 		_ = os.RemoveAll(filepath.Dir(rt.root))
@@ -2057,6 +2220,17 @@ func (f *Fleet) releaseProjectAgent(rt *agentRuntime) {
 	f.rearmLinger(rt.project)
 }
 
+// followAgentSession asks the agent to report sessionID's runs from other
+// connections (P5 F5, plan 4c). An older agent answers method-not-found,
+// which Registry.Follow logs once per session. Any other failure is logged
+// here: following is an observation, and it never fails a spawn or a restore.
+func (f *Fleet) followAgentSession(ctx context.Context, rt *agentRuntime, sessionID string) {
+	if err := rt.reg.Follow(ctx, sessionID); err != nil && !errors.Is(err, ErrUnsupported{Feature: "follow"}) {
+		slog.Default().Warn("webbridge: follow an agent's session failed",
+			"agent", rt.id, "session", sessionID, "err", err)
+	}
+}
+
 // restoreSession reattaches the bridge to the ACP session already
 // running inside a reattached container. An agent with no persisted
 // session id (a pre-v2 record) is left addressable by agent id only.
@@ -2083,6 +2257,9 @@ func (f *Fleet) restoreSession(ctx context.Context, rt *agentRuntime, a Agent) e
 			f.mu.Unlock()
 			return fmt.Errorf("restore session %s for agent %s: %w", a.SessionID, a.ID, err)
 		}
+		// The restored session is a fleet agent's, so it is followed again:
+		// this child never heard the follow the last one did (P5 4c).
+		f.followAgentSession(ctx, rt, a.SessionID)
 	} else {
 		if err := rt.reg.Load(ctx, cwd, a.SessionID); err != nil {
 			return fmt.Errorf("restore session %s for agent %s: %w", a.SessionID, a.ID, err)
@@ -2091,6 +2268,9 @@ func (f *Fleet) restoreSession(ctx context.Context, rt *agentRuntime, a Agent) e
 		rt.sessionID = a.SessionID
 		f.sessionAgent[a.SessionID] = a.ID
 		f.mu.Unlock()
+		// A child of the agent's own carries this session alone, and it is
+		// the fleet's too (P5 4c).
+		f.followAgentSession(ctx, rt, a.SessionID)
 	}
 	// A reattached session reports no mode_changed for the state it already
 	// holds, so ask for it before the fleet claims any privileges. A failed
@@ -2229,6 +2409,12 @@ func (f *Fleet) Close() {
 	f.runtimes = make(map[string]*agentRuntime)
 	f.sessionAgent = make(map[string]string)
 	f.mu.Unlock()
+
+	// The working-draft store releases its journal and ownership lock with the
+	// bridge; a failed close leaves nothing a caller could still write.
+	if f.workingDrafts != nil {
+		_ = f.workingDrafts.Close()
+	}
 
 	// The bridge is going away; the agents are not. Detaching leaves
 	// each container running under its name, so Open reattaches to it

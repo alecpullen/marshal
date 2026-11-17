@@ -299,6 +299,89 @@ func TestStatusLineShowsSwarmTokenBudget(t *testing.T) {
 	}
 }
 
+// restartStub is a session whose status carries a pending restart, so the
+// status line and the sheet can be asked what they make of one.
+func restartStub(reason, waitingFor string) *stubSession {
+	return &stubSession{patch: func(st *acpwire.SessionStatus) {
+		st.Restart = &acpwire.PendingRestart{Reason: reason, WaitingFor: waitingFor}
+	}}
+}
+
+// TestAPendingRestartShowsOnTheStatusLine: a child that is no longer the one
+// on disk says so, in the warning colour the fleet's count uses (B3).
+func TestAPendingRestartShowsOnTheStatusLine(t *testing.T) {
+	m := newStatusTestModelStub(t, restartStub("config.toml changed", "the turn to finish"))
+
+	line := m.renderStatusLine(100)
+	if got := stripANSI(line); !strings.Contains(got, "restart pending") {
+		t.Fatalf("status line = %q, want the pending restart", got)
+	}
+	if !strings.Contains(line, warningStyle().Render("restart pending")) {
+		t.Fatalf("the restart segment is not rendered in the warning colour: %q", line)
+	}
+}
+
+// TestNoPendingRestartShowsNothing: a current child adds no segment.
+func TestNoPendingRestartShowsNothing(t *testing.T) {
+	m := newStatusTestModelStub(t, &stubSession{})
+
+	if got := stripANSI(m.renderStatusLine(100)); strings.Contains(got, "restart") {
+		t.Fatalf("status line = %q, want no restart segment", got)
+	}
+}
+
+// TestThePendingRestartSurvivesANarrowTerminal: the segment is pinned beside
+// the fleet's count, outside the hint shedding, so 80 columns keeps both.
+func TestThePendingRestartSurvivesANarrowTerminal(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	f := newNeedsYouFleet(loadedFleet(agentItem("a2")))
+	m := testModelStub(t, state, restartStub("config.toml changed", "the turn to finish"), WithFleet(f, nil))
+	m.resize(80, 30)
+
+	line := stripANSI(m.renderStatusLine(80))
+	for _, want := range []string{"needs you 1", "restart pending"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("status line at 80 columns = %q, want %q", line, want)
+		}
+	}
+	if got := visibleRunes(line); got > 80 {
+		t.Fatalf("status line at 80 columns is %d cells wide: %q", got, line)
+	}
+}
+
+// TestTheStatusLineGoldenShowsTheRestart pins the segment's place on the
+// status line at 100 columns, beside the fleet count's own golden.
+func TestTheStatusLineGoldenShowsTheRestart(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	prev := theme.Current()
+	t.Cleanup(func() { theme.Reload(prev) })
+	theme.Reload(theme.LoadWithConfig("", "", theme.DepthFlat, nil))
+
+	render := func() string {
+		// The working directory is a temp dir, so the line's own segment is
+		// pinned to a fixed path, and the project is trusted so the hints
+		// survive beside the restart: the golden compares the whole row.
+		state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+		state.SetTrusted(true)
+		stub := &stubSession{patch: func(st *acpwire.SessionStatus) {
+			st.WorkingDir = "/home/marshal/project"
+			st.Restart = &acpwire.PendingRestart{Reason: "config.toml changed", WaitingFor: "the turn to finish"}
+		}}
+		m := testModelStub(t, state, stub)
+		m.resize(100, 30)
+		return stripANSI(m.renderStatusLine(100))
+	}
+
+	first := render()
+	if second := render(); first != second {
+		t.Fatalf("the status line is not deterministic:\nfirst:  %q\nsecond: %q", first, second)
+	}
+	if !strings.Contains(first, "restart pending") {
+		t.Fatalf("the golden's row has no restart: %q", first)
+	}
+	checkStatusGolden(t, "status-restart-100", first)
+}
+
 func TestStatusLineShowsEditCmdModeWhenEditingCommand(t *testing.T) {
 	m := newStatusTestModel(t)
 	m = openTestApprovalEdit(t, m, "go test")
@@ -1188,8 +1271,8 @@ func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
 		if got := m.modeSegment(); got != want {
 			t.Fatalf("modeSegment = %q, want %q during approval", got, want)
 		}
-		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "approval") {
-			t.Fatalf("statusRightSegment = %q, want the approval indicator", got)
+		if got := stripANSI(m.sessionRightSegment()); !strings.Contains(got, "approval") {
+			t.Fatalf("sessionRightSegment = %q, want the approval indicator", got)
 		}
 	})
 
@@ -1199,8 +1282,8 @@ func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
 		if got := m.modeSegment(); got != want {
 			t.Fatalf("modeSegment = %q, want %q while browsing", got, want)
 		}
-		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "browse") {
-			t.Fatalf("statusRightSegment = %q, want the browse indicator", got)
+		if got := stripANSI(m.sessionRightSegment()); !strings.Contains(got, "browse") {
+			t.Fatalf("sessionRightSegment = %q, want the browse indicator", got)
 		}
 	})
 
@@ -1213,8 +1296,8 @@ func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
 		if got := m.modeSegment(); got != want {
 			t.Fatalf("modeSegment = %q, want %q while answering", got, want)
 		}
-		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "answering") {
-			t.Fatalf("statusRightSegment = %q, want the answering indicator", got)
+		if got := stripANSI(m.sessionRightSegment()); !strings.Contains(got, "answering") {
+			t.Fatalf("sessionRightSegment = %q, want the answering indicator", got)
 		}
 	})
 
@@ -1225,8 +1308,8 @@ func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
 			t.Fatalf("modeSegment = %q, want %q while editing a command", got, want)
 		}
 		// The pending decision stays visible while its command is edited.
-		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "approval") {
-			t.Fatalf("statusRightSegment = %q, want the pending-approval indicator", got)
+		if got := stripANSI(m.sessionRightSegment()); !strings.Contains(got, "approval") {
+			t.Fatalf("sessionRightSegment = %q, want the pending-approval indicator", got)
 		}
 	})
 

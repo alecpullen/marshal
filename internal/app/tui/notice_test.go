@@ -256,7 +256,7 @@ func TestTickDismissRepaintsBannerAway(t *testing.T) {
 
 // A warning-severity notice renders with the warning glyph and style,
 // and the status bar renders the "⚠ warning" segment. This covers the
-// otherwise-dead warn branches in renderNotice and statusRightSegment.
+// otherwise-dead warn branches in renderNotice and sessionRightSegment.
 func TestRenderWarnNotice(t *testing.T) {
 	m := newTestModel(t)
 	stateOf(m).SetNotice(session.Notice{Category: session.NoticeConfig, Severity: session.SeverityWarn, Message: "old config key ignored"})
@@ -265,7 +265,7 @@ func TestRenderWarnNotice(t *testing.T) {
 	if !strings.Contains(plain, "old config key ignored") {
 		t.Fatalf("warn banner message missing:\n%s", plain)
 	}
-	status := stripANSI(m.statusRightSegment())
+	status := stripANSI(m.sessionRightSegment())
 	if !strings.Contains(status, "warning") {
 		t.Fatalf("status segment should show warning, got %q", status)
 	}

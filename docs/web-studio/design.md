@@ -240,15 +240,42 @@ These go in from W1, so adding users later doesn't need a redesign:
   | `◉` | live |
   | `⌂` | home |
 
+  The shell's own navigation (`lib/nav/model.ts`) assigns each row a mark from
+  that vocabulary, with two fresh reinterpretations — `◉` for Inbox and `▸`
+  for Live (anything in flight) — while `◆` marks a project, `┆` a work item,
+  and `▹` a planned destination that opens its roadmap page. The Fleet-first
+  shell keeps the Warm Sunset palette: the approved HIFI work supplies
+  layouts and interaction, not a new visual system.
+
 - **Components:**
   - rail, sidebar list items, cards, tags (semantic and role-coloured);
+  - **shell:** a labelled sidebar at wide widths, the same model as an icon
+    rail when collapsed, and a phone/tablet app bar plus bottom bar with a
+    drawer — one `buildNavModel` result drives all three;
+  - **page primitives:** `PageHeader` (breadcrumb, title, status, actions) and
+    `StateMessage` (empty, error, and roadmap states with one tone and one
+    action), so a page never invents its own heading or empty copy;
   - segmented controls, toggles, chips with popovers, a command palette;
+  - **fleet and factory:** attention cards, project factory cards with their
+    counts, an independent-agent list, warnings, the work-item card, the
+    effective-configuration summary, the decision and recovery panels, and
+    the activity timeline beside an embedded agent conversation;
   - the transcript set: task row, open-task rule, step header, tool row,
     output block, now bar and composer;
   - the dock: header, follow badge, tabs, strip;
   - diffs, the gate checklist, stage cells, graph nodes, sparklines, toasts.
 - **Motion:** live dots pulse, and nothing else animates by default. Honour
   `prefers-reduced-motion`.
+- **Layout:** 12px panel radius and 8px control radius (`studio-panel`,
+  `studio-control`). Below 768px the shell switches to phone chrome: an app
+  bar, a fixed bottom destination bar, and a drawer for the full list, with
+  `studio-safe-bottom` keeping content clear of the home indicator. The
+  project factory splits into two columns from 1200px and stacks below it.
+- **Accessibility:** one `:focus-visible` accent outline across the shell,
+  primary touch targets at least 44px, no horizontal overflow at any
+  supported width, and a page that reads correctly at 200% browser zoom.
+  Leaving a route with unsaved input asks first; a browser-level
+  `beforeunload` guard backs it up.
 - **Keyboard:** TUI parity:
   - `Esc` enters browse mode; `j`/`k`/`J`/`K`/`g`/`G` move;
   - `Enter` changes density, `i` inspects, `y` copies, `o` opens, `f`
@@ -258,19 +285,48 @@ These go in from W1, so adding users later doesn't need a redesign:
 
 ## 7. Information architecture
 
-| Rail | Route | Page |
+Routes are hash routes, so a deep link survives a reload served by webbridge.
+The shell is Fleet-first: `#` is the Fleet home, `#inbox` is the full inbox,
+and each project's factory dashboard is the project's front door. This
+supersedes the older Home/Fleet split described in §8.2 and §8.3 — those page
+specs remain the detail for the inbox and live wall, but the Fleet home, not
+Inbox, is where the shell lands.
+
+| Section | Route | Page |
 |---|---|---|
-| ⌂ Home | `/` | Inbox |
-| ◉ Live | `/live` | Live wall |
-| ⧉ Agents | `/:project/agents/:id` (+ `/new`, `/review`) | Session, New agent, Review & ship |
-| ⋔ Runs | `/:project/runs/:id?view=lanes\|graph\|timeline` | Plan runs and swarms |
-| ▦ Workspaces | `/workspaces`, `/workspaces/:name/edit\|network\|builds` | Gallery, designer, network inspector |
-| ≡ Projects | `/projects/:id` (+ `/automations/review-bot\|ci-fixer`) | Project overview, automations |
-| ○ Watches | `/watches` | Watch monitors |
-| ◈ Library | `/library/skills\|plugins\|mcp\|memory\|recipes` | Library, shared memory |
-| ∿ Usage | `/usage?tab=cost\|audit\|disk` | Usage & audit |
-| ⚙ Settings | `/settings/models\|providers\|tokens\|notifications` | Settings |
-| (public) | `/s/:token` | Status page |
+| Primary | `#` (`#fleet` redirects here) | Fleet: warnings, needs you, ready for review, project factories, independent agents, resources |
+| Primary | `#inbox` | Inbox: decisions, ready to ship, running |
+| Projects (one per registered project) | `#projects/<root>` | Project overview and automations; the row itself links to `#projects/<root>/factory` |
+| Project factory | `#projects/<root>/factory[?filter=current\|needs-you\|ready\|history]` | That project's work items, factory defaults, linked agents |
+| Project factory | `#factory[?filter=…]` | The same factory across every project |
+| Project factory | `#factory/new[?project=<root>]` | Handoff: scope, repository, roles, authority, approval summary |
+| Work item | `#factory/<id>[?view=approval\|activity\|review\|prs\|documents&agent=<id>]` | One item: header, tab strip, activity split with the selected agent's conversation |
+| Sessions | `#chat/<id>`, `#sessions` | Full agent session; session list |
+| Resources | `#live` | Live wall |
+| Resources | `#runs`, `#runs/<id>` | Plan runs and swarms |
+| Resources | `#workspaces` | Workspace gallery, designer, network inspector |
+| Resources | `#projects` | Project list |
+| Resources | `#watches` | Watch monitors |
+| Resources | `#library/skills\|plugins\|mcp\|memory\|recipes` | Library, shared memory |
+| Resources | `#usage?tab=cost\|audit\|disk` | Usage & audit |
+| Resources | `#settings/models\|providers\|tokens\|notifications` | Settings |
+| Planned (shown in the main UI) | `#roadmap/planning\|voice\|workflow\|hosts\|environments\|connections` | Roadmap page for a capability that does not exist yet |
+| Public | `/s/:token` | Status page |
+
+Navigation is responsive rather than a fixed rail: a labelled sidebar with a
+collapsible icon-rail form, and below 768px an app bar with a bottom
+destination bar and a drawer holding the same list. All three render one
+`buildNavModel` result, so a destination, its active state, and its needs-you
+count cannot disagree between them. Work items appear under a project only
+while that project or one of its items is the current route.
+
+Planned capabilities are first-class rows, not hidden placeholders: the
+navigation links each one to its roadmap page, and that page states what is
+planned, what exists today, and the nearest working alternative. Nothing in
+the roadmap is rendered as operational.
+
+Old routes are redirected rather than broken: `#fleet` to `#`, `#clients` to
+`#library/mcp`, `#disk` to `#usage?tab=disk`, `#activity` to `#usage?tab=audit`.
 
 ## 8. Page specs
 

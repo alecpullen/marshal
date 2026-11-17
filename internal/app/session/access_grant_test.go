@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -124,5 +125,38 @@ func TestAccessWorkspaceOrConfigRevisionRequiresRefresh(t *testing.T) {
 	}
 	if _, ok := f.state.AccessRequest(); !ok {
 		t.Fatal("a refresh dropped the pending request")
+	}
+}
+
+// A permission grant runs the same owner transaction as a session rule, so an
+// admission taken against the pre-grant snapshot is stale and must be retried
+// rather than executed under the old policy.
+func TestAddSessionPermissionRuleBumpsRevision(t *testing.T) {
+	owner := interactionState(t)
+	auth := owner.InteractionAuthority()
+	before := auth.Snapshot()
+
+	owner.AddSessionPermissionRule(PermissionGrant{Permission: "image.capture", Pattern: "active_window"})
+
+	if got := owner.InteractionState().Revision; got <= before.Access.Revision {
+		t.Fatalf("revision = %d, want > %d after a grant", got, before.Access.Revision)
+	}
+	if _, err := auth.BeginAdmission(context.Background(), before); !errors.Is(err, ErrAdmissionStale) {
+		t.Fatalf("BeginAdmission(stale) = %v, want ErrAdmissionStale", err)
+	}
+}
+
+func TestSessionPermissionRulesReturnsCopy(t *testing.T) {
+	f := newAccessFixture(t)
+	grant := PermissionGrant{Permission: "image.capture", Pattern: "active_window"}
+	f.state.AddSessionPermissionRule(grant)
+
+	got := f.state.SessionPermissionRules()
+	if len(got) != 1 || got[0] != grant {
+		t.Fatalf("SessionPermissionRules = %+v, want [%+v]", got, grant)
+	}
+	got[0].Pattern = "screen"
+	if again := f.state.SessionPermissionRules(); again[0].Pattern != "active_window" {
+		t.Fatalf("mutating the returned slice changed the session grants: %+v", again)
 	}
 }

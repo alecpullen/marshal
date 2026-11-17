@@ -113,9 +113,9 @@ func (p *OpenAICompatible) Capabilities(ctx context.Context) schema.ProviderCapa
 
 // UserAgent is the User-Agent marshal's provider client identifies itself
 // with on OpenCode Zen endpoints, which ask clients to use their own name
-// and version rather than a generic HTTP-library default. cmd/marshal
-// stamps the release version at startup; local builds keep the dev
-// default.
+// and version rather than a generic HTTP-library default. cmd/marshal always
+// stamps this build's version at startup; only a build carrying no VCS stamp
+// keeps the marshal/dev default below.
 var UserAgent = "marshal/dev"
 
 // isOpencode reports whether this provider talks to OpenCode Zen, which
@@ -319,7 +319,7 @@ func (p *OpenAICompatible) chat(ctx context.Context, req schema.ChatRequest) (<-
 	if p.replayRejected.Load() {
 		field = ""
 	}
-	body, err := buildChatRequestBody(req, p.reasoningSummary, field)
+	body, err := buildChatRequestBody(ctx, req, p.reasoningSummary, field)
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)
 	}
@@ -373,7 +373,7 @@ func (p *OpenAICompatible) chat(ctx context.Context, req schema.ChatRequest) (<-
 	return events, nil
 }
 
-func buildChatRequestBody(req schema.ChatRequest, reasoningSummary bool, replayField string) ([]byte, error) {
+func buildChatRequestBody(ctx context.Context, req schema.ChatRequest, reasoningSummary bool, replayField string) ([]byte, error) {
 	if req.Model == "" {
 		return nil, errors.New("chat request: model is required")
 	}
@@ -383,6 +383,28 @@ func buildChatRequestBody(req schema.ChatRequest, reasoningSummary bool, replayF
 	messages := make([]chatMessageBody, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		messages = append(messages, chatMessageToBody(m, replayField))
+		if len(m.Images) == 0 {
+			continue
+		}
+		switch m.Role {
+		case schema.RoleUser:
+			// A user message with images becomes one parts array: its text
+			// first, the images after.
+			parts, err := openAIImageParts(ctx, req.ImageSource, m.Images)
+			if err != nil {
+				return nil, err
+			}
+			parts = append([]openAIContentPart{{Type: "text", Text: m.Content}}, parts...)
+			messages[len(messages)-1].Content = partsContent(parts)
+		case schema.RoleTool:
+			// A tool message's images always ride a synthetic user message
+			// immediately after it, because role:"tool" content is text-only.
+			imageMessage, err := openAIToolImagesMessage(ctx, req.ImageSource, m.Images)
+			if err != nil {
+				return nil, err
+			}
+			messages = append(messages, imageMessage)
+		}
 	}
 	tools := make([]toolDefinitionBody, 0, len(req.Tools))
 	for _, tool := range req.Tools {
@@ -429,10 +451,46 @@ func buildChatRequestBody(req schema.ChatRequest, reasoningSummary bool, replayF
 	})
 }
 
+// openAIImageParts appends the images of one message as content parts,
+// resolved through the request's ImageSource. Text parts come first; the
+// image parts follow in ref order.
+func openAIImageParts(ctx context.Context, src schema.ImageSource, refs []schema.ImageRef) ([]openAIContentPart, error) {
+	parts := make([]openAIContentPart, 0, len(refs))
+	for _, ref := range refs {
+		url, err := imageDataURL(ctx, src, ref)
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, openAIContentPart{Type: "image_url", ImageURL: &openAIImageURL{URL: url}})
+	}
+	return parts, nil
+}
+
+// openAIToolImagesMessage builds the synthetic user message that carries a
+// tool message's images: OpenAI's role:"tool" content is text-only, so the
+// images ride a parts message immediately after it. One text part names them
+// so the model knows what the blocks are, and the image parts follow.
+func openAIToolImagesMessage(ctx context.Context, src schema.ImageSource, refs []schema.ImageRef) (chatMessageBody, error) {
+	labels := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		label := ref.Label
+		if label == "" {
+			label = ref.MIME
+		}
+		labels = append(labels, label)
+	}
+	images, err := openAIImageParts(ctx, src, refs)
+	if err != nil {
+		return chatMessageBody{}, err
+	}
+	parts := append([]openAIContentPart{{Type: "text", Text: strings.Join(labels, "\n")}}, images...)
+	return chatMessageBody{Role: string(schema.RoleUser), Content: partsContent(parts)}, nil
+}
+
 func chatMessageToBody(m schema.ChatMessage, replayField string) chatMessageBody {
 	body := chatMessageBody{
 		Role:       string(m.Role),
-		Content:    m.Content,
+		Content:    textContent(m.Content),
 		ToolCallID: m.ToolCallID,
 	}
 	if replayField != "" && m.Role == schema.RoleAssistant && m.Reasoning != nil && m.Reasoning.Text != "" {
@@ -554,6 +612,7 @@ func streamChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- sc
 	dec := streaming.NewDecoder(body)
 	var finishReason string
 	var usage *schema.TokenUsage
+	var completion streamCompletion
 	toolBuffers := make(map[int]*streamingToolCallBuffer)
 	var thinkParser inlineThinkParser
 
@@ -563,6 +622,8 @@ func streamChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- sc
 			continue
 		}
 		if data == "[DONE]" {
+			// The OpenAI-compatible protocol's terminal sentinel.
+			completion.mark()
 			break
 		}
 
@@ -625,6 +686,9 @@ func streamChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- sc
 		if choice.FinishReason != "" {
 			recognized = true
 			finishReason = choice.FinishReason
+			// A non-empty finish_reason is this protocol's other terminal
+			// marker: some servers close the stream right after it.
+			completion.mark()
 		}
 		if !recognized {
 			capture.annotate("[unrecognized-chunk]", data)
@@ -643,6 +707,15 @@ func streamChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- sc
 		if content != "" {
 			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: content}
 		}
+	}
+
+	// A stream that ended without [DONE] or a finish_reason was cut short.
+	// Report it as interrupted, with no tool calls: the buffers above may hold
+	// a partially accumulated call, and repairing it here would present a
+	// truncated stream as a complete one.
+	if !completion.seen {
+		events <- completion.interrupted("[DONE] or finish_reason", usage)
+		return
 	}
 
 	events <- schema.ChatEvent{
@@ -684,8 +757,8 @@ func readChatResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
 	if reasoning != "" {
 		events <- schema.ChatEvent{Type: schema.ChatEventDelta, Kind: schema.DeltaThinking, Delta: reasoning}
 	}
-	if choice.Message.Content != "" {
-		events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: choice.Message.Content}
+	if text := choice.Message.contentText(); text != "" {
+		events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: text}
 	}
 	var usage *schema.TokenUsage
 	if parsed.Usage != nil {

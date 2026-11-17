@@ -149,6 +149,101 @@ func TestVersionMismatchWarnsButDoesNotRefuse(t *testing.T) {
 	}
 }
 
+// TestTwoSourceBuildsWarnOfSkew: dev+<commit> is a version, so two source
+// builds from different commits are skewed and warn; plain dev is no
+// version at all, so it never does (decision 7).
+func TestTwoSourceBuildsWarnOfSkew(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		bridgeVersion string
+		agentVersion  string
+		wantWarn      bool
+	}{
+		{"different commits", "dev+bbbbbbbbbbbb", "dev+aaaaaaaaaaaa", true},
+		// The same commit is the same build: dev+<commit> carries one, so it
+		// is compared and found equal — skew needs a difference, not merely
+		// two source builds.
+		{"same commit", "dev+aaaaaaaaaaaa", "dev+aaaaaaaaaaaa", false},
+		{"plain dev bridge", "dev", "dev+aaaaaaaaaaaa", false},
+		{"plain dev agent", "dev+bbbbbbbbbbbb", "dev", false},
+		{"both plain dev", "dev", "dev", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := testFleetWithVersion(t, tc.bridgeVersion)
+			id, err := f.spawnWithAgentVersion(context.Background(), tc.agentVersion)
+			if err != nil {
+				t.Fatalf("the spawn was refused: %v", err)
+			}
+			if got := f.versionWarned(id); got != tc.wantWarn {
+				t.Fatalf("agent %s under bridge %s: warned = %v, want %v",
+					tc.agentVersion, tc.bridgeVersion, got, tc.wantWarn)
+			}
+		})
+	}
+}
+
+// agentStatus returns the agent's row as Snapshot reports it.
+func agentStatus(t *testing.T, f *Fleet, id string) AgentStatus {
+	t.Helper()
+	for _, st := range f.Snapshot() {
+		if st.ID == id {
+			return st
+		}
+	}
+	t.Fatalf("agent %s is not in the snapshot", id)
+	return AgentStatus{}
+}
+
+// TestAnAgentsVersionWarningIsOnItsStatus: the wire carries a sentence naming
+// both versions, whether the agent runs on its project's child or on a child
+// of its own (decisions 4 and 5).
+func TestAnAgentsVersionWarningIsOnItsStatus(t *testing.T) {
+	t.Run("on a project child", func(t *testing.T) {
+		f, _ := projectFleetWith(t, func(fake *fakeProjectChild) {
+			fake.fakeAgent.mu.Lock()
+			fake.fakeAgent.results["initialize"] = map[string]any{
+				"protocolVersion": 1,
+				"agentInfo":       map[string]any{"version": "v2.0.0"},
+			}
+			fake.fakeAgent.mu.Unlock()
+		})
+		f.SetHostProcessesOnly()
+		f.buildVersion = "v1.0.0"
+		id, err := f.Spawn(ctlContext(t), t.TempDir(), SpawnOptions{Name: "one"})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		want := "agent runs marshal v2.0.0; the daemon is v1.0.0"
+		if got := agentStatus(t, f, id).VersionWarning; got != want {
+			t.Fatalf("VersionWarning = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("on a child of its own", func(t *testing.T) {
+		f := testFleetWithVersion(t, "v1.2.3")
+		id, err := f.spawnWithAgentVersion(context.Background(), "v1.0.0")
+		if err != nil {
+			t.Fatalf("spawn: %v", err)
+		}
+		want := "agent runs marshal v1.0.0; the daemon is v1.2.3"
+		if got := agentStatus(t, f, id).VersionWarning; got != want {
+			t.Fatalf("VersionWarning = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestNoWarningLeavesTheFieldEmpty: matching versions say nothing on the wire.
+func TestNoWarningLeavesTheFieldEmpty(t *testing.T) {
+	f := testFleetWithVersion(t, "v1.2.3")
+	id, err := f.spawnWithAgentVersion(context.Background(), "v1.2.3")
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if got := agentStatus(t, f, id).VersionWarning; got != "" {
+		t.Fatalf("VersionWarning = %q, want it empty: both sides report v1.2.3", got)
+	}
+}
+
 func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	t.Helper()
 	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "answering": true,
+  "service": {
+    "installed": true,
+    "running": true,
+    "pid": 1234
+  },
+  "linger": {
+    "supported": true,
+    "enabled": true
+  },
+  "daemon": {
+    "version": "0.9.1",
+    "profile": "local",
+    "pid": 4321,
+    "startedAt": 1763300000000,
+    "socket": "/home/u/.local/share/marshal/daemon/daemon.sock",
+    "projects": [
+      "/home/u/src/marshal"
+    ],
+    "pinned": [
+      "/home/u/src/marshal"
+    ],
+    "children": [
+      {
+        "root": "/home/u/src/marshal",
+        "version": "0.9.1",
+        "pinned": true,
+        "sessions": [
+          {
+            "id": "s1",
+            "viewers": 1,
+            "lastActive": 1763300000000
+          }
+        ]
+      }
+    ],
+    "refresh": {
+      "pid": 4322,
+      "restarts": 0
+    }
+  }
+}

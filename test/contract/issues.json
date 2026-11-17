@@ -1,0 +1,9 @@
+{
+  "RepoIssue": {
+    "Number": 42,
+    "Title": "The login redirect loses the return path",
+    "Body": "Open a deep link while signed out, sign in, and the app lands on the Overview.",
+    "URL": "https://github.com/owner/name/issues/42",
+    "Labels": ["bug", "studio"]
+  }
+}

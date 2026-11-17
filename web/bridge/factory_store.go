@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -60,6 +62,14 @@ type FactoryStore struct {
 
 func factoryCopy[T any](v T) T      { b, _ := json.Marshal(v); var c T; _ = json.Unmarshal(b, &c); return c }
 func factoryDigest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+
+// factoryScopedRequestID namespaces a client-supplied request identity. The
+// journal keys replay by request ID, so two clients naming one ID must be two
+// operations; what the client sent survives only in provenance.
+func factoryScopedRequestID(clientID, requestID string) string {
+	h := sha256.Sum256([]byte(clientID + "\x00" + requestID))
+	return "mcp:" + hex.EncodeToString(h[:])
+}
 func factoryPlanHash(plan, spec string) string {
 	var b bytes.Buffer
 	for _, s := range []string{plan, spec} {
@@ -67,6 +77,152 @@ func factoryPlanHash(plan, spec string) string {
 		b.WriteString(s)
 	}
 	return factoryDigest(b.Bytes())
+}
+
+// factoryDigestPattern is the shape of one SHA-256 hex digest. A selected
+// file's hashes are checked against it because ContentSHA256 names a blob: a
+// value that is not a digest is a path, and a path must never reach the store.
+var factoryDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// factorySnapshotFileLimit matches the capture limit: an approval that selects
+// more files than a capture can hold is refused rather than half-applied.
+const factorySnapshotFileLimit = 100
+
+// factoryApprovalHash binds one approval to exactly what was approved: the
+// plan and specification bytes and, when the approval carries one, the
+// reviewed selection's own digest.
+//
+// An approval without a snapshot keeps the digest it has always had, so every
+// journal written before snapshots existed still validates and replays byte
+// for byte. A snapshot-bearing approval uses an explicitly versioned digest,
+// which is what keeps the two forms from ever being mistaken for each other.
+func factoryApprovalHash(plan, spec string, snap *EditSnapshot) string {
+	if snap == nil {
+		return FactoryPlanHash(plan, spec)
+	}
+	// The field order here is the digest's definition, not an accident: a
+	// verifier hashes this exact JSON.
+	canonical, _ := json.Marshal(struct {
+		Version            int    `json:"version"`
+		Plan               string `json:"plan"`
+		Spec               string `json:"spec"`
+		EditSnapshotSHA256 string `json:"editSnapshotSha256"`
+	}{Version: 2, Plan: plan, Spec: spec, EditSnapshotSHA256: snap.SHA256})
+	return factoryDigest(canonical)
+}
+
+// factoryCloneSnapshot returns a snapshot that shares no backing array with s.
+// A draft, an approval and a request body routinely hold the same snapshot in
+// one process, and none of them may mutate another's selection.
+func factoryCloneSnapshot(s *EditSnapshot) *EditSnapshot {
+	if s == nil {
+		return nil
+	}
+	out := &EditSnapshot{BaseCommit: s.BaseCommit, SHA256: s.SHA256}
+	if s.Files != nil {
+		out.Files = append([]SelectedFile(nil), s.Files...)
+	}
+	return out
+}
+
+// factoryValidateSnapshot refuses a selection a seed could not apply exactly.
+// Every rule here is one the seed depends on: a base commit it can resolve, a
+// blob name that is a digest, a path that stays inside the repository, and an
+// operation whose hashes say what it must verify before writing.
+func factoryValidateSnapshot(s *EditSnapshot) error {
+	if s == nil {
+		return nil
+	}
+	if !plannerCommitPattern.MatchString(s.BaseCommit) {
+		return fmt.Errorf("%w: edit snapshot base commit is not a commit id", errFactoryInput)
+	}
+	if !factoryDigestPattern.MatchString(s.SHA256) {
+		return fmt.Errorf("%w: edit snapshot digest is not a SHA-256", errFactoryInput)
+	}
+	// The recorded digest must describe this selection. A client that supplies
+	// its own EditSnapshot is not trusted to have hashed what it sent, and the
+	// approval digest binds this string, not the file list behind it.
+	if digest, err := plannerSnapshotDigest(*s); err != nil {
+		return fmt.Errorf("%w: edit snapshot digest: %v", errFactoryInput, err)
+	} else if digest != s.SHA256 {
+		return fmt.Errorf("%w: edit snapshot does not match its recorded digest", errFactoryInput)
+	}
+	if len(s.Files) > factorySnapshotFileLimit {
+		return fmt.Errorf("%w: an edit snapshot holds at most %d files", errFactoryInput, factorySnapshotFileLimit)
+	}
+	seen := make(map[string]bool, len(s.Files))
+	for _, file := range s.Files {
+		if problem := factorySnapshotPathProblem(file.Path); problem != "" {
+			return fmt.Errorf("%w: selected path %q %s", errFactoryInput, file.Path, problem)
+		}
+		if seen[file.Path] {
+			return fmt.Errorf("%w: selected path %q appears twice", errFactoryInput, file.Path)
+		}
+		seen[file.Path] = true
+		switch file.Operation {
+		case plannerFileCreate:
+			if file.BaseSHA256 != "" {
+				return fmt.Errorf("%w: create of %q carries a base hash", errFactoryInput, file.Path)
+			}
+			if !factoryDigestPattern.MatchString(file.ContentSHA256) {
+				return fmt.Errorf("%w: create of %q has no content hash", errFactoryInput, file.Path)
+			}
+		case plannerFileModify:
+			if !factoryDigestPattern.MatchString(file.BaseSHA256) || !factoryDigestPattern.MatchString(file.ContentSHA256) {
+				return fmt.Errorf("%w: modify of %q needs both hashes", errFactoryInput, file.Path)
+			}
+		case plannerFileDelete:
+			if !factoryDigestPattern.MatchString(file.BaseSHA256) {
+				return fmt.Errorf("%w: delete of %q has no base hash", errFactoryInput, file.Path)
+			}
+			if file.ContentSHA256 != "" {
+				return fmt.Errorf("%w: delete of %q carries a content hash", errFactoryInput, file.Path)
+			}
+		default:
+			return fmt.Errorf("%w: selected path %q has operation %q, not create, modify or delete", errFactoryInput, file.Path, file.Operation)
+		}
+	}
+	// A selection that nests one path inside another cannot be applied in any
+	// order: the seed would write the parent as a file and then fail to make a
+	// directory of it, leaving a half-applied checkout.
+	for _, file := range s.Files {
+		for parent := path.Dir(file.Path); parent != "."; parent = path.Dir(parent) {
+			if seen[parent] {
+				return fmt.Errorf("%w: selected path %q is inside selected path %q", errFactoryInput, file.Path, parent)
+			}
+		}
+	}
+	return nil
+}
+
+// factorySnapshotPathProblem explains why a selected path is not one a seed
+// may touch, or returns "" when it is. A path is repository-relative and names
+// no element of the repository's own metadata: writing through ".git" would
+// change the repository rather than the work.
+func factorySnapshotPathProblem(p string) string {
+	switch {
+	case p == "":
+		return "is empty"
+	case strings.HasPrefix(p, "/"):
+		return "is absolute"
+	case strings.ContainsRune(p, '\\'):
+		return "is not a slash path"
+	case strings.HasPrefix(p, ":"):
+		// git reads a leading ':' as pathspec magic even after "--", so this
+		// path would stage a different file than the one selected.
+		return "names git pathspec magic"
+	}
+	for _, part := range strings.Split(p, "/") {
+		switch part {
+		case "":
+			return "has an empty element"
+		case ".", "..":
+			return "is not a clean relative path"
+		case ".git":
+			return "names repository metadata"
+		}
+	}
+	return ""
 }
 func factoryCanonical(b []byte) ([]byte, error) {
 	if len(b) > factoryRequestLimit {
@@ -244,6 +400,12 @@ func factoryNormalize(r *FactoryCreate) error {
 	if len(r.Plan)+len(r.Spec) > factoryImportLimit {
 		return fmt.Errorf("plan/spec exceed 1 MiB")
 	}
+	// The snapshot is copied before it is checked, so the caller's value and
+	// the normalized one never share a selection even when nothing changes.
+	r.EditSnapshot = factoryCloneSnapshot(r.EditSnapshot)
+	if err := factoryValidateSnapshot(r.EditSnapshot); err != nil {
+		return err
+	}
 	c := &r.Config
 	if c.Native && c.Workspace != "" {
 		return fmt.Errorf("native and workspace are mutually exclusive")
@@ -300,15 +462,24 @@ func validateFactoryItem(i FactoryItem) error {
 		if a.Revision != uint64(n+1) || strings.TrimSpace(a.Plan) == "" {
 			return fmt.Errorf("invalid approval revision/plan")
 		}
-		ar := FactoryCreate{RequestID: "approval", Title: i.Title, Plan: a.Plan, Spec: a.Spec, Config: a.Config}
+		ar := FactoryCreate{RequestID: "approval", Title: i.Title, Plan: a.Plan, Spec: a.Spec, Config: a.Config, EditSnapshot: a.EditSnapshot}
 		if e := factoryNormalize(&ar); e != nil {
 			return e
 		}
 		if len(a.Config.ExpectedChecks) == 0 && !a.Config.NoRequiredCIAcknowledged {
 			return fmt.Errorf("expected checks or explicit no-required-CI acknowledgement required")
 		}
-		if len(a.Plan)+len(a.Spec) > factoryImportLimit || a.PlanHash != factoryPlanHash(a.Plan, a.Spec) {
+		if len(a.Plan)+len(a.Spec) > factoryImportLimit || a.PlanHash != factoryApprovalHash(a.Plan, a.Spec, a.EditSnapshot) {
 			return fmt.Errorf("invalid approval")
+		}
+		// A frozen subagent cap is validated, never clamped, so a stored value
+		// outside the enforceable range is corruption rather than a setting.
+		// Zero stays legal: an approval journalled before subagent settings
+		// existed carries the zero value and keeps replaying unchanged.
+		for _, role := range []FactorySubagentSettings{a.ImplementerSubagents, a.ReviewerSubagents} {
+			if role.Concurrency != 0 && !factorySubagentConcurrencySupported(role.Concurrency) {
+				return fmt.Errorf("invalid approval subagent concurrency")
+			}
 		}
 	}
 	for _, r := range i.Rounds {
@@ -320,7 +491,264 @@ func validateFactoryItem(i FactoryItem) error {
 			}
 		}
 	}
+	unresolved := 0
+	seenProposals := make(map[string]bool, len(i.Proposals))
+	for _, p := range i.Proposals {
+		if e := validateFactoryRevisionProposal(p); e != nil {
+			return e
+		}
+		if seenProposals[p.ID] {
+			return fmt.Errorf("duplicate proposal id")
+		}
+		seenProposals[p.ID] = true
+		// A proposal's base names the approval it was written against, and both
+		// sides are immutable, so the binding is checkable here as well as by the
+		// controller. A record naming an approval that does not exist, or a hash
+		// that is not that approval's, is corrupt rather than merely stale.
+		if p.BaseRevision > uint64(len(i.Approvals)) {
+			return fmt.Errorf("proposal names an approval that does not exist")
+		}
+		if i.Approvals[p.BaseRevision-1].PlanHash != p.BaseHash {
+			return fmt.Errorf("proposal base hash does not match its approval")
+		}
+		if factoryRevisionUnresolved(p.Status) {
+			unresolved++
+		}
+	}
+	if unresolved > 1 {
+		return fmt.Errorf("multiple unresolved proposals")
+	}
+	return validateFactoryCompletion(i)
+}
+
+// factoryCompletionStates are the values FactoryCompletion.Status accepts.
+// The empty status is not here because it is not stored: it is the same "open"
+// a missing record is, and an item that carries one is read as open rather
+// than rewritten.
+var factoryCompletionStates = map[string]bool{"open": true, "complete": true}
+
+var factoryCompletionStopStates = map[string]bool{"requested": true, "stopped": true, "failed": true, "unknown": true}
+
+var factoryAssessmentStates = map[string]bool{"pending": true, "available": true, "failed": true, "unavailable": true}
+
+var factoryLinkOrigins = map[string]bool{"factory": true, "user": true}
+
+var factoryMergeBatchStates = map[string]bool{"active": true, "stopped": true, "complete": true}
+
+var factoryMergeStepStates = map[string]bool{"unattempted": true, "prepared": true, "dispatched": true, "confirmed": true, "failed": true, "uncertain": true}
+
+// validateFactoryCompletion checks the business completion record the journal
+// stores. It is absent on every item journalled before completion existed, so
+// a nil record validates, and so does a record whose status is empty: both are
+// open, and neither is rewritten to say so.
+//
+// What is checked is the evidence a surface switches on — the statuses, the
+// stop state, the merge batch and its steps, and the origin of every PR link —
+// plus the record identities, which are the keys a later reopen or merge batch
+// names. A value no surface can render is corrupt rather than merely
+// unfamiliar.
+func validateFactoryCompletion(i FactoryItem) error {
+	c := i.Completion
+	if c == nil {
+		return nil
+	}
+	if c.Status != "" && !factoryCompletionStates[c.Status] {
+		return fmt.Errorf("invalid completion status")
+	}
+	if c.StopState != "" && !factoryCompletionStopStates[c.StopState] {
+		return fmt.Errorf("invalid completion stop state")
+	}
+	if e := validateFactoryAssessment(c.Assessment); e != nil {
+		return e
+	}
+	if e := validateFactoryPRLinks(c.Links); e != nil {
+		return e
+	}
+	seen := make(map[string]bool, len(c.Records))
+	for _, r := range c.Records {
+		if strings.TrimSpace(r.ID) == "" || r.At.IsZero() || strings.TrimSpace(r.Actor) == "" {
+			return fmt.Errorf("invalid completion record identity")
+		}
+		if seen[r.ID] {
+			return fmt.Errorf("duplicate completion record id")
+		}
+		seen[r.ID] = true
+		if e := validateFactoryRunChoice(r.RunChoice); e != nil {
+			return e
+		}
+		if e := validateFactoryAssessment(r.Assessment); e != nil {
+			return e
+		}
+		if e := validateFactoryPRLinks(r.Links); e != nil {
+			return e
+		}
+	}
+	b := c.Batch
+	if b == nil {
+		return nil
+	}
+	if strings.TrimSpace(b.ID) == "" || strings.TrimSpace(b.RequestID) == "" || !factoryMergeBatchStates[b.State] {
+		return fmt.Errorf("invalid merge batch")
+	}
+	if e := validateFactoryRunChoice(b.RunChoice); e != nil {
+		return e
+	}
+	// A batch is the reviewed, ordered set the user authorized: one entry per
+	// pull request, not two attempts at the same one.
+	seenSteps := make(map[string]bool, len(b.Steps))
+	for _, s := range b.Steps {
+		if !factoryMergeStepStates[s.State] {
+			return fmt.Errorf("invalid merge step state")
+		}
+		// A step names the reviewed pull request a merge is sent for, so a
+		// step without that identity — or with a strategy no forge applies —
+		// is corrupt rather than merely unfamiliar: no surface could render it
+		// and no batch could drive it.
+		if strings.TrimSpace(s.RepoID) == "" || s.Number <= 0 || strings.TrimSpace(s.NodeID) == "" || strings.TrimSpace(s.HeadSHA) == "" || strings.TrimSpace(s.BaseRef) == "" {
+			return fmt.Errorf("invalid merge step identity")
+		}
+		key := s.RepoID + "\x00" + s.NodeID
+		if seenSteps[key] {
+			return fmt.Errorf("duplicate merge step")
+		}
+		seenSteps[key] = true
+		if !factoryMergeStrategies[s.Strategy] {
+			return fmt.Errorf("invalid merge step strategy")
+		}
+	}
 	return nil
+}
+
+// validateFactoryRunChoice checks the decision a completion or a merge batch
+// records about the run that follows it.
+func validateFactoryRunChoice(choice string) error {
+	if choice != "" && choice != "continue" && choice != "request_stop" {
+		return fmt.Errorf("invalid completion run choice")
+	}
+	return nil
+}
+
+// validateFactoryAssessment checks one piece of completion evidence. Its status
+// is what a surface renders in place of the summary, so it is required.
+func validateFactoryAssessment(a *FactoryAssessment) error {
+	if a == nil {
+		return nil
+	}
+	if !factoryAssessmentStates[a.Status] {
+		return fmt.Errorf("invalid completion assessment status")
+	}
+	return nil
+}
+
+// validateFactoryPRLinks checks the pull requests a completion or an
+// assessment is about. The origin is optional, because a link observed before
+// it recorded who opened the PR still names a real PR, and the empty origin
+// says exactly that.
+//
+// The identity is not optional. A link without a repository or node ID is one
+// no command can observe again — link_pr would append a second, correct entry
+// beside it and leave the broken one stale for ever — so it is corrupt rather
+// than merely unfamiliar, and so is a second entry for the same identity.
+func validateFactoryPRLinks(links []FactoryPRLink) error {
+	seen := make(map[string]bool, len(links))
+	for _, l := range links {
+		if l.Origin != "" && !factoryLinkOrigins[l.Origin] {
+			return fmt.Errorf("invalid pr link origin")
+		}
+		if strings.TrimSpace(l.RepoID) == "" || strings.TrimSpace(l.PR.NodeID) == "" || l.PR.Number <= 0 || l.ObservedAt.IsZero() {
+			return fmt.Errorf("invalid pr link identity")
+		}
+		key := l.RepoID + "\x00" + l.PR.NodeID
+		if seen[key] {
+			return fmt.Errorf("duplicate pr link identity")
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+// validateFactoryRevisionProposal checks one proposal as the journal stores it.
+// A proposal's candidate, base and authorship are immutable content; its state
+// moves, and a state that names an attempt must name one.
+func validateFactoryRevisionProposal(p FactoryRevisionProposal) error {
+	if strings.TrimSpace(p.ID) == "" || p.Version == 0 || p.BaseRevision == 0 || strings.TrimSpace(p.BaseHash) == "" {
+		return fmt.Errorf("invalid proposal identity")
+	}
+	if strings.TrimSpace(p.Plan) == "" || len(p.Plan)+len(p.Spec) > factoryImportLimit || p.CandidateHash != factoryPlanHash(p.Plan, p.Spec) {
+		return fmt.Errorf("invalid proposal content")
+	}
+	if !factoryRevisionProposalStates[p.Status] || !factoryRevisionAssessmentStates[p.AssessmentState] {
+		return fmt.Errorf("invalid proposal state")
+	}
+	if p.CreatedAt.IsZero() || p.UpdatedAt.IsZero() || p.UpdatedAt.Before(p.CreatedAt) {
+		return fmt.Errorf("invalid proposal timestamp")
+	}
+	if (p.AssessmentState == "pending" || p.AssessmentState == "assessing") && strings.TrimSpace(p.AssessmentAttemptID) == "" {
+		return fmt.Errorf("invalid proposal assessment attempt")
+	}
+	if a := p.Assessment; a != nil {
+		if !factoryRevisionClassifications[a.Classification] || !factoryRevisionRoutings[a.Recommendation] || !factoryRevisionStrategies[a.Strategy] || strings.TrimSpace(a.AssessorID) == "" || a.CandidateHash != p.CandidateHash || a.BaseRevision != p.BaseRevision {
+			return fmt.Errorf("invalid proposal assessment")
+		}
+	}
+	if d := p.Delivery; d != nil {
+		if !factoryRevisionStrategies[d.Strategy] || !factoryRevisionDeliveryStates[d.State] || d.CandidateHash != p.CandidateHash {
+			return fmt.Errorf("invalid proposal delivery")
+		}
+	}
+	if p.Routing != "" && !factoryRevisionRoutings[p.Routing] {
+		return fmt.Errorf("invalid proposal routing")
+	}
+	if p.PauseState != "" && !factoryRevisionPauseStates[p.PauseState] {
+		return fmt.Errorf("invalid proposal pause state")
+	}
+	return nil
+}
+
+// factoryRevisionCarryOver checks one stored proposal against the update that
+// carried it forward. Everything but its state, assessment, authority and
+// delivery is journal history, and its version moves at most one step per
+// mutation, so a caller writing from a stale read conflicts.
+func factoryRevisionCarryOver(a, b FactoryRevisionProposal) error {
+	if a.ID != b.ID || a.BaseRevision != b.BaseRevision || a.BaseHash != b.BaseHash || a.Plan != b.Plan || a.Spec != b.Spec || a.CandidateHash != b.CandidateHash || a.CreatedBy != b.CreatedBy || a.AutoAssess != b.AutoAssess || !a.CreatedAt.Equal(b.CreatedAt) {
+		return fmt.Errorf("immutable proposal content")
+	}
+	if b.Version < a.Version || b.Version > a.Version+1 {
+		return fmt.Errorf("invalid proposal version")
+	}
+	// A state that moved has to say so in the version. Without this, two item
+	// versions could carry the same proposal version with different states, and
+	// the ProposalVersion guard would admit a command written from the older
+	// read: the promise in FactoryRevisionProposal's comment would rest on
+	// caller discipline instead of on the layer that makes it.
+	if !bytes.Equal(factoryRevisionState(a), factoryRevisionState(b)) && b.Version != a.Version+1 {
+		return fmt.Errorf("proposal state moved without a version step")
+	}
+	return nil
+}
+
+// factoryRevisionState projects the fields a mutation may move, so the store
+// can tell a proposal carried forward unchanged from one that advanced.
+// Everything absent here is immutable history, checked by factoryRevisionCarryOver.
+func factoryRevisionState(p FactoryRevisionProposal) []byte {
+	b, _ := json.Marshal(struct {
+		Status              string                     `json:"status"`
+		AssessmentState     string                     `json:"assessmentState"`
+		AssessmentAttemptID string                     `json:"assessmentAttemptId"`
+		Assessment          *FactoryRevisionAssessment `json:"assessment"`
+		AuthorizedBy        string                     `json:"authorizedBy"`
+		Authority           string                     `json:"authority"`
+		Routing             string                     `json:"routing"`
+		PauseState          string                     `json:"pauseState"`
+		PauseRequestID      string                     `json:"pauseRequestId"`
+		Delivery            *FactoryRevisionDelivery   `json:"delivery"`
+		FollowUpRequestID   string                     `json:"followUpRequestId"`
+		FollowUpItemID      string                     `json:"followUpItemId"`
+		UpdatedAt           time.Time                  `json:"updatedAt"`
+	}{p.Status, p.AssessmentState, p.AssessmentAttemptID, p.Assessment, p.AuthorizedBy,
+		p.Authority, p.Routing, p.PauseState, p.PauseRequestID, p.Delivery,
+		p.FollowUpRequestID, p.FollowUpItemID, p.UpdatedAt})
+	return b
 }
 func (s *FactoryStore) replayRequest(request, id, hash string) (FactoryItem, bool, error) {
 	if p, ok := s.requests[request]; ok {
@@ -330,6 +758,22 @@ func (s *FactoryStore) replayRequest(request, id, hash string) (FactoryItem, boo
 		return factoryCopy(p.Item), true, nil
 	}
 	return FactoryItem{}, false, nil
+}
+
+// ItemForRequest returns the item a journaled request produced, so a durable
+// intent whose association was lost can be reconciled with the record the same
+// request already created instead of creating a second one.
+func (s *FactoryStore) ItemForRequest(request string) (FactoryItem, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(request) == "" {
+		return FactoryItem{}, false
+	}
+	p, ok := s.requests[request]
+	if !ok {
+		return FactoryItem{}, false
+	}
+	return factoryCopy(p.Item), true
 }
 
 // Create stores a handoff whose replay identity and content are both the
@@ -346,6 +790,23 @@ func (s *FactoryStore) Create(req FactoryCreate, now time.Time) (FactoryItem, er
 // so the identity is hashed over what the operator sent, never over the
 // resolved result.
 func (s *FactoryStore) CreateResolved(req, resolved FactoryCreate, now time.Time) (FactoryItem, error) {
+	return s.createResolved(req, resolved, nil, now)
+}
+
+// CreateAuthorized stores a handoff an authenticated MCP client proposed,
+// journaling its provenance in the same append that creates the item: there is
+// no second audit write that could succeed behind a failed create, or fail
+// behind a successful one.
+//
+// It performs local validation and the append only. The caller holds the
+// policy lock and has already resolved, normalized and preflighted the
+// candidate, and a request that already committed replays its original item
+// before resolved is read at all.
+func (s *FactoryStore) CreateAuthorized(req, resolved FactoryCreate, p factoryPrincipal, now time.Time) (FactoryItem, error) {
+	return s.createResolved(req, resolved, &p, now)
+}
+
+func (s *FactoryStore) createResolved(req, resolved FactoryCreate, p *factoryPrincipal, now time.Time) (FactoryItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.unavailable {
@@ -373,6 +834,12 @@ func (s *FactoryStore) CreateResolved(req, resolved FactoryCreate, now time.Time
 	id := hex.EncodeToString(idBytes)
 	now = now.UTC()
 	i := FactoryItem{ID: id, Title: resolved.Title, State: "draft", Version: 1, Draft: resolved, RepoID: resolved.Config.RepoID, ProjectRoot: resolved.Config.ProjectRoot, HostID: resolved.Config.HostID, Branch: "marshal/factory/" + id, CreatedAt: now, UpdatedAt: now}
+	if p != nil {
+		// The attribution rides the append that creates the item, so a create
+		// that committed is never missing its provenance and a create that
+		// failed leaves nothing behind.
+		i.History = append(i.History, p.event("create", "draft created", "", now))
+	}
 	return s.append(req.RequestID, hash, i)
 }
 
@@ -434,12 +901,82 @@ func (s *FactoryStore) Update(id, requestID string, expectedVersion uint64, comm
 			return FactoryItem{}, fmt.Errorf("immutable grant history")
 		}
 	}
+	// Proposed revisions are journal history too: a stored proposal is
+	// carried forward, never rewritten, and only its state moves.
+	if len(i.Proposals) < len(old.Proposals) {
+		return FactoryItem{}, fmt.Errorf("immutable proposal history")
+	}
+	for n := range old.Proposals {
+		if e := factoryRevisionCarryOver(old.Proposals[n], i.Proposals[n]); e != nil {
+			return FactoryItem{}, e
+		}
+	}
 	i.Version++
 	i.UpdatedAt = now.UTC()
 	if e = validateFactoryItem(i); e != nil {
 		return FactoryItem{}, e
 	}
 	return s.append(requestID, hash, i)
+}
+
+// factoryReplaceIdentity is the journal's replay identity for a draft
+// replacement: the version it was made against, the whole normalized
+// candidate and the authority it was admitted under.
+type factoryReplaceIdentity struct {
+	Kind      string        `json:"kind"`
+	Version   uint64        `json:"expectedVersion"`
+	Candidate FactoryCreate `json:"candidate"`
+	ClientID  string        `json:"clientId"`
+	ProjectID string        `json:"projectId"`
+	Action    string        `json:"action"`
+	Authority string        `json:"authority,omitempty"`
+}
+
+// ReplaceDraft replaces an unapproved draft's content in one journal append.
+//
+// The state, the identity and the version are checked here, under the store
+// lock, so a draft that was approved between the caller's read and this commit
+// is refused rather than overwritten: an approval is a frozen snapshot and
+// stays one. Only the title, the plan, the spec and the configuration move;
+// every earlier event, approval, grant, round, effect and every immutable
+// identity field is carried over untouched, and the replacement's attribution
+// is part of the same append.
+func (s *FactoryStore) ReplaceDraft(id, requestID string, expectedVersion uint64, candidate FactoryCreate, p factoryPrincipal, now time.Time) (FactoryItem, error) {
+	c := candidate
+	// The candidate names the journal's request identity, so two clients that
+	// sent one request ID are two operations, and the version the caller read
+	// is part of what is hashed.
+	c.RequestID = requestID
+	if e := factoryNormalize(&c); e != nil {
+		return FactoryItem{}, e
+	}
+	command, e := json.Marshal(factoryReplaceIdentity{
+		Kind: "replace", Version: expectedVersion, Candidate: c,
+		ClientID: p.ClientID, ProjectID: p.ProjectID, Action: p.Action, Authority: p.Authority,
+	})
+	if e != nil {
+		return FactoryItem{}, e
+	}
+	return s.Update(id, requestID, expectedVersion, command, func(i *FactoryItem) error {
+		if i.State != "draft" {
+			return ErrFactoryConflict
+		}
+		// What the work item is about, and which project and repository it
+		// belongs to, cannot move: an edit replaces the content of one draft.
+		if c.Config.RepoID != i.RepoID || c.Config.ProjectRoot != i.ProjectRoot || c.Config.HostID != i.HostID {
+			return ErrFactoryConflict
+		}
+		// The item's title and its draft's title are one field reported
+		// twice, so a replacement moves both: a stale Draft.Title would be
+		// projected beside the new title and read as a contradiction.
+		i.Title = c.Title
+		i.Draft.Title = c.Title
+		i.Draft.Plan = c.Plan
+		i.Draft.Spec = c.Spec
+		i.Draft.Config = c.Config
+		i.History = append(i.History, p.event("replace", "draft replaced", "", now))
+		return nil
+	}, now)
 }
 func (s *FactoryStore) append(request, hash string, i FactoryItem) (FactoryItem, error) {
 	p := factoryPayload{1, s.seq + 1, request, i.ID, hash, i}

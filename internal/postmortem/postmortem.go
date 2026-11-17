@@ -105,6 +105,11 @@ type Report struct {
 	// ended. Additive: the schema version stays put, and an aggregator that
 	// ignores this field still sees the failure evidence above.
 	ExecutionEvidence []ExecutionEvidence `json:"execution_evidence,omitempty"`
+	// Latency is the optional preflight-timing section (see latency.go): the
+	// hidden prompt-preparation work, its per-phase aggregates and the slowest
+	// measured turns. Additive and omitted when the session measured nothing,
+	// so an absent section means "unavailable", never "zero latency".
+	Latency *Latency `json:"latency,omitempty"`
 	// AgentObservations is nil until the optional agent pass appends semantic
 	// observations. Extraction never fabricates it.
 	AgentObservations *string  `json:"agent_observations"`
@@ -307,6 +312,11 @@ func Build(state *session.State, database *db.DB) (Report, error) {
 		Turns:      countUserTurns(state.Messages()),
 		ModelsUsed: []string{},
 	}
+
+	// Preflight timings are read from the session's in-memory collector, so
+	// they are available at the same point as the rest of the live state and
+	// need no database round trip.
+	report.Latency = buildLatency(state, report.Session.Turns)
 
 	// clean redacts then truncates. Redaction runs first so a masked token is
 	// never cut in half by truncation (a half-masked secret is still a leak).

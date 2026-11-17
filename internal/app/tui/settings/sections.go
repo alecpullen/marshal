@@ -29,6 +29,10 @@ func sectionList() []sectionSpec {
 		{ID: "permissions", Title: "Permissions", Root: permissionsFrame},
 		{ID: "diagnostics", Title: "Diagnostics", Root: diagnosticsFrame},
 		{ID: "project", Title: "Project", Root: projectFrame},
+		// The Studio section is a settings surface, not a config section: its
+		// rows read and write the built-in session's connection and access
+		// through the client seam, and nothing it shows lives in the config.
+		{ID: "studio", Title: "Studio", Root: studioFrame},
 		{ID: "interface", Title: "Interface", Root: interfaceFrame},
 	}
 }

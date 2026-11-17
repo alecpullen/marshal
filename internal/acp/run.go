@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"time"
 
@@ -53,6 +54,25 @@ type runConfig struct {
 
 	// hold serves project/hold and project/release; nil serves neither.
 	hold projectHoldFunc
+
+	// viewers is a viewer socket beside --listen; nil for none.
+	viewers net.Listener
+
+	// restrictViewers puts the container allowlist on every viewer: only a
+	// container runs --listen, so there is no unrestricted pairing
+	// (decision 4).
+	restrictViewers bool
+
+	// record is what this child started from, for a project child the bridge
+	// starts; nil elsewhere (decision 1). With no record, nothing the host
+	// serves changes.
+	record *startRecord
+
+	// resumeDetached binds each session's watch resume to its own service
+	// (decision 2). It is set by the host that serves viewers: such a host has
+	// no connection bound to a session's turns, so a wake with no screen on the
+	// session resumes it itself.
+	resumeDetached bool
 }
 
 // runWithConfig constructs the agentHost, serves a single connection, then

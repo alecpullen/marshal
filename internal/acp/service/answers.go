@@ -88,12 +88,14 @@ func (s *Session) alwaysRule(call *session.PendingToolCall) func() error {
 		// one the save path would be a relative config.toml in the process's
 		// working directory, so the rule stays on the session instead.
 		if dir := userConfigDir(); dir != "" {
-			err := config.SaveUserConfigRule(filepath.Join(dir, "config.toml"), config.PermissionRule{
+			path := filepath.Join(dir, "config.toml")
+			err := config.SaveUserConfigRule(path, config.PermissionRule{
 				Permission: rule.Permission,
 				Pattern:    rule.Pattern,
 				Action:     string(rule.Action),
 			})
 			if err == nil {
+				s.reportConfigWrite(path)
 				newCfg := s.state.ConfigSnapshot()
 				newCfg.Permissions.Rules = append(newCfg.Permissions.Rules, config.PermissionRule{
 					Permission: rule.Permission,
@@ -107,7 +109,7 @@ func (s *Session) alwaysRule(call *session.PendingToolCall) func() error {
 				return nil
 			}
 		}
-		s.state.AddSessionRule(call.Command)
+		s.grantForSession(call)
 		return nil
 	}
 }
@@ -116,9 +118,27 @@ func (s *Session) alwaysRule(call *session.PendingToolCall) func() error {
 // the session, whichever subagent asked.
 func (s *Session) sessionRule(call *session.PendingToolCall) func() error {
 	return func() error {
-		s.state.AddSessionRule(call.Command)
+		s.grantForSession(call)
 		return nil
 	}
+}
+
+// grantForSession records the answered call as a session rule: a command rule
+// for a shell call, and a permission grant for every other tool.
+func (s *Session) grantForSession(call *session.PendingToolCall) {
+	// A shell call is answered by its command. Every other tool is answered by
+	// a permission grant: requestApproval fills Command with the tool's own
+	// name when the tool supplies none, so an empty Command is not a reliable
+	// signal, and a command rule recorded for a non-shell tool could never
+	// match anything.
+	if permissions.PermissionForTool(call.Name) != "shell" || call.Command == "" {
+		s.state.AddSessionPermissionRule(session.PermissionGrant{
+			Permission: permissions.PermissionForTool(call.Name),
+			Pattern:    permissions.PatternForApproval(call),
+		})
+		return
+	}
+	s.state.AddSessionRule(call.Command)
 }
 
 // settleApproval settles one approval decision on the state that raised it,

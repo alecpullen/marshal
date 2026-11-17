@@ -1,0 +1,24 @@
+╭─ Agents ────────────── 7─╮╭─ Question ───────────────────────────────────────╮
+│ Needs you                ││ Which checks should the fix run before it lands? │
+│ ⚠ fix-fl…  38%   2    2m ││                                                  │
+│ Running                  ││   [x] unit tests                                 │
+│ ● s3b-eg…  41%   7    0s ││   [ ] integration tests                          │
+│ Ready                    ││   [ ] usability suite  slow                      │
+│ ✓ docs-d…  22%   4    1h ││                                                  │
+│ Earlier                  ││                                                  │
+│ · docs-s…  12%   0    5s ││                                                  │
+│ ✗ ci-fix…   9%   0    3h ││                                                  │
+│ Sessions                 ││                                                  │
+│ · marshal 3f2a91bc 2… 3m ││                                                  │
+│ · marshal 9c1d4e5f 1… 1m ││                                                  │
+╰──────────────────────────╯│                                                  │
+╭─ Needs you ─────────── 2─╮│                                                  │
+│ fix-flaky-hooks question ││                                                  │
+│ intake github: fix the … ││                                                  │
+╰──────────────────────────╯│                                                  │
+╭─ Events ────────────── 3─╮│                                                  │
+│ 14:58 connected to local ││                                                  │
+│ 14:59 docs-deploy is re… ││                                                  │
+│ 15:00 fix-flaky-hooks n… ││                                                  │
+╰──────────────────────────╯╰──────────────────────────────────────────────────╯
+local ●  j/k move a answer x cancel n spawn  ⏎ open                 ?help q quit

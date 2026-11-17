@@ -1,238 +1,578 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import Card from '../lib/ui/Card.svelte'
+  import DraftApproval from '../lib/factory/DraftApproval.svelte'
+  import WorkItemHeader from '../lib/factory/WorkItemHeader.svelte'
+  import ActivityTimeline from '../lib/factory/ActivityTimeline.svelte'
+  import DecisionPanel from '../lib/factory/DecisionPanel.svelte'
+  import RecoveryPanel from '../lib/factory/RecoveryPanel.svelte'
+  import CompletionPanel from '../lib/factory/CompletionPanel.svelte'
+  import DocumentsView from '../lib/factory/DocumentsView.svelte'
+  import PullRequestsView from '../lib/factory/PullRequestsView.svelte'
+  import ReviewView from '../lib/factory/ReviewView.svelte'
   import Button from '../lib/ui/Button.svelte'
-  import Tag from '../lib/ui/Tag.svelte'
-  import { APIError, commandFactoryItem, errMessage, getFactoryItem, getPreviewEnvironments } from '../lib/api'
-  import { createFactoryPoller, type FactoryCheck, type FactoryCommand, type FactoryCreate, type FactoryItem } from '../lib/factory'
-  import type { PreviewDeployment, PreviewEnvironment, PreviewReport } from '../lib/preview'
-  let { itemId, onNavigate }: { itemId: string; onNavigate: (hash: string) => void } = $props()
-  let item = $state<FactoryItem | null>(null), error = $state(''), notice = $state(''), busy = $state(false)
-  let answer = $state(''), reason = $state(''), additionalRounds = $state(1)
-  let changePlan = $state(false), replacementPlan = $state(''), replacementSpec = $state(''), replacementInstructions = $state('')
-  let replaceImplementerProfile = $state(''), replaceReviewerProfile = $state('')
-  let attest = $state(false), workerName = $state(''), pending = $state<FactoryCommand | null>(null)
-  let preview = $state<PreviewReport | null>(null), previewLoading = $state(false), previewError = $state('')
-  let previewStarted = $state(false), previewRequest = 0, alive = true
-  type PreviewSegment = { kind: 'code'; text: string } | { kind: 'text'; text: string } | { kind: 'link'; url: string; logs: string } | { kind: 'badge'; label: string; sha: string }
-  const textEncoder = new TextEncoder(), unsafeUrlPattern = /[\s`<>\u0000-\u001f\u007f-\u009f]/
-  /** Spec D10: clickable only as a literal absolute http(s) URL with a nonempty host, no whitespace/control (C0+C1)/angle/backtick characters, at most 2048 bytes. Matches the bridge validator factoryURLClickable (web/bridge/factory_prbody.go). No repair. */
-  function isHttpUrl(value: string) {
-    if (!value || !/^https?:\/\//i.test(value) || value.length > 2048 || textEncoder.encode(value).length > 2048 || unsafeUrlPattern.test(value)) return false
-    try {
-      const parsed = new URL(value)
-      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.hostname
-    } catch { return false }
+  import AgentConversation from '../lib/session/AgentConversation.svelte'
+  import MarshalAccessPanel from '../lib/marshal/MarshalAccessPanel.svelte'
+  import FactoryRevision from '../lib/FactoryRevision.svelte'
+  import { APIError, commandFactoryItem, errMessage, factoryRevisionCommand, getProjectSettings, listClients } from '../lib/api'
+  import { delegatedState, effectiveAutoAssess, provenanceLine, workerChildren, workerDelegated, workerIsReviewer, workerRoleLabel } from '../lib/factory'
+  import { formatChatRoute, formatFactoryRoute, parseFactoryRoute } from '../lib/routes'
+  import type { DockTabParam } from '../lib/routes'
+  import { defaultFactoryItemView } from '../lib/studio/model'
+  import type { AgentRow } from '../lib/fleet'
+  import type { FactoryCommand, FactoryCompletionCommand, FactoryCreate, FactoryItem, FactoryItemView, FactoryRevisionCommand, FactoryRoute } from '../lib/factory'
+
+  import type { FactoryState } from '../lib/factoryStore'
+
+  /** C5: what a decision or recovery panel hands back with a command kind. */
+  interface FactoryCommandInput {
+    answer?: string
+    reason?: string
+    additionalRounds?: number
+    replacement?: FactoryCreate
+    implementerRouting?: Record<string, unknown>
+    reviewerRouting?: Record<string, unknown>
+    confirmPreviousWorkerStopped?: boolean
+    /** The settings version the reviewer displayed; an approval echoes it back. */
+    settingsVersion?: string
+    /** A revision lifecycle command's own half, sent beside the envelope. */
+    revision?: FactoryRevisionCommand
+    /** A completion command's own half, sent beside the envelope. */
+    completion?: FactoryCompletionCommand
   }
-  const displayText = (value: string) => { const chars = [...value]; return chars.length > 512 ? chars.slice(0, 512).join('') + '…' : value }
-  function previewBadge(sha: string, head: string) { return sha.toLowerCase() === head.toLowerCase() ? 'matches the last factory-recorded PR head' : 'differs from the last factory-recorded PR head' }
-  function deploymentSegments(d: PreviewDeployment, head: string): PreviewSegment[] {
-    const segments: PreviewSegment[] = [{ kind: 'code', text: d.environment }, d.state ? { kind: 'code', text: d.state } : { kind: 'text', text: '(no status reported by the provider)' }]
-    if (d.sha) {
-      segments.push({ kind: 'code', text: d.sha.slice(0, 7) })
-      if (head) segments.push({ kind: 'badge', label: previewBadge(d.sha, head), sha: head.slice(0, 7) })
-    } else segments.push({ kind: 'text', text: 'revision not reported by the provider' })
-    if (d.environmentUrl) segments.push({ kind: 'link', url: d.environmentUrl, logs: d.logUrl })
-    if (d.description) segments.push({ kind: 'code', text: d.description })
-    return segments
+  /**
+   * What each command says when it lands. The revision kinds say what did *not*
+   * happen as well, because saving a proposal and approving one are different
+   * acts and a receipt is not a delivery.
+   */
+  const NOTICES: Partial<Record<FactoryCommand['kind'], string>> = {
+    stop: 'Stop requested. Waiting for worker confirmation.',
+    revision_propose: 'Proposal saved. It is not approved, and nothing has been started or changed.',
+    revision_supersede: 'Proposal superseded. Nothing was approved.',
+    revision_reject: 'Proposal rejected. The approved revision is unchanged.',
+    revision_assess_request: 'Assessment requested. The result appears here when it arrives.',
+    revision_authorize: 'Revision approved. Delivery is reported separately.',
+    revision_delivery_choice: 'Delivery choice recorded. The receipt below says how far it got.',
+    revision_follow_up_confirm: 'Follow-up requested. This item keeps its approved revision.',
+    complete: 'Completion recorded. That is your decision about the work; the run itself is unchanged.',
+    reopen: 'Reopened. Nothing was started, and the records that called this work done stay as they are.',
+    link_pr: 'Pull request linked. Its head, base and state are the bridge\'s own observation.',
+    refresh_pr_evidence: 'Evidence refresh requested. A link whose read fails keeps its snapshot and comes back stale.',
+    assess_completion: 'Assessment requested. It is evidence about the work; it neither completes nor reopens it.',
+    merge_pr: 'Merge authorized. Each pull request is reported merged only once the forge confirms it.',
+    merge_and_complete: 'Merge authorized. This work item completes only when every reviewed merge confirms.',
   }
-  function environmentSegments(e: PreviewEnvironment): PreviewSegment[] {
-    return e.htmlUrl ? [{ kind: 'code', text: e.name }, { kind: 'link', url: e.htmlUrl, logs: '' }] : [{ kind: 'code', text: e.name }]
-  }
-  function checkState(c: FactoryCheck) { return c.conclusion || c.status || 'pending' }
-  async function loadPreview() {
-    if (!item?.repoId) return
-    const seq = ++previewRequest
-    previewLoading = true; previewError = ''
-    try {
-      const report = (await getPreviewEnvironments(item.repoId, item.branch)) ?? null
-      if (!alive || seq !== previewRequest) return
-      preview = report
-    } catch (e) {
-      if (!alive || seq !== previewRequest) return
-      previewError = errMessage(e)
-    }
-    if (alive && seq === previewRequest) previewLoading = false
-  }
-  async function refresh() { item = await getFactoryItem(itemId); error = '' }
-  // Spec §6: the initial preview load fires once from the mount path, never from the item poller's refresh.
+  /** The decision kinds the recovery panel presents; everything else is a question. */
+  const RECOVERY_KINDS = ['exhausted', 'no_progress', 'worker_failed', 'invalid_result', 'ci_unavailable', 'ci_wait', 'conflict', 'recovery']
+  /*
+    One item, read through the shell's store instead of a poller of its own:
+    the store answers the first read, the shell's list poll keeps it current,
+    and a command's own result is published back so every view agrees. The
+    callbacks are the shell's, so the poller and the error handling stay in
+    one place.
+  */
+  let {
+    itemId,
+    route,
+    factory,
+    agents = [],
+    getItem,
+    upsert,
+    onRefresh,
+    onNavigate,
+  }: {
+    itemId: string
+    route: FactoryRoute
+    factory: FactoryState
+    /** The fleet's live rows, so a drilled-in worker keeps its own gate and change count. */
+    agents?: AgentRow[]
+    getItem: (id: string) => Promise<FactoryItem>
+    upsert: (item: FactoryItem) => void
+    onRefresh: () => Promise<void>
+    onNavigate: (hash: string) => void
+  } = $props()
+  let error = $state(''), notice = $state(''), busy = $state(false)
+  /** The first read, until the shell's store carries this item. */
+  let fetched = $state<FactoryItem | null>(null)
+  /*
+    Once the store carries the item it is the source of truth: the shell's list
+    poll, another view's command and this view's own upsert all land there.
+    Deriving rather than copying keeps one value, so a store update redraws the
+    item in place and nothing here re-reads the preview.
+  */
+  const stored = $derived(factory.items.find((candidate) => candidate.id === itemId) ?? null)
+  const item = $derived(stored ?? fetched)
+  /*
+    The selected view is the reader's, not the item's. It is seeded once from
+    the state the item was in when this page opened — or from an explicit
+    `view` the route named — and after that only an explicit route change
+    moves it: a poll that reports a new state must never take the tab away
+    from the person reading it.
+  */
+  let view = $state<FactoryItemView | null>(null)
+  /** The route request last applied, so a repeated one cannot move the tab. */
+  let appliedView: FactoryItemView | undefined
   $effect(() => {
-    if (!item?.repoId || previewStarted) return
-    previewStarted = true
-    void loadPreview()
+    const requested = route.view
+    if (!item) return
+    if (view === null) {
+      view = defaultFactoryItemView(item, requested)
+      appliedView = requested
+      return
+    }
+    if (requested === appliedView) return
+    appliedView = requested
+    view = defaultFactoryItemView(item, requested)
   })
+  /*
+    Polling never moves the tab, so an approval that was open when the draft was
+    approved stays selected and says so rather than silently becoming another
+    view. The tab strip keeps it visible for exactly that reason.
+  */
+  const selectedView = $derived<FactoryItemView>(view ?? 'activity')
+  /*
+    The side-by-side layout is a different structure, not a narrower version of
+    the same one, so it is decided from one media query and the result is
+    rendered as markup. At 1200px and above activity sits beside the selected
+    worker's conversation; below it activity is the page and a conversation is
+    a focused drill-in the route asks for. The listener is the shell's own:
+    it is removed when this item unmounts, so a resize cannot write to a
+    component that is gone.
+  */
+  const DESKTOP_QUERY = '(min-width: 1200px)'
+  let desktop = $state(window.matchMedia(DESKTOP_QUERY).matches)
   onMount(() => {
-    // The poller's immediate tick performs the initial item fetch (exactly one
-    // fetch at mount); its errors land on the same onError handler that sets error.
-    const p = createFactoryPoller(refresh, () => !!item && !['draft', 'ready', 'stopped', 'closed', 'needs_input'].includes(item.state), (e) => { error = errMessage(e) }); p.start()
-    return () => { alive = false; p.stop() }
+    const width = window.matchMedia(DESKTOP_QUERY)
+    desktop = width.matches
+    const onWidth = (e: MediaQueryListEvent) => (desktop = e.matches)
+    width.addEventListener('change', onWidth)
+    return () => width.removeEventListener('change', onWidth)
   })
-  async function command(kind: FactoryCommand['kind']) {
-    if (!item || busy) return
+  /*
+    The conversation the reader is looking at. An explicit `agent` on the route
+    wins at every width: a drill-in and a return from the full session both
+    leave one behind. A wide screen with no explicit agent selects the item's
+    last worker — once, on entry — and later polls never move that selection,
+    because a worker list that grows or reorders must not take the
+    conversation away from the person reading it. Below 1200px nothing opens a
+    conversation that the route did not ask for.
+  */
+  let pickedAgent = $state<string | null>(null)
+  let pickedOnce = false
+  $effect(() => {
+    if (pickedOnce || !item || !desktop) return
+    pickedOnce = true
+    if (route.agent) return
+    pickedAgent = item.workers?.at(-1)?.agentId ?? null
+  })
+  /** The worker whose conversation this page shows, or null for none. */
+  const conversationId = $derived(route.agent ?? (desktop ? pickedAgent : null))
+  /*
+    The item's own worker list is the authority on whether an agent is still
+    part of this work: an id it no longer carries is unavailable rather than a
+    reason to fall back to whichever worker happens to be last.
+  */
+  const conversationWorker = $derived(
+    conversationId ? (item?.workers?.find((worker) => worker.agentId === conversationId) ?? null) : null,
+  )
+  const conversationRow = $derived(agents.find((row) => row.id === conversationId))
+  /*
+    Below 1200px the drill-in replaces the page. Activity is hidden rather than
+    unmounted, so the list keeps the reader's scroll position and its own cue
+    state and gives them back on the way out; beside a conversation on a wide
+    screen it simply stays where it is.
+  */
+  const activityHidden = $derived(!desktop && !!conversationId)
+  /** This item at the route it is on, which a full session returns to verbatim. */
+  const currentItemRoute = $derived(
+    formatFactoryRoute({ itemId, view: selectedView, ...(conversationId ? { agent: conversationId } : {}) }),
+  )
+  /*
+    Back to activity is the route minus its agent: the item, the selected view
+    and anything else the route carries stay, so the reader lands on this work
+    item rather than the factory list.
+  */
+  function backToActivity() {
+    onNavigate(formatFactoryRoute({ ...route, itemId, agent: undefined }))
+  }
+  /*
+    The full session is a page of its own, so the way back has to be carried to
+    it: `from` names this item, this view and this worker, Chat's Back consumes
+    it, and a later dock change keeps it because the chat route carries it on.
+  */
+  function openFull(tab?: DockTabParam) {
+    if (!conversationId) return
+    onNavigate(formatChatRoute({ id: conversationId, view: 'session', tab, from: currentItemRoute }))
+  }
+  /*
+    The decisions' answers, reasons, allowances, replacement documents and
+    attestations belong to the panels that collect them, so a refresh of the
+    same decision cannot take them away. Only the in-flight command's identity
+    is kept here, because request identity is the one thing every panel's
+    submission shares.
+  */
+  let pending = $state<FactoryCommand | null>(null)
+  let alive = true
+  /**
+   * A settings-version refusal the bridge reported on an approval: the version
+   * this page displayed, which the review names back. It is cleared by the
+   * review's own reload, so the card cannot outlive the settings it describes.
+   */
+  let approvalConflict = $state<{ reviewed: string } | null>(null)
+  /*
+    Client names decorate provenance: a failed read leaves the stable IDs,
+    which are still accurate, so this never becomes a page error.
+  */
+  let clientNames = $state<Record<string, string>>({})
+  async function loadClientNames() {
+    try {
+      const list = await listClients()
+      const names: Record<string, string> = {}
+      for (const c of list) if (c.name) names[c.id] = c.name
+      clientNames = names
+    } catch {
+      // The stable IDs identify the client just as well.
+    }
+  }
+  /*
+    The first read goes through the shell store's getItem, so an item the last
+    list snapshot already carries costs no request.
+  */
+  onMount(() => {
+    void loadClientNames()
+    void (async () => {
+      try {
+        const next = await getItem(itemId)
+        if (!alive) return
+        fetched = next
+        error = ''
+      } catch (e) {
+        if (alive) error = errMessage(e)
+      }
+    })()
+    return () => { alive = false }
+  })
+  /*
+    One command path for every control (design C5). The panels own what a
+    person typed; the identity a request must carry — its request ID, the
+    version it was reviewed against, and the decision it answers — is built
+    here from the latest item, so a panel can never submit a stale decision
+    binding of its own. A revision command rides in the same envelope, so a
+    proposal, its assessment and its delivery are never sent apart from it.
+  */
+  async function command(kind: FactoryCommand['kind'], input: FactoryCommandInput = {}): Promise<FactoryItem | null> {
+    if (!item || busy) return null
     busy = true; error = ''; notice = ''
     try {
       {
-        const c: FactoryCommand = { requestId: crypto.randomUUID(), kind, expectedVersion: item.version, decisionId: item.decision?.id }
-        if (kind === 'answer') c.answer = answer
-        if (kind === 'retry') {
-          c.reason = reason; c.additionalRounds = additionalRounds
-          const latest = item.approvals?.at(-1)?.config ?? item.draft.config
-          if (changePlan) {
-            const draft: FactoryCreate = { ...item.draft, requestId: crypto.randomUUID(), plan: replacementPlan, spec: replacementSpec,
-              config: { ...latest, reviewerInstructions: replacementInstructions,
-                implementerRouting: replaceImplementerProfile.trim() ? { profile: replaceImplementerProfile.trim() } : latest.implementerRouting,
-                reviewerRouting: replaceReviewerProfile.trim() ? { profile: replaceReviewerProfile.trim() } : latest.reviewerRouting } }
-            c.replacement = draft
-          } else {
-            if (replaceImplementerProfile.trim()) c.implementerRouting = { profile: replaceImplementerProfile.trim() }
-            if (replaceReviewerProfile.trim()) c.reviewerRouting = { profile: replaceReviewerProfile.trim() }
-          }
-        }
-        if (kind === 'recover') { c.confirmPreviousWorkerStopped = attest; c.reason = `${workerName.trim()}: ${reason.trim()}` }
+        const base: FactoryCommand = { requestId: crypto.randomUUID(), kind, expectedVersion: item.version, decisionId: item.decision?.id, ...input }
+        const c = input.revision ? factoryRevisionCommand(base, input.revision) : base
         pending = pending && JSON.stringify({ ...pending, requestId: '', replacement: pending.replacement && { ...pending.replacement, requestId: '' } }) === JSON.stringify({ ...c, requestId: '', replacement: c.replacement && { ...c.replacement, requestId: '' } }) ? pending : c
       }
-      item = await commandFactoryItem(itemId, pending)
-      pending = null; notice = kind === 'stop' ? 'Stop requested. Waiting for worker confirmation.' : `${kind} accepted`
-      if (kind === 'answer') answer = ''
+      const applied = await commandFactoryItem(itemId, pending)
+      // The command's own result is the newest truth: publish it before the
+      // list can render again, then show it here.
+      upsert(applied)
+      fetched = applied
+      pending = null; notice = NOTICES[kind] ?? `${kind} accepted`
+      // Handed back as well as shown: a multi-step revision path takes its next
+      // command's versions and base from this item, which is the only read that
+      // carries what the bridge just wrote.
+      return applied
     } catch (e) {
-      error = errMessage(e)
+      const message = errMessage(e)
+      error = message
       if (e instanceof APIError && e.status === 409) {
+        // A settings-version refusal names the version it compared, so the
+        // review that displayed that version shows the conflict card naming
+        // both — not a bare error line. A stale item version has no such name
+        // and keeps the refresh receipt below.
+        const settingsMoved = kind === 'approve' && !!input.settingsVersion && message.includes('settings changed since review')
+        if (settingsMoved) { approvalConflict = { reviewed: input.settingsVersion ?? '' }; error = '' }
+        // Only the obsolete command is dropped: the panel that submitted it
+        // stays mounted, so the person keeps their input and retries it
+        // against the version the refresh just showed them.
         pending = null
-        try { await refresh(); notice = 'Item changed. Review the refreshed version before trying again.' } catch (refreshError) { error += `; refresh failed: ${errMessage(refreshError)}` }
+        // Awaited, and its own failure reported: a stale command must say so
+        // rather than leave the person on a version that cannot succeed.
+        try {
+          await onRefresh()
+          if (!settingsMoved) notice = 'Item changed. Review the refreshed version before trying again.'
+        } catch (refreshError) {
+          const failed = `refresh failed: ${errMessage(refreshError)}`
+          error = error ? `${error}; ${failed}` : failed
+        }
       }
+      return null
     } finally { busy = false }
   }
-  const round = $derived(item?.rounds?.at(-1)), ci = $derived(round?.ci)
-  const failed = $derived((ci?.checks ?? []).filter((c) => c.conclusion && !['success', 'neutral', 'skipped'].includes(c.conclusion)))
-  const passed = $derived((ci?.checks ?? []).filter((c) => c.conclusion === 'success'))
-  const other = $derived((ci?.checks ?? []).filter((c) => !failed.includes(c) && !passed.includes(c)))
-  const granted = $derived((item?.grants ?? []).reduce((sum, g) => sum + g.additionalRounds, 0))
-  const lastWorkerId = $derived(item?.workers?.at(-1)?.agentId ?? '')
-  const currentConfig = $derived(item?.approvals?.at(-1)?.config ?? item?.draft.config ?? null)
-  const currentImplementerProfile = $derived((currentConfig?.implementerRouting as { profile?: string } | undefined)?.profile || 'none')
-  const currentReviewerProfile = $derived((currentConfig?.reviewerRouting as { profile?: string } | undefined)?.profile || 'none')
-  const narration = $derived(round?.implementation?.narration ?? null)
-  const narrationSections = $derived.by(() => {
-    const n = narration
-    if (!n) return [] as { heading: string; paragraphs: string[] }[]
-    const sections: { heading: string; paragraphs: string[] }[] = []
-    const add = (heading: string, ...paragraphs: string[]) => {
-      const kept = paragraphs.filter((paragraph) => paragraph)
-      if (kept.length) sections.push({ heading, paragraphs: kept })
-    }
-    add('Issue', n.issue)
-    add('Approach', n.approach)
-    add('Existing behaviour', n.existingBehaviour)
-    add('Alternatives and trade-offs', n.alternatives, n.tradeoffs)
-    add('Implementation choice', n.choice)
-    add('Verification', n.verification)
-    add('Limitations', n.limitations)
-    return sections
+  /**
+    The decision panels collect a person's input and hand it back with a kind;
+    they need the command's effect, not whether it succeeded.
+  */
+  const panelRun = async (kind: FactoryCommand['kind'], input?: FactoryCommandInput): Promise<void> => {
+    await command(kind, input)
+  }
+  /*
+    The project's automatic-assessment preference decides what "automatic"
+    means on this screen. It is read once per project and never guessed at: the
+    handoff's default is on, but a failed read is reported as a read that
+    failed — the screen must not claim a setting nobody managed to open.
+  */
+  let autoAssess = $state(true)
+  /** False once a read failed, so the section says it could not read the setting. */
+  let autoAssessKnown = $state(true)
+  let assessRoot = $state('')
+  $effect(() => {
+    const root = item?.projectRoot
+    if (!root || root === assessRoot) return
+    assessRoot = root
+    void (async () => {
+      try {
+        autoAssess = effectiveAutoAssess(await getProjectSettings(root))
+        autoAssessKnown = true
+      } catch {
+        autoAssess = true
+        autoAssessKnown = false
+      }
+    })()
   })
-  const excerpts = $derived(narration?.excerpts ?? [])
-  const prHead = $derived(item?.prs?.at(-1)?.headSha ?? '')
-  const previewDeployments = $derived((preview?.deployments ?? []).map((d) => deploymentSegments(d, prHead)))
-  const previewEnvironments = $derived((preview?.environments ?? []).map(environmentSegments))
-  const previewGaps = $derived(preview?.gaps ?? [])
-  const statusLinks = $derived.by(() => {
-    const last = item?.rounds?.at(-1), ci = last?.ci
-    if (!last || !ci || ci.headSha !== last.headSha) return [] as FactoryCheck[]
-    return [...(ci.checks ?? [])].filter((c) => c.key.kind === 'commit_status' && c.url)
-      .sort((a, b) => (a.key.name < b.key.name ? -1 : a.key.name > b.key.name ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-  })
-  const previewEmpty = $derived(!previewDeployments.length && !previewEnvironments.length && !previewGaps.length)
+  /*
+    A view tab moves within this item, so the worker drill-in the route names
+    stays selected: the tab hash keeps only the view change, and `agent` is
+    carried over from the route rather than dropped by the tab.
+  */
+  function navigateView(hash: string) {
+    const next = parseFactoryRoute(hash)
+    if (!next?.itemId) { onNavigate(hash); return }
+    onNavigate(formatFactoryRoute({ itemId: next.itemId, view: next.view, agent: route.agent }))
+  }
+  /** The activity view, which is also where a decision is answered. */
+  const activityRoute = $derived(formatFactoryRoute({ itemId, view: 'activity' }))
 </script>
+
 <div class="mx-auto flex max-w-6xl flex-col gap-4 p-4 sm:p-6">
-  <a class="text-sm text-accent underline" href="#factory" onclick={(e) => { e.preventDefault(); onNavigate('#factory') }}>Factory</a>
   {#if error}<Card role="alert" class="border-attention text-sm">{error}</Card>{/if}
   {#if notice}<Card role="status" class="text-sm">{notice}</Card>{/if}
   {#if item}
-    <header class="grid gap-2"><h1 class="break-words text-xl font-semibold">{item.title}</h1><p class="text-sm text-muted">{item.repoId} · {item.branch || item.draft.config.targetBranch}</p><div class="flex gap-2"><Tag tone={item.decision ? 'warn' : 'neutral'}>{item.state}</Tag><span class="text-sm">{item.stage}</span></div></header>
-    {#if item.state === 'draft'}
-      <Card class="grid gap-3" data-testid="draft-approval">
-        <h2 class="font-semibold">Review draft before starting</h2>
-        <p class="text-sm">Repository: {item.draft.config.repoId} · Branch: {item.draft.config.targetBranch} · {item.draft.config.maxRounds} rounds</p>
-        <p class="text-sm">Implementer: {JSON.stringify(item.draft.config.implementerRouting)} · Reviewer: {JSON.stringify(item.draft.config.reviewerRouting)}</p>
-        <p class="text-sm">CI: {item.draft.config.expectedChecks?.length ? item.draft.config.expectedChecks.map((c) => c.name).join(', ') : 'No required CI acknowledged'}</p>
-        <p class="text-sm">Environment: {item.draft.config.native ? 'Native' : item.draft.config.workspace || 'Unspecified workspace'} · Implementer auto permission: {item.draft.config.implementerAuto ? 'on' : 'off'}</p>
-        <p class="whitespace-pre-wrap break-words text-sm">Reviewer instructions: {item.draft.config.reviewerInstructions || 'None'}</p>
-        <pre class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border p-3 text-sm">{item.draft.plan}</pre>
-        {#if item.draft.spec}<details><summary>Specification</summary><pre class="max-h-72 overflow-auto whitespace-pre-wrap break-words text-sm">{item.draft.spec}</pre></details>{/if}
-        <Button onclick={() => void command('approve')} disabled={busy}>Approve &amp; start</Button>
-      </Card>
-    {/if}
-    {#if item.decision}
-      <Card class="grid gap-3 border-attention" data-testid="factory-decision">
+    <WorkItemHeader item={item} view={selectedView} onNavigate={navigateView} onStop={() => void command('stop')} stopping={busy} />
+    {#if item.decision && selectedView !== 'activity'}
+      <Card class="grid gap-2 border-attention" data-testid="factory-decision-banner">
         <h2 class="font-semibold">Action needed: {item.decision.kind}</h2>
-        {#if item.decision.question}<p class="whitespace-pre-wrap break-words">{item.decision.question}</p>{/if}
-        {#if item.decision.reason}<p class="whitespace-pre-wrap break-words text-sm text-muted">{item.decision.reason}</p>{/if}
-        {#if item.decision.kind === 'question'}
-          <label class="grid gap-1 text-sm">Answer <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={answer}></textarea></label>
-          <Button disabled={busy || !answer.trim()} onclick={() => void command('answer')}>Send answer</Button>
-        {/if}
-        {#if ['exhausted', 'no_progress', 'worker_failed', 'invalid_result', 'ci_unavailable', 'ci_wait', 'conflict'].includes(item.decision.kind)}
-          <p class="text-sm">{(item.rounds ?? []).length} rounds used · {granted} granted total. An additional allowance is required to resume work.</p>
-          <label class="grid gap-1 text-sm">Reason <textarea class="rounded border border-border bg-bg p-2" bind:value={reason}></textarea></label>
-          <label class="grid gap-1 text-sm">Additional rounds <input class="rounded border border-border bg-bg p-2" type="number" min="1" bind:value={additionalRounds} /></label>
-          <p class="text-sm">Routes in force: implementer {currentImplementerProfile} · reviewer {currentReviewerProfile}</p>
-          <label class="grid gap-1 text-sm">New implementer profile (optional) <input class="rounded border border-border bg-bg p-2" bind:value={replaceImplementerProfile} /></label>
-          <label class="grid gap-1 text-sm">New reviewer profile (optional) <input class="rounded border border-border bg-bg p-2" bind:value={replaceReviewerProfile} /></label>
-          <p class="text-sm">A route-only retry starts a fresh round. The interrupted round's review is not reused, and one granted round is spent.</p>
-          <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={changePlan} onchange={() => { if (changePlan && item) { const approval = item.approvals?.at(-1); replacementPlan = approval?.plan ?? item.draft.plan; replacementSpec = approval?.spec ?? item.draft.spec; replacementInstructions = approval?.config.reviewerInstructions ?? item.draft.config.reviewerInstructions } }} /> Change approved plan or reviewer instructions</label>
-          {#if changePlan}<details open><summary>Replacement plan and reviewer instructions</summary><div class="grid gap-2 pt-2">
-            <p class="text-sm">Review these changes before submitting. Retry records a new approval revision with this plan, the selected routes and reviewer instructions before work resumes.</p>
-            <label class="grid gap-1 text-sm">Replacement plan <textarea class="min-h-40 rounded border border-border bg-bg p-2" bind:value={replacementPlan}></textarea></label>
-            <label class="grid gap-1 text-sm">Replacement specification <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={replacementSpec}></textarea></label>
-            <label class="grid gap-1 text-sm">Reviewer instructions <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={replacementInstructions}></textarea></label>
-          </div></details>{/if}
-          <Button disabled={busy || !reason.trim() || additionalRounds < 1 || (changePlan && !replacementPlan.trim())} onclick={() => void command('retry')}>Grant rounds and retry</Button>
-        {/if}
-        {#if item.decision.kind === 'recovery'}
-          <p class="text-sm">Refresh evidence first. Attest only after independently confirming the previous named worker has stopped. Attestation cannot prove an unreachable worker stopped.</p>
-          <Button disabled={busy} onclick={() => void command('reconcile')}>Refresh evidence</Button>
-          <p class="break-all font-mono text-sm">Last worker agent ID: {lastWorkerId || "Unavailable"}</p>
-          <label class="grid gap-1 text-sm">Type the exact last worker agent ID <input class="rounded border border-border bg-bg p-2" bind:value={workerName} /></label>
-          <label class="grid gap-1 text-sm">How you confirmed it <textarea class="rounded border border-border bg-bg p-2" bind:value={reason}></textarea></label>
-          <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={attest} /> I confirm this named previous worker has stopped</label>
-          <Button disabled={busy || !attest || !lastWorkerId || workerName.trim() !== lastWorkerId || !reason.trim()} onclick={() => void command('recover')}>Record named-worker attestation</Button>
-        {/if}
+        {#if item.decision.question}<p class="whitespace-pre-wrap break-words text-sm">{item.decision.question}</p>{/if}
+        <a class="text-sm text-accent underline" href={activityRoute} onclick={(e) => { e.preventDefault(); onNavigate(activityRoute) }}>Answer it in activity</a>
       </Card>
     {/if}
-    {#if !['closed', 'stopped', 'stopping', 'draft'].includes(item.state)}<Button disabled={busy} onclick={() => void command('stop')}>Request stop</Button>{/if}
-    {#if item.state === 'stopping'}<Card role="status">Stop requested. Worker shutdown is not yet confirmed.</Card>{/if}
-    <div class="grid min-w-0 gap-4 lg:grid-cols-2"><div class="grid min-w-0 content-start gap-4">
-      <Card class="grid min-w-0 gap-3"><h2 class="font-semibold">CI evidence</h2>
-        {#if !ci}<p class="text-sm text-muted">No CI evidence observed yet.</p>{:else if !ci.complete}<p class="text-sm text-attention">CI evidence unavailable or incomplete. Readiness is not established.</p>{:else if !(ci.checks ?? []).length}<p class="text-sm">Observation complete; no checks reported.</p>{/if}
-        {#each failed as check}<div class="min-w-0 rounded border border-attention p-2"><strong>{check.key.name}: {check.conclusion}</strong>{#if check.url}<a class="ml-2 text-accent underline" href={check.url} target="_blank" rel="noopener noreferrer">Open check</a>{/if}{#if check.logTail}<pre class="max-h-60 max-w-full overflow-auto whitespace-pre-wrap break-words text-xs">{check.logTail}</pre>{/if}</div>{/each}
-        {#if passed.length}<details><summary>{passed.length} passing checks</summary><ul class="text-sm">{#each passed as check}<li>{check.key.name}</li>{/each}</ul></details>{/if}
-        {#each other as check}<p class="text-sm">{check.key.name}: {check.conclusion || check.status || 'pending'}</p>{/each}
-      </Card>
-      <Card class="grid min-w-0 gap-2"><h2 class="font-semibold">Engineering report</h2>
-        {#if round?.implementation}{#if narration}
-          <div class="grid gap-2" data-testid="factory-narration">
-            {#each narrationSections as section}<div class="grid gap-1"><h3 class="text-sm font-semibold">{section.heading}</h3>{#each section.paragraphs as paragraph}<p class="whitespace-pre-wrap break-words text-sm">{paragraph}</p>{/each}</div>{/each}
-            {#if excerpts.length}<div class="grid gap-1"><h3 class="text-sm font-semibold">Selected code</h3>{#each excerpts as excerpt}<div class="min-w-0 rounded border border-border p-2"><div class="flex flex-wrap items-baseline gap-2"><p class="break-all font-mono text-xs">{excerpt.path}</p>{#if excerpt.lang}<span class="text-xs text-muted">{excerpt.lang}</span>{/if}</div><pre class="max-h-60 overflow-auto whitespace-pre-wrap break-words text-xs">{excerpt.code}</pre></div>{/each}</div>{/if}
-          </div>
-        {:else}<p class="whitespace-pre-wrap break-words text-sm">{round.implementation.summary}</p>{/if}{#if round.implementation.question}<p class="text-sm">Implementer question: {round.implementation.question}</p>{/if}{#if round.implementation.reason}<p class="text-sm">Implementer reason: {round.implementation.reason}</p>{/if}{/if}
-        {#if round?.review}<p class="whitespace-pre-wrap break-words text-sm">Review: {round.review.summary}</p>{#if round.review.question}<p class="text-sm">Reviewer question: {round.review.question}</p>{/if}{#if round.review.reason}<p class="text-sm">Reviewer reason: {round.review.reason}</p>{/if}
-          {#if round.review.findings?.length}<h3 class="text-sm font-semibold">Review findings</h3>{#each round.review.findings as finding}<div class="min-w-0 rounded border border-border p-2 text-sm"><p class="font-semibold">{finding.severity}: {finding.title}</p>{#if finding.path}<p class="break-all font-mono text-xs">{finding.path}{#if finding.line}:{finding.line}{/if}</p>{/if}{#if finding.body}<p class="whitespace-pre-wrap break-words">{finding.body}</p>{/if}</div>{/each}{/if}
+    {#if selectedView === 'approval'}
+      {#if item.state === 'draft'}
+        <div data-testid="draft-approval">
+          <!--
+            The approval hands back the settings version this review displayed,
+            which the bridge checks against the one now in force; a refusal
+            arrives as the 409 the `command` path above turns into `conflict`.
+            No capability is passed here: this page has no read of a session's
+            status, so an override the backend cannot enforce is refused
+            server-side at approval and reported from that command's error.
+          -->
+          <DraftApproval
+            item={item}
+            busy={busy}
+            conflict={approvalConflict}
+            onApprove={(version) => void command('approve', { settingsVersion: version })}
+            onReload={() => { approvalConflict = null; void onRefresh() }}
+          />
+        </div>
+      {:else}
+        <Card class="text-sm">This item is no longer a draft, so there is nothing to approve. <a class="text-accent underline" href={activityRoute} onclick={(e) => { e.preventDefault(); onNavigate(activityRoute) }}>Go to activity</a></Card>
+      {/if}
+    {:else if selectedView === 'review'}
+      <div class="grid min-w-0 content-start gap-4">
+        <ReviewView {item} />
+      </div>
+    {:else if selectedView === 'prs'}
+      <div class="grid min-w-0 content-start gap-4">
+        <!--
+          Completion is a person's decision about this work, so it lives with
+          the pull requests it is judged against rather than in a view of its
+          own. The delivery history below it stays what it is: the pull
+          requests the factory actually recorded.
+        -->
+        <CompletionPanel {item} {busy} run={panelRun} />
+        <PullRequestsView {item} />
+      </div>
+    {:else if selectedView === 'documents'}
+      <DocumentsView {item} />
+    {:else}
+      <!--
+        Activity is the page, and beside it a wide screen shows the selected
+        worker's conversation. Drilling in on a narrow screen hides activity
+        without unmounting it, so the list's scroll position and its own state
+        come back with the reader; the conversation is keyed by session, so
+        switching workers disconnects the one that was showing.
+      -->
+      <div class={conversationId && desktop ? 'grid min-w-0 items-start gap-4 xl:grid-cols-2' : 'grid min-w-0 gap-4'} data-testid="factory-activity-layout">
+        <div class={activityHidden ? 'hidden' : 'grid min-w-0 gap-4'} data-testid="factory-activity-pane">
+          <!--
+            Plan changes belong to the item, not to a decision: a proposal can
+            be written and read at any time, so this is never gated on a
+            planner, a decision or a worker being available. A draft has no
+            approved revision to revise yet, so it is left to the approval tab.
+          -->
+          {#if item.state !== 'draft' || item.proposals?.length}
+            <FactoryRevision {item} {busy} {autoAssess} {autoAssessKnown} run={(kind, revision) => command(kind, { revision })} />
+          {/if}
+          {#if item.decision}
+            <!--
+              Keyed by the decision's id, never by the item's version: the same
+              decision refreshed in place keeps the panel — and what the person
+              typed into it — mounted, while a poll that replaces the decision
+              with a new one of the same kind remounts the panel, so its pickers
+              and answer reseed.
+            -->
+            {#key item.decision.id}
+              {#if RECOVERY_KINDS.includes(item.decision.kind)}
+                <RecoveryPanel {item} {busy} run={panelRun} />
+              {:else}
+                <DecisionPanel {item} {busy} run={panelRun} />
+              {/if}
+            {/key}
+          {/if}
+          {#if item.workers?.length}
+            <Card data-testid="worker-links">
+              <h2 class="font-semibold">Agents</h2>
+              <p class="text-xs text-muted">
+                A worker opens its own conversation. The children a worker delegated sit under it; the
+                factory reviewer is its own worker, never one of the implementer's children.
+              </p>
+              <ul class="grid min-w-0 gap-2 text-sm">
+                {#each item.workers as worker (worker.agentId)}
+                  {@const turn = workerDelegated(item, worker)}
+                  {@const state = delegatedState(turn)}
+                  {@const children = workerChildren(item, worker)}
+                  {@const href = formatFactoryRoute({ itemId, view: 'activity', agent: worker.agentId })}
+                  <li class="grid min-w-0 gap-1" data-testid="worker-row" data-role={worker.role}>
+                    <p class="flex min-w-0 flex-wrap items-center gap-2">
+                      <!-- A worker is opened in this item, not on the chat page:
+                           the same route, with the agent it names. Parked says
+                           so, but the retained conversation stays openable. -->
+                      <a
+                        class="break-words text-accent underline"
+                        href={href}
+                        onclick={(e) => { e.preventDefault(); onNavigate(href) }}
+                      >{workerRoleLabel(worker.role)}: {worker.agentId}</a>
+                      {#if worker.parked}<span class="text-xs text-muted">(parked)</span>{/if}
+                      {#if state}
+                        <span
+                          class="rounded bg-warn/15 px-1.5 py-px text-xs text-warn"
+                          data-testid="worker-waiting"
+                          data-state={state.state}
+                          title={state.meaning}
+                        >{state.headline}</span>
+                      {/if}
+                    </p>
+                    {#if workerIsReviewer(worker)}
+                      <!-- The factory's own reviewer: a worker of its own, so it
+                           is never nested under the implementer's children. -->
+                      <p class="text-xs text-muted" data-testid="worker-role-note">
+                        Independent of the implementer — not one of its children.
+                      </p>
+                    {:else if children.length}
+                      <ul
+                        class="ml-3 grid min-w-0 gap-1 border-l border-border pl-2"
+                        data-testid="worker-children"
+                        aria-label={`Children of ${workerRoleLabel(worker.role)}`}
+                      >
+                        {#each children as child (child.id)}
+                          <li
+                            class="flex min-w-0 flex-wrap items-center gap-2"
+                            data-testid="worker-child"
+                            data-child={child.id}
+                            data-session={child.sessionId}
+                          >
+                            <!-- A child has no route of its own: it lives in
+                                 the conversation of the session that owns it,
+                                 and child ids are session-local. -->
+                            <a
+                              class="break-words text-accent underline"
+                              href={href}
+                              aria-label={`${child.label} in ${workerRoleLabel(worker.role)}'s conversation`}
+                              onclick={(e) => { e.preventDefault(); onNavigate(href) }}
+                            >{child.label}</a>
+                            <span class="text-xs text-muted">{child.status || 'status not reported here'}</span>
+                          </li>
+                        {/each}
+                      </ul>
+                      <p class="text-xs text-muted" data-testid="worker-children-note">
+                        Delegated children of the implementer — part of this worker's run, not the factory reviewer.
+                      </p>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            </Card>
+          {/if}
+          <ActivityTimeline {item} {clientNames} hidden={activityHidden} />
+        </div>
+        {#if conversationId}
+          {#if conversationWorker}
+            <div class="h-[70vh] min-h-[32rem] min-w-0 overflow-hidden rounded-lg border border-border" data-testid="agent-conversation">
+              <!--
+                Keyed by the conversation it owns, not by the item: switching
+                workers remounts the conversation, which is what disconnects
+                the previous session's stream. The id is the agent's, the one
+                `#chat/<id>` uses and the fleet's rows are keyed by, so the
+                header still resolves the name it reports.
+              -->
+              {#key conversationWorker.agentId}
+                <AgentConversation
+                  sessionId={conversationWorker.agentId}
+                  onBack={backToActivity}
+                  agent={conversationRow}
+                  embedded
+                  onOpenFull={openFull}
+                />
+              {/key}
+            </div>
+            <!--
+              This worker's own Studio access. It is the same control set the
+              session screen and the project settings use — only the identities
+              differ — and the bridge treats a factory worker's override as the
+              worker's, not as its session's.
+
+              Like the conversation above it, it is keyed by the worker it
+              describes. The panel loads its view and versions on mount, so a
+              switch of worker without a remount would leave the previous
+              worker's draft and override version in place while the props name
+              the new worker — and a save would then carry one worker's version
+              with another worker's identity. Layer versions are content hashes,
+              so the bridge would accept that write when the two records happen
+              to hold equal values.
+            -->
+            {#key conversationWorker.agentId}
+              <details class="mt-3" data-testid="worker-studio-access">
+                <summary class="cursor-pointer text-xs text-muted">Worker access</summary>
+                <div class="mt-2">
+                  <MarshalAccessPanel
+                    sessionId={conversationWorker.agentId}
+                    workerId={conversationWorker.agentId}
+                    levels={['session']}
+                    heading="This worker"
+                    testId="worker-marshal-access"
+                  />
+                </div>
+              </details>
+            {/key}
+          {:else}
+            <!-- An id the item does not carry is not quietly swapped for
+                 another worker: the pane says so and offers the way back. -->
+            <Card class="grid gap-2" data-testid="agent-unavailable">
+              <h2 class="font-semibold">This worker is unavailable</h2>
+              <p class="text-sm">No worker named {conversationId} belongs to this work item, so there is no conversation to show.</p>
+              <Button variant="ghost" onclick={backToActivity}>Back to activity</Button>
+            </Card>
+          {/if}
         {/if}
-        {#if !round?.implementation && !round?.review}<p class="text-sm text-muted">No report yet.</p>{/if}</Card>
-      {#if item.prs?.length}<Card><h2 class="font-semibold">Pull requests</h2>{#each item.prs as pr}<a class="block text-sm text-accent underline" href={pr.url} target="_blank" rel="noopener noreferrer">PR #{pr.number} ({pr.draft ? 'draft' : pr.state})</a>{/each}</Card>{/if}
-      {#if item.repoId}<Card class="grid min-w-0 gap-2" data-testid="factory-preview">
-        <div class="flex flex-wrap items-center justify-between gap-2"><h2 class="font-semibold">Preview and test environments</h2><Button disabled={previewLoading} onclick={() => void loadPreview()}>Refresh</Button></div>
-        {#if previewLoading}<p class="text-sm text-muted">Reading preview environments…</p>
-        {:else if previewError}<p class="text-sm">Preview and test environments could not be read.</p><p class="break-words text-sm text-muted">{previewError}</p>
-        {:else if preview?.status === 'unavailable'}<p class="text-sm">Preview and test environments could not be read.</p>{#if preview.error}<p class="break-words text-sm text-muted">{preview.error}</p>{/if}
-        {:else if preview}
-          {#each previewGaps as gap}<p class="break-words text-sm"><code class="text-xs">{gap.key}</code> — {gap.state} — {gap.detail}</p>{/each}
-          {#if previewEmpty}<p class="text-sm text-muted">No preview deployments or test environments are configured for this revision.</p>{/if}
-          {#if previewDeployments.length}<ul class="grid gap-1">{#each previewDeployments as segments}<li class="break-words text-sm">{#each segments as segment, i}{#if i}<span class="text-muted"> — </span>{/if}{#if segment.kind === 'code'}<code class="text-xs">{segment.text}</code>{:else if segment.kind === 'badge'}{segment.label} <code class="text-xs">{segment.sha}</code>{:else if segment.kind === 'link'}{#if isHttpUrl(segment.url)}<a class="break-all text-accent underline" href={segment.url} target="_blank" rel="noopener noreferrer">{segment.url}</a>{:else}<span class="break-all">{displayText(segment.url)}</span>{/if}{#if segment.logs} (logs: {#if isHttpUrl(segment.logs)}<a class="break-all text-accent underline" href={segment.logs} target="_blank" rel="noopener noreferrer">{segment.logs}</a>{:else}<span class="break-all">{displayText(segment.logs)}</span>{/if}){/if}{:else if segment.kind === 'text'}{segment.text}{/if}{/each}</li>{/each}</ul>{/if}
-          {#if previewEnvironments.length}<p class="text-sm">Configured environments:</p><ul class="grid gap-1">{#each previewEnvironments as segments}<li class="break-words text-sm">{#each segments as segment, i}{#if i}<span class="text-muted"> — </span>{/if}{#if segment.kind === 'code'}<code class="text-xs">{segment.text}</code>{:else if segment.kind === 'link'}{#if isHttpUrl(segment.url)}<a class="break-all text-accent underline" href={segment.url} target="_blank" rel="noopener noreferrer">{segment.url}</a>{:else}<span class="break-all">{displayText(segment.url)}</span>{/if}{:else if segment.kind === 'text'}{segment.text}{/if}{/each}</li>{/each}</ul>{/if}
-          {#if statusLinks.length}<p class="text-sm">Links reported by commit statuses:</p><ul class="grid gap-1">{#each statusLinks as check}<li class="break-words text-sm"><code class="text-xs">{check.key.name}</code> (<code class="text-xs">{checkState(check)}</code>): {#if isHttpUrl(check.url)}<a class="break-all text-accent underline" href={check.url} target="_blank" rel="noopener noreferrer">{check.url}</a>{:else}<span class="break-all">{displayText(check.url)}</span>{/if}</li>{/each}</ul>{/if}
-        {/if}
-      </Card>{/if}
-      {#if item.workers?.length}<Card><h2 class="font-semibold">Agents</h2>{#each item.workers as worker}<a class="block text-sm text-accent underline" href={`#chat/${encodeURIComponent(worker.agentId)}`} onclick={(e) => { e.preventDefault(); onNavigate(`#chat/${encodeURIComponent(worker.agentId)}`) }}>{worker.role}: {worker.agentId}</a>{/each}</Card>{/if}
-    </div><Card class="min-w-0"><h2 class="mb-2 font-semibold">Activity</h2>{#if !item.history?.length}<p class="text-sm text-muted">No activity yet.</p>{:else}<ol class="grid gap-3 text-sm">{#each [...item.history].reverse() as event}<li class="min-w-0 border-b border-border pb-2"><time class="text-xs text-muted">{event.at}</time><p class="whitespace-pre-wrap break-words">{event.message}</p></li>{/each}</ol>{/if}</Card></div>
+      </div>
+    {/if}
   {:else}<p role="status">Loading work item…</p>{/if}
 </div>

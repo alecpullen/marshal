@@ -16,6 +16,9 @@ vi.mock('./api.js', async (importActual) => {
     listClients: vi.fn(),
     createClient: vi.fn(),
     deleteClient: vi.fn(),
+    listProjects: vi.fn(),
+    getFactoryGrant: vi.fn(),
+    putFactoryGrant: vi.fn(),
   }
 })
 
@@ -33,6 +36,30 @@ function client(over: Partial<api.MCPClient> = {}): api.MCPClient {
   }
 }
 
+/** Registered projects carry the opaque factory ID a grant names, never the path. */
+const projects: api.ProjectStatus[] = [
+  { root: '/home/u/alpha', available: true, trust: 'trusted', isolation: 'available', mcpProjectId: 'p1' },
+  { root: '/home/u/beta', available: true, trust: 'trusted', isolation: 'available', mcpProjectId: 'p2' },
+]
+
+const zeroGrant = (projectId = 'p1'): api.MCPFactoryProjectGrant => api.emptyFactoryGrant(projectId)
+
+/** Choose a pair, which is what starts the one grant read. */
+async function openGrant(clientId = 'c1', projectId = 'p1') {
+  ;(api.listClients as Mock).mockResolvedValue([client()])
+  render(ClientsPanel)
+  const user = userEvent.setup()
+  // The clients and projects arrive from the bridge, so the options appear a
+  // tick after the selects do.
+  const clientSelect = (await screen.findByLabelText('Client')) as HTMLSelectElement
+  await vi.waitFor(() => expect([...clientSelect.options].map((o) => o.value)).toContain(clientId))
+  await user.selectOptions(clientSelect, clientId)
+  const projectSelect = screen.getByLabelText('Project') as HTMLSelectElement
+  await vi.waitFor(() => expect([...projectSelect.options].map((o) => o.value)).toContain(projectId))
+  await user.selectOptions(projectSelect, projectId)
+  return user
+}
+
 function seedCreate() {
   ;(api.createClient as Mock).mockResolvedValue({
     id: 'c1',
@@ -46,6 +73,7 @@ afterEach(cleanup)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  ;(api.listProjects as Mock).mockResolvedValue(projects)
 })
 
 describe('ClientsPanel', () => {
@@ -158,5 +186,203 @@ describe('ClientsPanel', () => {
       autonomous: false,
       allowedRepos: ['a/b', 'c/d'],
     })
+  })
+
+  it('existingClientStartsWithNoGrant', async () => {
+    ;(api.getFactoryGrant as Mock).mockResolvedValue({
+      clientId: 'c1',
+      projectId: 'p1',
+      grant: zeroGrant(),
+      version: 'v0',
+    })
+
+    await openGrant()
+
+    // A never-granted pair is the zero grant, not an error: nothing is checked
+    // and no approval authority exists to begin with.
+    expect(await screen.findByRole('button', { name: 'Save authority' })).toBeTruthy()
+    for (const label of ['Read work items', 'Create drafts', 'Edit drafts', 'Answer questions', 'Approve and queue']) {
+      expect((screen.getByLabelText(label) as HTMLInputElement).checked).toBe(false)
+    }
+    expect((screen.getByLabelText('Approval authority') as HTMLSelectElement).value).toBe('none')
+    expect(screen.queryByText(/unknown to the bridge/)).toBeNull()
+    expect(api.getFactoryGrant).toHaveBeenCalledWith('c1', 'p1')
+    expect(api.getFactoryGrant).toHaveBeenCalledTimes(1)
+  })
+
+  it('revisionGrantsDefaultOff', async () => {
+    // A grant stored before revision permissions existed carries neither
+    // field, which is the zero value: it grants nothing.
+    ;(api.getFactoryGrant as Mock).mockResolvedValue({
+      clientId: 'c1',
+      projectId: 'p1',
+      grant: zeroGrant(),
+      version: 'v0',
+    })
+    ;(api.putFactoryGrant as Mock).mockImplementation(
+      async (clientId: string, projectId: string, grant: api.MCPFactoryProjectGrant, version: string) => ({
+        clientId,
+        projectId,
+        grant,
+        version: `${version}+`,
+      }),
+    )
+
+    const user = await openGrant()
+    await screen.findByRole('button', { name: 'Save authority' })
+    const assess = screen.getByLabelText('Assess plan changes') as HTMLInputElement
+    const approveRevision = screen.getByLabelText('Approve routine revisions') as HTMLInputElement
+    expect(assess.checked).toBe(false)
+    expect(approveRevision.checked).toBe(false)
+
+    // Saving an old grant without touching them sends neither: the permissions
+    // it already had are untouched, not reset to false on the way through.
+    await user.click(screen.getByLabelText('Read work items'))
+    await user.click(screen.getByRole('button', { name: 'Save authority' }))
+    const first = (api.putFactoryGrant as Mock).mock.calls[0][2] as api.MCPFactoryProjectGrant
+    expect(first).not.toHaveProperty('assessPlanChanges')
+    expect(first).not.toHaveProperty('approveRoutineRevision')
+    expect(first.read).toBe(true)
+
+    // Granting one writes only that one.
+    await user.click(assess)
+    await user.click(screen.getByRole('button', { name: 'Save authority' }))
+    const second = (api.putFactoryGrant as Mock).mock.calls[1][2] as api.MCPFactoryProjectGrant
+    expect(second.assessPlanChanges).toBe(true)
+    expect(second).not.toHaveProperty('approveRoutineRevision')
+    // Nothing else about the grant moved, including the approval authority
+    // the revision permission does not imply.
+    expect(second.read).toBe(true)
+    expect(second.createDraft).toBe(false)
+    expect(second.approveAndQueue).toBe(false)
+    expect(second.approvalAuthority).toBe('none')
+
+    // And it can be taken away again.
+    await user.click(assess)
+    await user.click(screen.getByRole('button', { name: 'Save authority' }))
+    const third = (api.putFactoryGrant as Mock).mock.calls[2][2] as api.MCPFactoryProjectGrant
+    expect(third.assessPlanChanges).toBe(false)
+    expect(third.read).toBe(true)
+  })
+
+  it('editsProjectScopedFactoryGrant', async () => {
+    ;(api.getFactoryGrant as Mock).mockResolvedValue({
+      clientId: 'c1',
+      projectId: 'p2',
+      grant: zeroGrant('p2'),
+      version: 'v0',
+    })
+    ;(api.putFactoryGrant as Mock).mockImplementation(
+      async (clientId: string, projectId: string, grant: api.MCPFactoryProjectGrant, version: string) => ({
+        clientId,
+        projectId,
+        grant,
+        version: `${version}+`,
+      }),
+    )
+
+    const user = await openGrant('c1', 'p2')
+    await screen.findByRole('button', { name: 'Save authority' })
+
+    await user.click(screen.getByLabelText('Read work items'))
+    await user.click(screen.getByLabelText('Edit drafts'))
+    // Approving is only offered alongside an authority, so pick one first.
+    expect((screen.getByLabelText('Approve and queue') as HTMLInputElement).disabled).toBe(true)
+    await user.selectOptions(screen.getByLabelText('Approval authority'), 'standing')
+    await user.click(screen.getByLabelText('Approve and queue'))
+    await user.click(screen.getByRole('button', { name: 'Save authority' }))
+
+    // The write names the opaque project ID and the version it was edited
+    // from; the untouched capabilities are sent as false, not omitted.
+    expect(api.putFactoryGrant).toHaveBeenCalledWith(
+      'c1',
+      'p2',
+      {
+        projectId: 'p2',
+        read: true,
+        createDraft: false,
+        editDraft: true,
+        answerQuestion: false,
+        approveAndQueue: true,
+        approvalAuthority: 'standing',
+      },
+      'v0',
+    )
+    // The version follows the write, so the next save is not refused as stale.
+    expect(await screen.findByText('Version v0+')).toBeTruthy()
+  })
+
+  it('grantConflictRetainsInput', async () => {
+    ;(api.getFactoryGrant as Mock).mockResolvedValue({
+      clientId: 'c1',
+      projectId: 'p1',
+      grant: zeroGrant(),
+      version: 'v0',
+    })
+    // Another editor saved first; the refusal carries the value that won.
+    const winner: api.FactoryGrantState = {
+      clientId: 'c1',
+      projectId: 'p1',
+      grant: { ...zeroGrant(), read: true, approvalAuthority: 'user_directed' },
+      version: 'v2',
+    }
+    ;(api.putFactoryGrant as Mock).mockRejectedValue(new api.FactoryGrantConflictError(winner))
+
+    const user = await openGrant()
+    await screen.findByRole('button', { name: 'Save authority' })
+    await user.click(screen.getByLabelText('Answer questions'))
+    await user.click(screen.getByRole('button', { name: 'Save authority' }))
+
+    const conflict = await screen.findByTestId('grant-conflict')
+    expect(conflict.textContent).toContain('v2')
+    expect(conflict.textContent).toContain('user_directed')
+    // The unsaved edit survives the refusal…
+    expect((screen.getByLabelText('Answer questions') as HTMLInputElement).checked).toBe(true)
+    // …and nothing was re-read behind the user's back: only the explicit
+    // reload below asks for the saved value.
+    expect(api.getFactoryGrant).toHaveBeenCalledTimes(1)
+
+    await user.click(screen.getByRole('button', { name: 'Reload saved authority' }))
+    await vi.waitFor(() => expect(api.getFactoryGrant).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect((screen.getByLabelText('Answer questions') as HTMLInputElement).checked).toBe(false))
+    expect(screen.queryByTestId('grant-conflict')).toBeNull()
+  })
+
+  it('bareConflictIsReportedNotSilent', async () => {
+    ;(api.getFactoryGrant as Mock).mockResolvedValue({
+      clientId: 'c1',
+      projectId: 'p1',
+      grant: zeroGrant(),
+      version: 'v0',
+    })
+    // A 409 the client cannot read: the bridge reported no winning state, so
+    // there is no box to show. The refusal still has to be visible, or the
+    // operator reads silence as a successful save.
+    ;(api.putFactoryGrant as Mock).mockRejectedValue(new api.FactoryGrantConflictError(null))
+
+    const user = await openGrant()
+    await screen.findByRole('button', { name: 'Save authority' })
+    await user.click(screen.getByLabelText('Read work items'))
+    await user.click(screen.getByRole('button', { name: 'Save authority' }))
+
+    expect(await screen.findByText(/did not report what it stored/)).toBeTruthy()
+    expect(screen.queryByTestId('grant-conflict')).toBeNull()
+    // The unsaved edit is still there, and nothing was re-read.
+    expect((screen.getByLabelText('Read work items') as HTMLInputElement).checked).toBe(true)
+    expect(api.getFactoryGrant).toHaveBeenCalledTimes(1)
+  })
+
+  it('unauthorizedGrantIsNotEditable', async () => {
+    // The route answers one 404 for an unknown client and an unknown project
+    // alike, so neither can become an oracle for which IDs exist.
+    ;(api.getFactoryGrant as Mock).mockRejectedValue(new api.APIError(404, { error: 'unknown client or project' }))
+
+    await openGrant()
+
+    expect(await screen.findByText(/unknown to the bridge/)).toBeTruthy()
+    // Nothing is editable without the version the bridge would have shown.
+    expect(screen.queryByRole('button', { name: 'Save authority' })).toBeNull()
+    expect(screen.queryByLabelText('Read work items')).toBeNull()
+    expect(api.putFactoryGrant).not.toHaveBeenCalled()
   })
 })

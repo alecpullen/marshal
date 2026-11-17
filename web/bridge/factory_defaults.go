@@ -99,6 +99,11 @@ func (a *factoryAPI) factoryResolveDefaults(req FactoryCreate) (FactoryCreate, e
 // project with no usable profile contributes no fallback at all, and the
 // stored routing message is only ever read.
 func factoryApplyProjectAgentDefaults(c FactoryConfig, ps ProjectSettings) FactoryConfig {
+	// The subagent overrides are not among the fields this level fills: the
+	// project's factory defaults state them with pointer fields, and the
+	// draft keeps only what it states itself. Both are carried here exactly
+	// as the handoff wrote them, so resolution still has the original
+	// overrides and their absence, not a copy of a resolved value.
 	if !c.Native && c.Workspace == "" {
 		c.Workspace = ps.Workspace
 	}
@@ -198,7 +203,143 @@ func factoryMergeDefaults(c FactoryConfig, d *FactoryDefaults) FactoryConfig {
 	if c.CIWaitSeconds == 0 {
 		c.CIWaitSeconds = d.CIWaitSeconds
 	}
+	// The subagent overrides are resolved per role and per field, not copied:
+	// the handoff keeps only the overrides it stated, and the project's
+	// overrides stay on the defaults where resolution reads them. Copying
+	// either direction would collapse "inherit" into a value, which is what
+	// lets a draft follow a changed default while its own override stays
+	// fixed. Both fields are therefore carried unchanged, and
+	// factoryResolveSubagents is the resolution.
 	return c
+}
+
+// factorySubagentRuntime is the Marshal side of the inheritance chain: the
+// child settings a session reports, and the digest of the config and route
+// inputs they were derived from. It is read from the session's status JSON —
+// the bridge never imports the agent side — and an absent report is nil, which
+// contributes nothing to resolution.
+type factorySubagentRuntime struct {
+	// Settings is whether the session advertises per-session child settings.
+	// A session that reports defaults but not the capability cannot be made to
+	// enforce an override, so an override that demands one is unsupported.
+	Settings    bool
+	Enabled     bool
+	Model       string
+	Concurrency int
+	Digest      string
+}
+
+// The sources a resolved field can come from, most specific first. They are
+// part of the result: they are how a reviewer tells an inherited value from a
+// stated one, and how the approval proves what it froze.
+const (
+	factorySubagentSourceItem    = "item"
+	factorySubagentSourceProject = "project"
+	factorySubagentSourceRuntime = "runtime"
+)
+
+// factorySubagentResolution is one role's resolved settings and, per field,
+// the source it came from. A field no source states is empty and holds its
+// zero value, which is exactly what an approval journalled before subagent
+// settings existed records.
+type factorySubagentResolution struct {
+	Settings          FactorySubagentSettings
+	EnabledSource     string
+	ModelSource       string
+	ConcurrencySource string
+}
+
+// factoryResolveSubagentRole resolves one role's settings: the item's
+// override, then the project's, then the session's reported default. Each
+// field resolves on its own, so a draft that states only a model still
+// inherits enablement and concurrency.
+//
+// An override is a pointer, so an explicit false and an explicit empty model
+// are values, not absences: they win over every source below them.
+func factoryResolveSubagentRole(item, project *FactorySubagentOverrides, rt *factorySubagentRuntime) factorySubagentResolution {
+	var out factorySubagentResolution
+	for _, level := range []struct {
+		overrides *FactorySubagentOverrides
+		source    string
+	}{
+		{item, factorySubagentSourceItem},
+		{project, factorySubagentSourceProject},
+	} {
+		if level.overrides == nil {
+			continue
+		}
+		if out.EnabledSource == "" && level.overrides.Enabled != nil {
+			out.Settings.Enabled = *level.overrides.Enabled
+			out.EnabledSource = level.source
+		}
+		if out.ModelSource == "" && level.overrides.Model != nil {
+			out.Settings.Model = *level.overrides.Model
+			out.ModelSource = level.source
+		}
+		if out.ConcurrencySource == "" && level.overrides.Concurrency != nil {
+			out.Settings.Concurrency = *level.overrides.Concurrency
+			out.ConcurrencySource = level.source
+		}
+	}
+	if rt != nil {
+		if out.EnabledSource == "" {
+			out.Settings.Enabled = rt.Enabled
+			out.EnabledSource = factorySubagentSourceRuntime
+		}
+		if out.ModelSource == "" {
+			out.Settings.Model = rt.Model
+			out.ModelSource = factorySubagentSourceRuntime
+		}
+		if out.ConcurrencySource == "" {
+			out.Settings.Concurrency = rt.Concurrency
+			out.ConcurrencySource = factorySubagentSourceRuntime
+		}
+	}
+	return out
+}
+
+// factoryResolveSubagents resolves both roles of a draft against the project's
+// factory defaults and the session's reported defaults. It is the only place
+// the chain is applied, so a draft view and an approval resolve the same way;
+// it reads the stored overrides and never writes the draft.
+func factoryResolveSubagents(c FactoryConfig, d *FactoryDefaults, rt *factorySubagentRuntime) (implementer, reviewer factorySubagentResolution) {
+	var projectImplementer, projectReviewer *FactorySubagentOverrides
+	if d != nil {
+		projectImplementer, projectReviewer = d.ImplementerSubagents, d.ReviewerSubagents
+	}
+	return factoryResolveSubagentRole(c.ImplementerSubagents, projectImplementer, rt),
+		factoryResolveSubagentRole(c.ReviewerSubagents, projectReviewer, rt)
+}
+
+// factorySubagentOverridesPresent reports whether one role's overrides state
+// anything at all.
+func factorySubagentOverridesPresent(o *FactorySubagentOverrides) bool {
+	return o != nil && (o.Enabled != nil || o.Model != nil || o.Concurrency != nil)
+}
+
+// factorySubagentEnforcement reports whether an approval is asking the runtime
+// to enforce subagent settings. A project default that states an override
+// demands it just as a draft override does, because the run inherits it.
+func factorySubagentEnforcement(c FactoryConfig, d *FactoryDefaults) bool {
+	if factorySubagentOverridesPresent(c.ImplementerSubagents) || factorySubagentOverridesPresent(c.ReviewerSubagents) {
+		return true
+	}
+	return d != nil && (factorySubagentOverridesPresent(d.ImplementerSubagents) || factorySubagentOverridesPresent(d.ReviewerSubagents))
+}
+
+// The cap a session enforces on agent.run children in flight. A snapshot
+// outside this range is refused at approval rather than clamped: a silently
+// reduced cap is not the setting the operator approved.
+const (
+	factorySubagentMinConcurrency = 1
+	factorySubagentMaxConcurrency = 8
+)
+
+// factorySubagentConcurrencySupported reports whether a resolved concurrency
+// is one a session can enforce. Zero means "no snapshot" and is allowed only
+// where nothing is being enforced; a cap is validated, never clamped.
+func factorySubagentConcurrencySupported(n int) bool {
+	return n >= factorySubagentMinConcurrency && n <= factorySubagentMaxConcurrency
 }
 
 // factoryValidateDefaults checks a project's factory defaults on their own.

@@ -241,7 +241,48 @@ func TestChatStreamingFinishReasonWithoutDoneSentinel(t *testing.T) {
 	assertChannelClosed(t, events)
 }
 
-func TestChatStreamingCleanCloseSynthesizesDone(t *testing.T) {
+// breakStream writes body as an unfinished chunked response and closes the
+// connection without its terminating chunk, so the client's decoder gets a
+// read error (io.ErrUnexpectedEOF) rather than a clean EOF. A handler that
+// simply returns produces a clean EOF and therefore exercises the bare-EOF
+// row of the matrix, not the transport-error one.
+func breakStream(t *testing.T, w http.ResponseWriter, contentType, body string) {
+	t.Helper()
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		t.Fatalf("response writer does not support hijacking")
+	}
+	conn, buf, err := hj.Hijack()
+	if err != nil {
+		t.Fatalf("hijack: %v", err)
+	}
+	defer conn.Close()
+	if _, err := fmt.Fprintf(buf, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nTransfer-Encoding: chunked\r\n\r\n", contentType); err != nil {
+		t.Fatalf("write headers: %v", err)
+	}
+	if _, err := fmt.Fprintf(buf, "%x\r\n%s\r\n", len(body), body); err != nil {
+		t.Fatalf("write body: %v", err)
+	}
+	if err := buf.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	// No "0\r\n\r\n" terminator: the connection closes mid-body.
+}
+
+// TestChatStreamingBareEOFIsInterrupted replaces
+// TestChatStreamingCleanCloseSynthesizesDone, which pinned the opposite
+// behaviour: a content delta followed by a bare EOF — neither the `[DONE]`
+// sentinel nor a non-empty finish_reason — becoming a synthesized successful
+// Done. AUD-08 (docs/backend-tui-audit.md) distinguishes that case from clean
+// protocol completion; the recorded contract is that a stream is complete only
+// when the adapter observed its protocol's terminal marker, so a bare EOF is
+// an interrupted stream and never a successful turn. The provider-side
+// behaviour is now visible as ChatEventInterrupted with no ToolCalls, so a
+// truncated tool call can never be repaired into apparent completeness.
+// Renamed rather than deleted: the old assertion is replaced by a protocol
+// decision, not silently dropped. See
+// .docs-archive/backend-tui-audit/plans/aud-08-stream-completion.md §1.3.
+func TestChatStreamingBareEOFIsInterrupted(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -265,12 +306,82 @@ func TestChatStreamingCleanCloseSynthesizesDone(t *testing.T) {
 
 	ev2, ok := recvEvent(t, events)
 	if !ok {
-		t.Fatal("channel closed before synthesized done event")
+		t.Fatal("channel closed before the interrupted event")
 	}
-	if ev2.Type != schema.ChatEventDone {
-		t.Fatalf("event 2 = %+v, want synthesized Done", ev2)
+	if ev2.Type != schema.ChatEventInterrupted {
+		t.Fatalf("event 2 = %+v, want Interrupted (a bare EOF is not a completion)", ev2)
+	}
+	if ev2.Err == nil {
+		t.Fatal("interrupted event carries no error; the cut must be visible")
+	}
+	if len(ev2.ToolCalls) != 0 {
+		t.Fatalf("interrupted event carries tool calls: %+v", ev2.ToolCalls)
 	}
 
+	assertChannelClosed(t, events)
+}
+
+func TestChatStreamingEOFDuringToolArgumentsIsInterrupted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			"data: {\"choices\":[{\"delta\":{\"content\":\"reading\"}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"d.\"}}]}}]}\n\n",
+		))
+		// Connection closes mid tool call, with no terminal marker.
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Delta != "reading" {
+		t.Fatalf("event 1 = %+v, want Delta %q", ev1, "reading")
+	}
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventInterrupted {
+		t.Fatalf("event 2 = %+v ok=%v, want Interrupted", ev2, ok)
+	}
+	if ev2.Err == nil {
+		t.Fatal("interrupted event carries no error")
+	}
+	// The partially accumulated arguments must never be repaired and handed
+	// out as a complete call.
+	if len(ev2.ToolCalls) != 0 {
+		t.Fatalf("truncated tool call reached the event: %+v", ev2.ToolCalls)
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestChatStreamingTransportErrorIsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		breakStream(t, w, "text/event-stream",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Delta != "hi" {
+		t.Fatalf("event 1 = %+v, want Delta %q", ev1, "hi")
+	}
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventError {
+		t.Fatalf("event 2 = %+v ok=%v, want Error (a read failure is not an interruption)", ev2, ok)
+	}
+	if ev2.Err == nil || !strings.Contains(ev2.Err.Error(), "read stream:") {
+		t.Fatalf("error = %v, want a read stream failure", ev2.Err)
+	}
 	assertChannelClosed(t, events)
 }
 
@@ -754,7 +865,7 @@ func TestChatStreamingInlineThinkTagEmitsThinkingDelta(t *testing.T) {
 }
 
 func TestBuildChatRequestBodyIncludesResponseFormat(t *testing.T) {
-	body, err := buildChatRequestBody(schema.ChatRequest{
+	body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 		Model:          "test-model",
 		Messages:       []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 		ResponseFormat: &schema.ResponseFormat{Type: "json_object"},
@@ -789,7 +900,7 @@ func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
 	// varies by backend and the panel now gates visibility on resolved
 	// support, so the wire layer does not second-guess it.
 	for _, effort := range []string{"low", "medium", "high", "minimal", "xhigh"} {
-		body, err := buildChatRequestBody(newReq(effort), false, "")
+		body, err := buildChatRequestBody(t.Context(), newReq(effort), false, "")
 		if err != nil {
 			t.Fatalf("buildChatRequestBody(%q): %v", effort, err)
 		}
@@ -799,7 +910,7 @@ func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
 	}
 	// Explicit off requests none; default and empty omit the control.
 	for _, effort := range []string{"off", "default", ""} {
-		body, err := buildChatRequestBody(newReq(effort), false, "")
+		body, err := buildChatRequestBody(t.Context(), newReq(effort), false, "")
 		if err != nil {
 			t.Fatalf("buildChatRequestBody(%q): %v", effort, err)
 		}
@@ -814,7 +925,7 @@ func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
 }
 
 func TestBuildChatRequestBodyOmitsResponseFormatWhenNil(t *testing.T) {
-	body, err := buildChatRequestBody(schema.ChatRequest{
+	body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 		Model:    "test-model",
 		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 	}, false, "")
@@ -834,7 +945,7 @@ func TestBuildChatRequestBodyOmitsResponseFormatWhenNil(t *testing.T) {
 
 func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 	t.Run("omits tools for baseline request", func(t *testing.T) {
-		body, err := buildChatRequestBody(schema.ChatRequest{
+		body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 			Model:    "test-model",
 			Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 		}, false, "")
@@ -850,7 +961,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 
 	t.Run("includes max_tokens when set", func(t *testing.T) {
 		maxTok := 2048
-		body, err := buildChatRequestBody(schema.ChatRequest{
+		body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 			Model:     "test-model",
 			Messages:  []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 			MaxTokens: &maxTok,
@@ -872,7 +983,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 	})
 
 	t.Run("serializes tool definitions", func(t *testing.T) {
-		body, err := buildChatRequestBody(schema.ChatRequest{
+		body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 			Model:    "test-model",
 			Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 			Tools: []schema.ToolDefinition{{
@@ -897,7 +1008,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 	})
 
 	t.Run("serializes assistant calls and tool results", func(t *testing.T) {
-		body, err := buildChatRequestBody(schema.ChatRequest{
+		body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 			Model: "test-model",
 			Messages: []schema.ChatMessage{
 				{
@@ -1311,7 +1422,7 @@ func TestBuildChatRequestBodyReasoningSummary(t *testing.T) {
 		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 	}
 
-	body, err := buildChatRequestBody(req, true, "")
+	body, err := buildChatRequestBody(t.Context(), req, true, "")
 	if err != nil {
 		t.Fatalf("buildChatRequestBody: %v", err)
 	}
@@ -1319,7 +1430,7 @@ func TestBuildChatRequestBodyReasoningSummary(t *testing.T) {
 		t.Fatalf("reasoning summary not requested: %s", body)
 	}
 
-	body, err = buildChatRequestBody(req, false, "")
+	body, err = buildChatRequestBody(t.Context(), req, false, "")
 	if err != nil {
 		t.Fatalf("buildChatRequestBody: %v", err)
 	}
@@ -1860,6 +1971,109 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
 	}
 }
 
+func TestResponsesStreamingBareEOFIsInterrupted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hi"}
+
+`))
+		// Stream ends with no response.completed / response.incomplete.
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(true)
+	req.Model = "grok-4.7"
+	events, err := p.responsesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("responsesChat returned error: %v", err)
+	}
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Delta != "hi" {
+		t.Fatalf("event 1 = %+v, want Delta hi", ev1)
+	}
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventInterrupted {
+		t.Fatalf("event 2 = %+v ok=%v, want Interrupted", ev2, ok)
+	}
+	if ev2.Err == nil {
+		t.Fatal("interrupted event carries no error")
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestResponsesStreamingEOFDuringToolArgumentsIsInterrupted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"get_weather"}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"city\""}
+
+`))
+		// Stream ends mid function-call arguments.
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(true)
+	req.Model = "grok-4.7"
+	events, err := p.responsesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("responsesChat returned error: %v", err)
+	}
+	ev, ok := recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventInterrupted {
+		t.Fatalf("event = %+v ok=%v, want Interrupted", ev, ok)
+	}
+	if ev.Err == nil {
+		t.Fatal("interrupted event carries no error")
+	}
+	if len(ev.ToolCalls) != 0 {
+		t.Fatalf("truncated tool call reached the event: %+v", ev.ToolCalls)
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestResponsesStreamingTransportErrorIsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		breakStream(t, w, "text/event-stream",
+			"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n")
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(true)
+	req.Model = "grok-4.7"
+	events, err := p.responsesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("responsesChat returned error: %v", err)
+	}
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Delta != "hi" {
+		t.Fatalf("event 1 = %+v, want Delta hi", ev1)
+	}
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventError {
+		t.Fatalf("event 2 = %+v ok=%v, want Error (a read failure is not an interruption)", ev2, ok)
+	}
+	if ev2.Err == nil || !strings.Contains(ev2.Err.Error(), "read stream:") {
+		t.Fatalf("error = %v, want a read stream failure", ev2.Err)
+	}
+	assertChannelClosed(t, events)
+}
+
 func TestResponsesMapsIncompleteToLength(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1899,7 +2113,7 @@ func TestResponsesReasoningEffortField(t *testing.T) {
 	req := chatReq(false)
 	req.Model = "grok-4.7"
 	req.Thinking = "medium"
-	body, err := buildResponsesRequestBody(req, false)
+	body, err := buildResponsesRequestBody(t.Context(), req, false)
 	if err != nil {
 		t.Fatalf("buildResponsesRequestBody returned error: %v", err)
 	}
@@ -1922,7 +2136,7 @@ func TestResponsesReasoningEffortField(t *testing.T) {
 	}
 
 	// The summary flag adds summary:auto alongside the effort.
-	body, err = buildResponsesRequestBody(req, true)
+	body, err = buildResponsesRequestBody(t.Context(), req, true)
 	if err != nil {
 		t.Fatalf("buildResponsesRequestBody(summary) returned error: %v", err)
 	}
@@ -1938,7 +2152,7 @@ func TestResponsesReasoningEffortField(t *testing.T) {
 	// Explicit off requests none; default and empty omit the reasoning object.
 	for _, effort := range []string{"off", "default", ""} {
 		req.Thinking = effort
-		body, err = buildResponsesRequestBody(req, false)
+		body, err = buildResponsesRequestBody(t.Context(), req, false)
 		if err != nil {
 			t.Fatalf("buildResponsesRequestBody(%q) returned error: %v", effort, err)
 		}
@@ -2603,7 +2817,10 @@ func TestResponsesInputDefaultsEmptyToolCallArguments(t *testing.T) {
 		}},
 		{Role: schema.RoleTool, ToolCallID: "call_empty", Content: "ok"},
 	}
-	_, items := buildResponsesInput(msgs)
+	_, items, err := buildResponsesInput(t.Context(), msgs)
+	if err != nil {
+		t.Fatalf("buildResponsesInput: %v", err)
+	}
 
 	got := make(map[string]string)
 	for _, item := range items {
@@ -2628,7 +2845,7 @@ func TestResponsesInputDefaultsEmptyToolCallArguments(t *testing.T) {
 	req := chatReq(false)
 	req.Model = "grok-4.7"
 	req.Messages = msgs
-	body, err := buildResponsesRequestBody(req, false)
+	body, err := buildResponsesRequestBody(t.Context(), req, false)
 	if err != nil {
 		t.Fatalf("buildResponsesRequestBody returned error: %v", err)
 	}
@@ -2737,7 +2954,7 @@ func TestTokenUsageFromReadsFlatCachedTokens(t *testing.T) {
 }
 
 func TestBuildChatRequestBodyReplaysReasoningContent(t *testing.T) {
-	body, err := buildChatRequestBody(schema.ChatRequest{
+	body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 		Model: "test-model",
 		Messages: []schema.ChatMessage{
 			{Role: schema.RoleUser, Content: "hi"},
@@ -2769,7 +2986,7 @@ func TestBuildChatRequestBodyReplaysReasoningContent(t *testing.T) {
 }
 
 func TestBuildChatRequestBodyReplaysReasoningField(t *testing.T) {
-	body, err := buildChatRequestBody(schema.ChatRequest{
+	body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 		Model: "test-model",
 		Messages: []schema.ChatMessage{
 			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "plan"}},
@@ -2787,7 +3004,7 @@ func TestBuildChatRequestBodyReplaysReasoningField(t *testing.T) {
 }
 
 func TestBuildChatRequestBodyNoReplayWhenOff(t *testing.T) {
-	body, err := buildChatRequestBody(schema.ChatRequest{
+	body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 		Model: "test-model",
 		Messages: []schema.ChatMessage{
 			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "plan"}},
@@ -3005,7 +3222,10 @@ func TestBuildResponsesInputPlacesReasoningBeforeFunctionCall(t *testing.T) {
 		},
 		{Role: schema.RoleTool, ToolCallID: "call_1", Content: "ok"},
 	}
-	_, items := buildResponsesInput(msgs)
+	_, items, err := buildResponsesInput(t.Context(), msgs)
+	if err != nil {
+		t.Fatalf("buildResponsesInput: %v", err)
+	}
 
 	var gotTypes []string
 	for _, item := range items {
@@ -3036,7 +3256,7 @@ func TestBuildResponsesInputPlacesReasoningBeforeFunctionCall(t *testing.T) {
 	req := chatReq(false)
 	req.Model = "grok-4.7"
 	req.Messages = msgs
-	body, err := buildResponsesRequestBody(req, false)
+	body, err := buildResponsesRequestBody(t.Context(), req, false)
 	if err != nil {
 		t.Fatalf("buildResponsesRequestBody returned error: %v", err)
 	}

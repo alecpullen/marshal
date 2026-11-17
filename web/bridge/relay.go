@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+
+	"marshal/web/bridge/contract"
 )
 
 // readFrame reads one newline-terminated frame, newline included, up to cap. A
@@ -58,21 +60,37 @@ type relayWatch struct {
 	sessionID string
 }
 
+// relayEnd is what a relay needs from the child its attach reached (decision
+// 2): the registry that counts the viewer, the hook that rearms a project
+// child's linger — nil for a child of the agent's own — and what names the
+// child on the attach's log lines: a project child's root directory, or an
+// agent's own child's display name.
+type relayEnd struct {
+	reg    *Registry       // counts the viewer
+	linger func()          // rearms a project child's linger; nil for an own child
+	root   string          // names the child on the attach's log lines
+	allow  map[string]bool // a container's methods; nil forwards every frame
+}
+
 // relay copies frames between an attached client and its viewer connection
 // until either side ends (P4 D3). Every frame passes through unchanged, in
 // order, in both directions; the only frames it interprets are the answers
 // to a session/new that replaces a session and to a session/close.
-func (f *Fleet) relay(pc *projectChild, sessionID string, client net.Conn, buffered *bufio.Reader, agent net.Conn) {
+//
+// agentID is the agent whose session an agent attach opened, "" for a project
+// attach.
+func (f *Fleet) relay(end relayEnd, sessionID, agentID string, client net.Conn, buffered *bufio.Reader, agent net.Conn) {
 	r := &relay{
 		fleet:   f,
-		pc:      pc,
+		end:     end,
 		client:  client,
 		agent:   agent,
 		session: sessionID,
+		agentID: agentID,
 		watches: make(map[string]*relayWatch),
 		cap:     f.frameCap(),
 	}
-	logAttach("attached", pc.root, sessionID, "requested")
+	logAttach("attached", end.root, sessionID, "requested")
 
 	done := make(chan string, 2)
 	go func() { done <- r.pumpClient(buffered) }()
@@ -88,12 +106,20 @@ func (f *Fleet) relay(pc *projectChild, sessionID string, client net.Conn, buffe
 // and the answers it is waiting for.
 type relay struct {
 	fleet  *Fleet
-	pc     *projectChild
+	end    relayEnd
 	client net.Conn
 	agent  net.Conn
 
+	// agentID is the agent whose session this attach opened, "" for a project
+	// attach.
+	agentID string
+
 	sessMu  sync.Mutex
 	session string
+
+	// clientMu serialises writes to the client: the agent's frames and the
+	// relay's refusals.
+	clientMu sync.Mutex
 
 	// cap is the largest frame this relay forwards, read once so no pump
 	// consults shared state per frame.
@@ -101,6 +127,12 @@ type relay struct {
 
 	watchMu sync.Mutex
 	watches map[string]*relayWatch
+
+	// dropMu guards dropped, the methods this attach has already logged a
+	// drop for: decision 2 asks for the first one of each method, not one per
+	// frame.
+	dropMu  sync.Mutex
+	dropped map[string]bool
 
 	stopOnce sync.Once
 }
@@ -128,16 +160,19 @@ func (r *relay) stop() {
 }
 
 // finish uncounts the viewer, touches the session, and arms the linger when
-// the close that ended the relay left the project child with no session.
+// the close that ended the relay left the project child with no session. An
+// own child has no linger to arm: end.linger is nil.
 func (r *relay) finish(reason string) {
 	id := r.currentSession()
-	r.pc.reg.detachViewer(id)
-	r.pc.reg.touch(id)
+	r.end.reg.detachViewer(id)
+	r.end.reg.touch(id)
 	// Neither pump is running now, so an answer that has not arrived cannot
 	// arrive: drop the watches rather than keep decoding every frame for them.
 	r.clearWatches()
-	r.fleet.rearmLinger(r.pc)
-	logAttach("detached", r.pc.root, id, reason)
+	if r.end.linger != nil {
+		r.end.linger()
+	}
+	logAttach("detached", r.end.root, id, reason)
 }
 
 // pumpClient forwards the client's frames to the child. It reads the
@@ -149,6 +184,35 @@ func (r *relay) pumpClient(src *bufio.Reader) string {
 		if err != nil {
 			return "client: " + frameErrReason(err)
 		}
+		// A restricted relay comes first: a container's viewer may send only
+		// the methods its session screen uses, and everything else is answered
+		// or dropped here rather than forwarded (decisions 2 and 7).
+		if r.end.allow != nil {
+			if answer, refused := r.restricted(frame); refused {
+				if answer != nil {
+					r.clientMu.Lock()
+					_, err := r.client.Write(answer)
+					r.clientMu.Unlock()
+					if err != nil {
+						return "client write: " + err.Error()
+					}
+				}
+				continue
+			}
+		}
+		// A frame the relay refuses is answered here instead of being
+		// forwarded: no viewer may finish an agent's session, so neither a
+		// close nor a replacement naming one ever reaches the child (decision
+		// 1).
+		if answer, refused := r.refusal(frame); refused {
+			r.clientMu.Lock()
+			_, err := r.client.Write(answer)
+			r.clientMu.Unlock()
+			if err != nil {
+				return "client write: " + err.Error()
+			}
+			continue
+		}
 		// The watch is registered before the frame is written: the answer can
 		// arrive as soon as the child reads it.
 		if key, watch, ok := watchedRequest(frame); ok {
@@ -157,7 +221,7 @@ func (r *relay) pumpClient(src *bufio.Reader) string {
 		if _, err := r.agent.Write(frame); err != nil {
 			return "child write: " + err.Error()
 		}
-		r.pc.reg.touch(r.currentSession())
+		r.end.reg.touch(r.currentSession())
 	}
 }
 
@@ -176,27 +240,193 @@ func (r *relay) pumpAgent(src *bufio.Reader) string {
 		if r.hasWatches() {
 			after = r.answer(frame)
 		}
-		if _, err := r.client.Write(frame); err != nil {
+		r.clientMu.Lock()
+		_, err = r.client.Write(frame)
+		r.clientMu.Unlock()
+		if err != nil {
 			return "client write: " + err.Error()
 		}
-		r.pc.reg.touch(r.currentSession())
+		r.end.reg.touch(r.currentSession())
 		if after != nil {
 			after()
 		}
 	}
 }
 
+// clientRequest is the part of a client frame the relay interprets: the
+// request's id, its method, and the session a close or a replacement names.
+// watchedRequest and refusal both read a frame through decodeClientRequest, so
+// a client frame's shape is decoded in one place rather than in two.
+type clientRequest struct {
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
+	Params struct {
+		Replaces  string `json:"replaces"`
+		SessionID string `json:"sessionId"`
+	} `json:"params"`
+}
+
+// decodeClientRequest decodes one client frame as watchedRequest and refusal
+// both read it. ok is false for a frame that is not a request: a malformed
+// one, a notification, or an answer.
+func decodeClientRequest(frame []byte) (clientRequest, bool) {
+	var req clientRequest
+	if err := json.Unmarshal(frame, &req); err != nil || len(req.ID) == 0 {
+		return clientRequest{}, false
+	}
+	return req, true
+}
+
+// clientFrame is what a restricted relay reads of every client frame: its id,
+// when it has one, and its method, when it has one.
+type clientFrame struct {
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
+}
+
+// restricted answers a frame a container's relay does not forward
+// (decisions 2 and 7): answer is nil for a frame that is only dropped.
+//
+// A container's viewer may call only the methods its session screen uses
+// (contract.ContainerViewerMethods): every other request is answered with
+// decision 2's sentence and every other notification is dropped. A frame that
+// does not decode as one JSON-RPC message — a batch, or malformed JSON — is
+// dropped, and so is one with neither a method nor an id: the relay fails
+// closed (decision 7). An answer to one of the agent's own requests carries no
+// method and passes unchanged, so approvals and questions still reach the
+// viewer and its answers reach the agent.
+func (r *relay) restricted(frame []byte) (answer []byte, refused bool) {
+	var cf clientFrame
+	if err := json.Unmarshal(frame, &cf); err != nil {
+		r.dropFrame("", "not one JSON-RPC message")
+		return nil, true
+	}
+	if cf.Method == "" {
+		if !hasJSONValue(cf.ID) {
+			r.dropFrame("", "neither a method nor an id")
+			return nil, true
+		}
+		return nil, false
+	}
+	if r.end.allow[cf.Method] {
+		return nil, false
+	}
+	// The close rule is asked before the list is enforced: decision 1 is a rule
+	// about sessions rather than about a method's surface, so a session/close or
+	// a replacing session/new the close rule refuses is answered with the close
+	// rule's own sentence. The answer is returned here rather than asked for
+	// again by pumpClient, so the fleet is asked once per frame.
+	if answer, closes := r.refusal(frame); closes {
+		return answer, true
+	}
+	if !hasJSONValue(cf.ID) {
+		r.dropFrame(cf.Method, "not available for a containerized agent")
+		return nil, true
+	}
+	return refusalAnswer(cf.ID, cf.Method+" is not available for a containerized agent"), true
+}
+
+// dropFrame logs the first frame of each method this attach drops, so a client
+// retrying a refused notification cannot flood the log (decision 2). An
+// undecodable frame has no method and is logged once per attach.
+func (r *relay) dropFrame(method, why string) {
+	r.dropMu.Lock()
+	if r.dropped == nil {
+		r.dropped = make(map[string]bool)
+	}
+	first := !r.dropped[method]
+	r.dropped[method] = true
+	r.dropMu.Unlock()
+	if !first {
+		return
+	}
+	named := method
+	if named == "" {
+		named = "(no method)"
+	}
+	slog.Default().Warn("webbridge: restricted relay dropped a frame",
+		"root", r.end.root, "session", r.currentSession(), "method", named, "why", why)
+}
+
+// containerViewerSet is ContainerViewerMethods as the relay looks them up.
+func containerViewerSet() map[string]bool {
+	set := make(map[string]bool, len(contract.ContainerViewerMethods))
+	for _, method := range contract.ContainerViewerMethods {
+		set[method] = true
+	}
+	return set
+}
+
+// refusal answers a client frame the relay does not forward: a session/close
+// or a replacing session/new that names an agent's session. ok is false for
+// every other frame.
+//
+// Only a request is refused. A frame without an id is not decoded at all,
+// exactly as watchedRequest treats it: ACP sends both methods as requests, so
+// an id-less notification naming an agent's session would be forwarded like any
+// other frame. Widening this means widening decodeClientRequest, which the
+// watch side shares.
+//
+// No viewer may finish an agent's session, on either attach (decision 1), so
+// the frame is answered to the client instead of being forwarded. The answer
+// echoes the request's id and says what the fleet screen says: data carries an
+// acpwire.Error-shaped object whose code is empty, which is how a marshal
+// client reads an error's own sentence. web/ is standard library only, so that
+// shape is written out here rather than imported.
+func (r *relay) refusal(frame []byte) (answer []byte, ok bool) {
+	req, isRequest := decodeClientRequest(frame)
+	if !isRequest {
+		return nil, false
+	}
+	var sessionID string
+	switch req.Method {
+	case "session/new":
+		sessionID = req.Params.Replaces
+	case "session/close":
+		sessionID = req.Params.SessionID
+	default:
+		return nil, false
+	}
+	agent, owned := r.fleet.agentOwning(sessionID)
+	if !owned {
+		return nil, false
+	}
+	// The answer is assembled rather than marshalled whole: the request's id
+	// is already valid JSON and quoting the sentence cannot fail, so a refused
+	// frame is never lost to an encoding error and never falls through to the
+	// child.
+	return refusalAnswer(req.ID, finishFromFleet(agent)), true
+}
+
+// refusalAnswer writes an error answer to one client request: the request's own
+// id, -32000, and a sentence a marshal client reads as that sentence. data
+// carries an acpwire.Error-shaped object whose code is empty, which is how a
+// marshal client reads an error's own sentence; web/ is standard library only,
+// so that shape is written out here rather than imported.
+//
+// The answer is assembled rather than marshalled whole: the id is already valid
+// JSON and quoting the sentence cannot fail, so a refused frame is never lost
+// to an encoding error.
+func refusalAnswer(id json.RawMessage, sentence string) []byte {
+	// json.Marshal of a string cannot fail: the sentence is quoted, never
+	// rejected.
+	quoted, _ := json.Marshal(sentence)
+	var out bytes.Buffer
+	out.WriteString(`{"jsonrpc":"2.0","id":`)
+	out.Write(id)
+	out.WriteString(`,"error":{"code":-32000,"message":`)
+	out.Write(quoted)
+	out.WriteString(`,"data":{"code":"","message":`)
+	out.Write(quoted)
+	out.WriteString(`}}}`)
+	out.WriteByte('\n')
+	return out.Bytes()
+}
+
 // watchedRequest reports the request a client frame asks the relay to follow.
 func watchedRequest(frame []byte) (string, *relayWatch, bool) {
-	var req struct {
-		ID     json.RawMessage `json:"id"`
-		Method string          `json:"method"`
-		Params struct {
-			Replaces  string `json:"replaces"`
-			SessionID string `json:"sessionId"`
-		} `json:"params"`
-	}
-	if err := json.Unmarshal(frame, &req); err != nil || len(req.ID) == 0 {
+	req, ok := decodeClientRequest(frame)
+	if !ok {
 		return "", nil, false
 	}
 	switch req.Method {
@@ -244,13 +474,13 @@ func (r *relay) answer(frame []byte) func() {
 		if err := json.Unmarshal(resp.Result, &res); err != nil || res.SessionID == "" {
 			return nil
 		}
-		if r.pc.reg.rename(r.currentSession(), res.SessionID) {
+		if r.end.reg.rename(r.currentSession(), res.SessionID) {
 			r.setSession(res.SessionID)
 		}
 		return nil
 	case watchClose:
 		id := watch.sessionID
-		return func() { r.fleet.closeRelayedSession(r.pc, id) }
+		return func() { r.fleet.closeRelayedSession(r.end.reg, r.end.root, id) }
 	}
 	return nil
 }
@@ -258,13 +488,13 @@ func (r *relay) answer(frame []byte) func() {
 // closeRelayedSession ends a session's runtime through the bridge's own
 // connection after a viewer closed it. It runs off the relay's goroutine so a
 // slow agent never delays the client's stream (decision 8).
-func (f *Fleet) closeRelayedSession(pc *projectChild, id string) {
+func (f *Fleet) closeRelayedSession(reg *Registry, root, id string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), controlHandshakeTimeout)
 		defer cancel()
-		if err := pc.reg.Close(ctx, id); err != nil {
+		if err := reg.Close(ctx, id); err != nil {
 			slog.Default().Warn("webbridge: close a viewer-closed session",
-				"root", pc.root, "session", id, "err", err)
+				"root", root, "session", id, "err", err)
 		}
 	}()
 }

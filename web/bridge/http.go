@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -18,9 +20,10 @@ import (
 	"marshal/web/bridge/contract"
 )
 
-// maxBodyBytes bounds inbound request bodies. Prompt and steer text
-// dominate; 1 MiB matches the ACP inbound frame cap.
-const maxBodyBytes = 1 << 20
+// maxBodyBytes bounds inbound request bodies. Prompt and steer text dominate;
+// the bound is also above the largest planner body, a plan and a spec at their
+// per-document limits.
+const maxBodyBytes = 2 << 20
 
 // maxAuditTail caps how many audit records a single feed request may
 // return. The UI polls every few seconds; a bounded tail keeps the
@@ -34,8 +37,11 @@ type Server struct {
 	fleet *Fleet
 	mux   *http.ServeMux
 	http  http.Handler
-	reg   *Registry
-	log   *EventLog
+	// networkAttach is the agent attach behind the bearer check; nil without
+	// a token, and then the network listener answers the attach 404 (D7).
+	networkAttach http.Handler
+	reg           *Registry
+	log           *EventLog
 	// publicURLBase is the externally reachable base URL, used to build
 	// absolute links (e.g. the operator-approval URL an MCP spawn
 	// returns). Empty falls back to the listen address.
@@ -49,6 +55,21 @@ type Server struct {
 	// refresh, when set, is the daemon's refresh helper, reported per
 	// request by GET /api/daemon (see SetRefreshHelper).
 	refresh *Helper
+	// factoryAuth is the one factory policy lock: grant management, client
+	// deletion, project removal, delegation settings and the authorization
+	// guarding a durable factory mutation all take it. It is created with the
+	// server, over the workspace it reads, so every route that can change
+	// authority or act under it shares one mutex.
+	factoryAuth *factoryMCPAuthorizer
+	// factory is the same factory service the Studio routes serve, kept here
+	// so the MCP tools compose the identical instance. It is nil when this
+	// server was built without one, and a factory tool then answers
+	// unavailable instead of taking an unauthorised path.
+	factory FactoryAPI
+	// marshalEnroll is the record of live built-in enrollments: one binding per
+	// enrolled session, in memory only, so a restart ends every one of them
+	// (marshal_enrollment.go).
+	marshalEnroll *marshalEnrollments
 }
 
 func NewServer(target any, args ...any) *Server {
@@ -80,16 +101,35 @@ func NewServer(target any, args ...any) *Server {
 	if fleet != nil && publicURLBase != "" {
 		fleet.SetPublicURLBase(publicURLBase)
 	}
-	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux()}
+	var ws *Workspace
+	if fleet != nil {
+		ws = fleet.ws
+	}
+	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux(),
+		factoryAuth:   newFactoryMCPAuthorizer(ws),
+		marshalEnroll: newMarshalEnrollments()}
 	s.routes()
+	// The planner API owns live backend sessions, so it exists only when this
+	// server has a fleet to hold them.
+	if fleet != nil {
+		s.plannerRoutes()
+	}
 	for _, arg := range args {
 		if factory, ok := arg.(FactoryAPI); ok {
+			s.factory = factory
 			s.factoryRoutes(factory)
+			// Working drafts live beside the factory journal, in a store of
+			// their own. Only a factory API with a fleet state directory can
+			// host one; anything else keeps its routes as they were.
+			s.workingDraftSetup(factory)
 		}
 	}
 	s.http = s.mux
 	if token != "" {
 		s.http = bearerAuth(token, s.mux)
+		// The network listener also serves the agent attach, behind the same
+		// bearer check and, past it, the transport rule (decision 7).
+		s.networkAttach = s.networkAgentAttach(token)
 	}
 	return s
 }
@@ -107,8 +147,16 @@ func (s *Server) publicURL(path string) string {
 // ServeHTTP implements http.Handler. Non-API paths are served by the
 // embedded SPA (index.html fallback for client-side routing); /api paths
 // go through the mux (with optional bearer auth) so method mismatches
-// still produce 405.
+// still produce 405. The agent attach is the one /api route that is not
+// on the mux: it goes to networkAttach, which owns the bearer check and
+// the transport rule, and is absent without a token (decision 7).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.networkAttach != nil {
+		if _, ok := agentAttachID(r.URL.Path); ok {
+			s.networkAttach.ServeHTTP(w, r)
+			return
+		}
+	}
 	s.route(s.http, w, r)
 }
 
@@ -116,17 +164,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // routing without the bearer check (decision 7). /mcp keeps its own
 // per-client auth, so it is on the bare mux here either way.
 //
-// The attach and pin routes exist only here: the network listener never
-// upgrades a connection to a session's stream and never changes what the
-// daemon keeps running, so ServeHTTP answers both 404 (P4 D3, D9).
+// The project attach and the pin route exist only here: the network
+// listener never opens a project's child and never changes what the daemon
+// keeps running, so ServeHTTP answers both 404 (P4 D3, D9). The agent
+// attach is the one route ServeHTTP shares, through networkAttach.
 func (s *Server) SocketHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == attachPath {
 			s.attachProject(w, r)
 			return
 		}
+		if id, ok := agentAttachID(r.URL.Path); ok {
+			s.attachAgent(w, r, id)
+			return
+		}
 		if r.URL.Path == pinPath {
 			s.pinProject(w, r)
+			return
+		}
+		if r.URL.Path == marshalEnrollPath {
+			// Enrollment is the socket's own operation: it is reached only
+			// where the owner is the caller, never on the network listener,
+			// which answers it 404 (marshal_enrollment.go).
+			s.enrollMarshal(w, r)
 			return
 		}
 		s.route(s.mux, w, r)
@@ -155,8 +215,16 @@ func (s *Server) route(api http.Handler, w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
+	if isNextPath(r.URL.Path) {
+		// The Flutter Studio, at its prefix: the cutover is deferred, so the
+		// Svelte Studio keeps the root (F8 decision 1, revised 2026-11-17).
+		flutterHandler().ServeHTTP(w, r)
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {
-		staticHandler().ServeHTTP(w, r)
+		// Everything else that is not the API is the Svelte Studio, at the
+		// root.
+		svelteHandler().ServeHTTP(w, r)
 		return
 	}
 	api.ServeHTTP(w, r)
@@ -166,6 +234,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/daemon", s.daemon)
 	s.mux.HandleFunc("GET /api/config", s.config)
 	s.mux.HandleFunc("GET /api/projects", s.listProjects)
+	// A project's image upload: the ref it answers is what a prompt attaches.
+	s.mux.HandleFunc("POST /api/projects/images", s.uploadImage)
 	s.mux.HandleFunc("POST /api/projects", s.addProject)
 	s.mux.HandleFunc("DELETE /api/projects", s.removeProject)
 	s.mux.HandleFunc("GET /api/agents", s.listAgents)
@@ -199,6 +269,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/sessions/{id}/prompt", s.prompt)
 	s.mux.HandleFunc("POST /api/sessions/{id}/cancel", s.cancel)
 	s.mux.HandleFunc("POST /api/sessions/{id}/steer", s.steer)
+	// The child controls: one live child of the named session, addressed by
+	// the child ID its session reports. Steering and cancellation reach the
+	// owning ACP session only; cancel reuses session/subagent_cancel.
+	s.mux.HandleFunc("POST /api/sessions/{id}/subagents/{subagentId}/steer", s.steerSubagent)
+	s.mux.HandleFunc("POST /api/sessions/{id}/subagents/{subagentId}/cancel", s.cancelSubagent)
 	s.mux.HandleFunc("POST /api/sessions/{id}/mode", s.setMode)
 	s.mux.HandleFunc("GET /api/sessions/{id}/access", s.getAccess)
 	s.mux.HandleFunc("PATCH /api/sessions/{id}/access", s.patchAccess)
@@ -227,6 +302,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/clients", s.listClients)
 	s.mux.HandleFunc("POST /api/clients", s.createClient)
 	s.mux.HandleFunc("DELETE /api/clients/{id}", s.deleteClient)
+	// Factory grants are a Studio management surface. They hang off /api/, so
+	// /mcp — which authenticates per client and is not under /api/ — can never
+	// reach them: an MCP client cannot change its own authority.
+	s.mux.HandleFunc("GET /api/clients/{clientId}/factory-grants/{projectId}", s.getFactoryGrant)
+	s.mux.HandleFunc("PUT /api/clients/{clientId}/factory-grants/{projectId}", s.putFactoryGrant)
+	// The built-in session's own access is the same kind of management
+	// surface: it hangs off /api/, so /mcp can never reach it and a session's
+	// model-facing tools cannot widen their own authority. Reads and writes
+	// are versioned, and a field reset to unset restores inheritance.
+	s.marshalAccessRoutes()
 	s.mux.HandleFunc("GET /api/pending", s.listPending)
 	s.mux.HandleFunc("POST /api/pending/{id}/approve", s.approvePending)
 	s.mux.HandleFunc("POST /api/pending/{id}/deny", s.denyPending)
@@ -247,6 +332,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/repos", s.listRepos)
 	s.mux.HandleFunc("POST /api/repos", s.registerRepo)
 	s.mux.HandleFunc("DELETE /api/repos/{id}", s.removeRepo)
+	// The pull requests the bridge opened, and the one index of their checks.
+	s.mux.HandleFunc("GET /api/pulls", s.listPulls)
+	s.mux.HandleFunc("GET /api/pulls/{id}", s.getPull)
+	s.mux.HandleFunc("POST /api/pulls/{id}/fix", s.fixPull)
+	s.mux.HandleFunc("POST /api/pulls/{id}/fix/stop", s.stopPullFix)
 	s.mux.HandleFunc("GET /api/network", s.networkView)
 	s.mux.HandleFunc("GET /api/network/pending", s.networkPending)
 	s.mux.HandleFunc("POST /api/network/decisions", s.networkDecision)
@@ -289,10 +379,16 @@ func writeErr(w http.ResponseWriter, err error) {
 	var budget ErrBudget
 	var setup ErrSetupFailed
 	var merge ErrWorkspaceMerge
+	var running pullFixRunning
 	switch {
 	case errors.Is(err, ErrFactoryConflict):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrUnknownRecipe), errors.Is(err, ErrUnknownSchedule):
+	case errors.As(err, &running):
+		// The refusal names the fix that is already running.
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "fixId": running.ID})
+	case errors.Is(err, ErrPullFixNotFailing), errors.Is(err, ErrInvalidPullFixMode):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrUnknownRecipe), errors.Is(err, ErrUnknownSchedule), errors.Is(err, ErrUnknownPull):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrInvalidRecipe), errors.Is(err, ErrRecipeBuiltin), errors.Is(err, errInvalidSchedule):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -381,6 +477,24 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
+// decodeStrictJSON is decodeJSON for a body whose every field is known: an
+// unknown field is a typo, and dropping it silently is worse than refusing it.
+func decodeStrictJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	defer r.Body.Close()
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
+		return false
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body must contain a single JSON value"})
+		return false
+	}
+	return true
+}
+
 // config exposes read-only bridge configuration needed by the SPA.
 func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 	if s.fleet == nil {
@@ -391,7 +505,23 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.fleet.ProjectStatus())
+	writeJSON(w, http.StatusOK, s.projectsWithFactoryIDs())
+}
+
+// projectsWithFactoryIDs is the project list with each entry's derived ids
+// attached: its stable factory project ID (what a grant is keyed by and what
+// an MCP client may name) and the registered repo its work comes from (what
+// `GET /api/repos/{id}/issues` is keyed by). Every other field is exactly
+// what the fleet reported.
+func (s *Server) projectsWithFactoryIDs() []contract.ProjectStatus {
+	statuses := s.fleet.ProjectStatus()
+	for i := range statuses {
+		if id, ok := s.fleet.ws.ProjectID(statuses[i].Root); ok {
+			statuses[i].MCPProjectID = id
+		}
+		statuses[i].RepoID = s.fleet.projectRepoID(statuses[i].Root)
+	}
+	return statuses
 }
 
 func (s *Server) addProject(w http.ResponseWriter, r *http.Request) {
@@ -432,7 +562,10 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request) {
 			s.fleet.dropGate(a.ID)
 		}
 	}
-	if err := s.fleet.ws.RemoveProject(body.Root); err != nil {
+	// Removal drops the project's identity and every grant naming it in one
+	// save, so it takes the policy lock: an authorization either sees the
+	// project or does not, and never sees it after its grants are gone.
+	if err := s.factoryAuth.withPolicy(func() error { return s.fleet.ws.RemoveProject(body.Root) }); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -644,6 +777,7 @@ func (s *Server) agentExit(w http.ResponseWriter, r *http.Request) {
 	res, err := s.fleet.Exit(r.Context(), r.PathValue("id"), ExitOptions{
 		CommitMessage: body.CommitMessage,
 		Override:      body.Override,
+		NoPR:          body.NoPR,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -887,9 +1021,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "turn already in flight"})
 		return
 	}
-	var body struct {
-		Text string `json:"text"`
-	}
+	var body contract.PromptRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -921,9 +1053,7 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 
 // steer redirects the in-flight turn.
 func (s *Server) steer(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Text string `json:"text"`
-	}
+	var body contract.SteerRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -943,14 +1073,195 @@ func (s *Server) steer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "steered"})
 }
 
+// The child-control outcomes writeSubagentErr separates, as the response
+// body's "code". A caller must be able to tell them apart without parsing a
+// sentence: a conflict is a request ID the session already used for something
+// else, an unsupported backend registers no such control, an unknown delivery
+// names no live child of this session, and a lost connection left the outcome
+// unknown — the one case where a retry must carry the same request ID.
+const (
+	subagentCodeInvalid         = "invalid"
+	subagentCodeUnknownSession  = "unknown_session"
+	subagentCodeUnknownDelivery = "unknown_delivery"
+	subagentCodeConflict        = "conflict"
+	subagentCodeRefused         = "refused"
+	subagentCodeUnsupported     = "unsupported"
+	subagentCodeConnectionLost  = "connection_lost"
+)
+
+// rpcServerError is JSON-RPC's server-error code. ACP sends it for a session's
+// own refusal, and the bridge may not import internal/acp, so the code is a
+// literal here beside method-not-found and invalid-params.
+const rpcServerError = -32000
+
+// subagentIDPath reads the route's child ID. A child ID is an int64 on the
+// wire and session-local; anything else is the caller's mistake and must not
+// reach the agent, where 0 names no child and would answer "unknown" to a typo.
+func subagentIDPath(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	raw := r.PathValue("subagentId")
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "subagentId must be a positive integer: " + raw,
+			"code":  subagentCodeInvalid,
+		})
+		return 0, false
+	}
+	return id, true
+}
+
+// steerSubagent forwards one user instruction to one live child of the named
+// session (session/subagent_steer).
+//
+// The session is resolved first, which is the authorization step: a child ID
+// is session-local, so two sessions that both hold child 1 each reach only
+// their own. The route owns the session and child IDs and the body names only
+// the request and its text, so a caller cannot address another session's child
+// through either field.
+//
+// The bridge keeps no receipt of its own: the session deduplicates by request
+// ID, so a retry after a lost reply is answered from its receipt instead of
+// being enqueued twice. Accepted is not consumed, and nothing here upgrades
+// one into the other.
+func (s *Server) steerSubagent(w http.ResponseWriter, r *http.Request) {
+	subagentID, ok := subagentIDPath(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		RequestID string `json:"requestId"`
+		Message   string `json:"message"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.RequestID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "requestId is required", "code": subagentCodeInvalid})
+		return
+	}
+	if strings.TrimSpace(body.Message) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "message is required", "code": subagentCodeInvalid})
+		return
+	}
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeSubagentErr(w, err, "subagent_steer")
+		return
+	}
+	res, err := reg.call(r.Context(), sessionID, "session/subagent_steer", "subagent_steer", map[string]any{
+		"subagentId": subagentID,
+		"requestId":  body.RequestID,
+		"message":    body.Message,
+	})
+	if err != nil {
+		writeSubagentErr(w, err, "subagent_steer")
+		return
+	}
+	var out struct {
+		RequestID string `json:"requestId"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil || out.RequestID == "" || out.Status == "" {
+		// The call ended without an acceptance. Whether the child's queue took
+		// the instruction is unknown, so this is a lost reply, not a success.
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "bridge: session/subagent_steer returned no acceptance",
+			"code":  subagentCodeConnectionLost,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, contract.SubagentSteerResult{RequestID: body.RequestID, Status: out.Status})
+}
+
+// cancelSubagent asks one live child of the named session to stop through the
+// existing session/subagent_cancel control: a second route, never a second
+// cancellation mechanism. Cancelled is the acknowledgement — the child's
+// terminal state arrives as its own completion, so a caller must not read this
+// as "stopped".
+func (s *Server) cancelSubagent(w http.ResponseWriter, r *http.Request) {
+	subagentID, ok := subagentIDPath(w, r)
+	if !ok {
+		return
+	}
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeSubagentErr(w, err, "subagent_cancel")
+		return
+	}
+	res, err := reg.call(r.Context(), sessionID, "session/subagent_cancel", "subagent_cancel", map[string]any{
+		"subagentId": subagentID,
+	})
+	if err != nil {
+		writeSubagentErr(w, err, "subagent_cancel")
+		return
+	}
+	var out contract.SubagentCancelResult
+	if err := json.Unmarshal(res, &out); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "bridge: decode session/subagent_cancel result: " + err.Error(),
+			"code":  subagentCodeConnectionLost,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// writeSubagentErr answers a failed child control with a body whose "code"
+// tells the four apart: a conflict (409), an unsupported backend (501), an
+// unknown delivery (404) and a lost connection (502). An unknown session is
+// 404 before any control is attempted.
+func writeSubagentErr(w http.ResponseWriter, err error, feature string) {
+	var rpc *rpcError
+	var unsupported ErrUnsupported
+	switch {
+	case errors.Is(err, ErrUnknownSession), errors.Is(err, ErrUnknownAgent):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error(), "code": subagentCodeUnknownSession})
+	case errors.As(err, &unsupported):
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": unsupported.Error(), "code": subagentCodeUnsupported})
+	case errors.As(err, &rpc) && rpc.Code == rpcInvalidParams:
+		// The session refused the input itself.
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": rpc.Message, "code": subagentCodeInvalid})
+	case errors.As(err, &rpc) && rpc.Code == rpcServerError:
+		// The session refused the request; its sentence says which refusal.
+		code := subagentRefusalCode(rpc.Message)
+		if code == subagentCodeUnknownDelivery {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": rpc.Message, "code": code})
+			return
+		}
+		writeJSON(w, http.StatusConflict, map[string]string{"error": rpc.Message, "code": code})
+	default:
+		// No reply at all: the child stopped, the write failed, or the call was
+		// cancelled. The request may have been accepted before the connection
+		// went, so the outcome is unknown and a retry must reuse its ID.
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error(), "code": subagentCodeConnectionLost})
+	}
+}
+
+// subagentRefusalCode reads which refusal a session's sentence is. web/ is
+// standard library only, so the bridge may not import the session's error
+// values or a typed code: the sentences internal/app/session/subagents.go
+// writes are the seam, and http_test.go pins each one. A sentence it does not
+// recognise stays "refused" rather than being guessed into a conflict a client
+// would act on.
+func subagentRefusalCode(message string) string {
+	switch {
+	case strings.Contains(message, "was already used"):
+		return subagentCodeConflict
+	case strings.Contains(message, "unknown subagent"),
+		strings.Contains(message, "has no live session"),
+		strings.Contains(message, "no longer running"):
+		return subagentCodeUnknownDelivery
+	default:
+		return subagentCodeRefused
+	}
+}
+
 // setMode switches the session's permission mode. It is the legacy
 // single-field ingress for PATCH /api/sessions/{id}/access: the mode is
 // forwarded as an atomic patch and the full committed state is returned.
 // New clients use the access routes and never need a dummy mode.
 func (s *Server) setMode(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Mode string `json:"mode"`
-	}
+	var body contract.ModeRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -1231,7 +1542,10 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
 		return
 	}
-	if err := s.fleet.ws.DeleteClient(id); err != nil {
+	// Deleting a client revokes its grants in the same save, and it shares the
+	// policy lock with authorization: a mutation either admits under the
+	// client that still existed or is denied by its absence.
+	if err := s.factoryAuth.withPolicy(func() error { return s.fleet.ws.DeleteClient(id) }); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -1350,4 +1664,442 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 		events = []AuditEvent{}
 	}
 	writeJSON(w, http.StatusOK, events)
+}
+
+// marshalStateUnauthorized is the state a user-side access surface reports for
+// a pair the server will not act on: a session that is not associated with the
+// project it named, or a project this instance does not hold. It names neither
+// the reason nor which of the two was wrong, so the route is not an oracle for
+// which IDs exist.
+const marshalStateUnauthorized = "unauthorized"
+
+// MarshalAccessLayer is one level's stored built-in access and the opaque
+// version a write to it must name. A level is the project's defaults when it
+// carries no session, and one session's (or worker's) override when it does.
+// Unset fields inherit the level beneath; an explicit false is a denial that
+// stays one until it is reset.
+type MarshalAccessLayer struct {
+	Access  MarshalFactoryAccess `json:"access"`
+	Version string               `json:"version"`
+}
+
+// MarshalAccessView is one session's Studio connection and effective built-in
+// access, as the user-side surface reads it and as every write answers.
+//
+// State is the connection the surface reports: connected, ambiguous,
+// unavailable, unsupported or unauthorized. The layers, the effective access
+// and its Source are the policy, which is stored whether or not a connection
+// is up: an offline state never implies an unreadable or unwritable policy.
+type MarshalAccessView struct {
+	State      string   `json:"state"`
+	InstanceID string   `json:"instanceId,omitempty"`
+	Generation string   `json:"generation,omitempty"`
+	ProjectID  string   `json:"projectId,omitempty"`
+	SessionID  string   `json:"sessionId,omitempty"`
+	WorkerID   string   `json:"workerId,omitempty"`
+	Candidates []string `json:"candidates,omitempty"`
+	// SelectedProjectID is the project a person chose for a session whose
+	// enrollment named more than one. SelectionVersion is the opaque version
+	// a selection write must name.
+	SelectedProjectID string              `json:"selectedProjectId,omitempty"`
+	SelectionVersion  string              `json:"selectionVersion,omitempty"`
+	Default           MarshalAccessLayer  `json:"default"`
+	Override          *MarshalAccessLayer `json:"override,omitempty"`
+	// OverrideVersion is the version a session-layer write must name. It is
+	// present even when no override is stored: that level reports the stable
+	// version of the absent value, so the first write from an editor that has
+	// read it is conditional on exactly what it was shown.
+	OverrideVersion string               `json:"overrideVersion,omitempty"`
+	Effective       MarshalFactoryAccess `json:"effective"`
+	Source          map[string]string    `json:"source,omitempty"`
+	// Editable says the surface may write both layers. It follows the policy
+	// the server will actually store, not the connection state.
+	Editable bool `json:"editable"`
+}
+
+// price recomputes the effective access from the layers the view carries, in
+// the order the authorizer resolves them. A write that replaces one layer calls
+// it so the answer describes exactly the value that write left behind.
+func (v *MarshalAccessView) price() {
+	layers := []MarshalFactoryAccess{v.Default.Access}
+	if v.Override != nil {
+		layers = append(layers, v.Override.Access)
+	}
+	v.Effective = resolveMarshalFactoryAccess(layers...)
+}
+
+// marshalAccessRoutes registers the built-in session's user-side access
+// surface. Every route hangs off /api/, so /mcp cannot reach one: the model
+// a session runs holds no call that widens its own authority.
+func (s *Server) marshalAccessRoutes() {
+	s.mux.HandleFunc("GET /api/marshal/access", s.getMarshalAccess)
+	s.mux.HandleFunc("PUT /api/marshal/access/default", s.putMarshalAccessDefaultRoute)
+	s.mux.HandleFunc("PUT /api/marshal/access/override", s.putMarshalAccessOverrideRoute)
+	s.mux.HandleFunc("PUT /api/marshal/access/selection", s.putMarshalSelectionRoute)
+}
+
+// getMarshalAccess answers GET /api/marshal/access. projectId names the project
+// whose defaults to read; sessionId (and optionally workerId) names the
+// session whose override and connection state to report. A session with no
+// project resolves the project from the server's own associations, reporting
+// ambiguous when they name more than one.
+func (s *Server) getMarshalAccess(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	view, err := s.marshalAccessView(q.Get("projectId"), q.Get("sessionId"), q.Get("workerId"))
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// putMarshalAccessDefaultRoute answers PUT /api/marshal/access/default: the
+// whole project-default layer plus the version it was edited from.
+func (s *Server) putMarshalAccessDefaultRoute(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ProjectID string               `json:"projectId"`
+		Access    MarshalFactoryAccess `json:"access"`
+		Version   string               `json:"version"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if err := validateMarshalAccessLayer(body.Access); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(body.Version) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "version is required"})
+		return
+	}
+	wrote, state, err := s.factoryAuth.putMarshalAccessDefault(body.ProjectID, body.Access, body.Version)
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	view, err := s.marshalAccessView(body.ProjectID, "", "")
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	// The layer this write left behind is the one the store reported, not a
+	// second read: a racing writer must not make the answer describe its value.
+	view.Default = MarshalAccessLayer{Access: state.Access, Version: state.Version}
+	view.price()
+	status := http.StatusOK
+	if !wrote {
+		// The layer moved since the caller read it. The answer carries the
+		// value that won, so the editor shows the conflict instead of
+		// re-reading blind and discarding what the user typed.
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, view)
+}
+
+// putMarshalAccessOverrideRoute answers PUT /api/marshal/access/override: one
+// session's (or worker's) override and the version it was edited from. An
+// access with every field unset is the reset: it stores a level that inherits
+// everything, which is what a revoke means.
+func (s *Server) putMarshalAccessOverrideRoute(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ProjectID string               `json:"projectId"`
+		SessionID string               `json:"sessionId"`
+		WorkerID  string               `json:"workerId"`
+		Access    MarshalFactoryAccess `json:"access"`
+		Version   string               `json:"version"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if err := validateMarshalAccessLayer(body.Access); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(body.SessionID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sessionId is required"})
+		return
+	}
+	if strings.TrimSpace(body.Version) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "version is required"})
+		return
+	}
+	wrote, state, err := s.factoryAuth.putMarshalAccessOverride(body.ProjectID, body.SessionID, body.WorkerID, body.Access, body.Version)
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	view, err := s.marshalAccessView(body.ProjectID, body.SessionID, body.WorkerID)
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	view.Override = &MarshalAccessLayer{Access: state.Access, Version: state.Version}
+	view.price()
+	status := http.StatusOK
+	if !wrote {
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, view)
+}
+
+// putMarshalSelectionRoute answers PUT /api/marshal/access/selection: the
+// project a person picked for a session whose enrollment was ambiguous. An
+// empty projectId clears the choice, which is the reset: the session is
+// ambiguous again and the surface says so.
+func (s *Server) putMarshalSelectionRoute(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SessionID string `json:"sessionId"`
+		ProjectID string `json:"projectId"`
+		Version   string `json:"version"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.SessionID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sessionId is required"})
+		return
+	}
+	if strings.TrimSpace(body.Version) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "version is required"})
+		return
+	}
+	wrote, state, err := s.putMarshalSelection(body.SessionID, body.ProjectID, body.Version)
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	view, err := s.marshalAccessView(body.ProjectID, body.SessionID, "")
+	if err != nil {
+		factoryAuthError(w, err)
+		return
+	}
+	view.SelectedProjectID, view.SelectionVersion = state.ProjectID, state.Version
+	status := http.StatusOK
+	if !wrote {
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, view)
+}
+
+// putMarshalSelection stores one session's selected project under the policy
+// lock, so a choice cannot land inside an admitted mutation. A project that is
+// not one of the session's candidates is refused: a selection answers the
+// question the server asked, it does not introduce a project.
+func (s *Server) putMarshalSelection(sessionID, projectID, expected string) (bool, marshalFactorySelectionState, error) {
+	if s == nil || s.factoryAuth == nil {
+		return false, marshalFactorySelectionState{}, fmt.Errorf("%w: no authorizer", ErrFactoryUnavailable)
+	}
+	if projectID != "" && !s.marshalIsCandidate(sessionID, projectID) {
+		return false, marshalFactorySelectionState{}, fmt.Errorf("%w: project is not a candidate for this session", errFactoryGrantInvalid)
+	}
+	var (
+		wrote bool
+		state marshalFactorySelectionState
+	)
+	err := s.factoryAuth.withPolicy(func() error {
+		next, current, err := s.factoryAuth.ws.putMarshalSelectionIfMatch(sessionID, projectID, expected)
+		wrote, state = next, current
+		return err
+	})
+	if err != nil {
+		return false, state, err
+	}
+	return wrote, state, nil
+}
+
+// validateMarshalAccessLayer refuses a layer whose fields no resolution could
+// honour. An unset authority is inheritance, so it is not checked; a named one
+// must be one of the three, and asking for approval without any authority is a
+// contradictory request rather than a stricter one.
+func validateMarshalAccessLayer(a MarshalFactoryAccess) error {
+	if a.ApprovalAuthority != nil {
+		switch *a.ApprovalAuthority {
+		case factoryAuthorityNone, factoryAuthorityUserDirected, factoryAuthorityStanding:
+		case "":
+			return fmt.Errorf("%w: approvalAuthority must be none, user_directed or standing", errFactoryGrantInvalid)
+		default:
+			return fmt.Errorf("%w: approvalAuthority must be none, user_directed or standing", errFactoryGrantInvalid)
+		}
+	}
+	if a.ApproveAndQueue != nil && *a.ApproveAndQueue && a.ApprovalAuthority != nil && *a.ApprovalAuthority == factoryAuthorityNone {
+		return fmt.Errorf("%w: approveAndQueue requires user_directed or standing authority", errFactoryGrantInvalid)
+	}
+	return nil
+}
+
+// marshalAccessView builds the user-side view of one session's Studio
+// connection and effective access.
+//
+// The connection state is the server's own reading of what it tracks — the
+// instance identity it reports and the associations it persisted — never a
+// value a request supplies. The policy below it is read from the store whatever
+// the state is: a session that is offline, ambiguous or unauthorized still has
+// stored defaults, and an operator may still change them.
+func (s *Server) marshalAccessView(projectID, sessionID, workerID string) (MarshalAccessView, error) {
+	if s == nil || s.fleet == nil || s.fleet.ws == nil {
+		return MarshalAccessView{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	ws := s.fleet.ws
+	view := MarshalAccessView{SessionID: sessionID, WorkerID: workerID}
+	instanceID, generation, ok := s.marshalInstance()
+	if !ok {
+		// Not a daemon instance, or one that names no socket: there is no
+		// Studio to be connected to, and inventing an identity would bind
+		// nothing. The policy is still readable, so the defaults are below.
+		view.State = marshalStateUnsupported
+		projectID = s.marshalDefaultProject(projectID)
+		s.fillMarshalAccessLayers(&view, projectID)
+		return view, nil
+	}
+	view.InstanceID, view.Generation = instanceID, generation
+	view.Candidates = s.marshalCandidateProjects(sessionID)
+	if selection, ok := ws.marshalSelection(sessionID); ok {
+		view.SelectedProjectID, view.SelectionVersion = selection.ProjectID, selection.Version
+	} else {
+		view.SelectionVersion = marshalSelectionState(sessionID, "").Version
+	}
+	resolved, state := s.marshalResolveProject(projectID, sessionID, view.Candidates, view.SelectedProjectID)
+	view.State = state
+	if resolved == "" {
+		// A state that names no project still reads the project the caller
+		// named, when it named one: the defaults are the project's setting,
+		// not the session's, and an operator may change them while the
+		// session is offline, ambiguous or unauthorized.
+		if projectID != "" {
+			s.fillMarshalAccessLayers(&view, projectID)
+		}
+		return view, nil
+	}
+	view.ProjectID = resolved
+	s.fillMarshalAccessLayers(&view, resolved)
+	return view, nil
+}
+
+// marshalDefaultProject is the project whose defaults a surface reads when the
+// server is not a daemon instance and the caller named none: the first
+// registered project, which is the only one such a server can hold.
+func (s *Server) marshalDefaultProject(projectID string) string {
+	if projectID != "" || s == nil || s.fleet == nil || s.fleet.ws == nil {
+		return projectID
+	}
+	projects := s.fleet.ws.Projects()
+	if len(projects) == 0 {
+		return ""
+	}
+	if id, ok := s.fleet.ws.ProjectID(projects[0]); ok {
+		return id
+	}
+	return ""
+}
+
+// marshalResolveProject picks the project a view is about and the connection
+// state that goes with it. An empty result is a state that names no project.
+func (s *Server) marshalResolveProject(projectID, sessionID string, candidates []string, selected string) (string, string) {
+	named := strings.TrimSpace(projectID)
+	if named == "" {
+		switch {
+		case len(candidates) == 0:
+			// The server tracks no project for this session: there is no
+			// enrollment to report and none can be made by asking.
+			return "", marshalStateUnavailable
+		case len(candidates) == 1:
+			return candidates[0], marshalStateConnected
+		default:
+			if selected != "" && slices.Contains(candidates, selected) {
+				return selected, marshalStateConnected
+			}
+			return "", marshalStateAmbiguous
+		}
+	}
+	if s.fleet == nil || s.fleet.ws == nil {
+		return "", marshalStateUnavailable
+	}
+	if _, ok := s.fleet.ws.ProjectRootByID(named); !ok {
+		return "", marshalStateUnauthorized
+	}
+	if len(candidates) == 0 {
+		// The server tracks no project for this session, so nothing verifies
+		// that it acts on the one the caller named.
+		return "", marshalStateUnavailable
+	}
+	if !slices.Contains(candidates, named) {
+		// The session is tracked, and it is not this project's.
+		return "", marshalStateUnauthorized
+	}
+	return named, marshalStateConnected
+}
+
+// fillMarshalAccessLayers reads the stored layers for one project (and, when
+// the view names a session, that session's override) and resolves them.
+func (s *Server) fillMarshalAccessLayers(view *MarshalAccessView, projectID string) {
+	if view == nil || s == nil || s.fleet == nil || s.fleet.ws == nil || projectID == "" {
+		return
+	}
+	ws := s.fleet.ws
+	if _, ok := ws.ProjectRootByID(projectID); !ok {
+		return
+	}
+	view.ProjectID = projectID
+	view.Editable = true
+	// An absent default is not an empty one: it reports the zero layer and the
+	// stable version of it, so an editor's first write is conditional on
+	// exactly what it was shown.
+	project := marshalAccessState(projectID, "", "", MarshalFactoryAccess{})
+	source := map[string]string{"project": "default"}
+	if stored, ok := ws.marshalAccessDefault(projectID); ok {
+		project = stored
+		source["project"] = "override"
+	}
+	view.Default = MarshalAccessLayer{Access: project.Access, Version: project.Version}
+	view.Override = nil
+	if view.SessionID != "" {
+		// The version an editor holds is the version of the scope it edits: a
+		// worker's panel writes the worker's record, never its session's. What
+		// it displays may still be inherited from the session, until the worker
+		// has a record of its own.
+		view.OverrideVersion = marshalAccessState(projectID, view.SessionID, view.WorkerID, MarshalFactoryAccess{}).Version
+		if override, ok := ws.marshalAccessOverride(projectID, view.SessionID, view.WorkerID); ok && marshalLayerApplies(override, view.WorkerID) {
+			source["session"] = "override"
+			if override.WorkerID == view.WorkerID {
+				// This scope's own record, so this is what a save is
+				// conditional on.
+				view.OverrideVersion = override.Version
+			}
+			view.Override = &MarshalAccessLayer{Access: override.Access, Version: view.OverrideVersion}
+		}
+	}
+	view.Source = source
+	view.price()
+}
+
+// marshalLayerApplies reports whether a stored override is the one this view's
+// session (or worker) holds. A record that names no worker is the session's
+// own; one that names a worker is that worker's, and a sibling worker inherits
+// the project default instead.
+func marshalLayerApplies(override marshalFactoryAccessState, workerID string) bool {
+	return override.WorkerID == "" || override.WorkerID == workerID
+}
+
+// marshalCandidateProjects is every project the server's own associations name
+// for sessionID, resolved to opaque project IDs and sorted. It replaces the
+// request as the source of what a session may be bound to.
+func (s *Server) marshalCandidateProjects(sessionID string) []string {
+	if sessionID == "" || s == nil || s.fleet == nil || s.fleet.ws == nil {
+		return nil
+	}
+	var out []string
+	for _, assoc := range s.marshalAssociations(sessionID) {
+		if id, ok := s.fleet.ws.ProjectID(assoc.root); ok && !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// marshalIsCandidate reports whether projectID is one of the session's
+// candidates. A session the server does not track has none, so no selection can
+// be made for it.
+func (s *Server) marshalIsCandidate(sessionID, projectID string) bool {
+	return slices.Contains(s.marshalCandidateProjects(sessionID), projectID)
 }

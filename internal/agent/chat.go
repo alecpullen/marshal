@@ -87,6 +87,17 @@ type turnRequestOptions struct {
 	thinking        string
 	thinkingOptions *schema.ThinkingOptions
 	temperature     *float64
+	// visionForced records that an explicit vision = "on" — or this session's
+	// send-anyway answer for the same model — put images on this turn on
+	// purpose, so a provider rejection must surface as itself instead of
+	// being retried without images.
+	visionForced bool
+	// visionOff records that the resolved route cannot take images, so a tool
+	// result's images are dropped at the request gate rather than costing a
+	// rejected request and a stripped retry on every image-bearing result.
+	// The zero value means "no route verdict" and leaves images alone, which
+	// is the safe direction for a caller that never resolved a route.
+	visionOff bool
 }
 
 func intPtr(v int) *int { return &v }
@@ -157,7 +168,7 @@ func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Prov
 	// reconnect wait (retrying would start a second wait), a thinking loop,
 	// and a prompt the provider rejected as too long — resending that
 	// identical wire cannot succeed, and the runner compacts instead.
-	if !sentTools || isCancellation(err) || isNetworkError(err) || errors.Is(err, errThinkingLoop) || errors.Is(err, errContextOverflow) || (err == nil && len(res.ToolCalls) == 0) {
+	if !sentTools || isCancellation(err) || isNetworkError(err) || errors.Is(err, errThinkingLoop) || errors.Is(err, errContextOverflow) || errors.Is(err, errStreamInterrupted) || (err == nil && len(res.ToolCalls) == 0) {
 		return res, err
 	}
 	// The provider failed the request, or the model called a tool
@@ -555,6 +566,15 @@ func isRetryableChatError(err error) bool {
 // prompt, so the runner can compact and retry instead of failing the turn.
 var errContextOverflow = errors.New("agent: provider rejected the prompt as too long")
 
+// errStreamInterrupted marks an attempt whose provider stream ended before the
+// provider's protocol announced completion (AUD-08). It is agent-internal: the
+// adapters emit schema.ChatEventInterrupted with their own detail error, and
+// chatOnce wraps that detail with this sentinel. It deliberately does not wrap
+// io.EOF or io.ErrUnexpectedEOF, so a protocol-level truncation is retried as a
+// transient failure instead of being misrouted into the reconnect wait's
+// network-error path.
+var errStreamInterrupted = errors.New("agent: provider stream ended before completion")
+
 // contextOverflowError carries a classified oversize-prompt rejection. It
 // unwraps to BOTH the sentinel and the original provider error. The sentinel
 // is what the runner matches on to take the recovery path; keeping the
@@ -797,6 +817,13 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	// handoff summary, plan) carries the current working state, and the
 	// request-inspection snapshot below records it as sent.
 	messages = r.withWorkingState(messages)
+	// Image gate. Both drops below rewrite the wire, which the cache-prefix
+	// rule otherwise forbids mid-turn — but neither is avoidable: a ref the
+	// store can no longer resolve fails the whole request at the encoder, and
+	// an image on a route that cannot take it costs a rejected request plus a
+	// stripped retry on every step. Both conditions are permanent for the
+	// rest of the turn, so the rewritten prefix is stable from here on.
+	messages = r.gateRequestImages(ctx, messages)
 
 	// Two independent bounds. The idle cause fires when the stream goes
 	// silent; the ceiling fires regardless of activity. Both carry an
@@ -885,6 +912,10 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 		Thinking:        thinking,
 		ThinkingOptions: r.turnRequestOptions.thinkingOptions,
 		Temperature:     requestTemperature,
+		// The same source the request gate consulted: refs that resolve there
+		// resolve here, so a dropped one is genuinely gone and a kept one
+		// genuinely has bytes.
+		ImageSource: r.ImageSource,
 	}
 	attemptID := r.captureRequestInspection(p, model, req)
 
@@ -903,6 +934,23 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	defer close(watchdogDone)
 	go r.watchIdle(ctx, cancelIdle, &lastEvent, watchdogDone)
 	events, err := p.Chat(ctx, req)
+	if err != nil && !r.turnRequestOptions.visionForced && carriesImages(req.Messages) && isVisionRejection(err) {
+		// A provider that refuses image input is recoverable: the turn is
+		// worth more without its screenshots than not at all. Retried once,
+		// here, before the failure is classified — and the learned fact is
+		// persisted only when the retry actually succeeds, so a rejection
+		// the text-only request shares (a bad key, a dead endpoint) is not
+		// mislabelled as "this model is blind".
+		if retryMsgs, ok := withoutImages(req.Messages); ok {
+			retryReq := req
+			retryReq.Messages = retryMsgs
+			if retryEvents, retryErr := p.Chat(ctx, retryReq); retryErr == nil {
+				r.recordVisionRejection(p.Name(), model) // persist the fact
+				r.noteVisionRetry()                      // a user-visible notice
+				events, err = retryEvents, nil
+			}
+		}
+	}
 	if err != nil {
 		// The adapter runs the HTTP request inside Chat, so a bound that fires
 		// before the first event (time-to-first-byte, or the ceiling) surfaces
@@ -940,6 +988,13 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	var quota *schema.QuotaInfo
 	var toolCalls []schema.ToolCall
 	var finishReason string
+	// sawDone records a protocol completion event. A stream whose channel
+	// closes without one never completed, whatever the adapter did or did not
+	// emit: the defensive half of the AUD-08 contract.
+	var sawDone bool
+	// interruptedErr carries the adapter's detail for a stream it reported as
+	// interrupted (schema.ChatEventInterrupted).
+	var interruptedErr error
 	// steeringAbort marks a stream the user's interruption ended. Once set the
 	// loop only drains: the provider's own goroutine still has to be allowed to
 	// finish its last send and close the channel, and the usage it reported on
@@ -1031,7 +1086,20 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			// Discarding them turns a recoverable hiccup into a failed turn.
 			return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, r.classifyStreamError(ctx, model, event.Err)
 
+		case schema.ChatEventInterrupted:
+			// The adapter saw its stream end before the provider's protocol
+			// announced completion. The text that arrived is real output, but
+			// this is not an answer: no tool call and no finish reason are
+			// taken from it, and the caller gets the interruption error below.
+			interruptedErr = event.Err
+			if event.Usage != nil {
+				usage = event.Usage
+			}
+			if event.Quota != nil {
+				quota = event.Quota
+			}
 		case schema.ChatEventDone:
+			sawDone = true
 			// A completion that arrives after the user's interruption is the
 			// response of a request the turn has already abandoned: it is not
 			// this turn's to take. Switch to draining instead, keeping the
@@ -1076,6 +1144,17 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, r.classifyStreamError(ctx, model, cause)
 		}
 	}
+	// A stream whose channel closed with no terminal event is not a
+	// completion, whatever the adapter did or did not emit: the defensive
+	// half of the AUD-08 contract, independent of ChatEventInterrupted.
+	// Nothing buffered is executable — no tool call, no finish reason — and
+	// the partial text is returned only for the runner to preserve as a
+	// salvaged fragment.
+	interrupted := !sawDone && !steeringAbort && !errors.Is(session.CheckSteering(ctx), session.ErrSendNow)
+	interruptionDetail := "stream ended without a completion event"
+	if interruptedErr != nil {
+		interruptionDetail = interruptedErr.Error()
+	}
 	// The stream ended: completion as far as the adapter is concerned, not an
 	// acknowledgement from a server. A cancelled context still wins, so a
 	// provider that finishes a request the user stopped is not shown as done.
@@ -1095,6 +1174,11 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
 			Status: session.InspectionCancelled,
 			Err:    session.ErrSendNow.Error(),
+		})
+	} else if interrupted {
+		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+			Status: session.InspectionFailed,
+			Err:    interruptionDetail,
 		})
 	} else {
 		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
@@ -1124,6 +1208,12 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			s.m.CacheReadTokens += usage.CacheReadTokens
 			s.m.CacheWriteTokens += usage.CacheWriteTokens
 		})
+	}
+	if interrupted {
+		// The turn does not complete: the provider never announced it. The
+		// partial text is returned with the error so the runner can preserve
+		// it as a salvaged, non-final fragment.
+		return chatResult{Text: sb.String()}, fmt.Errorf("%w: %s", errStreamInterrupted, interruptionDetail)
 	}
 	if steering {
 		// Usage and quota above are already recorded; only the response is

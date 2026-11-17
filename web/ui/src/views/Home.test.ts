@@ -216,6 +216,15 @@ describe('Home automations', () => {
     expect(screen.getAllByTestId('ci-fix-ready')).toHaveLength(1)
   })
 
+  it('shows a project whose automations failed without dropping Needs you or Running', async () => {
+    vi.mocked(api.listReviewDrafts).mockRejectedValueOnce(new api.APIError(500, { error: 'automations are down' }))
+    render(Home, { agents, inbox, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {}, projects })
+    const card = await screen.findByTestId('automation-error')
+    expect(card.textContent).toContain('alpha · automations are down')
+    expect(screen.getByText(/Needs you · 2/)).toBeTruthy()
+    expect(screen.getByText(/Running · 1/)).toBeTruthy()
+  })
+
   it('refetches when an automation delta arrives', async () => {
     vi.mocked(api.listReviewDrafts).mockClear()
     const { rerender } = render(Home, { agents: [], inbox: emptyInbox, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {}, projects, automationTick: 0 })

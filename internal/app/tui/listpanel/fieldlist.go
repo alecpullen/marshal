@@ -5,6 +5,7 @@ package listpanel
 
 import (
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -92,6 +93,71 @@ type FieldList struct {
 	// turn it on: in two columns the rule would erase the detail pane's text
 	// on its row.
 	groupDividers bool
+
+	// now is the list's clock. It bounds the delete arm window; tests inject
+	// it to step past the window, production leaves it nil for time.Now.
+	now func() time.Time
+
+	// deleteArmed is true while a first d has armed a row for deletion;
+	// deleteArmedID names that row by identity and deleteArmedAt when it
+	// armed. The second d on that same row deletes; any other keystroke, a
+	// cursor move off the row, or the arm window expiring disarms it (AUD-13).
+	deleteArmed   bool
+	deleteArmedID string
+	deleteArmedAt time.Time
+}
+
+// deleteArmWindow bounds how long a first d keeps a row armed for the second
+// press that deletes it. It mirrors the TUI's Ctrl+C arm window (model's
+// ctrlCWindow): long enough that the second press is deliberate, short enough
+// that a stray d a moment later is not read as one.
+const deleteArmWindow = 4 * time.Second
+
+// clock is the list's time source, defaulting to time.Now.
+func (fl *FieldList) clock() time.Time {
+	if fl.now != nil {
+		return fl.now()
+	}
+	return time.Now()
+}
+
+// armDelete arms row for a confirming second d.
+func (fl *FieldList) armDelete(row *Field) {
+	fl.deleteArmed = true
+	fl.deleteArmedID = row.ID
+	fl.deleteArmedAt = fl.clock()
+}
+
+// disarmDelete clears a pending delete arm. Every path that moves the cursor,
+// takes another key, or leaves the frame goes through it, so an arm can never
+// outlive the gesture that set it.
+func (fl *FieldList) disarmDelete() {
+	fl.deleteArmed = false
+	fl.deleteArmedID = ""
+	fl.deleteArmedAt = time.Time{}
+}
+
+// deleteArmedOn reports whether row is the armed row and the arm has not
+// expired. An expired arm is cleared on the way out.
+func (fl *FieldList) deleteArmedOn(row *Field) bool {
+	if !fl.deleteArmed || row == nil || row.ID != fl.deleteArmedID {
+		return false
+	}
+	if fl.clock().Sub(fl.deleteArmedAt) > deleteArmWindow {
+		fl.disarmDelete()
+		return false
+	}
+	return true
+}
+
+// DeleteArmed reports whether the cursor row is armed for a confirming second
+// d. The owning surface renders it so the first press is never silent.
+func (fl *FieldList) DeleteArmed() bool {
+	fl.Refresh()
+	if len(fl.rows) == 0 || !fl.deleteArmed {
+		return false
+	}
+	return fl.deleteArmedOn(fl.rows[fl.cursor])
 }
 
 // NewFieldList creates a FieldList with the given field provider.
@@ -106,7 +172,33 @@ func NewFieldList(fields func() []*Field) *FieldList {
 }
 
 func (fl *FieldList) Refresh() {
+	// Remember the row under the cursor by identity, not by index: a rebuild
+	// that inserts or removes a row above it would otherwise slide a different
+	// entry under the cursor, and a repeated d would delete that one.
+	prevID := ""
+	if fl.cursor >= 0 && fl.cursor < len(fl.rows) {
+		prevID = fl.rows[fl.cursor].ID
+	}
 	fl.rows = fl.Fields()
+	if prevID != "" {
+		// Identity only decides the cursor when it names exactly one row. A
+		// list may legitimately repeat an ID (action rows, index-derived ids),
+		// and jumping to the first of those would move the cursor somewhere
+		// the user did not ask for; the index clamp below is the fallback.
+		match := -1
+		for i, row := range fl.rows {
+			if row.ID == prevID && row.Kind != KindHeader {
+				if match >= 0 {
+					match = -1
+					break
+				}
+				match = i
+			}
+		}
+		if match >= 0 {
+			fl.cursor = match
+		}
+	}
 	if fl.cursor >= len(fl.rows) {
 		fl.cursor = len(fl.rows) - 1
 	}
@@ -129,6 +221,7 @@ func (fl *FieldList) Rows() []*Field { fl.Refresh(); return fl.rows }
 func (fl *FieldList) Cursor() int    { return fl.cursor }
 
 func (fl *FieldList) SetCursor(i int) {
+	fl.disarmDelete()
 	fl.Refresh()
 	if i >= 0 && i < len(fl.rows) {
 		fl.cursor = i
@@ -224,6 +317,12 @@ func (fl *FieldList) Update(msg tea.Msg) tea.Cmd {
 	k, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
+	}
+	// Any key other than a second d cancels a pending delete arm, mirroring
+	// the Ctrl+R rollback arm: the armed state never outlives the keystroke
+	// that set it (AUD-13).
+	if k.String() != "d" {
+		fl.disarmDelete()
 	}
 	if fl.picking {
 		fl.updatePick(k)
@@ -330,10 +429,20 @@ func (fl *FieldList) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case "d":
-		if row != nil && row.Del != nil {
-			row.Del()
-			fl.Refresh()
+		if row == nil || row.Del == nil {
+			return nil
 		}
+		// d is destructive and repeated presses land on a different row once
+		// one is removed, so it is a two-press gesture: arm on the first, and
+		// delete only on a second within the window (AUD-13).
+		if !fl.deleteArmedOn(row) {
+			fl.armDelete(row)
+			return nil
+		}
+		fl.disarmDelete()
+		row.Del()
+		fl.committed = true
+		fl.Refresh()
 	}
 	return nil
 }
@@ -656,6 +765,11 @@ func (fl *FieldList) View() string {
 		}
 		if isCursor && fl.ErrMsg != "" {
 			push("    " + flErrStyle().Render(glyph.Warning+" "+fl.ErrMsg))
+		}
+		// The first d must never look like a no-op: name the row a second
+		// press would delete, and how to get out of it (AUD-13).
+		if isCursor && fl.deleteArmedOn(row) {
+			push("    " + flWarnStyle().Render(glyph.Warning+" press d again to delete "+row.Title+" · any other key cancels"))
 		}
 		if isCursor && row.Desc != "" && !fl.Editing() && !fl.descSuppressed {
 			push("    " + DescStyle().Render(row.Desc))

@@ -2,7 +2,9 @@ package bridge
 
 import (
 	"errors"
+
 	"fmt"
+	"marshal/web/bridge/contract"
 	"net/http"
 )
 
@@ -13,83 +15,47 @@ import (
 // DiscoveryCapabilityState is the outcome of one read-only capability probe.
 // The set is frozen at five values; the studio client switches on these exact
 // strings.
-type DiscoveryCapabilityState string
+// DiscoveryCapabilityState is contract.DiscoveryCapabilityState.
+type DiscoveryCapabilityState = contract.DiscoveryCapabilityState
 
 const (
-	DiscoveryCapabilitySupported              DiscoveryCapabilityState = "supported"
-	DiscoveryCapabilityUnconfigured           DiscoveryCapabilityState = "unconfigured"
-	DiscoveryCapabilityInsufficientPermission DiscoveryCapabilityState = "insufficient_permission"
-	DiscoveryCapabilityTemporarilyUnavailable DiscoveryCapabilityState = "temporarily_unavailable"
-	DiscoveryCapabilityUnsupported            DiscoveryCapabilityState = "unsupported"
+	DiscoveryCapabilitySupported              = contract.DiscoveryCapabilitySupported
+	DiscoveryCapabilityUnconfigured           = contract.DiscoveryCapabilityUnconfigured
+	DiscoveryCapabilityInsufficientPermission = contract.DiscoveryCapabilityInsufficientPermission
+	DiscoveryCapabilityTemporarilyUnavailable = contract.DiscoveryCapabilityTemporarilyUnavailable
+	DiscoveryCapabilityUnsupported            = contract.DiscoveryCapabilityUnsupported
 )
 
 // DiscoveryCapability is one entry of the report's capability list.
-type DiscoveryCapability struct {
-	Key    string                   `json:"key"`
-	State  DiscoveryCapabilityState `json:"state"`
-	Detail string                   `json:"detail,omitempty"`
-}
+// DiscoveryCapability is contract.DiscoveryCapability.
+type DiscoveryCapability = contract.DiscoveryCapability
 
 // DiscoveryFact is something detected in the checkout. Origin distinguishes a
 // detected fact from a recommendation.
-type DiscoveryFact struct {
-	Origin   string `json:"origin"`
-	Section  string `json:"section"`
-	Kind     string `json:"kind"`
-	Value    string `json:"value"`
-	Source   string `json:"source"`
-	Revision string `json:"revision,omitempty"`
-	Size     int64  `json:"size,omitempty"`
-	Detail   string `json:"detail,omitempty"`
-}
+// DiscoveryFact is contract.DiscoveryFact.
+type DiscoveryFact = contract.DiscoveryFact
 
 // DiscoveryRecommendation is an advisory setup option. It is never applied by
 // discovery.
-type DiscoveryRecommendation struct {
-	Origin  string `json:"origin"`
-	Section string `json:"section"`
-	Kind    string `json:"kind"`
-	Value   string `json:"value"`
-	Reason  string `json:"reason"`
-}
+// DiscoveryRecommendation is contract.DiscoveryRecommendation.
+type DiscoveryRecommendation = contract.DiscoveryRecommendation
 
 // DiscoveryGap explains a capability that is not supported, so the UI can turn
 // it into an actionable next step.
-type DiscoveryGap struct {
-	Key     string                   `json:"key"`
-	Section string                   `json:"section"`
-	State   DiscoveryCapabilityState `json:"state"`
-	Detail  string                   `json:"detail"`
-}
+// DiscoveryGap is contract.DiscoveryGap.
+type DiscoveryGap = contract.DiscoveryGap
 
 // DiscoveryWorktree is the locally observable Git state of a linked checkout.
 // Dirty is a pointer: nil means not determined, which differs from a known
 // clean checkout.
-type DiscoveryWorktree struct {
-	Path       string   `json:"path"`
-	Branch     string   `json:"branch,omitempty"`
-	Head       string   `json:"head,omitempty"`
-	Dirty      *bool    `json:"dirty"`
-	DirtyFiles []string `json:"dirtyFiles,omitempty"`
-	Detail     string   `json:"detail,omitempty"`
-}
+// DiscoveryWorktree is contract.DiscoveryWorktree.
+type DiscoveryWorktree = contract.DiscoveryWorktree
 
 // DiscoveryReport is the single JSON document the discovery endpoint returns.
 // Status is "ok", "degraded", or "unavailable"; the report slices are always
 // non-nil so the wire shape stays stable.
-type DiscoveryReport struct {
-	RepoID       string                    `json:"repoId"`
-	Forge        string                    `json:"forge"`
-	Status       string                    `json:"status"`
-	Error        string                    `json:"error,omitempty"`
-	Revision     string                    `json:"revision,omitempty"`
-	Branch       string                    `json:"branch,omitempty"`
-	Worktree     *DiscoveryWorktree        `json:"worktree,omitempty"`
-	Capabilities []DiscoveryCapability     `json:"capabilities"`
-	Facts        []DiscoveryFact           `json:"facts"`
-	Recommended  []DiscoveryRecommendation `json:"recommended"`
-	Gaps         []DiscoveryGap            `json:"gaps"`
-}
+// DiscoveryReport is contract.DiscoveryReport.
+type DiscoveryReport = contract.DiscoveryReport
 
 // DiscoveryRepositoryMetadata is the normalised repository description a forge
 // probe returns.

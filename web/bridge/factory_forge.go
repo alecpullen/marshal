@@ -39,6 +39,27 @@ func FactoryPRDescriptionFor(f Forge) (FactoryPRDescription, error) {
 	return v, nil
 }
 
+// ErrFactoryMergeUnsupported reports a forge with no pull request merge
+// capability. It is never simulated as success.
+var ErrFactoryMergeUnsupported = errors.New("forge does not support merging factory pull requests")
+
+// ErrFactoryMergeRejected reports a merge the forge refused, or evidence that
+// proves no merge happened. Nothing was applied and the batch may report a
+// failure.
+var ErrFactoryMergeRejected = errors.New("factory pull request merge was refused")
+
+// ErrFactoryMergeUncertain reports a merge whose outcome cannot be proven. The
+// coordinator must reconcile with the forge before any further mutation.
+var ErrFactoryMergeUncertain = errors.New("factory pull request merge outcome is uncertain")
+
+func FactoryPRMergerFor(f Forge) (FactoryPRMerger, error) {
+	v, ok := f.(FactoryPRMerger)
+	if !ok {
+		return nil, ErrFactoryMergeUnsupported
+	}
+	return v, nil
+}
+
 // EvaluateFactoryCI never treats incomplete or revision-mismatched evidence as passing.
 func EvaluateFactoryCI(ci FactoryCI, expected []FactoryCheckKey, acknowledged bool) (string, []FactoryCheck) {
 	if !ci.Complete || ci.HeadSHA == "" {

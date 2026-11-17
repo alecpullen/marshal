@@ -66,7 +66,7 @@ func TestStartResumeForcesNotify(t *testing.T) {
 func TestStartOwnedWatchDropsResume(t *testing.T) {
 	m := newTestManager(t, Deps{})
 	off := false
-	id, note, err := m.Start(Spec{Name: "x", Kind: KindCommand, Notify: &off, Resume: true, Owner: "sa-1", Interval: time.Hour})
+	id, note, err := m.Start(Spec{Name: "x", Kind: KindCommand, Notify: &off, Resume: true, Owner: "subagent-1", Interval: time.Hour})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -82,6 +82,31 @@ func TestStartOwnedWatchDropsResume(t *testing.T) {
 	}
 	if !strings.Contains(note, "ignored") {
 		t.Fatalf("note = %q, want it to mention the ignored resume", note)
+	}
+}
+
+// TestStartStudioWatchKeepsResume: an owner that only records where the watch
+// came from is not a subagent, so the resume intent its client asked for
+// stands — otherwise no client could ever start a resuming watch.
+func TestStartStudioWatchKeepsResume(t *testing.T) {
+	m := newTestManager(t, Deps{})
+	off := false
+	id, note, err := m.Start(Spec{Name: "x", Kind: KindCommand, Notify: &off, Resume: true, Owner: "studio", Interval: time.Hour})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	w := m.getWatch(id)
+	if w == nil {
+		t.Fatal("watch not found")
+	}
+	if !w.resume {
+		t.Fatal("studio watch dropped its resume intent")
+	}
+	if !w.notify {
+		t.Fatal("resume did not force notify on")
+	}
+	if strings.Contains(note, "ignored") {
+		t.Fatalf("note = %q, want no ignored-resume note", note)
 	}
 }
 

@@ -155,6 +155,20 @@ func TestSheetDataCarriesTotals(t *testing.T) {
 	}
 }
 
+// The restart row reads the session's status, not the sheet: without this
+// wiring the row could never render however stale the child is.
+func TestTheSheetDataCarriesTheRestart(t *testing.T) {
+	stub := &stubSession{patch: func(st *acpwire.SessionStatus) {
+		st.Restart = &acpwire.PendingRestart{Reason: "config changed", WaitingFor: "turn"}
+	}}
+	m := testModelStub(t, seamState(t, "s1"), stub)
+	if got := m.sheetDataFor().Restart; got == nil {
+		t.Fatal("Restart = nil, want the status's pending restart")
+	} else if got.Reason != "config changed" || got.WaitingFor != "turn" {
+		t.Errorf("Restart = %+v, want the status's reason and what it waits for", got)
+	}
+}
+
 // Pipeline/SDD cards have no child state, so drillIntoSubagent must refuse
 // them — the child-scoped sheet must never see a nil child.
 func TestNilChildCardCannotDrillIn(t *testing.T) {

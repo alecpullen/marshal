@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -430,6 +431,307 @@ func TestPreflightOpsMarksBlockedFileOverwrite(t *testing.T) {
 	}
 	if op.Status != OpBlocked {
 		t.Errorf("Status = %q, want %q", op.Status, OpBlocked)
+	}
+}
+
+// symlinkOrSkip creates link -> target, skipping the test on platforms or
+// filesystems where symlinks are unavailable.
+func symlinkOrSkip(t *testing.T, target, link string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+}
+
+// relTo builds the relative spelling that reaches target from dir. Tests
+// assert on file contents and existence, never on the absolute spelling.
+func relTo(t *testing.T, dir, target string) string {
+	t.Helper()
+	rel, err := filepath.Rel(dir, target)
+	if err != nil {
+		t.Fatalf("filepath.Rel(%q, %q): %v", dir, target, err)
+	}
+	return rel
+}
+
+func TestPreflightOpsBlocksEscapingFilePath(t *testing.T) {
+	dir := t.TempDir()
+	op := &FileOp{Path: "../outside.txt", Content: "pwned", Replace: true}
+	diags := preflightOps(dir, []Operation{op})
+	if op.Status != OpBlocked {
+		t.Fatalf("Status = %q, want %q", op.Status, OpBlocked)
+	}
+	requireErrorDiagnostic(t, diags, "../outside.txt")
+}
+
+func TestPreflightOpsBlocksEscapingPatchPath(t *testing.T) {
+	dir := t.TempDir()
+	op := &PatchOp{File: "../outside.txt", Search: "a", Replace: "b"}
+	diags := preflightOps(dir, []Operation{op})
+	if op.Status != OpBlocked {
+		t.Fatalf("Status = %q, want %q", op.Status, OpBlocked)
+	}
+	requireErrorDiagnostic(t, diags, "../outside.txt")
+}
+
+func TestPreflightOpsBlocksAbsoluteFilePath(t *testing.T) {
+	dir := t.TempDir()
+	op := &FileOp{Path: "/etc/passwd", Content: "pwned", Replace: true}
+	diags := preflightOps(dir, []Operation{op})
+	if op.Status != OpBlocked {
+		t.Fatalf("Status = %q, want %q", op.Status, OpBlocked)
+	}
+	requireErrorDiagnostic(t, diags, "/etc/passwd")
+}
+
+func TestPreflightOpsBlocksSymlinkEscapingFilePath(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "victim.txt"), []byte("secret\n"), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+	symlinkOrSkip(t, outside, filepath.Join(dir, "link"))
+
+	op := &FileOp{Path: "link/victim.txt", Content: "pwned", Replace: true}
+	diags := preflightOps(dir, []Operation{op})
+	if op.Status != OpBlocked {
+		t.Fatalf("Status = %q, want %q", op.Status, OpBlocked)
+	}
+	requireErrorDiagnostic(t, diags, "link/victim.txt")
+}
+
+func TestPreflightOpsBlocksSymlinkEscapeToNewFile(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	symlinkOrSkip(t, outside, filepath.Join(dir, "link"))
+
+	op := &FileOp{Path: "link/new.txt", Content: "pwned"}
+	diags := preflightOps(dir, []Operation{op})
+	if op.Status != OpBlocked {
+		t.Fatalf("Status = %q, want %q", op.Status, OpBlocked)
+	}
+	requireErrorDiagnostic(t, diags, "link/new.txt")
+}
+
+func TestPreflightOpsAllowsSymlinkInsideWorktree(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("mkdir real: %v", err)
+	}
+	symlinkOrSkip(t, real, filepath.Join(dir, "inner"))
+
+	op := &FileOp{Path: "inner/new.txt", Content: "hello\n"}
+	diags := preflightOps(dir, []Operation{op})
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if op.Status != OpExecutable {
+		t.Fatalf("Status = %q, want %q", op.Status, OpExecutable)
+	}
+}
+
+func TestPreflightOpsAllowsNormalizedWorkspaceRelativePath(t *testing.T) {
+	dir := t.TempDir()
+	op := &FileOp{Path: "pkg/../ok.txt", Content: "hello\n"}
+	diags := preflightOps(dir, []Operation{op})
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if op.Status != OpExecutable {
+		t.Fatalf("Status = %q, want %q", op.Status, OpExecutable)
+	}
+}
+
+func TestApplyFileOpRejectsEscapingPath(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(victim, []byte("original\n"), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+
+	op := &FileOp{Path: relTo(t, dir, victim), Content: "pwned\n", Replace: true}
+	if err := applyFileOp(dir, op); err == nil {
+		t.Fatal("applyFileOp should reject a path outside the worktree")
+	}
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("read victim: %v", err)
+	}
+	if string(got) != "original\n" {
+		t.Fatalf("outside file was mutated: %q", got)
+	}
+}
+
+func TestApplyFileOpRejectsAbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "created.txt")
+
+	op := &FileOp{Path: target, Content: "pwned\n"}
+	if err := applyFileOp(dir, op); err == nil {
+		t.Fatal("applyFileOp should reject an absolute path")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("absolute target was created: stat err = %v", err)
+	}
+}
+
+func TestApplyPatchOpRejectsEscapingPath(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(victim, []byte("original\n"), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+
+	op := &PatchOp{File: relTo(t, dir, victim), Search: "original", Replace: "pwned", Status: OpExecutable}
+	if err := applyPatchOp(dir, op); err == nil {
+		t.Fatal("applyPatchOp should reject a path outside the worktree")
+	}
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("read victim: %v", err)
+	}
+	if string(got) != "original\n" {
+		t.Fatalf("outside file was mutated: %q", got)
+	}
+}
+
+func TestApplyFileOpRejectsSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(victim, []byte("original\n"), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+	symlinkOrSkip(t, outside, filepath.Join(dir, "link"))
+
+	op := &FileOp{Path: "link/victim.txt", Content: "pwned\n", Replace: true}
+	if err := applyFileOp(dir, op); err == nil {
+		t.Fatal("applyFileOp should reject a symlink escape")
+	}
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("read victim: %v", err)
+	}
+	if string(got) != "original\n" {
+		t.Fatalf("outside file was mutated: %q", got)
+	}
+}
+
+func TestApplyFileOpRejectsSymlinkFileEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(victim, []byte("original\n"), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+	// The symlink is the final component, pointing at an existing file.
+	symlinkOrSkip(t, victim, filepath.Join(dir, "filelink"))
+
+	op := &FileOp{Path: "filelink", Content: "pwned\n", Replace: true}
+	if err := applyFileOp(dir, op); err == nil {
+		t.Fatal("applyFileOp should reject a symlink that points at an outside file")
+	}
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("read victim: %v", err)
+	}
+	if string(got) != "original\n" {
+		t.Fatalf("outside file was mutated: %q", got)
+	}
+}
+
+func TestApplyPatchOpRejectsSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(victim, []byte("original\n"), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+	symlinkOrSkip(t, outside, filepath.Join(dir, "link"))
+
+	op := &PatchOp{File: "link/victim.txt", Search: "original", Replace: "pwned", Status: OpExecutable}
+	if err := applyPatchOp(dir, op); err == nil {
+		t.Fatal("applyPatchOp should reject a symlink escape")
+	}
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("read victim: %v", err)
+	}
+	if string(got) != "original\n" {
+		t.Fatalf("outside file was mutated: %q", got)
+	}
+}
+
+func TestApplyFileOpRejectsSymlinkEscapeToNewFile(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	symlinkOrSkip(t, outside, filepath.Join(dir, "link"))
+
+	op := &FileOp{Path: "link/new.txt", Content: "pwned\n"}
+	if err := applyFileOp(dir, op); err == nil {
+		t.Fatal("applyFileOp should reject a symlink escape to a new file")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("outside file was created: stat err = %v", err)
+	}
+}
+
+func TestApplyFileOpAllowsSymlinkInsideWorktree(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("mkdir real: %v", err)
+	}
+	symlinkOrSkip(t, real, filepath.Join(dir, "inner"))
+
+	op := &FileOp{Path: "inner/new.txt", Content: "hello\n"}
+	if err := applyFileOp(dir, op); err != nil {
+		t.Fatalf("applyFileOp: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(real, "new.txt"))
+	if err != nil {
+		t.Fatalf("read resolved target: %v", err)
+	}
+	if string(got) != "hello\n" {
+		t.Fatalf("content = %q, want %q", got, "hello\n")
+	}
+}
+
+func TestApplyFileOpAcceptsNormalizedWorkspaceRelativePath(t *testing.T) {
+	dir := t.TempDir()
+
+	op := &FileOp{Path: "pkg/../ok.txt", Content: "hello\n"}
+	if err := applyFileOp(dir, op); err != nil {
+		t.Fatalf("applyFileOp: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "ok.txt"))
+	if err != nil {
+		t.Fatalf("read ok.txt: %v", err)
+	}
+	if string(got) != "hello\n" {
+		t.Fatalf("content = %q, want %q", got, "hello\n")
+	}
+}
+
+func TestApplyFileOpAcceptsNestedPathWithMissingParents(t *testing.T) {
+	dir := t.TempDir()
+
+	op := &FileOp{Path: "a/b/c.txt", Content: "hello\n"}
+	if err := applyFileOp(dir, op); err != nil {
+		t.Fatalf("applyFileOp: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "a", "b", "c.txt"))
+	if err != nil {
+		t.Fatalf("read nested file: %v", err)
+	}
+	if string(got) != "hello\n" {
+		t.Fatalf("content = %q, want %q", got, "hello\n")
 	}
 }
 

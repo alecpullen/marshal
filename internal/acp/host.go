@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app"
 	"marshal/internal/app/session"
@@ -92,6 +93,22 @@ type agentHost struct {
 	cancellers   []TurnCanceller
 
 	holds *projectHolds // nil when runConfig.hold is nil
+
+	// viewers counts each session's marshal viewers (decision 1): a connection
+	// that subscribes to the session's status adds one, and its cleanup takes
+	// it back. A session with one is on someone's screen, so a wake resumes
+	// nothing by itself.
+	viewers *marshalViewers
+
+	// restrictViewers puts the container allowlist on every viewer this host
+	// serves (decision 4): set from runConfig for a listener beside a
+	// container's --listen.
+	restrictViewers bool
+
+	// record is what this child started from, nil when it is not a project
+	// child (decision 1). It answers project/state and feeds every session's
+	// pending restart.
+	record *startRecord
 }
 
 // newAgentHost constructs the session manager and turn manager in
@@ -114,10 +131,12 @@ func newAgentHost(cfg runConfig) (*agentHost, error) {
 	sink := &notifySink{}
 
 	manager := NewSessionManager(SessionManagerConfig{
-		StartRuntime: cfg.startRuntime,
-		CloseRuntime: cfg.closeRuntime,
-		Lister:       cfg.lister,
-		Notify:       sink.Notify,
+		StartRuntime:   cfg.startRuntime,
+		CloseRuntime:   cfg.closeRuntime,
+		Lister:         cfg.lister,
+		Notify:         sink.Notify,
+		ConfigWritten:  recordWrote(cfg.record),
+		PendingRestart: recordPending(cfg.record),
 	}, WithSessionManagerLogger(log))
 
 	h := &agentHost{
@@ -125,6 +144,19 @@ func newAgentHost(cfg runConfig) (*agentHost, error) {
 		sink:     sink,
 		log:      log,
 		shutdown: cfg.shutdown,
+
+		viewers:         newMarshalViewers(),
+		restrictViewers: cfg.restrictViewers,
+		record:          cfg.record,
+	}
+	if cfg.resumeDetached {
+		// A host that serves viewers has no connection bound to a session's
+		// turns, so each session's service binds its own wake (decision 2):
+		// the binding is made where the service is built, so it follows every
+		// session this host builds.
+		manager.detachedResume = func(rt *app.Runtime, sessionID string, sess *service.Session) {
+			bindDetachedResume(rt, sess, sessionID, h.viewers)
+		}
 	}
 	if cfg.hold != nil {
 		h.holds = &projectHolds{hold: cfg.hold, held: map[string]func(){}}
@@ -286,6 +318,9 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 		Perms:     perms,
 		Questions: questions,
 		Marshal:   marshal,
+		// The follower reports the session's service runs to a viewer, and a
+		// cancel with no turn of its own stops the run it follows (P5).
+		Service: manager.Service,
 	})
 	return tm
 }
@@ -351,6 +386,123 @@ func responseBarrier(fencers ...sessionFencer) func(ctx context.Context, session
 	}
 }
 
+// recordWrote is the session manager's ConfigWritten for rec: the record's own
+// write, or nil when the child keeps no record (decision 3).
+func recordWrote(rec *startRecord) func(path string) {
+	if rec == nil {
+		return nil
+	}
+	return rec.wrote
+}
+
+// recordPending is the session manager's PendingRestart for rec: the record's
+// remembered answer, or nil when the child keeps no record (decision 4).
+func recordPending(rec *startRecord) func() *acpwire.PendingRestart {
+	if rec == nil {
+		return nil
+	}
+	return rec.pending
+}
+
+// projectState answers project/state on the bridge's connection (B3): the
+// reasons this child is stale, what keeps it busy, and its version. It keeps
+// the answer, so every session's status shows it as its pending restart
+// (decision 4); nothing hashes a file until the bridge asks again.
+func (h *agentHost) projectState(ctx context.Context, params json.RawMessage) (any, error) {
+	stale := h.record.stale()
+	busy := h.busy()
+	h.record.remember(stale, busy)
+	return acpwire.ProjectState{Stale: stale, Busy: busy, Version: AgentVersion}, nil
+}
+
+// projectNote serves project/note: its text becomes a plain note in every live
+// session (decision 7), and the answer is how many sessions it reached.
+func (h *agentHost) projectNote(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.ProjectNoteParams
+	if err := decodeParams(params, &p, acpwire.MethodProjectNote); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	n := 0
+	for _, rt := range h.liveRuntimes() {
+		sess, ok := h.manager.Service(rt.SessionID)
+		if !ok || sess == nil {
+			continue
+		}
+		if err := sess.AddNote(ctx, acpwire.Note{Text: p.Text}); err != nil {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+// busy lists what holds the child up (decision 5): one line per item, in each
+// session's own fixed order, visiting the sessions in creation order so the
+// first line is stable. A session is named by its title, else its ID.
+func (h *agentHost) busy() []string {
+	var out []string
+	for _, rt := range h.liveRuntimes() {
+		name := rt.SessionID
+		if rt.State != nil {
+			if title := rt.State.Title(); title != "" {
+				name = title
+			}
+		}
+		if sess, ok := h.manager.Service(rt.SessionID); ok && sess != nil {
+			status := sess.Status()
+			if status.Run != nil {
+				out = append(out, "a run in "+name)
+			}
+			if anySubagentRunning(status.Subagents) {
+				out = append(out, "subagents in "+name)
+			}
+			if status.RunningJobs > 0 {
+				out = append(out, "jobs in "+name)
+			}
+			if status.Swarm.Active {
+				out = append(out, "a swarm in "+name)
+			}
+			if status.SDD.Active {
+				out = append(out, "an SDD run in "+name)
+			}
+		}
+		if wm := rt.CurrentWatchManager(); wm != nil {
+			for _, info := range wm.List() {
+				if info.State == watch.StateWatching {
+					out = append(out, "watch "+info.Name+" in "+name)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// liveRuntimes is every published runtime, in creation order, with no nil
+// entry: what project/note tells and what busy reports.
+func (h *agentHost) liveRuntimes() []*app.Runtime {
+	if h.manager == nil {
+		return nil
+	}
+	all := h.manager.All()
+	out := make([]*app.Runtime, 0, len(all))
+	for _, rt := range all {
+		if rt != nil {
+			out = append(out, rt)
+		}
+	}
+	return out
+}
+
+// anySubagentRunning reports whether any of the session's subagents is running.
+func anySubagentRunning(subagents []acpwire.Subagent) bool {
+	for _, sub := range subagents {
+		if sub.Status == acpwire.SubagentRunning {
+			return true
+		}
+	}
+	return false
+}
+
 // registerHandlers registers every JSON-RPC handler on srv, constructing
 // the per-handler managers in the same dependency order as before. The
 // managers are wired to this specific connection's server.
@@ -408,6 +560,10 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 		srv.Handle("session/delete", refuse)
 		srv.Handle("project/hold", refuse)
 		srv.Handle("project/release", refuse)
+		// A viewer is not the project's driver, so it neither asks the child's
+		// state nor tells its sessions anything (decision 6).
+		srv.Handle(acpwire.MethodProjectState, refuse)
+		srv.Handle(acpwire.MethodProjectNote, refuse)
 	} else {
 		srv.Handle("session/new", manager.Create)
 		srv.Handle("session/load", manager.Load)
@@ -419,6 +575,12 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 			srv.Handle("project/hold", h.holds.Hold)
 			srv.Handle("project/release", h.holds.Release)
 		}
+		// Only a project child keeps a record, so only it serves the two
+		// project requests (decision 1).
+		if h.record != nil {
+			srv.Handle(acpwire.MethodProjectState, h.projectState)
+			srv.Handle(acpwire.MethodProjectNote, h.projectNote)
+		}
 	}
 
 	srv.Handle("session/access_state", turns.AccessState)
@@ -426,6 +588,10 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 	srv.Handle("session/last_request", turns.LastRequest)
 	srv.Handle("session/step_diffs", turns.StepDiffs)
 	srv.Handle("session/run", turns.Run)
+	// A viewer follows a session's service runs: the bridge starts them, and
+	// this connection only reports them (P5). Follow refuses a marshal client,
+	// which reads the same runs from the session's status.
+	srv.Handle(methodFollow, turns.Follow)
 	srv.HandleNotification("session/cancel", turns.Cancel)
 
 	watches := NewWatchManagerACP(func(sessionID string) (*watch.Manager, *pubsub.Broker[watch.Event], bool) {
@@ -486,6 +652,10 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 		Lookup:  manager.Service,
 		Notify:  notify,
 		Marshal: srv.marshalClient,
+		// A marshal connection subscribing to a session's status is one of its
+		// viewers (decision 1): the wake a viewers host holds back for the
+		// screen knows when that screen is there.
+		Viewers: h.viewers,
 	})
 	registerStatus(srv, statuses)
 
@@ -541,6 +711,11 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)
+	// A project child hears about its own config writes through the record, so
+	// its own settings change never marks it stale (decision 3).
+	if h.record != nil {
+		cfgMgr.wrote = h.record.wrote
+	}
 	srv.Handle("config/get", cfgMgr.Get)
 	srv.Handle("config/set_providers", cfgMgr.SetProviders)
 	srv.Handle("config/set_presets", cfgMgr.SetPresets)
@@ -711,6 +886,9 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 	// through this connection's permission bridge, so they end with it.
 	return func() {
 		turns.CloseChildApprovals()
+		// A run follower reports one session's service runs to this
+		// connection, so it ends with it too (P5).
+		turns.CloseFollowers()
 		works.Close()
 		statuses.Close()
 		sheets.Close()
@@ -775,6 +953,12 @@ func (h *agentHost) serveConnWith(ctx context.Context, stdin io.Reader, stdout i
 	defer cleanup()
 	h.sink.Set(srv.Notify)
 	defer h.sink.Clear()
+	// A connection's watch-resume binding is gated on this connection's
+	// liveness, so its death leaves the hook inert. On a host that serves
+	// viewers the session's own binding goes back (review A1), or a driver
+	// connection cycle would silence every later detached wake. Declared
+	// before the liveness defer, so it runs after it.
+	defer h.manager.RebindDetachedResume()
 	defer alive.Store(false)
 	return srv.Serve(ctx)
 }

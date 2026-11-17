@@ -37,20 +37,31 @@ type SessionStatus struct {
 	LastRun *RunResult `json:"lastRun,omitempty"`
 	// AgentReady says the session's agent runner is built, so Prompt, Review
 	// and RunAgent can start. It is false while the provider is not built.
-	AgentReady   bool          `json:"agentReady,omitempty"`
-	Workspace    Workspace     `json:"workspace"`
-	Browser      Browser       `json:"browser"`
-	Sandbox      Sandbox       `json:"sandbox"`
-	Steering     Steering      `json:"steering"`
-	RunningJobs  int           `json:"runningJobs,omitempty"`
-	Subagents    []Subagent    `json:"subagents,omitempty"`
-	Swarm        SwarmProgress `json:"swarm"`
-	SDD          SDDProgress   `json:"sdd"`
-	SDDGate      SDDGate       `json:"sddGate"`
-	Git          Git           `json:"git"`
-	ChangedFiles int           `json:"changedFiles,omitempty"` // against the sheet's base; 0 means "no changes", never "not refreshed"
-	WatchResume  *WatchResume  `json:"watchResume,omitempty"`
-	Notice       *Notice       `json:"notice,omitempty"` // the banner; nil when none
+	AgentReady  bool       `json:"agentReady,omitempty"`
+	Workspace   Workspace  `json:"workspace"`
+	Browser     Browser    `json:"browser"`
+	Sandbox     Sandbox    `json:"sandbox"`
+	Steering    Steering   `json:"steering"`
+	RunningJobs int        `json:"runningJobs,omitempty"`
+	Subagents   []Subagent `json:"subagents,omitempty"`
+	// SubagentControls is which child controls this session actually
+	// registers. Absent — an older agent, or another ACP backend — means
+	// unsupported, so a client offers no control and never infers support
+	// from an unrelated session.
+	SubagentControls *SubagentCapabilities `json:"subagentControls,omitempty"`
+	// SubagentDefaults is the ordinary child settings this session applies to
+	// an agent.run child when no per-session snapshot is bound, plus the digest
+	// of the config and route inputs they were derived from. Absent means the
+	// agent does not report them: a client then offers no settings surface.
+	SubagentDefaults *SubagentDefaults `json:"subagentDefaults,omitempty"`
+	Swarm            SwarmProgress     `json:"swarm"`
+	SDD              SDDProgress       `json:"sdd"`
+	SDDGate          SDDGate           `json:"sddGate"`
+	Git              Git               `json:"git"`
+	ChangedFiles     int               `json:"changedFiles,omitempty"` // against the sheet's base; 0 means "no changes", never "not refreshed"
+	WatchResume      *WatchResume      `json:"watchResume,omitempty"`
+	Notice           *Notice           `json:"notice,omitempty"`  // the banner; nil when none
+	Restart          *PendingRestart   `json:"restart,omitempty"` // nil while the child is current
 	// SkillGate is the session's skill load gate (C11, plan 8b).
 	SkillGate SkillGateState `json:"skillGate"`
 	// UserConfigPath and ProjectConfigPath are the files the config writes
@@ -58,6 +69,68 @@ type SessionStatus struct {
 	// empty when the agent cannot locate it.
 	UserConfigPath    string `json:"userConfigPath,omitempty"`
 	ProjectConfigPath string `json:"projectConfigPath,omitempty"`
+}
+
+// SubagentCapabilities is which child controls a session registers, as the
+// session reports it. It is per session and per backend: absent (or false)
+// means unsupported, and a client offers no control rather than inferring one
+// from another session or from the ACP version.
+type SubagentCapabilities struct {
+	// Settings is per-session child settings: enablement, model and
+	// concurrency.
+	Settings bool `json:"settings"`
+	// Steer delivers one user instruction to a live child
+	// (session/subagent_steer).
+	Steer bool `json:"steer"`
+	// Stop asks a live child to stop (session/subagent_cancel).
+	Stop bool `json:"stop"`
+	// Observe is the child's own transcript and lifecycle, which
+	// session/stack already reports.
+	Observe bool `json:"observe"`
+}
+
+// MarshalSubagentCapabilities is what a Marshal session advertises: steering,
+// stopping and observing a live child are registered
+// (internal/acp/controls.go, registerControls), and a session accepts a
+// resolved child-settings snapshot at creation and enforces it in agent.run,
+// so Settings is true too.
+func MarshalSubagentCapabilities() *SubagentCapabilities {
+	return &SubagentCapabilities{Settings: true, Steer: true, Stop: true, Observe: true}
+}
+
+// SubagentSettings is a session's child settings: whether agent.run is
+// offered at all, the model children run on, and the cap on children in
+// flight. A session binds one only at creation, and only that session
+// enforces it.
+type SubagentSettings struct {
+	Enabled bool `json:"enabled"`
+	// Model is the child's model, as a "provider/model" pair. Empty means
+	// normal child routing: the child inherits the parent's route, exactly as
+	// it does with no snapshot at all. It is not the worker model.
+	Model string `json:"model,omitempty"`
+	// Concurrency is the cap on agent.run children in flight. A snapshot
+	// supplied at creation carries a positive value and is validated, never
+	// clamped.
+	Concurrency int `json:"concurrency"`
+}
+
+// SubagentDefaults is the ordinary child settings a session reports: what
+// agent.run does with no per-session snapshot bound, and the digest of the
+// config and route inputs they were derived from. A client that bound its own
+// snapshot compares the digest to tell an unchanged default from a new one,
+// without re-resolving routing itself.
+type SubagentDefaults struct {
+	Settings SubagentSettings `json:"settings"`
+	// Digest identifies the effective config and route inputs the settings
+	// were derived from. Two sessions reporting the same digest would derive
+	// the same defaults.
+	Digest string `json:"digest"`
+}
+
+// PendingRestart is a stale child's restart as its sessions show it (B3).
+type PendingRestart struct {
+	Reason     string `json:"reason"`
+	WaitingFor string `json:"waitingFor"`
 }
 
 // Route mirrors the session's RouteInfo: the route a turn runs on.

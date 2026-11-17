@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -34,36 +35,17 @@ func isMethodNotFound(err error) bool {
 	return errors.As(err, &rpc) && rpc.Code == -32601
 }
 
-// Decision is the HTTP-facing shape of a permission decision. It maps
-// 1:1 onto the ACP session/request_permission result.
-type Decision struct {
-	Approved bool   `json:"approved"`
-	Edited   string `json:"edited,omitempty"`
-	// ModeAccess is the typed capability choice, when the client supports
-	// it. The bridge forwards it untouched: the agent validates the
-	// identity and applies the grant, so nothing here can grant a
-	// capability locally.
-	ModeAccess *ModeAccessChoice `json:"modeAccess,omitempty"`
-}
+// Decision is contract.Decision; it maps 1:1 onto the ACP
+// session/request_permission result, and ModeAccess rides along untouched.
+type Decision = contract.Decision
 
-// Answer is one question-and-response pair on the wire.
-//
-// This deliberately duplicates the agent-side shape rather than
-// importing it: web/bridge is an external ACP client, and the JSON
-// contract — not a shared Go type — is what binds the two halves. The
-// duplication is what lets web/ ship as its own module.
-type Answer struct {
-	Question string `json:"question"`
-	Answer   string `json:"answer"`
-}
+// Answer is contract.Answer; the JSON contract, not a shared Go type, is what
+// binds web/ to the agent.
+type Answer = contract.Answer
 
-// Answers is the HTTP-facing shape of a question response. Declined
-// maps to the ACP {declined:true} result; otherwise Answers carries one
-// entry per question, in order.
-type Answers struct {
-	Answers  []Answer `json:"answers,omitempty"`
-	Declined bool     `json:"declined,omitempty"`
-}
+// Answers is contract.Answers; Declined maps to the ACP {declined:true}
+// result, otherwise one entry per question, in order.
+type Answers = contract.Answers
 
 // sessionInfo tracks one active session's bridge-side state.
 type sessionInfo struct {
@@ -97,6 +79,18 @@ type sessionInfo struct {
 	// child running, but the idle sweep, the daemon's listing, an attach and
 	// the client-trust mark all leave it alone. Not serialized.
 	fleet bool
+	// followAsked is true once this bridge has asked the agent to follow the
+	// session (session/follow), whatever the reply: a restart's resume asks
+	// again, so a follow that failed on a spawn's dying request context is
+	// retried rather than lost for the session's life (P5 F5, plan 4c). Not
+	// serialized.
+	followAsked bool
+	// ownTurn is true while the bridge's own prompt is in flight, so a
+	// followed run's end cannot hide it. Not serialized.
+	ownTurn bool
+	// followedRun is the followed run in flight; "" for none. Not
+	// serialized.
+	followedRun string
 }
 
 // DaemonSession is contract.DaemonSession; see that declaration.
@@ -134,6 +128,10 @@ type Registry struct {
 
 	mu       sync.Mutex
 	sessions map[string]*sessionInfo
+	// followWarned holds the sessions an agent's missing session/follow was
+	// logged for, so an older agent is reported once rather than at every
+	// spawn and restore (P5 F5, plan 4c). Guarded by mu.
+	followWarned map[string]bool
 
 	permMu      sync.Mutex
 	permissions map[string]chan Decision
@@ -142,20 +140,44 @@ type Registry struct {
 	quesMu      sync.Mutex
 	questions   map[string]chan Answers
 	quesSession map[string]string // questionId -> issuing sessionId
+
+	// steerMu guards the Send now receipts this registry observed: the newest
+	// receipt per session and request, bounded by
+	// revisionSteeringReceiptLimit. A receipt is evidence for its own request
+	// and nothing else, so the map is keyed by both.
+	steerMu      sync.Mutex
+	steerReceipt map[string]map[string]RevisionSteeringReceipt
+	steerOrder   map[string][]string
 }
 
 // NewRegistry wires a Registry onto a started Child, installing the
-// OnRequest and OnRestart hooks.
+// OnRequest, OnNotification and OnRestart hooks.
 func NewRegistry(child *Child) *Registry {
 	r := &Registry{
-		child:       child,
-		sessions:    make(map[string]*sessionInfo),
-		permissions: make(map[string]chan Decision),
-		permSession: make(map[string]string),
-		questions:   make(map[string]chan Answers),
-		quesSession: make(map[string]string),
+		child:        child,
+		sessions:     make(map[string]*sessionInfo),
+		followWarned: make(map[string]bool),
+		permissions:  make(map[string]chan Decision),
+		permSession:  make(map[string]string),
+		questions:    make(map[string]chan Answers),
+		quesSession:  make(map[string]string),
 	}
 	child.OnRequest = r.handleChildRequest
+	// Followed runs are reported as session/update notifications, so the
+	// registry takes its place first in the chain (Attach and the fleet's
+	// classifier chain onto whatever is installed here).
+	prevNotify := child.OnNotification
+	child.OnNotification = func(method string, params json.RawMessage) {
+		if prevNotify != nil {
+			prevNotify(method, params)
+		}
+		if method == "session/update" {
+			r.observeFollowedRun(params)
+			// A Send now receipt is evidence only where it was observed, so it
+			// is captured here rather than inferred later from an idle session.
+			r.observeSteeringReceiptUpdate(params)
+		}
+	}
 	prevOnRestart := child.OnRestart
 	child.OnRestart = func() {
 		if prevOnRestart != nil {
@@ -322,7 +344,7 @@ func (r *Registry) closeTracked(ctx context.Context, id string, cwd AgentPath) e
 	}
 	r.cancelSession(id)
 	r.mu.Lock()
-	delete(r.sessions, id)
+	r.dropSessionLocked(id)
 	r.mu.Unlock()
 	return nil
 }
@@ -332,8 +354,15 @@ func (r *Registry) closeTracked(ctx context.Context, id string, cwd AgentPath) e
 func (r *Registry) forget(id string) {
 	r.cancelSession(id)
 	r.mu.Lock()
-	delete(r.sessions, id)
+	r.dropSessionLocked(id)
 	r.mu.Unlock()
+}
+
+// dropSessionLocked removes id's record and the follow log kept for it, so
+// followWarned tracks live sessions only. The caller holds mu.
+func (r *Registry) dropSessionLocked(id string) {
+	delete(r.sessions, id)
+	delete(r.followWarned, id)
 }
 
 // idleCandidates lists the tracked sessions with no viewer whose last
@@ -390,6 +419,12 @@ func (r *Registry) rename(oldID, newID string) bool {
 	}
 	delete(r.sessions, oldID)
 	r.sessions[newID] = info
+	// The record is the same session, so its follow log comes with it: a
+	// rename must not make an older agent's missing method be reported twice.
+	if warned := r.followWarned[oldID]; warned {
+		r.followWarned[newID] = true
+		delete(r.followWarned, oldID)
+	}
 	return true
 }
 
@@ -468,7 +503,7 @@ func (r *Registry) Delete(ctx context.Context, id string) error {
 	}
 	r.cancelSession(id)
 	r.mu.Lock()
-	delete(r.sessions, id)
+	r.dropSessionLocked(id)
 	r.mu.Unlock()
 	return nil
 }
@@ -594,6 +629,123 @@ func (r *Registry) call(ctx context.Context, id, method, feature string, params 
 		return nil, ErrUnsupported{Feature: feature}
 	}
 	return result, err
+}
+
+// Follow asks the agent to report id's runs from other connections
+// (P5 F5, plan 4c). An agent without the method is left as it was: it answers
+// method-not-found, which becomes ErrUnsupported{Feature: "follow"} and is
+// logged once per session. Follow changes no status by itself; a followed
+// run's own update is what marks the session busy.
+func (r *Registry) Follow(ctx context.Context, id string) error {
+	// The request is recorded before the reply, so a follow the agent never
+	// confirmed, a transient context cancellation at spawn included, is asked
+	// again after a restart instead of leaving the session unfollowed for its
+	// life.
+	r.mu.Lock()
+	if info, ok := r.sessions[id]; ok {
+		info.followAsked = true
+	}
+	r.mu.Unlock()
+	if _, err := r.call(ctx, id, "session/follow", "follow", nil); err != nil {
+		if errors.Is(err, ErrUnsupported{Feature: "follow"}) {
+			r.warnFollowUnsupported(id)
+		}
+		return err
+	}
+	return nil
+}
+
+// warnFollowUnsupported logs an older agent's missing session/follow once per
+// session: a spawn and every later restore would otherwise repeat it.
+func (r *Registry) warnFollowUnsupported(id string) {
+	r.mu.Lock()
+	if r.followWarned == nil {
+		r.followWarned = make(map[string]bool)
+	}
+	warned := r.followWarned[id]
+	r.followWarned[id] = true
+	r.mu.Unlock()
+	if !warned {
+		slog.Default().Info("webbridge: the agent does not report a followed session's runs",
+			"session", id)
+	}
+}
+
+// followedRunUpdate is the update a follower sends for a run on another
+// connection (P5 F5, plan 4c). The bridge holds no shared Go type with the
+// agent, so the wire shape is decoded here.
+type followedRunUpdate struct {
+	Kind    string `json:"kind"`              // "followed_run"
+	State   string `json:"state"`             // "started" or "ended"
+	RunID   string `json:"runId"`             //
+	RunKind string `json:"runKind,omitempty"` // on "started"
+	Outcome string `json:"outcome,omitempty"` // on "ended"
+	Error   string `json:"error,omitempty"`   // a failed run's message
+}
+
+// observeFollowedRun applies one followed_run update. It runs on the child's
+// read goroutine, so it lands before any request read after it: a permission
+// request from the followed run is brokered, not denied.
+func (r *Registry) observeFollowedRun(params json.RawMessage) {
+	var p struct {
+		SessionID string            `json:"sessionId"`
+		Update    followedRunUpdate `json:"update"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || p.Update.Kind != "followed_run" {
+		return
+	}
+	r.mu.Lock()
+	info, ok := r.sessions[p.SessionID]
+	if !ok {
+		// An untracked session is not the bridge's to report.
+		r.mu.Unlock()
+		return
+	}
+	switch p.Update.State {
+	case "started":
+		if p.Update.RunID == "" {
+			// A start with no id can never be matched by an end: recording it
+			// would leave the session busy for good.
+			r.mu.Unlock()
+			return
+		}
+		info.followedRun = p.Update.RunID
+		info.Busy = true
+		info.accepting = true
+		r.mu.Unlock()
+	case "ended":
+		if p.Update.RunID == "" || info.followedRun != p.Update.RunID {
+			// Another run's end (or one already reported): nothing to clear.
+			r.mu.Unlock()
+			return
+		}
+		info.followedRun = ""
+		if !info.ownTurn {
+			// The bridge's own prompt ends its own turn; a late end must not
+			// hide it.
+			info.Busy = false
+			info.accepting = false
+		}
+		r.mu.Unlock()
+		r.emitEvent(p.SessionID, followedRunTurnEnd(p.Update))
+	default:
+		r.mu.Unlock()
+	}
+}
+
+// followedRunTurnEnd is decision 9's mapping to a bridge-side turn_end:
+// done and gated end the turn, cancelled is a cancelled stop, and a failed
+// run carries its message as the event's error, exactly as Prompt does on a
+// failed request.
+func followedRunTurnEnd(u followedRunUpdate) map[string]any {
+	switch u.Outcome {
+	case "cancelled":
+		return map[string]any{"type": "turn_end", "stopReason": "cancelled"}
+	case "failed":
+		return map[string]any{"type": "turn_end", "error": u.Error}
+	default: // "done", "gated"
+		return map[string]any{"type": "turn_end", "stopReason": "end_turn"}
+	}
 }
 
 // Stack proxies the agent's session/stack snapshot without decoding it. A
@@ -904,6 +1056,7 @@ func (r *Registry) beginTurn(id string) {
 	if info, ok := r.sessions[id]; ok {
 		info.accepting = true
 		info.Busy = true
+		info.ownTurn = true
 	}
 }
 
@@ -911,8 +1064,14 @@ func (r *Registry) endTurn(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if info, ok := r.sessions[id]; ok {
-		info.accepting = false
-		info.Busy = false
+		info.ownTurn = false
+		// A followed run still in flight keeps the session busy: the bridge's
+		// own prompt is over, not the run it is reporting. The two cannot
+		// overlap today, but leaving the fields set is what makes that safe.
+		if info.followedRun == "" {
+			info.accepting = false
+			info.Busy = false
+		}
 	}
 }
 
@@ -997,16 +1156,22 @@ func (r *Registry) drainSession(id string) {
 // bridge_restarted.
 func (r *Registry) resumeAll() {
 	r.clearPending()
+	r.clearRevisionReceipts()
 
 	r.mu.Lock()
 	ids := make([]string, 0, len(r.sessions))
 	cwds := make(map[string]AgentPath, len(r.sessions))
 	fleets := make(map[string]bool, len(r.sessions))
+	followAsked := make(map[string]bool, len(r.sessions))
 	for id, info := range r.sessions {
 		ids = append(ids, id)
 		cwds[id] = info.Cwd
 		fleets[id] = info.fleet
-		info.Busy = false // in-flight turn was interrupted by the restart
+		followAsked[id] = info.followAsked
+		// Both kinds of turn in flight were interrupted by the restart.
+		info.Busy = false
+		info.ownTurn = false
+		info.followedRun = ""
 	}
 	r.mu.Unlock()
 
@@ -1017,6 +1182,15 @@ func (r *Registry) resumeAll() {
 		// keeps the registry-wide one, a fleet agent's omits it.
 		trust := r.ClientTrust && !fleets[id]
 		_, _ = r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwds[id], SessionID: id, MCPServers: &[]json.RawMessage{}, ClientTrust: trust})
+		if followAsked[id] {
+			// The follow lived in the process that just died: ask the
+			// replacement for the same reports (P5 F5, plan 4c). A failure is
+			// logged, never fatal to the resume.
+			if err := r.Follow(ctx, id); err != nil && !errors.Is(err, ErrUnsupported{Feature: "follow"}) {
+				slog.Default().Warn("webbridge: follow a session's runs after a restart",
+					"session", id, "err", err)
+			}
+		}
 		r.emitEvent(id, map[string]any{"type": "bridge_restarted"})
 	}
 }

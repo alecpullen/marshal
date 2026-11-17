@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
 	"io"
 	"net/url"
 	"os"
@@ -15,6 +17,11 @@ import (
 	"marshal/internal/app"
 	"marshal/internal/daemon"
 )
+
+// updateGolden rewrites the checked-in fixtures a currency test compares
+// against, so a deliberate document change is one command rather than a
+// hand-edited JSON diff.
+var updateGolden = flag.Bool("update", false, "rewrite the checked-in fixtures")
 
 // fakeDaemonClient answers `status` without a socket.
 type fakeDaemonClient struct {
@@ -74,17 +81,23 @@ func daemonTestEnv(t *testing.T) string {
 // fakeDaemonManager replaces the service-manager seam with a launchd-shaped
 // manager whose every command goes to run. No launchctl process is started.
 func fakeDaemonManager(t *testing.T, run daemon.Runner) {
+	fakeDaemonManagerOS(t, "darwin", run)
+}
+
+// fakeDaemonManagerOS replaces the service-manager seam for one platform, so
+// a test can drive Linux and macOS without a real service manager.
+func fakeDaemonManagerOS(t *testing.T, goos string, run daemon.Runner) {
 	t.Helper()
 	old := daemonManagerFor
 	t.Cleanup(func() { daemonManagerFor = old })
 	daemonManagerFor = func(home string) (*daemon.Manager, error) {
-		return &daemon.Manager{
-			GOOS:    "darwin",
-			Home:    home,
-			UID:     501,
-			UnitDir: filepath.Join(home, "Library", "LaunchAgents"),
-			Run:     run,
-		}, nil
+		m := &daemon.Manager{GOOS: goos, Home: home, UID: 501, Run: run}
+		if goos == "darwin" {
+			m.UnitDir = filepath.Join(home, "Library", "LaunchAgents")
+		} else {
+			m.UnitDir = filepath.Join(home, ".config", "systemd", "user")
+		}
+		return m, nil
 	}
 }
 
@@ -208,8 +221,13 @@ func TestDaemonInstallPassesExplicitPaths(t *testing.T) {
 			paths.Socket,
 			paths.StateDir,
 			paths.Registry,
+			// The Studio listener is the browser's door onto this daemon:
+			// the loopback address from the user config, and the token file
+			// the bridge reads or mints 0600, so the page starts signed in.
 			"<string>--addr</string>",
-			"<string>off</string>",
+			"<string>127.0.0.1:7788</string>",
+			"<string>--token-file</string>",
+			"<string>" + paths.Token + "</string>",
 			"<string>--marshal-bin</string>",
 			// The installed daemon always refreshes (decision 5), so the
 			// flag is written into the unit rather than configured.
@@ -312,6 +330,238 @@ func TestDaemonInstallWritesTheIdleTimeout(t *testing.T) {
 	}
 	if strings.Contains(unit, "99m0s") {
 		t.Errorf("unit carries the project config's timeout:\n%s", unit)
+	}
+}
+
+// TestDaemonInstallEnablesLinger pins D1's default: a Linux install reads the
+// user's linger bit, sets it when it is off, and says which it did. The bit is
+// a warning, not a gate — install has already succeeded by the time it runs.
+func TestDaemonInstallEnablesLinger(t *testing.T) {
+	daemonTestEnv(t)
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	webbridge := filepath.Join(t.TempDir(), "webbridge")
+	if err := os.WriteFile(webbridge, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const show = "loginctl show-user 501 -p Linger"
+	var calls []string
+	fakeDaemonManagerOS(t, "linux", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		line := strings.Join(append([]string{name}, args...), " ")
+		calls = append(calls, line)
+		if line == show {
+			return []byte("Linger=no\n"), nil
+		}
+		return nil, nil
+	})
+	// install waits for the daemon to answer; an answering client means
+	// the readiness poll returns at once.
+	fakeDaemonSocket(t, fakeDaemonClient{})
+
+	var out, errOut bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"install", "--webbridge", webbridge},
+		strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatalf("runDaemon install: %v\nstderr: %s", err, errOut.String())
+	}
+
+	if !strings.Contains(out.String(), "linger: enabled") {
+		t.Errorf("install printed %q, want it to say linger: enabled", out.String())
+	}
+	if !strings.Contains(strings.Join(calls, "\n"), "loginctl enable-linger 501") {
+		t.Errorf("install did not enable linger; manager calls:\n%s", strings.Join(calls, "\n"))
+	}
+}
+
+// TestDaemonInstallLeavesLingerOffWithTheFlag: --no-linger is an opt-out, so
+// install neither reads nor sets the bit.
+func TestDaemonInstallLeavesLingerOffWithTheFlag(t *testing.T) {
+	daemonTestEnv(t)
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	webbridge := filepath.Join(t.TempDir(), "webbridge")
+	if err := os.WriteFile(webbridge, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls []string
+	fakeDaemonManagerOS(t, "linux", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+		return nil, nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{})
+
+	var out, errOut bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"install", "--webbridge", webbridge, "--no-linger"},
+		strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatalf("runDaemon install --no-linger: %v\nstderr: %s", err, errOut.String())
+	}
+
+	if !strings.Contains(out.String(), "linger: left off (--no-linger)") {
+		t.Errorf("install printed %q, want it to say linger: left off (--no-linger)", out.String())
+	}
+	for _, call := range calls {
+		if strings.Contains(call, "loginctl") {
+			t.Errorf("install --no-linger ran %q; it must not touch linger", call)
+		}
+	}
+}
+
+// TestDaemonInstallPrintsLingerAtAFixedPosition: the linger line holds one
+// place in install's output — after the unit and socket it names, and before
+// the readiness note — so a script that reads the block sees it in the same
+// spot whether or not linger needed setting.
+func TestDaemonInstallPrintsLingerAtAFixedPosition(t *testing.T) {
+	daemonTestEnv(t)
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	webbridge := filepath.Join(t.TempDir(), "webbridge")
+	if err := os.WriteFile(webbridge, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeDaemonManagerOS(t, "linux", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		line := strings.Join(append([]string{name}, args...), " ")
+		if line == "loginctl show-user 501 -p Linger" {
+			return []byte("Linger=yes\n"), nil
+		}
+		return nil, nil
+	})
+	// An answering daemon makes the readiness note the single "answering"
+	// line rather than a poll that runs for daemonStartTimeout.
+	fakeDaemonSocket(t, fakeDaemonClient{})
+
+	var out, errOut bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"install", "--webbridge", webbridge},
+		strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatalf("runDaemon install: %v\nstderr: %s", err, errOut.String())
+	}
+
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	at := func(prefix string) int {
+		for i, line := range lines {
+			if strings.HasPrefix(line, prefix) {
+				return i
+			}
+		}
+		return -1
+	}
+	unit, socket, linger, ready := at("unit:"), at("socket:"), at("linger:"), at("answering")
+	if unit < 0 || socket < 0 || linger < 0 || ready < 0 {
+		t.Fatalf("install printed %d lines %q, want unit:, socket:, linger: and the readiness note:\n%s",
+			len(lines), lines, out.String())
+	}
+	if !(unit < socket && socket < linger && linger < ready) {
+		t.Errorf("install order unit@%d socket@%d linger@%d ready@%d, want unit < socket < linger < ready:\n%s",
+			unit, socket, linger, ready, out.String())
+	}
+}
+
+// TestDaemonInstallReportsAnAlreadyEnabledLinger: with the bit already set,
+// install says so and issues no enable-linger — the privilege is not asked for
+// again when the wanted end state already holds.
+func TestDaemonInstallReportsAnAlreadyEnabledLinger(t *testing.T) {
+	daemonTestEnv(t)
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	webbridge := filepath.Join(t.TempDir(), "webbridge")
+	if err := os.WriteFile(webbridge, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls []string
+	fakeDaemonManagerOS(t, "linux", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		line := strings.Join(append([]string{name}, args...), " ")
+		calls = append(calls, line)
+		if line == "loginctl show-user 501 -p Linger" {
+			return []byte("Linger=yes\n"), nil
+		}
+		return nil, nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{})
+
+	var out, errOut bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"install", "--webbridge", webbridge},
+		strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatalf("runDaemon install: %v\nstderr: %s", err, errOut.String())
+	}
+
+	if !strings.Contains(out.String(), "linger: already enabled") {
+		t.Errorf("install printed %q, want it to say linger: already enabled", out.String())
+	}
+	for _, call := range calls {
+		if strings.Contains(call, "enable-linger") {
+			t.Errorf("install ran %q with linger already on; it must not set it again", call)
+		}
+	}
+}
+
+// TestDaemonStatusReportsLinger: status answers whether the install survives
+// logout, on the line after the service line and exactly once.
+func TestDaemonStatusReportsLinger(t *testing.T) {
+	daemonTestEnv(t)
+
+	fakeDaemonManagerOS(t, "linux", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		line := strings.Join(append([]string{name}, args...), " ")
+		switch line {
+		case "loginctl show-user 501 -p Linger":
+			return []byte("Linger=yes\n"), nil
+		case "systemctl --user show --property=ActiveState,MainPID,LoadState " + daemon.Unit:
+			return []byte("LoadState=loaded\nActiveState=active\nMainPID=4242\n"), nil
+		}
+		return nil, nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"status"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runDaemon status: %v\nstderr: %s", err, stderr.String())
+	}
+
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("status printed %d lines, want the service and linger lines:\n%s", len(lines), stdout.String())
+	}
+	if !strings.HasPrefix(lines[0], "service:") {
+		t.Errorf("line 0 = %q, want the service line", lines[0])
+	}
+	if lines[1] != "linger: enabled" {
+		t.Errorf("line 1 = %q, want \"linger: enabled\"", lines[1])
+	}
+	if got := strings.Count(stdout.String(), "linger:"); got != 1 {
+		t.Errorf("status printed linger %d times, want once:\n%s", got, stdout.String())
+	}
+}
+
+// TestDaemonUninstallLeavesLingerEnabled pins D1's decision 3: the bit is per
+// user, so uninstall reports it and never clears it.
+func TestDaemonUninstallLeavesLingerEnabled(t *testing.T) {
+	daemonTestEnv(t)
+
+	var calls []string
+	fakeDaemonManagerOS(t, "linux", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		line := strings.Join(append([]string{name}, args...), " ")
+		calls = append(calls, line)
+		if line == "loginctl show-user 501 -p Linger" {
+			return []byte("Linger=yes\n"), nil
+		}
+		return nil, nil
+	})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"uninstall"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runDaemon uninstall: %v\nstderr: %s", err, stderr.String())
+	}
+
+	if !strings.Contains(stdout.String(), "linger: left enabled (per user, not per unit)") {
+		t.Errorf("uninstall printed %q, want it to say the bit was left enabled", stdout.String())
+	}
+	for _, call := range calls {
+		if strings.Contains(call, "disable-linger") {
+			t.Errorf("uninstall ran %q; it must not clear a bit it does not own", call)
+		}
 	}
 }
 
@@ -844,6 +1094,154 @@ func TestDaemonRefreshRefusesArguments(t *testing.T) {
 	}
 	if *calls != 0 {
 		t.Errorf("the refresh helper ran %d times, want none", *calls)
+	}
+}
+
+// TestTheStatusDocumentIsCurrent holds the JSON the tray app reads to the
+// example checked in beside the Flutter tests. A field added to the Go
+// document, dropped from it, or renamed fails here; regenerate with -update.
+func TestTheStatusDocumentIsCurrent(t *testing.T) {
+	const path = "../../test/contract/daemon-status.json"
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var status daemon.Status
+	if err := json.Unmarshal(raw, &status); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+	got, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		t.Fatalf("encode status: %v", err)
+	}
+	got = append(got, '\n')
+
+	if *updateGolden {
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+		return
+	}
+	if string(got) != string(raw) {
+		t.Errorf("%s is stale; regenerate with\n  go test ./cmd/marshal -run TestTheStatusDocumentIsCurrent -update", path)
+	}
+}
+
+// TestDaemonStatusJSONExitsZeroWhenSilent pins the decision the tray app
+// depends on: `--json` exits 0 whenever it wrote the document, and the
+// document says the socket did not answer.
+func TestDaemonStatusJSONExitsZeroWhenSilent(t *testing.T) {
+	daemonTestEnv(t)
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("state = running\npid = 77\n"), nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{err: errors.New("dial unix: connect: no such file or directory")})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"status", "--json"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("status --json with a silent socket: %v\nstderr: %s", err, stderr.String())
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		t.Fatalf("decode the status document: %v\n%s", err, stdout.String())
+	}
+	if _, ok := raw["daemon"]; ok {
+		t.Errorf("the document carries a daemon key a silent socket cannot have:\n%s", stdout.String())
+	}
+	var status daemon.Status
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatalf("decode the status document: %v", err)
+	}
+	if status.Answering {
+		t.Errorf("answering = true with a silent socket:\n%s", stdout.String())
+	}
+	if status.SchemaVersion != daemon.StatusSchema {
+		t.Errorf("schemaVersion = %d, want %d", status.SchemaVersion, daemon.StatusSchema)
+	}
+	// The service state is present even when the socket is not: the tray
+	// reads install/start/stop from it.
+	if !status.Service.Running || status.Service.PID != 77 {
+		t.Errorf("service = %+v, want the running service and its pid", status.Service)
+	}
+	if strings.Contains(stdout.String(), "socket:") {
+		t.Errorf("--json printed a human line:\n%s", stdout.String())
+	}
+}
+
+// TestDaemonStatusJSONCarriesTheDaemon: an answering daemon is in the
+// document, at the schema the app speaks.
+func TestDaemonStatusJSONCarriesTheDaemon(t *testing.T) {
+	daemonTestEnv(t)
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("state = running\npid = 4242\n"), nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{info: daemon.Info{
+		Version:  "1.4.0",
+		Profile:  "local",
+		PID:      4242,
+		Projects: []string{"/work/one"},
+	}})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"status", "--json"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("status --json: %v\nstderr: %s", err, stderr.String())
+	}
+
+	var status daemon.Status
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatalf("decode the status document: %v\n%s", err, stdout.String())
+	}
+	if status.SchemaVersion != 1 {
+		t.Errorf("schemaVersion = %d, want 1", status.SchemaVersion)
+	}
+	if !status.Answering {
+		t.Error("answering = false for an answering daemon")
+	}
+	if status.Daemon == nil {
+		t.Fatalf("no daemon in the document:\n%s", stdout.String())
+	}
+	if status.Daemon.Version != "1.4.0" {
+		t.Errorf("daemon.version = %q, want %q", status.Daemon.Version, "1.4.0")
+	}
+	if status.Service.PID != 4242 {
+		t.Errorf("service.pid = %d, want 4242", status.Service.PID)
+	}
+}
+
+// TestDaemonStatusJSONReportsLinger: the document always carries a linger
+// object, and on Linux it reports the bit D1's install sets.
+func TestDaemonStatusJSONReportsLinger(t *testing.T) {
+	daemonTestEnv(t)
+	fakeDaemonManagerOS(t, "linux", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		line := strings.Join(append([]string{name}, args...), " ")
+		switch line {
+		case "loginctl show-user 501 -p Linger":
+			return []byte("Linger=yes\n"), nil
+		case "systemctl --user show --property=ActiveState,MainPID,LoadState " + daemon.Unit:
+			return []byte("LoadState=loaded\nActiveState=active\nMainPID=4242\n"), nil
+		}
+		return nil, nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"status", "--json"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("status --json: %v\nstderr: %s", err, stderr.String())
+	}
+	var status daemon.Status
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatalf("decode the status document: %v", err)
+	}
+	if !status.Linger.Supported || !status.Linger.Enabled {
+		t.Errorf("linger = %+v, want supported and enabled", status.Linger)
+	}
+	if strings.Contains(stdout.String(), "linger:") {
+		t.Errorf("--json printed a human line:\n%s", stdout.String())
 	}
 }
 

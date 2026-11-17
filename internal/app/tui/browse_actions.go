@@ -126,9 +126,15 @@ func osc52Unsupported() bool {
 	return false
 }
 
-// copyCursorNode copies the cursor node over OSC 52 and says how much.
+// copyCursorNode copies the cursor node over OSC 52 and says how much. The
+// text can need a detail the cache does not hold, so the copy goes through the
+// call queue (AUD-10): the fetch runs off the Update goroutine and the
+// clipboard message lands back on it.
 func (m *Model) copyCursorNode() tea.Cmd {
-	return m.copyText(m.nodeCopyText(m.cursor))
+	id := m.cursor
+	return m.queueBrowse("copying…", []nodeID{id}, func(m *Model) tea.Cmd {
+		return m.copyText(m.nodeCopyText(id))
+	})
 }
 
 // copyText puts text on the clipboard and says how much. Browse mode and the
@@ -339,9 +345,31 @@ func editorCommand(editor, path string, line int) *exec.Cmd {
 
 type editorDoneMsg struct{ err error }
 
-// openCursorFile opens the node's file in $EDITOR.
+// openCursorFile opens the node's file in $EDITOR. Resolving the path reads one
+// detail per row it gathers a call from, so the gather runs off the Update
+// goroutine (AUD-10) and the editor handoff lands back on it.
 func (m *Model) openCursorFile() tea.Cmd {
-	return m.openFile(m.nodeFile(m.cursor))
+	id := m.cursor
+	return m.queueBrowse("opening…", m.openDetailIDs(id), func(m *Model) tea.Cmd {
+		return m.openFile(m.nodeFile(id))
+	})
+}
+
+// openDetailIDs are the nodes whose detail open's resolution reads: the row
+// itself, and for a step the tool rows it gathers a call from — all fetched off
+// the Update goroutine in one queued call.
+func (m *Model) openDetailIDs(id nodeID) []nodeID {
+	ids := []nodeID{id}
+	w := m.wireNode(id)
+	if w == nil || w.Kind != acpwire.KindStep || w.Step == nil {
+		return ids
+	}
+	for _, key := range w.Children {
+		if row := m.wire[key]; row != nil && row.Tool != nil {
+			ids = append(ids, nodeID{Kind: acpwire.KindTool, Key: key})
+		}
+	}
+	return ids
 }
 
 func (m *Model) openFile(path string, line int) tea.Cmd {

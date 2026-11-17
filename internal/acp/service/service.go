@@ -17,6 +17,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
+	"marshal/internal/imagepayload"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/schema"
@@ -118,6 +119,16 @@ type Deps struct {
 	// against. Nil, or a nil index, means the session has none.
 	SkillIndex func() *skills.Index
 
+	// MarshalAccess, SaveMarshalAccess and SelectMarshalInstance are the
+	// session's Studio access surface: the connection its enrollment reached
+	// and the built-in access it holds. Without them the session reports the
+	// association it can verify for itself and refuses writes — the policy is
+	// served by the Studio bridge, and a session that cannot reach one says so
+	// rather than inventing authority. Nil never blocks ordinary agent work.
+	MarshalAccess         func() (acpwire.MarshalAccessView, error)
+	SaveMarshalAccess     func(acpwire.SaveMarshalAccessParams) (acpwire.MarshalAccessView, error)
+	SelectMarshalInstance func(acpwire.SelectMarshalInstanceParams) (acpwire.MarshalAccessView, error)
+
 	// Auth is the runtime's credential and OAuth dependency: every provider
 	// client and sign-in the adapter builds uses it. Nil means
 	// provider.DefaultAuthResolver(), the substitution tui.New used to make.
@@ -139,6 +150,12 @@ type Deps struct {
 	// TrustRefresh advances the permanent-trust record's config hash for dir
 	// after a project save. Nil means no hash is refreshed.
 	TrustRefresh func(dir string)
+	// ConfigWritten is told the path of every user or project config write
+	// this session makes, after it succeeds (decision 3). Nil tells no one.
+	ConfigWritten func(path string)
+	// PendingRestart is the child's pending restart; nil, or a nil answer,
+	// means none.
+	PendingRestart func() *acpwire.PendingRestart
 	// HomeDir is the home directory the user config is found under. Empty
 	// means os.UserHomeDir().
 	HomeDir string
@@ -150,6 +167,10 @@ type Deps struct {
 	FileIndex func() ([]string, error)
 	// Git runs Diff. Nil means worktree.CLIGitOps{}.
 	Git worktree.GitOps
+
+	// Images is the payload store. Nil means the session serves no
+	// images: session/images_put refuses and a prompt attaching any fails.
+	Images *imagepayload.Store
 }
 
 // ReferenceFinder resolves what references a symbol. ok is false when no
@@ -199,6 +220,13 @@ type Session struct {
 	skillListing map[string]skills.ScopedSkill
 	pluginScans  map[string]*pluginScan
 	pluginSeq    uint64
+
+	// marshalAccess, saveMarshalAccess and selectMarshalInstance are
+	// Deps.MarshalAccess and its writes. Without them the session reports the
+	// Studio association it can verify for itself and refuses a write.
+	marshalAccess         func() (acpwire.MarshalAccessView, error)
+	saveMarshalAccess     func(acpwire.SaveMarshalAccessParams) (acpwire.MarshalAccessView, error)
+	selectMarshalInstance func(acpwire.SelectMarshalInstanceParams) (acpwire.MarshalAccessView, error)
 
 	// accessRequest and resolveAccess are the runtime's access seam. Without
 	// both, ReconcileAccess settles every typed access request as failed
@@ -257,6 +285,11 @@ type Session struct {
 	trustRefresh   func(dir string)
 	homeDir        string
 	userConfigFile string
+	// configWritten and pendingRestart are Deps.ConfigWritten and
+	// Deps.PendingRestart: the child's record of its own writes and its
+	// pending restart (decision 3).
+	configWritten  func(path string)
+	pendingRestart func() *acpwire.PendingRestart
 	// modelCacheDir is Deps.ModelCacheDir, for preset setup's catalog and
 	// provenance sidecar.
 	modelCacheDir string
@@ -264,6 +297,9 @@ type Session struct {
 	// worktree.CLIGitOps{}, never nil.
 	fileIndex func() ([]string, error)
 	git       worktree.GitOps
+	// images is Deps.Images. Nil means the session serves no images: an
+	// upload or a prompt attaching one is refused.
+	images *imagepayload.Store
 	// actions holds the row actions of the most recent results that minted
 	// any, by ID; actionResults lists each such result's IDs, oldest first;
 	// actionSeq numbers them. All three are guarded by mu.
@@ -314,8 +350,17 @@ var errSessionClosed = &acpwire.Error{
 
 // New builds the host and the session over d.State.
 func New(d Deps) (*Host, *Session) {
-	sess := newSession(d)
+	sess := withRecord(newSession(d), d)
 	return &Host{deps: d, current: sess}, sess
+}
+
+// withRecord gives sess the child's record dependencies (decision 3): the
+// config write it reports and the pending restart its status carries. They are
+// applied here rather than in newSession so every construction path keeps them.
+func withRecord(sess *Session, d Deps) *Session {
+	sess.configWritten = d.ConfigWritten
+	sess.pendingRestart = d.PendingRestart
+	return sess
 }
 
 // swap closes the current session and returns a new one over state. It is the
@@ -335,7 +380,7 @@ func (h *Host) swap(state *session.State) *Session {
 	}
 	d := h.deps
 	d.State = state
-	sess := newSession(d)
+	sess := withRecord(newSession(d), d)
 	h.current = sess
 	return sess
 }
@@ -364,6 +409,23 @@ func (s *Session) ID() string { return s.state.SessionID() }
 // reach the state behind a model, and the TUI cannot: it holds only the wire
 // types.
 func (s *Session) State() *session.State { return s.state }
+
+// reportConfigWrite tells the child's record about a config write the host made
+// in this session, after it succeeded (decision 3). A host with no record tells
+// no one.
+func (h *Host) reportConfigWrite(path string) {
+	if fn := h.clientDeps().ConfigWritten; fn != nil {
+		fn(path)
+	}
+}
+
+// reportConfigWrite tells the child's record about a config write this session
+// made, after it succeeded (decision 3). A session with no record tells no one.
+func (s *Session) reportConfigWrite(path string) {
+	if s.configWritten != nil {
+		s.configWritten(path)
+	}
+}
 
 // Status is the session's current status (C5). It reads the state one field at
 // a time, as the TUI read them before, so the value is not one atomic
@@ -450,8 +512,17 @@ func (s *Session) Status() acpwire.SessionStatus {
 		},
 		RunningJobs: st.RunningJobsCount(),
 		Subagents:   subagentsOf(st.Subagents()),
-		Swarm:       swarmOf(st.SwarmProgress()),
-		SDD:         sddOf(st.SDDProgress()),
+		// Which child controls this session registers: steering and stopping
+		// a live child, observing it, and binding per-session child settings
+		// at creation. Absent means unsupported, so this one field is what a
+		// Studio client reads instead of guessing.
+		SubagentControls: acpwire.MarshalSubagentCapabilities(),
+		// The ordinary child settings and the digest of the config and route
+		// inputs they were derived from, for a client that bound its own
+		// snapshot at creation. Nil until the runtime has derived them.
+		SubagentDefaults: subagentDefaultsOf(st),
+		Swarm:            swarmOf(st.SwarmProgress()),
+		SDD:              sddOf(st.SDDProgress()),
 		SDDGate: acpwire.SDDGate{
 			TaskN:     gate.TaskN,
 			Question:  gate.Question,
@@ -480,6 +551,11 @@ func (s *Session) Status() acpwire.SessionStatus {
 		status.Notice = &n
 	}
 	status.WatchResume = s.watchResume()
+	// The pending restart the child's last project/state answer left, or nil
+	// while it is current (decision 4).
+	if s.pendingRestart != nil {
+		status.Restart = s.pendingRestart()
+	}
 	// The two files a config write changes, when the agent can locate them. A
 	// home it cannot find leaves the user path empty rather than failing a
 	// read that never blocks.
@@ -531,6 +607,25 @@ func interactionOf(s interaction.State) acpwire.Interaction {
 		Auto:     s.Auto,
 		System:   s.System,
 		Revision: s.Revision,
+	}
+}
+
+// subagentDefaultsOf maps the session's ordinary child settings onto the wire,
+// with the digest of the config and route inputs they came from. Nil until the
+// runtime has derived them, so a client never reads a zero default as a real
+// one.
+func subagentDefaultsOf(st *session.State) *acpwire.SubagentDefaults {
+	defaults, ok := st.SubagentDefaults()
+	if !ok {
+		return nil
+	}
+	return &acpwire.SubagentDefaults{
+		Settings: acpwire.SubagentSettings{
+			Enabled:     defaults.Settings.Enabled,
+			Model:       defaults.Settings.Model,
+			Concurrency: defaults.Settings.Concurrency,
+		},
+		Digest: defaults.Digest,
 	}
 }
 

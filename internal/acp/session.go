@@ -69,6 +69,12 @@ type SessionManagerConfig struct {
 	// Lister provides session discovery for session/list. When nil,
 	// List returns a server error.
 	Lister SessionLister
+	// ConfigWritten is told the path of every user or project config write a
+	// session makes, after it succeeds (decision 3). Nil tells no one.
+	ConfigWritten func(path string)
+	// PendingRestart is the child's pending restart; nil, or a nil answer,
+	// means none.
+	PendingRestart func() *acpwire.PendingRestart
 }
 
 // SessionManager owns the map from ACP session IDs to *app.Runtime. It
@@ -91,9 +97,26 @@ type SessionManager struct {
 	cancel TurnCanceller
 	lister SessionLister
 
+	// configWritten and pendingRestart are what every session's service is
+	// built with (decision 3): the child's record of its own writes and its
+	// pending restart. Both are nil when the child keeps no record.
+	configWritten  func(path string)
+	pendingRestart func() *acpwire.PendingRestart
+
+	// detachedResume binds a session's watch resume to the service built for
+	// it (decision 2). The host that serves viewers sets it; it is nil
+	// elsewhere, and a host without it binds nothing here, exactly as before.
+	detachedResume func(rt *app.Runtime, sessionID string, sess *service.Session)
+
 	mu          sync.RWMutex
 	sessions    map[string]*app.Runtime
 	lifecycleMu sync.Mutex
+
+	// seq numbers the runtimes as they are published, so All answers in
+	// creation order even though the map does not (decision 5). Both are
+	// guarded by mu.
+	seq     map[*app.Runtime]uint64
+	seqNext uint64
 
 	// closeOnce guards each runtime's closer so a given *app.Runtime
 	// pointer is torn down at most once, regardless of which lifecycle
@@ -161,6 +184,12 @@ type sessionParams struct {
 	// Policy, when present, sets the new session's approval mode and
 	// pre-approved commands. Honored by session/new only.
 	Policy *PolicyParams `json:"policy,omitempty"`
+	// SubagentSettings, when present, is a resolved child-settings snapshot
+	// bound to this session only: whether agent.run is offered, the model
+	// children run on (empty: normal child routing) and the cap on children
+	// in flight. Absent means the ordinary defaults, so a legacy client keeps
+	// Marshal's normal behaviour. Honored by session/new only.
+	SubagentSettings *acpwire.SubagentSettings `json:"subagentSettings,omitempty"`
 	// ClientTrust starts the runtime with app.WithClientTrust, so the session's
 	// marshal client answers the trust question (P4 D8). Honoured by
 	// session/new, session/load and session/resume.
@@ -186,13 +215,16 @@ func NewSessionManager(cfg SessionManagerConfig, opts ...SessionManagerOption) *
 		}
 	}
 	m := &SessionManager{
-		start:     cfg.StartRuntime,
-		close:     closeFn,
-		notify:    cfg.Notify,
-		lister:    cfg.Lister,
-		options:   cfg.Options,
-		sessions:  map[string]*app.Runtime{},
-		closeOnce: map[*app.Runtime]*sync.Once{},
+		start:          cfg.StartRuntime,
+		close:          closeFn,
+		notify:         cfg.Notify,
+		lister:         cfg.Lister,
+		options:        cfg.Options,
+		configWritten:  cfg.ConfigWritten,
+		pendingRestart: cfg.PendingRestart,
+		sessions:       map[string]*app.Runtime{},
+		seq:            map[*app.Runtime]uint64{},
+		closeOnce:      map[*app.Runtime]*sync.Once{},
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -441,9 +473,23 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 		}
 		extra = append(extra, app.WithSessionRouting(p.Routing.Profile, overrides))
 	}
+	if p.SubagentSettings != nil {
+		// A resolved snapshot is enforced, not clamped: reject an unusable
+		// limit before any runtime starts, so no approved worker is ever
+		// launched under settings this session cannot honour.
+		settings := session.SubagentSettings{
+			Enabled:     p.SubagentSettings.Enabled,
+			Model:       p.SubagentSettings.Model,
+			Concurrency: p.SubagentSettings.Concurrency,
+		}
+		if verr := session.ValidateSubagentSettings(settings); verr != nil {
+			return nil, invalidParamsError("%v", verr)
+		}
+		extra = append(extra, app.WithSubagentSettings(settings))
+	}
 	rt, err := m.startRuntime(ctx, p, extra...)
 	if err != nil {
-		if errors.Is(err, app.ErrInvalidSessionRouting) {
+		if errors.Is(err, app.ErrInvalidSessionRouting) || errors.Is(err, app.ErrInvalidSubagentSettings) {
 			return nil, invalidParamsError("%v", err)
 		}
 		return nil, err
@@ -521,6 +567,7 @@ func (m *SessionManager) replace(ctx context.Context, replaces, name string) (an
 	m.mu.Lock()
 	delete(m.sessions, replaces)
 	m.sessions[newID] = rt
+	m.number(rt)
 	m.mu.Unlock()
 
 	// The host's swap already closed the replaced session, so the pair points
@@ -842,6 +889,7 @@ func (m *SessionManager) adopt(rt *app.Runtime, host *service.Host, sess *servic
 	_, taken := m.sessions[rt.SessionID]
 	if !taken {
 		m.sessions[rt.SessionID] = rt
+		m.number(rt)
 	}
 	m.mu.Unlock()
 	if taken {
@@ -880,9 +928,63 @@ func (m *SessionManager) servicePair(id string) (*service.Host, *service.Session
 	if closing {
 		return nil, nil, false
 	}
-	host, sess := service.New(rt.ServiceDeps(context.Background()))
+	host, sess := service.New(m.serviceDeps(rt))
+	// The binding is the host's, made once per session and only where a wake
+	// may find no connection of its own (decision 2).
+	if m.detachedResume != nil {
+		m.detachedResume(rt, id, sess)
+	}
 	m.services[rt] = &servicePair{host: host, sess: sess}
 	return host, sess, true
+}
+
+// RebindDetachedResume puts each session's own wake binding back after the
+// connection that replaced it ends (P6 plan 6 review, A1). A connection's
+// binding is gated on that connection's liveness flag, so the hook it
+// installed goes inert when the connection dies. On a host that serves viewers
+// nothing else restores the session's own binding, and every later wake with
+// no screen up would do nothing for the rest of the runtime's life: the
+// bridge's driver connection cycling — a webbridge re-exec, a relay reset — is
+// enough to get there, which is the case P6 exists for.
+//
+// Only sessions whose service this manager already built are rebound. A wake
+// resumes a session through that service, so a session without one has no wake
+// to restore, and building one here would put service construction on the
+// teardown path of every connection. The hook is replace-on-write, so
+// installing the session's own binding again is safe.
+func (m *SessionManager) RebindDetachedResume() {
+	if m.detachedResume == nil {
+		return
+	}
+	type bound struct {
+		rt   *app.Runtime
+		id   string
+		sess *service.Session
+	}
+	m.servicesMu.Lock()
+	rebind := make([]bound, 0, len(m.services))
+	for rt, pair := range m.services {
+		if rt == nil || rt.State == nil || pair == nil || pair.sess == nil {
+			continue
+		}
+		rebind = append(rebind, bound{rt: rt, id: rt.State.SessionID(), sess: pair.sess})
+	}
+	m.servicesMu.Unlock()
+	// Bind outside the lock: the binder reads the session's own state and the
+	// host's viewer count, and a close holding servicesMu must not wait on it.
+	for _, b := range rebind {
+		m.detachedResume(b.rt, b.id, b.sess)
+	}
+}
+
+// serviceDeps is the runtime's service dependencies with the child's record
+// on them (decision 3): every session this manager builds reports its own
+// config writes and carries the pending restart.
+func (m *SessionManager) serviceDeps(rt *app.Runtime) service.Deps {
+	deps := rt.ServiceDeps(context.Background())
+	deps.ConfigWritten = m.configWritten
+	deps.PendingRestart = m.pendingRestart
+	return deps
 }
 
 // releaseService removes rt's pair from the registry and releases its
@@ -897,8 +999,9 @@ func (m *SessionManager) releaseService(rt *app.Runtime) {
 	}
 }
 
-// All returns every published runtime. Used by worktree orphan detection,
-// which must know every session's active root.
+// All returns every published runtime, in creation order. Used by worktree
+// orphan detection, which must know every session's active root, and by the
+// project's busy report, whose first line must be stable (decision 5).
 func (m *SessionManager) All() []*app.Runtime {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -906,11 +1009,30 @@ func (m *SessionManager) All() []*app.Runtime {
 	for _, rt := range m.sessions {
 		out = append(out, rt)
 	}
+	sort.SliceStable(out, func(i, j int) bool { return m.seq[out[i]] < m.seq[out[j]] })
 	return out
 }
 
-// detach removes the runtime for id from the map under both locks and
-// returns the removed pointer (or false if id was unknown).
+// number records rt's place in creation order, once: a runtime published under
+// a new session ID by a replacement keeps the number it first got. The caller
+// holds mu.
+func (m *SessionManager) number(rt *app.Runtime) {
+	if rt == nil {
+		return
+	}
+	if m.seq == nil {
+		m.seq = map[*app.Runtime]uint64{}
+	}
+	if _, ok := m.seq[rt]; ok {
+		return
+	}
+	m.seqNext++
+	m.seq[rt] = m.seqNext
+}
+
+// detach removes the runtime for id from the map under both locks, forgets
+// its creation-order entry, and returns the removed pointer (or false if id
+// was unknown).
 func (m *SessionManager) detach(id string) (*app.Runtime, bool) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
@@ -921,6 +1043,13 @@ func (m *SessionManager) detach(id string) (*app.Runtime, bool) {
 		return nil, false
 	}
 	delete(m.sessions, id)
+	// The runtime's creation-order entry leaves with the session: number
+	// records every published runtime and removes nothing itself, so without
+	// this a long-lived project child retains one *app.Runtime per closed
+	// session. A replacement is not pruned this way: publishReplacement
+	// republishes a pointer number already knows, and number keeps the first
+	// number it gave it.
+	delete(m.seq, rt)
 	return rt, true
 }
 
@@ -965,6 +1094,7 @@ func (m *SessionManager) publishReplacement(ctx context.Context, id string, rt *
 	samePointer := prior == rt
 	if !samePointer {
 		m.sessions[id] = rt
+		m.number(rt)
 	}
 	m.mu.Unlock()
 

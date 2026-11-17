@@ -80,11 +80,13 @@ type Spec struct {
 	Notify    *bool // repeat-mode only; default true
 	// Resume opts the watch into session auto-resume: a fire on an idle
 	// session starts a new turn (gated by [watch] resume_enabled at wake
-	// time). Start forces Notify on and drops Resume for owned
-	// (subagent) watches.
+	// time). Start forces Notify on and drops Resume for a subagent's own
+	// watches.
 	Resume   bool
 	Interval time.Duration // command/file; clamped to floor
-	Owner    string        // "" (parent) or subagent tag
+	// Owner is "" (parent), a subagent tag ("subagent-<id>"), or a tag that
+	// only records where the watch came from (the ACP layer's "studio").
+	Owner string
 }
 
 // TerminalReason values pinned by the plan. A terminal watch's disposition is
@@ -424,12 +426,14 @@ func (m *Manager) Start(spec Spec) (string, string, error) {
 		notify = *spec.Notify
 	}
 
-	// Auto-resume rules (spec §1): a subagent watch never resumes —
-	// dropping it here means re-parenting (TransferFromSubagent) can
-	// never reintroduce intent; resume forces notify because a fire
-	// nobody reports can't wake anyone.
+	// Auto-resume rules (spec §1): a subagent's own watch never resumes —
+	// dropping it here means re-parenting (TransferFromSubagent) can never
+	// reintroduce intent; resume forces notify because a fire nobody
+	// reports can't wake anyone. A watch whose owner only records where it
+	// came from (the ACP layer's "studio") is not a subagent's, so it keeps
+	// the intent its client asked for.
 	resume := spec.Resume
-	if resume && spec.Owner != "" {
+	if resume && subagentOwned(spec.Owner) {
 		resume = false
 		notes = append(notes, "resume ignored: subagent watches never resume")
 	}

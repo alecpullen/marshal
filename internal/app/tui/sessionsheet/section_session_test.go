@@ -156,6 +156,52 @@ func TestSessionSectionBudgetRow(t *testing.T) {
 	}
 }
 
+// A stale child's restart is the session section's row: the reason it is
+// stale and what it is waiting for, above the tool budget so the two counts
+// keep their order.
+func TestTheSheetSaysWhatTheRestartWaitsFor(t *testing.T) {
+	s := SessionSection{}
+	base := sessionData(time.Now())
+	base.ToolBudget = acpwire.SheetToolBudget{Used: 7, Max: 100}
+
+	// A current child says nothing about a restart.
+	joined := StripANSI(strings.Join(s.Render(base, 80, 0), "\n"))
+	if strings.Contains(joined, "Restart") {
+		t.Fatalf("no restart row expected while the child is current, got %q", joined)
+	}
+
+	d := base
+	d.Restart = &acpwire.PendingRestart{Reason: "config changed", WaitingFor: "turn"}
+	rows := s.Render(d, 80, 0)
+	joined = StripANSI(strings.Join(rows, "\n"))
+	want := "Restart: config changed, waiting for turn"
+	if !strings.Contains(joined, want) {
+		t.Fatalf("rows = %q, want %q", joined, want)
+	}
+
+	// It sits after the token row and before the tool budget.
+	restartAt, budgetAt := -1, -1
+	for i, r := range rows {
+		line := StripANSI(r)
+		if strings.Contains(line, want) {
+			restartAt = i
+		}
+		if strings.Contains(line, "tools 7/100") {
+			budgetAt = i
+		}
+	}
+	if restartAt != 2 || budgetAt != 3 {
+		t.Errorf("restart row at %d, budget row at %d; want 2 and 3 (%q)", restartAt, budgetAt, joined)
+	}
+
+	// It truncates to the width like its neighbours.
+	for i, r := range s.Render(d, 16, 0) {
+		if w := len([]rune(StripANSI(r))); w > 16 {
+			t.Errorf("row %d width = %d, want <= 16: %q", i, w, StripANSI(r))
+		}
+	}
+}
+
 func TestSessionSectionShowsPromptCacheShare(t *testing.T) {
 	d := sessionData(time.Now())
 	d.Totals.CacheReadTokens = 16_840 // 40% of 42_100

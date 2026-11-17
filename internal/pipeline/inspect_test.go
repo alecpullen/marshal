@@ -52,6 +52,40 @@ func TestInspectPlanStrictBlocksAgentAndProseTasks(t *testing.T) {
 	}
 }
 
+func TestInspectPlanReportsEscapingFilePath(t *testing.T) {
+	root := t.TempDir()
+	planPath := writeFile(t, root, "escape.md", "# Plan\n\n## Task 1: Escape\n\n"+
+		"```marshal.file path=\"../outside.txt\" replace=\"true\"\npwned\n```\n")
+
+	got, err := InspectPlan(planPath, root, StrategyStrict)
+	if err != nil {
+		t.Fatalf("InspectPlan: %v", err)
+	}
+	if !got.HasErrors() {
+		t.Fatalf("inspection reported no error-severity diagnostic: %v", got.Diagnostics)
+	}
+	if !got.StrictBlocked {
+		t.Fatal("strict inspection must block a plan that writes outside the worktree")
+	}
+}
+
+func TestInspectPlanAcceptsValidFilePath(t *testing.T) {
+	root := t.TempDir()
+	planPath := writeFile(t, root, "valid.md", "# Plan\n\n## Task 1: Add file\n\n"+
+		"```marshal.file path=\"ok.txt\"\nhello\n```\n")
+
+	got, err := InspectPlan(planPath, root, StrategyStrict)
+	if err != nil {
+		t.Fatalf("InspectPlan: %v", err)
+	}
+	if got.HasErrors() {
+		t.Fatalf("unexpected error diagnostics: %v", got.Errors())
+	}
+	if got.StrictBlocked {
+		t.Fatal("strict inspection must accept a workspace-relative path")
+	}
+}
+
 func TestControllerInspectionMatchesInspectPlan(t *testing.T) {
 	root := t.TempDir()
 	planPath := writeFile(t, root, "plan.md", "# Plan\n\n## Task 1: Add file\n\n"+

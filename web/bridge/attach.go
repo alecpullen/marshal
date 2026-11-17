@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -10,16 +11,81 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // The attach wire contract (P4 D3). The TUI's client and the daemon are two
 // halves of one protocol, so these strings are the binding rather than a
 // shared Go type.
 const (
-	attachPath     = "/api/projects/attach"
-	attachProtocol = "marshal-acp"
-	sessionHeader  = "Marshal-Session"
+	attachPath       = "/api/projects/attach"
+	attachProtocol   = "marshal-acp"
+	sessionHeader    = "Marshal-Session"
+	agentHeader      = "Marshal-Agent"
+	envWarningHeader = "Marshal-Env-Warning"
 )
+
+// envWarningLineMax bounds the environment warning a 101 carries: a header is
+// not the place for a paragraph (decision 6).
+const envWarningLineMax = 300
+
+// headerLine is decision 6's one line: a warning's first line, with control
+// characters removed and cut at 300 bytes, because a header cannot hold a
+// newline. It is empty when nothing is left to say.
+func headerLine(s string) string {
+	line := s
+	if i := strings.IndexAny(line, "\r\n"); i >= 0 {
+		line = line[:i]
+	}
+	line = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, line)
+	if len(line) > envWarningLineMax {
+		// Cut on a rune boundary: half a rune would make the header invalid
+		// UTF-8 for no gain.
+		cut := envWarningLineMax
+		for cut > 0 && !utf8.RuneStart(line[cut]) {
+			cut--
+		}
+		line = line[:cut]
+	}
+	return strings.TrimSpace(line)
+}
+
+// envWarningOf is a project child's environment warning, read under the lock
+// that guards it. An agent on a child of its own has no project child, and so
+// no warning.
+func envWarningOf(pc *projectChild) string {
+	if pc == nil {
+		return ""
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	return pc.envWarning
+}
+
+// agentAttachPrefix and agentAttachSuffix bracket the agent id in an agent
+// attach's path: /api/agents/{id}/attach.
+const (
+	agentAttachPrefix = "/api/agents/"
+	agentAttachSuffix = "/attach"
+)
+
+// agentAttachID returns the agent ID a /api/agents/{id}/attach path names.
+func agentAttachID(path string) (string, bool) {
+	if !strings.HasPrefix(path, agentAttachPrefix) || !strings.HasSuffix(path, agentAttachSuffix) {
+		return "", false
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(path, agentAttachPrefix), agentAttachSuffix)
+	if id == "" || strings.Contains(id, "/") {
+		return "", false
+	}
+	return id, true
+}
 
 // attachRequest is the attach handshake's body.
 type attachRequest struct {
@@ -60,6 +126,16 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Registering the root is what makes it offerable: /api/projects is where
+	// the Studio gets the projects it can spawn into, and it reads the
+	// workspace, which until now only a spawn or an explicit POST filled. An
+	// attach is proof the daemon runs this project, so the TUI opening a
+	// session is enough to list it. Best-effort: a workspace that cannot be
+	// saved must not cost the user their session.
+	if err := s.fleet.ws.AddProject(root); err != nil {
+		slog.Default().Warn("webbridge: register attached project", "root", root, "err", err)
+	}
+
 	// The child and the session are resolved within one handshake budget, as
 	// the control agent's lazy start is: a stuck child must not hold the
 	// request open indefinitely.
@@ -91,12 +167,16 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 		// decision 6). Refused before any viewer connection opens; the child
 		// keeps its session, so no linger is rearmed.
 		//
-		// Both sources are consulted. The registry's flag is the fast path, but
-		// it is set after session/new returns: a Spawn in that window is live on
-		// the child and not yet tracked, so the classifier's map — which Spawn
-		// fills first — closes it.
+		// Three sources are consulted. The registry's flag is the fast path,
+		// but it is set after session/new returns: a Spawn in that window is
+		// live on the child and not yet tracked, so the classifier's map —
+		// which Spawn fills first — closes it. agentOwning then covers what
+		// neither sees: a record naming the session, live or paused (decision
+		// 2), which is the one source that knows a paused agent's session is
+		// still the agent's.
 		_, classified := s.fleet.agentForSession(sessionID)
-		if pc.reg.IsFleet(sessionID) || classified {
+		_, owned := s.fleet.agentOwning(sessionID)
+		if pc.reg.IsFleet(sessionID) || classified || owned {
 			logAttach("refused", root, sessionID, "fleet session")
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "session " + sessionID + " belongs to a fleet agent"})
 			return
@@ -152,7 +232,14 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 	head := "HTTP/1.1 101 Switching Protocols\r\n" +
 		"Connection: Upgrade\r\n" +
 		"Upgrade: " + attachProtocol + "\r\n" +
-		sessionHeader + ": " + sessionID + "\r\n\r\n"
+		sessionHeader + ": " + sessionID + "\r\n"
+	// The attach carries why this child's environment fell back, so the client
+	// can say so without asking the daemon about it (P6 T3). A child that
+	// resolved its environment has nothing to say.
+	if warning := headerLine(envWarningOf(pc)); warning != "" {
+		head += envWarningHeader + ": " + warning + "\r\n"
+	}
+	head += "\r\n"
 	if _, err := io.WriteString(client, head); err != nil {
 		// The client is gone before the stream began, so a session opened for
 		// it has no viewer and must not stay open.
@@ -168,7 +255,209 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 	// A viewer that arrives while the session is being closed attaches to
 	// nothing: the relay still runs for it, and detach/touch become no-ops.
 	pc.reg.attachViewer(sessionID)
-	go s.fleet.relay(pc, sessionID, client, buffered.Reader, conn)
+	// The relay rearms the child's linger when the viewer goes: an empty
+	// registry is what reaps a project child (P4 D2).
+	go s.fleet.relay(relayEnd{
+		reg:    pc.reg,
+		linger: func() { s.fleet.rearmLinger(pc) },
+		root:   pc.root,
+	}, sessionID, "", client, buffered.Reader, conn)
+}
+
+// attachAgent serves POST /api/agents/{id}/attach on the socket (P5 F5). It is
+// the fleet's view of an agent's session: the same handshake as the project
+// attach, naming an agent the fleet already started instead of opening one.
+// Every refusal is an ordinary JSON answer, and none of them resumes the
+// agent: the fleet's resume is the way back.
+func (s *Server) attachAgent(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "attach is a POST"})
+		return
+	}
+	if !hasToken(r.Header.Get("Connection"), "upgrade") ||
+		!strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), attachProtocol) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "attach needs an " + attachProtocol + " upgrade"})
+		return
+	}
+	// The handshake carries no body: the path names the agent.
+	if s.fleet == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "this bridge has no fleet"})
+		return
+	}
+	a, ok := s.fleet.ws.Agent(id)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown agent " + id})
+		return
+	}
+	name := agentDisplayName(a)
+	pc, sessionID, err := s.fleet.attachTargetFor(id)
+	if err != nil {
+		if errors.Is(err, ErrUnknownAgent) {
+			// A paused agent keeps its record and loses its runtime. Resuming
+			// it here would start an agent behind the fleet's back.
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " is paused: resume it first"})
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	// What the attach dials and what its relay needs: an agent on a project
+	// child uses that child's socket, registry, linger rearm and root; an
+	// agent whose runtime records a viewer socket of its own is dialled there
+	// and counted on its own registry, with no linger to rearm (decision 2).
+	// A container's agent is dialled on its host-side socket like an own
+	// child, and its relay carries the methods a container's viewer may call
+	// (decision 6).
+	var socket string
+	end := relayEnd{}
+	containerized := false
+	versionWarning := false
+	if pc != nil {
+		socket = pc.socket
+		end = relayEnd{reg: pc.reg, linger: func() { s.fleet.rearmLinger(pc) }, root: pc.root}
+	} else {
+		s.fleet.mu.Lock()
+		rt := s.fleet.runtimes[id]
+		if rt != nil {
+			socket, end = rt.viewerSocket, relayEnd{reg: rt.reg, root: name}
+			containerized, versionWarning = rt.containerized, rt.versionWarning
+			if containerized {
+				end.allow = containerViewerSet()
+			}
+		}
+		s.fleet.mu.Unlock()
+		// A container's agent is not refused here: it serves viewers on the
+		// host side of its socket, and an absent one is a dial that fails
+		// (decision 6). Anything else without a socket is an agent whose
+		// runtime went away before the attach reached it, or a fleet with no
+		// state root to put one in.
+		if socket == "" && !containerized {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " has no viewer socket yet"})
+			return
+		}
+	}
+	if sessionID == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " has no session yet"})
+		return
+	}
+
+	// rearm is what a refusal that leaves nothing behind owes a project child:
+	// resolving the child cancelled its linger, so it must be armed again. An
+	// own child has none, and there end.linger is nil.
+	rearm := func() {
+		if end.linger != nil {
+			end.linger()
+		}
+	}
+	// A failed dial names what it could not reach. A container's socket is on
+	// the host side of the boundary, and an image that predates the viewer
+	// socket serves none: the warning says so (decision 6).
+	dialled := "the agent's own child"
+	if pc != nil {
+		dialled = "the project child"
+	}
+	if containerized {
+		dialled = "the agent's container"
+	}
+
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		rearm()
+		sentence := "dial " + dialled + ": " + err.Error()
+		if containerized && versionWarning {
+			sentence += "; its image runs another marshal version, which may serve no viewer socket: rebuild it"
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": sentence})
+		return
+	}
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		_ = conn.Close()
+		rearm()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "attach needs a hijackable connection"})
+		return
+	}
+	client, buffered, err := hj.Hijack()
+	if err != nil {
+		_ = conn.Close()
+		rearm()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "hijack the connection: " + err.Error()})
+		return
+	}
+
+	// From here the connection is ours: the server's deadlines are dropped so
+	// a long-lived stream is never cut off by the handshake's.
+	_ = client.SetDeadline(time.Time{})
+	head := "HTTP/1.1 101 Switching Protocols\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Upgrade: " + attachProtocol + "\r\n" +
+		sessionHeader + ": " + sessionID + "\r\n" +
+		agentHeader + ": " + a.ID + "\r\n"
+	// The warning belongs to the agent's project child: an agent on a child of
+	// its own has no project child, and so no warning (P6 T3).
+	if warning := headerLine(envWarningOf(pc)); warning != "" {
+		head += envWarningHeader + ": " + warning + "\r\n"
+	}
+	head += "\r\n"
+	if _, err := io.WriteString(client, head); err != nil {
+		// The client is gone before the stream began. The session is the
+		// agent's, so it stays open: only what the attach opened is closed.
+		_ = client.Close()
+		_ = conn.Close()
+		rearm()
+		return
+	}
+
+	// A viewer that arrives while the session is being closed attaches to
+	// nothing: the relay still runs for it, and detach/touch become no-ops.
+	end.reg.attachViewer(sessionID)
+	go s.fleet.relay(end, sessionID, a.ID, client, buffered.Reader, conn)
+}
+
+// attachNeedsTLS is the network listener's refusal (decision 7).
+const attachNeedsTLS = "the agent attach needs TLS"
+
+// overTLSOrLoopback reports whether r arrived over TLS, or on a connection
+// whose local address is loopback.
+func overTLSOrLoopback(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	switch addr := r.Context().Value(http.LocalAddrContextKey).(type) {
+	case *net.TCPAddr:
+		return addr != nil && addr.IP.IsLoopback()
+	case net.Addr:
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return false
+		}
+		ip := net.ParseIP(host)
+		return ip != nil && ip.IsLoopback()
+	}
+	// A request with no local address never came off a socket this process
+	// listens on, so it is not loopback.
+	return false
+}
+
+// networkAgentAttach is the network listener's agent attach (decision 7): the
+// socket's agent attach, behind the bearer check passed here and, past it, the
+// transport rule. A request that is neither TLS nor on a loopback connection
+// is refused before attachAgent can reach a viewer socket; anything else that
+// this handler does not serve is a 404, as on the mux.
+func (s *Server) networkAgentAttach(token string) http.Handler {
+	return bearerAuth(token, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := agentAttachID(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !overTLSOrLoopback(r) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": attachNeedsTLS})
+			return
+		}
+		s.attachAgent(w, r, id)
+	}))
 }
 
 // hasToken reports whether a comma-separated header value carries want, case

@@ -35,14 +35,24 @@ that:
   many projects in one browser UI, with worktree isolation, an egress proxy,
   and automations that watch your repos.
 
+## Install
+
+```bash
+# macOS
+brew install alecpullen/tap/marshal
+
+# Linux, or macOS without Homebrew
+curl -fsSL https://raw.githubusercontent.com/alecpullen/marshal/main/scripts/install.sh | sh
+```
+
+Both install `marshal` and `webbridge` and run `marshal daemon install`,
+which starts the background daemon. Add `--no-daemon` to install only the
+binaries, and `--uninstall` to remove them (your data is kept).
+
 ## Quickstart
 
 ```bash
-# Grab a prebuilt binary (Linux, macOS)
-tar -xzf marshal_*_<os>_<arch>.tar.gz
-sudo mv marshal /usr/local/bin/
-
-# Or build from source (Go 1.26+ and a C toolchain)
+# Build from source (Go 1.26+ and a C toolchain)
 CGO_ENABLED=1 go build ./cmd/marshal
 ```
 
@@ -307,6 +317,12 @@ hashed assets, and the next `go build` picks them up.
 ```bash
 go test ./test/usability/... -run TestScripted -v   # synthetic-user scenarios
 ```
+
+To run the local daemon and the Web Studio from a working tree — rebuilt and
+restarted on your own commits instead of a release — use
+`scripts/dev-daemon.sh` and `scripts/dev-studio.sh`; see
+[docs/dev-loop.md](docs/dev-loop.md) for setup, the daily loop, and the agent
+image they need.
 
 Architecture, the package map, and the data flow of a single turn live in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

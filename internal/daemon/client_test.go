@@ -3,10 +3,17 @@ package daemon
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -269,12 +276,22 @@ func attachStub(t *testing.T, serve func(conn net.Conn, req *http.Request)) stri
 // writeUpgrade writes a 101 and, in the same write, the bytes the stream
 // should start with.
 func writeUpgrade(w io.Writer, session, stream string) error {
+	return writeUpgradeFor(w, session, "", stream)
+}
+
+// writeUpgradeFor writes the 101 an agent or project attach answers with: the
+// session, the agent it belongs to when there is one, and the bytes the
+// stream should start with.
+func writeUpgradeFor(w io.Writer, session, agent, stream string) error {
 	var b strings.Builder
 	b.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
 	b.WriteString("Connection: Upgrade\r\n")
 	b.WriteString("Upgrade: " + attachProtocol + "\r\n")
 	if session != "" {
 		b.WriteString(sessionHeader + ": " + session + "\r\n")
+	}
+	if agent != "" {
+		b.WriteString(agentHeader + ": " + agent + "\r\n")
 	}
 	b.WriteString("\r\n")
 	b.WriteString(stream)
@@ -452,6 +469,149 @@ func TestAnUpgradeWithoutASessionIsRefused(t *testing.T) {
 	}
 }
 
+// TestAttachAgentUpgrades: an agent attach asks the agent's own route, sends
+// no body, and reads both the session and the agent off the 101.
+func TestAttachAgentUpgrades(t *testing.T) {
+	requests := make(chan *http.Request, 1)
+	bodies := make(chan string, 1)
+
+	socket := attachStub(t, func(conn net.Conn, req *http.Request) {
+		body, _ := io.ReadAll(req.Body)
+		requests <- req
+		bodies <- string(body)
+		if err := writeUpgradeFor(conn, "sess-7", "agent-7", ""); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
+	})
+
+	att, err := NewClient(socket).AttachAgent(context.Background(), "agent-7")
+	if err != nil {
+		t.Fatalf("AttachAgent(): %v", err)
+	}
+	defer att.Conn.Close()
+
+	if att.SessionID != "sess-7" {
+		t.Errorf("SessionID = %q, want %q", att.SessionID, "sess-7")
+	}
+	if att.AgentID != "agent-7" {
+		t.Errorf("AgentID = %q, want %q", att.AgentID, "agent-7")
+	}
+
+	req := <-requests
+	if req.Method != http.MethodPost {
+		t.Errorf("method = %q, want POST", req.Method)
+	}
+	if req.URL.Path != "/api/agents/agent-7/attach" {
+		t.Errorf("path = %q, want /api/agents/agent-7/attach", req.URL.Path)
+	}
+	if got := req.Header.Get("Upgrade"); got != attachProtocol {
+		t.Errorf("Upgrade = %q, want %q", got, attachProtocol)
+	}
+	if req.ContentLength != 0 {
+		t.Errorf("ContentLength = %d, want none: an agent attach carries no body", req.ContentLength)
+	}
+	if raw := <-bodies; raw != "" {
+		t.Errorf("body = %q, want none", raw)
+	}
+}
+
+// TestAttachAgentRefusalIsAnAttachError: a daemon that will not open the
+// agent answers an *AttachError carrying its status and its sentence.
+func TestAttachAgentRefusalIsAnAttachError(t *testing.T) {
+	const sentence = "unknown agent"
+
+	socket := attachStub(t, func(conn net.Conn, req *http.Request) {
+		_ = req.Body.Close()
+		body := fmt.Sprintf(`{"error":%q}`, sentence)
+		if _, err := io.WriteString(conn, "HTTP/1.1 404 Not Found\r\n"+
+			"Content-Type: application/json\r\n"+
+			fmt.Sprintf("Content-Length: %d\r\n", len(body))+
+			"\r\n"+body); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
+	})
+
+	att, err := NewClient(socket).AttachAgent(context.Background(), "agent-gone")
+	if err == nil {
+		_ = att.Conn.Close()
+		t.Fatalf("AttachAgent() = %+v, want a refusal", att)
+	}
+	if att != nil {
+		t.Errorf("AttachAgent() returned an attachment alongside a refusal")
+	}
+
+	var refused *AttachError
+	if !errors.As(err, &refused) {
+		t.Fatalf("AttachAgent() error = %v (%T), want an *AttachError", err, err)
+	}
+	if refused.Status != http.StatusNotFound {
+		t.Errorf("Status = %d, want %d", refused.Status, http.StatusNotFound)
+	}
+	const want = "daemon refused attach (404): unknown agent"
+	if got := refused.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+// TestAttachAgentNeedsTheAgentHeader: an upgrade naming no agent, or another
+// one, is not the stream that was asked for, and is closed.
+func TestAttachAgentNeedsTheAgentHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response string
+	}{
+		{
+			name: "no agent",
+			response: "HTTP/1.1 101 Switching Protocols\r\n" +
+				"Connection: Upgrade\r\n" +
+				"Upgrade: " + attachProtocol + "\r\n" +
+				sessionHeader + ": sess-7\r\n\r\n",
+		},
+		{
+			name: "another agent",
+			response: "HTTP/1.1 101 Switching Protocols\r\n" +
+				"Connection: Upgrade\r\n" +
+				"Upgrade: " + attachProtocol + "\r\n" +
+				sessionHeader + ": sess-7\r\n" +
+				agentHeader + ": agent-other\r\n\r\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			closed := make(chan error, 1)
+			socket := attachStub(t, func(conn net.Conn, req *http.Request) {
+				_ = req.Body.Close()
+				if _, err := io.WriteString(conn, tc.response); err != nil {
+					closed <- err
+					return
+				}
+				// The refusal must close the connection rather than
+				// leave it dangling: a read on the far side sees EOF.
+				_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				_, err := conn.Read(make([]byte, 1))
+				closed <- err
+			})
+
+			att, err := NewClient(socket).AttachAgent(context.Background(), "agent-7")
+			if err == nil {
+				_ = att.Conn.Close()
+				t.Fatalf("AttachAgent() accepted an upgrade with %s", tc.name)
+			}
+			if att != nil {
+				t.Errorf("AttachAgent() returned an attachment alongside an error")
+			}
+
+			select {
+			case readErr := <-closed:
+				if !errors.Is(readErr, io.EOF) {
+					t.Errorf("the connection was not closed: read = %v", readErr)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the stub never saw the connection close")
+			}
+		})
+	}
+}
+
 func TestTheContextBoundsTheHandshakeOnly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -600,5 +760,401 @@ func TestInfoDecodesTheEnvironmentWarning(t *testing.T) {
 	}
 	if got := info.Children[1].EnvWarning; got != "" {
 		t.Errorf("Children[1].EnvWarning = %q, want it empty for a child with no warning", got)
+	}
+}
+
+// attachCertificates is a throwaway certificate for 127.0.0.1, generated in the
+// test so nothing on disk can expire: the server's configuration, one that
+// trusts it, and one that does not.
+func attachCertificates(t *testing.T) (server, trusted, untrusted *tls.Config) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "marshal-attach-test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse certificate: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+
+	server = &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
+		// The attach handshake is HTTP/1.1, so the listener offers only that.
+		NextProtos: []string{"http/1.1"},
+		MinVersion: tls.VersionTLS12,
+	}
+	trusted = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	untrusted = &tls.Config{RootCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS12}
+	return server, trusted, untrusted
+}
+
+// tcpAttachStub listens on 127.0.0.1 and hands the one connection a client
+// makes to serve, once the request line and headers have been read. It plays
+// the bridge's half of the handshake by hand, as attachStub does, but over TCP
+// — over TLS when config is not nil, which is how a server profile's bridge is
+// reached. It returns the listener's host:port.
+func tcpAttachStub(t *testing.T, config *tls.Config, serve func(conn net.Conn, req *http.Request)) string {
+	t.Helper()
+	plain, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on loopback: %v", err)
+	}
+	address := plain.Addr().String()
+	var listener net.Listener = plain
+	if config != nil {
+		listener = tls.NewListener(plain, config)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// A TLS connection handshakes under this read: a client that does not
+		// trust the certificate fails here, before a request exists.
+		req, err := http.ReadRequest(bufio.NewReader(conn))
+		if err != nil {
+			return
+		}
+		serve(conn, req)
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		<-done
+	})
+	return address
+}
+
+// echoUpgrade answers the handshake and then echoes one 4-byte message, so a
+// test can see the stream working both ways.
+func echoUpgrade(conn net.Conn, session, agent, stream string) {
+	if err := writeUpgradeFor(conn, session, agent, stream); err != nil {
+		return
+	}
+	echo := make([]byte, 4)
+	if _, err := io.ReadFull(conn, echo); err != nil {
+		return
+	}
+	_, _ = conn.Write(echo)
+}
+
+// TestARemoteAttachUpgradesOverTLS: a server profile's attach dials the URL's
+// host over TLS, carries the bearer token and the URL's host, and leaves a
+// stream that works in both directions after the 101.
+func TestARemoteAttachUpgradesOverTLS(t *testing.T) {
+	const (
+		first = "the stream's first bytes"
+		token = "profile-token"
+	)
+	server, trusted, _ := attachCertificates(t)
+
+	requests := make(chan *http.Request, 1)
+	bodies := make(chan string, 1)
+	address := tcpAttachStub(t, server, func(conn net.Conn, req *http.Request) {
+		body, _ := io.ReadAll(req.Body)
+		requests <- req
+		bodies <- string(body)
+		echoUpgrade(conn, "sess-7", "agent-7", first)
+	})
+
+	client, err := Remote("https://"+address, trusted, func(context.Context) (string, error) {
+		return token, nil
+	})
+	if err != nil {
+		t.Fatalf("Remote(): %v", err)
+	}
+
+	att, err := client.AttachAgent(context.Background(), "agent-7")
+	if err != nil {
+		t.Fatalf("AttachAgent(): %v", err)
+	}
+	defer att.Conn.Close()
+
+	if att.SessionID != "sess-7" || att.AgentID != "agent-7" {
+		t.Errorf("attachment = %+v, want session sess-7 on agent-7", att)
+	}
+
+	req := <-requests
+	if got := req.Header.Get("Authorization"); got != "Bearer "+token {
+		t.Errorf("Authorization = %q, want the profile's bearer token", got)
+	}
+	if req.Host != address {
+		t.Errorf("Host = %q, want %q: the request names the URL's host", req.Host, address)
+	}
+	if req.URL.Path != "/api/agents/agent-7/attach" {
+		t.Errorf("path = %q, want /api/agents/agent-7/attach", req.URL.Path)
+	}
+	if raw := <-bodies; raw != "" {
+		t.Errorf("body = %q, want none", raw)
+	}
+
+	// The bytes behind the 101 are the bridge's, and the other direction
+	// reaches it: the stream is usable.
+	got := make([]byte, len(first))
+	if _, err := io.ReadFull(att.Conn, got); err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	if string(got) != first {
+		t.Errorf("stream began with %q, want %q", got, first)
+	}
+	if _, err := att.Conn.Write([]byte("ping")); err != nil {
+		t.Fatalf("write the stream: %v", err)
+	}
+	back := make([]byte, 4)
+	if _, err := io.ReadFull(att.Conn, back); err != nil {
+		t.Fatalf("read the echo: %v", err)
+	}
+	if string(back) != "ping" {
+		t.Errorf("echo = %q, want %q", back, "ping")
+	}
+}
+
+// TestARemoteAttachOverLoopbackHTTP: a loopback http base needs no TLS, and the
+// same handshake goes over the plain connection.
+func TestARemoteAttachOverLoopbackHTTP(t *testing.T) {
+	const first = "plain stream bytes"
+
+	requests := make(chan *http.Request, 1)
+	address := tcpAttachStub(t, nil, func(conn net.Conn, req *http.Request) {
+		_ = req.Body.Close()
+		requests <- req
+		echoUpgrade(conn, "sess-8", "agent-8", first)
+	})
+
+	client, err := Remote("http://"+address, nil, func(context.Context) (string, error) {
+		return "loopback-token", nil
+	})
+	if err != nil {
+		t.Fatalf("Remote(): %v", err)
+	}
+
+	att, err := client.AttachAgent(context.Background(), "agent-8")
+	if err != nil {
+		t.Fatalf("AttachAgent(): %v", err)
+	}
+	defer att.Conn.Close()
+
+	if att.SessionID != "sess-8" || att.AgentID != "agent-8" {
+		t.Errorf("attachment = %+v, want session sess-8 on agent-8", att)
+	}
+
+	req := <-requests
+	if req.Host != address {
+		t.Errorf("Host = %q, want %q: the request names the URL's host", req.Host, address)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer loopback-token" {
+		t.Errorf("Authorization = %q, want the configured bearer token", got)
+	}
+
+	got := make([]byte, len(first))
+	if _, err := io.ReadFull(att.Conn, got); err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	if string(got) != first {
+		t.Errorf("stream began with %q, want %q", got, first)
+	}
+}
+
+// TestARemoteAttachRefusesAnUntrustedCertificate: without a configuration that
+// trusts the bridge's certificate, the handshake fails and no request is ever
+// written.
+func TestARemoteAttachRefusesAnUntrustedCertificate(t *testing.T) {
+	server, _, untrusted := attachCertificates(t)
+
+	served := make(chan *http.Request, 1)
+	address := tcpAttachStub(t, server, func(conn net.Conn, req *http.Request) {
+		served <- req
+		_ = writeUpgradeFor(conn, "sess-7", "agent-7", "")
+	})
+
+	client, err := Remote("https://"+address, untrusted, nil)
+	if err != nil {
+		t.Fatalf("Remote(): %v", err)
+	}
+
+	att, err := client.AttachAgent(context.Background(), "agent-7")
+	if err == nil {
+		_ = att.Conn.Close()
+		t.Fatalf("AttachAgent() = %+v, want the certificate's refusal", att)
+	}
+	if att != nil {
+		t.Errorf("AttachAgent() returned an attachment alongside an error")
+	}
+	if !strings.Contains(err.Error(), "certificate") {
+		t.Errorf("AttachAgent() error = %q, want the certificate's refusal", err)
+	}
+
+	// The handshake failed, so the bridge saw no request at all.
+	select {
+	case req := <-served:
+		t.Fatalf("the bridge read %s %s, want no request: the handshake failed first", req.Method, req.URL.Path)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestARemoteAttachTokenFailureDialsNothing: a token that cannot be fetched
+// ends the attach before a connection is opened.
+func TestARemoteAttachTokenFailureDialsNothing(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on loopback: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	dialled := make(chan struct{}, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+		dialled <- struct{}{}
+	}()
+
+	const refusal = "no token today"
+	client, err := Remote("http://"+listener.Addr().String(), nil, func(context.Context) (string, error) {
+		return "", errors.New(refusal)
+	})
+	if err != nil {
+		t.Fatalf("Remote(): %v", err)
+	}
+
+	att, err := client.AttachAgent(context.Background(), "agent-7")
+	if err == nil {
+		_ = att.Conn.Close()
+		t.Fatalf("AttachAgent() = %+v, want the token's failure", att)
+	}
+	if att != nil {
+		t.Errorf("AttachAgent() returned an attachment alongside an error")
+	}
+	if !strings.Contains(err.Error(), refusal) {
+		t.Errorf("AttachAgent() error = %q, want it to carry %q", err, refusal)
+	}
+
+	select {
+	case <-dialled:
+		t.Error("the attach dialled with no token, want nothing dialled")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestARemoteAttachOffersHTTP1: the handshake rides HTTP/1.1, so the TLS
+// connection negotiates it and not h2.
+func TestARemoteAttachOffersHTTP1(t *testing.T) {
+	server, trusted, _ := attachCertificates(t)
+
+	negotiated := make(chan string, 1)
+	address := tcpAttachStub(t, server, func(conn net.Conn, req *http.Request) {
+		_ = req.Body.Close()
+		protocol := ""
+		if tlsConn, ok := conn.(*tls.Conn); ok {
+			protocol = tlsConn.ConnectionState().NegotiatedProtocol
+		}
+		negotiated <- protocol
+		echoUpgrade(conn, "sess-7", "agent-7", "")
+	})
+
+	client, err := Remote("https://"+address, trusted, nil)
+	if err != nil {
+		t.Fatalf("Remote(): %v", err)
+	}
+
+	att, err := client.AttachAgent(context.Background(), "agent-7")
+	if err != nil {
+		t.Fatalf("AttachAgent(): %v", err)
+	}
+	defer att.Conn.Close()
+
+	if got := <-negotiated; got != "http/1.1" {
+		t.Errorf("negotiated protocol = %q, want %q", got, "http/1.1")
+	}
+}
+
+// TestRemoteRefusesANonHTTPScheme pins the attach's own rule: a base that is
+// neither http nor https is refused, not dialled as plain TCP on the scheme's
+// default port.
+func TestRemoteRefusesANonHTTPScheme(t *testing.T) {
+	for _, base := range []string{"ftp://fleet.example.com", "ws://fleet.example.com"} {
+		client, err := Remote(base, nil, nil)
+		if err == nil {
+			t.Errorf("Remote(%q) = %+v, want a refusal", base, client)
+			continue
+		}
+		if client != nil {
+			t.Errorf("Remote(%q) returned a client alongside an error", base)
+		}
+		if !strings.Contains(err.Error(), "http or https") {
+			t.Errorf("Remote(%q) error = %q, want it to name the schemes", base, err)
+		}
+	}
+}
+
+// TestTheAttachmentReadsTheEnvWarning: the 101 carries the project child's
+// environment warning in a header of its own, and an answer without one leaves
+// the attachment's field empty (P6 T3).
+func TestTheAttachmentReadsTheEnvWarning(t *testing.T) {
+	const warning = "the login shell exited with status 2"
+
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{
+			name:   "carries it",
+			header: envWarningHeader + ": " + warning + "\r\n",
+			want:   warning,
+		},
+		{
+			name:   "none",
+			header: "",
+			want:   "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			socket := attachStub(t, func(conn net.Conn, req *http.Request) {
+				_ = req.Body.Close()
+				head := "HTTP/1.1 101 Switching Protocols\r\n" +
+					"Connection: Upgrade\r\n" +
+					"Upgrade: " + attachProtocol + "\r\n" +
+					sessionHeader + ": sess-1\r\n" +
+					tc.header + "\r\n"
+				if _, err := io.WriteString(conn, head); err != nil {
+					t.Errorf("stub write: %v", err)
+				}
+			})
+
+			att, err := NewClient(socket).Attach(context.Background(), "/work/root", "sess-1")
+			if err != nil {
+				t.Fatalf("Attach(): %v", err)
+			}
+			defer att.Conn.Close()
+
+			if att.SessionID != "sess-1" {
+				t.Errorf("SessionID = %q, want sess-1", att.SessionID)
+			}
+			if att.EnvWarning != tc.want {
+				t.Fatalf("EnvWarning = %q, want %q", att.EnvWarning, tc.want)
+			}
+		})
 	}
 }

@@ -38,11 +38,17 @@ func TestListDrillEditsSlice(t *testing.T) {
 		t.Fatalf("add should append, got %v", items)
 	}
 
-	// delete the first item
+	// delete the first item. Deletion is a two-press gesture (AUD-13): the
+	// first d arms the row, the second removes it. The test pinned the single
+	// press that was the defect.
 	ps.Top().List.SetCursor(0)
 	ps.Update(kp("d"))
+	if len(items) != 3 {
+		t.Fatalf("the first d must only arm, got %v", items)
+	}
+	ps.Update(kp("d"))
 	if len(items) != 2 || items[0] != "git push --force" {
-		t.Fatalf("d should delete row 0, got %v", items)
+		t.Fatalf("the confirming d should delete row 0, got %v", items)
 	}
 
 	// pop back to root

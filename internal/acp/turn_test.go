@@ -5331,6 +5331,296 @@ func TestACPSendNowCancelsPromptRPCWithoutCancelingTurn(t *testing.T) {
 	t.Run("question", testSendNowCancelsQuestionRPC)
 }
 
+// forwarderFixture builds one turn forwarder over a real session.State, the
+// way runTurn and the follower do. Its failed callback does what runTurn's
+// does — cancels the turn's context — and records that it ran.
+type forwarderFixture struct {
+	state  *session.State
+	fw     *turnForwarder
+	ctx    context.Context
+	failed chan struct{}
+}
+
+func newForwarderFixture(t *testing.T, followed bool, perms PermissionClient, questions QuestionClient) *forwarderFixture {
+	t.Helper()
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	broker := pubsub.NewBroker[session.Event]()
+	state.SetEventBroker(broker)
+	rt := &TurnRuntime{
+		SessionID: "sess_forwarder",
+		BeginWork: identityBeginWork,
+		Run:       RunnerFunc(func(context.Context, string) error { return nil }),
+		Events:    broker,
+		State:     state,
+	}
+	tm := NewTurnManager(TurnManagerConfig{
+		Lookup:    func(string) (*TurnRuntime, bool) { return rt, true },
+		Notify:    func(string, any) error { return nil },
+		Perms:     perms,
+		Questions: questions,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	failed := make(chan struct{})
+	var once sync.Once
+	fw := tm.newTurnForwarder(ctx, "sess_forwarder", rt, forwarderOptions{
+		followed: followed,
+		failed: func() {
+			// runTurn's failed cancels its slot and the subscription; the
+			// fixture cancels the forwarder's context and records the report.
+			cancel()
+			once.Do(func() { close(failed) })
+		},
+	})
+	return &forwarderFixture{state: state, fw: fw, ctx: ctx, failed: failed}
+}
+
+// expectFailure waits for the forwarder's failure report and checks that it
+// cancelled the forwarder's context, as runTurn's own failed does.
+func (f *forwarderFixture) expectFailure(t *testing.T) {
+	t.Helper()
+	select {
+	case <-f.failed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the forwarder never reported the bridge failure")
+	}
+	if f.ctx.Err() == nil {
+		t.Fatal("the reported failure did not cancel the turn")
+	}
+}
+
+// expectNoFailure checks that the forwarder reported nothing. Every path it
+// guards runs synchronously, so an immediate check is enough.
+func (f *forwarderFixture) expectNoFailure(t *testing.T) {
+	t.Helper()
+	select {
+	case <-f.failed:
+		t.Fatal("the forwarder reported a failure")
+	default:
+	}
+}
+
+// approvalEvent is the session event a pending approval publishes.
+func approvalEvent(pa *session.PendingToolCall) pubsub.Event[session.Event] {
+	return pubsub.Event[session.Event]{
+		Type:    session.EventPendingApprovalChanged,
+		Payload: session.Event{PendingApproval: pa},
+	}
+}
+
+// questionEvent is the session event a pending question publishes.
+func questionEvent(p *session.PendingQuestion) pubsub.Event[session.Event] {
+	return pubsub.Event[session.Event]{
+		Type:    session.EventPendingQuestionChanged,
+		Payload: session.Event{PendingQuestion: p},
+	}
+}
+
+// registerTurnApproval installs a canonical approval in the session, so a test
+// can tell whether the forwarder cleared it.
+func registerTurnApproval(t *testing.T, state *session.State, pending *session.PendingToolCall) {
+	t.Helper()
+	if _, err := state.RegisterApproval(context.Background(), pending); err != nil {
+		t.Fatalf("RegisterApproval: %v", err)
+	}
+}
+
+// registerTurnQuestion installs a canonical question in the session, so a test
+// can tell whether the forwarder answered it.
+func registerTurnQuestion(t *testing.T, state *session.State, pending *session.PendingQuestion) {
+	t.Helper()
+	if _, err := state.RegisterQuestion(context.Background(), pending); err != nil {
+		t.Fatalf("RegisterQuestion: %v", err)
+	}
+}
+
+// expectNoApprovalAnswer checks that no decision reached the approval.
+func expectNoApprovalAnswer(t *testing.T, ch <-chan session.UserApprovalDecision) {
+	t.Helper()
+	select {
+	case got := <-ch:
+		t.Fatalf("the forwarder answered the approval: %+v", got)
+	default:
+	}
+}
+
+// expectNoQuestionAnswer checks that no answer reached the question.
+func expectNoQuestionAnswer(t *testing.T, ch <-chan []session.Answer) {
+	t.Helper()
+	select {
+	case got := <-ch:
+		t.Fatalf("the forwarder answered the question: %#v", got)
+	default:
+	}
+}
+
+// skillGateEvent is the session event a pending skill gate publishes.
+func skillGateEvent(p *session.PendingSkillGate) pubsub.Event[session.Event] {
+	return pubsub.Event[session.Event]{
+		Type:    session.EventPendingSkillGateChanged,
+		Payload: session.Event{PendingSkillGate: p},
+	}
+}
+
+// registerTurnGate installs a canonical skill gate in the session, so a test
+// can tell whether the forwarder answered it.
+func registerTurnGate(t *testing.T, state *session.State, pending *session.PendingSkillGate) {
+	t.Helper()
+	if _, err := state.RegisterSkillGate(context.Background(), pending); err != nil {
+		t.Fatalf("RegisterSkillGate: %v", err)
+	}
+}
+
+// expectNoGateAnswer checks that no choice reached the skill gate.
+func expectNoGateAnswer(t *testing.T, ch <-chan session.SkillGateChoice) {
+	t.Helper()
+	select {
+	case got := <-ch:
+		t.Fatalf("the forwarder answered the skill gate: %v", got)
+	default:
+	}
+}
+
+// TestTheTurnsForwarderKeepsItsFailureRules pins that moving runTurn's forward
+// closure into turnForwarder changed nothing for runTurn: a failing bridge
+// still cancels the turn for an approval, still answers Unanswered for a
+// question, and a missing bridge still denies an approval.
+func TestTheTurnsForwarderKeepsItsFailureRules(t *testing.T) {
+	t.Run("failing approval bridge cancels the turn", func(t *testing.T) {
+		fx := newForwarderFixture(t, false,
+			&recordingPermissionClient{err: errors.New("permission bridge down")}, nil)
+		response := make(chan session.UserApprovalDecision, 1)
+		pa := &session.PendingToolCall{ID: "a-fail", Name: "shell.run", Command: "date", ResponseChan: response}
+		fx.fw.forward(approvalEvent(pa))
+		fx.expectFailure(t)
+		expectNoApprovalAnswer(t, response)
+	})
+
+	t.Run("failing question bridge answers Unanswered", func(t *testing.T) {
+		fx := newForwarderFixture(t, false, nil,
+			&fakeQuestionClient{err: errors.New("question bridge down")})
+		response := make(chan []session.Answer, 1)
+		pending := &session.PendingQuestion{
+			Questions:    []session.Question{{Question: "pick", Options: []session.QuestionOption{{Label: "a"}}}},
+			ResponseChan: response,
+		}
+		fx.fw.forward(questionEvent(pending))
+		select {
+		case got := <-response:
+			if len(got) != 1 || got[0].Answer != session.AnswerUnanswered {
+				t.Fatalf("answers = %#v, want one %q answer", got, session.AnswerUnanswered)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("a failed question bridge never answered the question")
+		}
+		// A failed question is answered, not fatal: runTurn's turn continues.
+		fx.expectNoFailure(t)
+	})
+
+	t.Run("missing bridge denies the approval", func(t *testing.T) {
+		fx := newForwarderFixture(t, false, nil, nil)
+		response := make(chan session.UserApprovalDecision, 1)
+		pa := &session.PendingToolCall{ID: "a-nobridge", Name: "shell.run", Command: "date", ResponseChan: response}
+		fx.fw.forward(approvalEvent(pa))
+		select {
+		case got := <-response:
+			if got.Approved {
+				t.Fatalf("decision = %+v, want denied", got)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("a turn's approval with no bridge was never denied")
+		}
+		fx.expectNoFailure(t)
+	})
+}
+
+// TestAFollowedForwarderNeverAnswersForTheViewer pins decision 5: a followed
+// forwarder never answers, denies or fails a prompt for the viewer. A failing
+// bridge leaves the prompt pending in the state and reports the failure; a
+// missing bridge leaves it pending and reports nothing.
+func TestAFollowedForwarderNeverAnswersForTheViewer(t *testing.T) {
+	t.Run("failing approval bridge", func(t *testing.T) {
+		fx := newForwarderFixture(t, true,
+			&recordingPermissionClient{err: errors.New("permission bridge down")}, nil)
+		response := make(chan session.UserApprovalDecision, 1)
+		pending := &session.PendingToolCall{ID: "a-follow", Name: "shell.run", Command: "date", ResponseChan: response}
+		registerTurnApproval(t, fx.state, pending)
+		fx.fw.forward(approvalEvent(pending))
+		fx.expectFailure(t)
+		if fx.state.PendingApproval() == nil {
+			t.Fatal("the followed forwarder cleared the approval it never answered")
+		}
+		expectNoApprovalAnswer(t, response)
+	})
+
+	t.Run("failing question bridge", func(t *testing.T) {
+		fx := newForwarderFixture(t, true, nil,
+			&fakeQuestionClient{err: errors.New("question bridge down")})
+		response := make(chan []session.Answer, 1)
+		pending := &session.PendingQuestion{
+			Questions:    []session.Question{{Question: "pick"}},
+			ResponseChan: response,
+		}
+		registerTurnQuestion(t, fx.state, pending)
+		fx.fw.forward(questionEvent(pending))
+		fx.expectFailure(t)
+		if fx.state.PendingQuestion() == nil {
+			t.Fatal("the followed forwarder answered the question it never answered")
+		}
+		expectNoQuestionAnswer(t, response)
+	})
+
+	t.Run("failing skill gate bridge", func(t *testing.T) {
+		fx := newForwarderFixture(t, true,
+			&recordingPermissionClient{err: errors.New("permission bridge down")}, nil)
+		response := make(chan session.SkillGateChoice, 1)
+		pending := &session.PendingSkillGate{Skill: "go-testing", ResponseChan: response}
+		registerTurnGate(t, fx.state, pending)
+		fx.fw.forward(skillGateEvent(pending))
+		fx.expectFailure(t)
+		if fx.state.PendingSkillGate() == nil {
+			t.Fatal("the followed forwarder answered the skill gate it never answered")
+		}
+		expectNoGateAnswer(t, response)
+	})
+
+	t.Run("missing bridges", func(t *testing.T) {
+		fx := newForwarderFixture(t, true, nil, nil)
+		approvals := make(chan session.UserApprovalDecision, 1)
+		approval := &session.PendingToolCall{ID: "a-nobridge", Name: "shell.run", Command: "date", ResponseChan: approvals}
+		registerTurnApproval(t, fx.state, approval)
+		fx.fw.forward(approvalEvent(approval))
+
+		questions := make(chan []session.Answer, 1)
+		question := &session.PendingQuestion{
+			Questions:    []session.Question{{Question: "pick"}},
+			ResponseChan: questions,
+		}
+		registerTurnQuestion(t, fx.state, question)
+		fx.fw.forward(questionEvent(question))
+
+		gates := make(chan session.SkillGateChoice, 1)
+		gate := &session.PendingSkillGate{Skill: "go-testing", ResponseChan: gates}
+		registerTurnGate(t, fx.state, gate)
+		fx.fw.forward(skillGateEvent(gate))
+
+		// A missing bridge is a warning, not a failure.
+		fx.expectNoFailure(t)
+		if fx.state.PendingApproval() == nil {
+			t.Fatal("a followed forwarder with no bridge answered the approval")
+		}
+		if fx.state.PendingQuestion() == nil {
+			t.Fatal("a followed forwarder with no bridge answered the question")
+		}
+		if fx.state.PendingSkillGate() == nil {
+			t.Fatal("a followed forwarder with no bridge answered the skill gate")
+		}
+		expectNoApprovalAnswer(t, approvals)
+		expectNoQuestionAnswer(t, questions)
+		expectNoGateAnswer(t, gates)
+	})
+}
+
 // TestSetEffortWithoutHookIsServerError pins that a runtime which cannot take
 // effort changes answers with a server error, not invalid params: the request
 // was well formed, the session simply has no effort control.

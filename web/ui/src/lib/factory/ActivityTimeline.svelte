@@ -1,0 +1,180 @@
+<script lang="ts">
+  import Button from '../ui/Button.svelte'
+  import Card from '../ui/Card.svelte'
+  import Tag from '../ui/Tag.svelte'
+  import { sortedFactoryHistory } from '../studio/model'
+  import { delegatedState, provenanceLine, workerRoleLabel, type FactoryEvent, type FactoryItem } from '../factory'
+
+  /**
+   * One work item's factory activity (design C5): every recorded event, oldest
+   * first, with the worker role it ran as where the item can map it.
+   *
+   * It renders `item` and nothing else: no poller, no session stream and no
+   * merged transcript — events the factory cannot map to an effect stay
+   * factory-level rather than being attributed to a worker. The list is not a
+   * progress bar either: it shows the events that happened, never a percentage.
+   *
+   * The newest event is where the reader starts and stays while they are
+   * there. A reader who scrolled back keeps their place, and a new event then
+   * waits behind a cue instead of yanking the list out from under them.
+   *
+   * `hidden` conceals the pane without unmounting it, so scroll position and
+   * disclosures survive a drill-in and come back with the reader.
+   */
+  export interface ActivityTimelineProps {
+    item: FactoryItem
+    hidden?: boolean
+    /** Client names for provenance lines; a missing name falls back to the stable ID. */
+    clientNames?: Record<string, string>
+  }
+
+  let { item, hidden = false, clientNames = {} }: ActivityTimelineProps = $props()
+
+  const events = $derived(sortedFactoryHistory(item))
+
+  /**
+   * The role each recorded effect ran as. A worker names the effect that
+   * spawned it, and the effect itself names its role; both are real
+   * server-reported facts, so either can label the event.
+   */
+  function roleByEffect(subject: FactoryItem): Map<string, string> {
+    const roles = new Map<string, string>()
+    for (const worker of subject.workers ?? []) if (worker.spawnEffectId && worker.role) roles.set(worker.spawnEffectId, worker.role)
+    for (const effect of subject.effects ?? []) {
+      const role = effect.workerRole || effect.worker?.role
+      if (effect.id && role) roles.set(effect.id, role)
+    }
+    return roles
+  }
+
+  const roles = $derived(roleByEffect(item))
+  const roleOf = (event: FactoryEvent) => roles.get(event.effectId) ?? 'Factory'
+
+  /**
+   * Every worker turn this item still owes work for. A delegated turn's state is
+   * not an outcome: while its children are not proven settled the report the turn
+   * wrote is early, and the timeline says so beside the events rather than
+   * reading the last event as the end of the work.
+   *
+   * It is derived from `item` alone, so a failed read or a dropped connection
+   * leaves the last item it had and the waiting state stays on screen — the one
+   * thing a person must not lose while nothing is answering.
+   */
+  const waiting = $derived.by(() => {
+    const out: { state: NonNullable<ReturnType<typeof delegatedState>>; role: string; children: number; sessionId: string }[] = []
+    for (const effect of item.effects ?? []) {
+      const state = delegatedState(effect.delegated)
+      if (!state) continue
+      const role = effect.workerRole || effect.worker?.role || roles.get(effect.id) || ''
+      out.push({ state, role, children: effect.delegated?.childIds?.length ?? 0, sessionId: effect.delegated?.sessionId ?? '' })
+    }
+    return out
+  })
+
+  /**
+   * The completion kinds, named so the journal reads as what happened rather
+   * than as a run of PR events: the person's own decisions, the batch's
+   * receipts, what a merge did to a pull request, what the run did afterwards
+   * and what an assessment reported are four different things. A kind outside
+   * this map is rendered exactly as it always was.
+   */
+  const COMPLETION_KIND_LABELS: Record<string, string> = {
+    completion_completed: 'You completed this work item',
+    completion_reopened: 'You reopened this work item',
+    completion_pr_linked: 'Pull request linked',
+    completion_batch_authorized: 'Merge batch authorized',
+    completion_batch_completed: 'Merge batch completed',
+    completion_batch_stopped: 'Merge batch stopped',
+    completion_merge_dispatched: 'Merge sent — not confirmed',
+    completion_merge_confirmed: 'Merge confirmed',
+    completion_stop_requested: 'Run stop requested',
+    completion_stop_stopped: 'Run stopped',
+    completion_stop_failed: 'Run stop failed',
+    completion_stop_unknown: 'Run stop unknown',
+    completion_assessment_requested: 'Assessment requested',
+    completion_assessment_recorded: 'Assessment recorded',
+    delivery_merge_continued: 'Delivery continued after the merge',
+  }
+  const kindLabel = (kind: string) => COMPLETION_KIND_LABELS[kind] ?? ''
+
+  let viewport = $state<HTMLDivElement | null>(null)
+  let atLatest = $state(true)
+  /** Events the reader had already reached the end for. */
+  let seen = $state(0)
+  /** The reader's place while they are not at the latest event. */
+  let savedTop = 0
+
+  // The end of the list is within a line of the bottom, so a rounding scroll
+  // never reads as "the reader scrolled away".
+  const atEnd = (list: HTMLDivElement) => list.scrollHeight - list.scrollTop - list.clientHeight <= 8
+
+  function onScroll() {
+    if (!viewport) return
+    savedTop = viewport.scrollTop
+    atLatest = atEnd(viewport)
+  }
+
+  function jumpToLatest() {
+    atLatest = true
+    seen = events.length
+    savedTop = 0
+    if (viewport) viewport.scrollTop = viewport.scrollHeight
+  }
+
+  $effect(() => {
+    const count = events.length
+    // Reaching the latest event is what marks events as seen; a reader who is
+    // behind keeps their count, so the cue only appears for genuinely new
+    // activity.
+    if (atLatest) seen = count
+    if (hidden || !viewport) return
+    viewport.scrollTop = atLatest ? viewport.scrollHeight : savedTop
+  })
+</script>
+
+<Card class={hidden ? 'hidden' : 'grid min-w-0 gap-2'} data-testid="activity-timeline" aria-hidden={hidden}>
+  <div class="flex flex-wrap items-center justify-between gap-2">
+    <h2 class="font-semibold">Activity</h2>
+    {#if !atLatest && events.length > seen}
+      <Button variant="ghost" onclick={jumpToLatest}>New activity</Button>
+    {/if}
+  </div>
+  {#if waiting.length}
+    <!--
+      An unsettled delegated turn is not an outcome. It stays here, from the item
+      the screen already holds, so a dropped connection or a failed read does not
+      make the work look finished.
+    -->
+    <ul class="grid gap-2" data-testid="activity-delegated" aria-label="Delegated work">
+      {#each waiting as turn}
+        <li class="grid min-w-0 gap-0.5" data-testid="activity-delegated-turn" data-state={turn.state.state}>
+          <p class="flex flex-wrap items-center gap-2 text-sm">
+            <strong class="text-warn">{turn.state.headline}</strong>
+            {#if turn.role}<span class="text-xs text-muted">{workerRoleLabel(turn.role)}</span>{/if}
+            <span class="text-xs text-muted">{turn.children} {turn.children === 1 ? 'child' : 'children'}</span>
+          </p>
+          <p class="whitespace-pre-wrap break-words text-xs text-muted">{turn.state.meaning}</p>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+  {#if !events.length}
+    <p class="text-sm text-muted">No activity yet.</p>
+  {:else}
+    <div class="max-h-[36rem] overflow-y-auto" bind:this={viewport} onscroll={onScroll} data-testid="activity-scroll">
+      <ol class="grid gap-3 text-sm">
+        {#each events as event}
+          <li class="min-w-0 border-b border-border pb-2" data-testid="activity-event">
+            <div class="flex flex-wrap items-center gap-2">
+              <time class="text-xs text-muted" datetime={event.at}>{event.at}</time>
+              <Tag role={roleOf(event)} />
+              {#if kindLabel(event.kind)}<span class="text-xs font-medium" data-testid="factory-event-kind">{kindLabel(event.kind)}</span>{/if}
+            </div>
+            <p class="whitespace-pre-wrap break-words">{event.message}</p>
+            {#if event.provenance}<p class="mt-1 break-words text-xs text-muted" data-testid="factory-provenance">{provenanceLine(event.provenance, clientNames[event.provenance.clientId])}</p>{/if}
+          </li>
+        {/each}
+      </ol>
+    </div>
+  {/if}
+</Card>

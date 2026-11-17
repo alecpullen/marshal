@@ -146,7 +146,7 @@ func (r *Runner) shellInputFor(toolName string, argsMap map[string]interface{}) 
 		if r.State == nil {
 			return policy.ShellInput{}, false
 		}
-		cfg, _, _ := r.State.PolicySnapshot()
+		cfg, _, _, _ := r.State.PolicySnapshot()
 		command = strings.TrimSpace(cfg.Commands.Test)
 		if command == "" {
 			return policy.ShellInput{}, false
@@ -1141,6 +1141,10 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) (_ []s
 }
 
 func (r *Runner) buildToolResultMessage(name string, result registry.ToolResult, toolCallID string) schema.ChatMessage {
+	// This is the one place this run's tool results become wire messages, so
+	// it is also where the images it surfaced are retained for the parent's
+	// report (see TakeToolImages).
+	r.noteToolImages(result.Images)
 	toolCallID = wireCallID(toolCallID)
 	if toolCallID != "" {
 		return BuildNativeToolResultMessage(name, result, toolCallID)

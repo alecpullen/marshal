@@ -11,6 +11,7 @@
     getVersionedProjectSettings,
     getWorkspacePolicy,
     listClients,
+    listProjects,
     listRepos,
     listWorkspaces,
     putVersionedProjectSettings,
@@ -22,13 +23,27 @@
     type VersionedProjectSettings,
     type WorkspaceListItem,
   } from '../lib/api'
-  import type { FactoryCheckKey, FactoryDefaults } from '../lib/factory'
+  import type { FactoryCheckKey, FactoryDefaults, FactorySubagentOverrides, SubagentRoleView } from '../lib/factory'
+  import { resolveSubagentRole } from '../lib/factory'
+  import {
+    PROJECT_SUBAGENT_SOURCES,
+    SUBAGENT_INHERIT,
+    concurrencyText,
+    enabledChoice,
+    modelChoice,
+    subagentFieldLines,
+    subagentOverridesBody,
+    subagentOverridesOfControls,
+    type SubagentEnabledChoice,
+  } from '../lib/factory/config'
   import type { AgentRow, AgentTelemetry } from '../lib/fleet'
+  import MarshalAccessPanel from '../lib/marshal/MarshalAccessPanel.svelte'
   import { MODES, SHIP_TARGETS, autoFrom, autoOf, healthChecks, soft, isolatedFrom, isolationOf, latestAgent, parseWorkspaceRef, type AutoChoice, type Dot, type IsolationChoice } from '../lib/project/model'
   import { shortName } from '../lib/utils'
-  import { formatAutomationRoute, type AutomationPage } from '../lib/routes'
+  import type { RouteLeaveGuard } from '../lib/navigationGuard'
+  import { formatAutomationRoute, formatFactoryRoute, type AutomationPage } from '../lib/routes'
 
-  let { root, agents, telemetry = {}, onNavigate }: { root: string; agents: AgentRow[]; telemetry?: Record<string, AgentTelemetry>; onNavigate: (hash: string) => void } = $props()
+  let { root, agents, telemetry = {}, onNavigate, registerGuard = () => {} }: { root: string; agents: AgentRow[]; telemetry?: Record<string, AgentTelemetry>; onNavigate: (hash: string) => void; registerGuard?: (guard?: RouteLeaveGuard) => void } = $props()
 
   let tab = $state<'overview' | 'session' | 'automations'>('overview')
   let error = $state('')
@@ -59,6 +74,13 @@
   let autoMode = $state<AutoChoice>('default')
   let isolation = $state<IsolationChoice>('default')
   let shipTarget = $state('')
+  /**
+   * Automatic assessment of plan changes. It is the project's own field, not a
+   * factory default: absent follows the handoff (which means on), and only a
+   * deliberate change writes it, so saving an unrelated field never
+   * materialises a value the user did not choose.
+   */
+  let autoAssessMode = $state<AutoChoice>('default')
   // Factory-only defaults, held as typed text so a cleared field stays absent.
   let targetBranch = $state('')
   let expectedChecksText = $state('')
@@ -69,11 +91,27 @@
   // A stored host, kept verbatim. Only a value this build does not offer is
   // shown; 'local' needs no field of its own but is preserved all the same.
   let factoryHost = $state('')
+  /*
+    Per-role subagent defaults. Each control's "inherit" value is its own, so an
+    explicit false and an explicit empty model stay stated choices rather than
+    becoming absences: a save writes only what the user actually chose.
+  */
+  let implementerSubagentsEnabled = $state<SubagentEnabledChoice>('inherit')
+  let implementerSubagentsModel = $state<string>(SUBAGENT_INHERIT)
+  let implementerSubagentsConcurrency = $state('')
+  let reviewerSubagentsEnabled = $state<SubagentEnabledChoice>('inherit')
+  let reviewerSubagentsModel = $state<string>(SUBAGENT_INHERIT)
+  let reviewerSubagentsConcurrency = $state('')
   // Intake drafts.
   let repoId = $state('')
   let labels = $state<string[]>([])
   let newLabel = $state('')
   let clientIds = $state<string[]>([])
+  // Planner delegation drafts (MCP factory handoff). Off and unselected by
+  // default: a client that was never designated answers nothing, and an off
+  // toggle stores no client at all.
+  let delegation = $state(false)
+  let delegateClient = $state('')
   // The drafts as adopted, so an unsaved edit can be recognised.
   let baseline = $state('')
 
@@ -85,9 +123,11 @@
   function draftSignature(): string {
     return JSON.stringify([
       workspace, factoryWorkspace, profile, implementerProfile, reviewerProfile,
-      mode, autoMode, isolation, shipTarget,
+      mode, autoMode, isolation, shipTarget, autoAssessMode,
       targetBranch, expectedChecksText, reviewerInstructions, maxRoundsText, ciPollText, ciWaitText,
-      repoId, labels, clientIds,
+      implementerSubagentsEnabled, implementerSubagentsModel, implementerSubagentsConcurrency,
+      reviewerSubagentsEnabled, reviewerSubagentsModel, reviewerSubagentsConcurrency,
+      repoId, labels, clientIds, delegation, delegateClient,
     ])
   }
   const dirty = $derived(!!saved && draftSignature() !== baseline)
@@ -106,6 +146,10 @@
     autoMode = autoOf(s)
     isolation = isolationOf(s)
     shipTarget = s.shipTarget ?? ''
+    // Absent is "follow the handoff", which is on; only an explicit false is a
+    // stored override, so the control shows the effective value rather than a
+    // default it invented.
+    autoAssessMode = autoOf({ auto: s.autoAssessPlanChanges })
     factoryWorkspace = f.workspace ?? ''
     implementerProfile = routingProfile(f.implementerRouting)
     reviewerProfile = routingProfile(f.reviewerRouting)
@@ -116,9 +160,21 @@
     ciPollText = f.ciPollSeconds ? String(f.ciPollSeconds) : ''
     ciWaitText = f.ciWaitSeconds ? String(f.ciWaitSeconds) : ''
     factoryHost = f.hostId ?? ''
+    // Each subagent field starts from what the record states: an absent field
+    // is "inherit", an explicit false or empty model is a stated choice.
+    implementerSubagentsEnabled = enabledChoice(f.implementerSubagents)
+    implementerSubagentsModel = modelChoice(f.implementerSubagents)
+    implementerSubagentsConcurrency = concurrencyText(f.implementerSubagents)
+    reviewerSubagentsEnabled = enabledChoice(f.reviewerSubagents)
+    reviewerSubagentsModel = modelChoice(f.reviewerSubagents)
+    reviewerSubagentsConcurrency = concurrencyText(f.reviewerSubagents)
     repoId = s.intake.repoId ?? ''
     labels = [...(s.intake.labels ?? [])]
     clientIds = [...(s.intake.clients ?? [])]
+    // Both delegation fields are optional: absent means off and nobody
+    // designated, which is what the drafts start from.
+    delegation = s.plannerDelegationEnabled === true
+    delegateClient = s.designatedMCPClientId ?? ''
     baseline = draftSignature()
     stale = false
   }
@@ -128,6 +184,13 @@
   let profiles = $state<string[]>([])
   let repos = $state<RepoRow[]>([])
   let clients = $state<MCPClient[]>([])
+  /*
+    The Studio access surface is keyed by the project's opaque ID, which the
+    bridge mints from the root this page already holds. It is read with the
+    other pickers; a project the bridge has minted no ID for renders no editor,
+    rather than an editor that would write somewhere else.
+  */
+  let studioProjectId = $state('')
 
   async function load() {
     try {
@@ -140,16 +203,18 @@
       error = errMessage(e)
     }
     loaded = true
-    const [w, m, r, c] = await Promise.all([
+    const [w, m, r, c, p] = await Promise.all([
       soft(listWorkspaces(), []),
       soft(getModels().then((x) => Object.keys(x.profiles).sort()), []),
       soft(listRepos(), []),
       soft(listClients(), []),
+      soft(listProjects(), []),
     ])
     workspaces = w
     profiles = m
     repos = r
     clients = c
+    studioProjectId = p.find((entry) => entry.root === root)?.mcpProjectId ?? ''
   }
 
   const PROJECT_CHANGED = 'These settings changed elsewhere. Your edits are kept until you reload: reloading discards them and shows the saved values.'
@@ -237,6 +302,12 @@
     if (reviewerInstructions.trim()) f.reviewerInstructions = reviewerInstructions.trim()
     const checks = parseChecks()
     if (checks.length) f.expectedChecks = checks
+    // Only a stated field is written: an inherit choice leaves the record's
+    // field out so the session's reported default still reaches it.
+    const implementerSubagents = subagentOverridesBody(implementerSubagentsEnabled, implementerSubagentsModel, implementerSubagentsConcurrency)
+    if (implementerSubagents) f.implementerSubagents = implementerSubagents
+    const reviewerSubagents = subagentOverridesBody(reviewerSubagentsEnabled, reviewerSubagentsModel, reviewerSubagentsConcurrency)
+    if (reviewerSubagents) f.reviewerSubagents = reviewerSubagents
     const rounds = positiveInt(maxRoundsText)
     if (rounds !== undefined) f.maxRounds = rounds
     const poll = positiveInt(ciPollText)
@@ -273,6 +344,11 @@
     const factoryDefaults = factoryDefaultsBody()
     if (factoryDefaults) next.factoryDefaults = factoryDefaults
     else delete next.factoryDefaults
+    // Only a deliberate choice writes this: following the handoff leaves the
+    // record exactly as it was read, which is what "absent means on" requires.
+    const assess = autoFrom(autoAssessMode)
+    if (assess === undefined) delete next.autoAssessPlanChanges
+    else next.autoAssessPlanChanges = assess
     return next
   }
 
@@ -291,6 +367,36 @@
       return
     }
     void save({ ...settings, intake: { repoId: repoId || undefined, labels: repoId ? labels : [], clients: clientIds } }, 'Intake')
+  }
+
+  /**
+   * Only the two delegation fields change here; every other member of the
+   * record is carried through exactly as it was read. Client records hold no
+   * tokens, so nothing secret can be written back by this save.
+   */
+  function delegationBody(): ProjectSettings {
+    const base = settings
+    if (!base) throw new Error('Project settings could not be read; reload before saving.')
+    const next: ProjectSettings = { ...base }
+    if (delegation) next.plannerDelegationEnabled = true
+    else delete next.plannerDelegationEnabled
+    // Off stores no designation: an inert client ID in the record would look
+    // like authority the user did not grant.
+    if (delegation && delegateClient) next.designatedMCPClientId = delegateClient
+    else delete next.designatedMCPClientId
+    return next
+  }
+
+  /** Delegation with nobody designated answers nothing, so it is not a savable state. */
+  const delegationIncomplete = $derived(delegation && !delegateClient)
+
+  function saveDelegation() {
+    try {
+      void save(delegationBody(), 'Delegation')
+    } catch (e) {
+      notice = ''
+      error = errMessage(e)
+    }
   }
 
   function addLabel() {
@@ -347,16 +453,21 @@
     void loadHealth()
   })
 
-  // Unsaved edits are only lost on purpose: in-app navigation asks first, and
-  // the browser's own unload warning covers reload and close.
+  // Unsaved edits are only lost on purpose: in-app navigation asks the shell's
+  // route guard, and the browser's own unload warning covers reload and close.
   function confirmLeave(): boolean {
     if (!dirty) return true
     return window.confirm('You have unsaved project settings. Leave without saving them?')
   }
-  function navigate(hash: string) {
-    if (!confirmLeave()) return
-    onNavigate(hash)
-  }
+  /*
+    The guard asks before the shell changes the route, so it is registered for
+    as long as this screen is mounted and cleared when it is torn down — a
+    screen that is gone must never answer for the one that replaced it.
+  */
+  $effect(() => {
+    registerGuard(confirmLeave)
+    return () => registerGuard(undefined)
+  })
   $effect(() => {
     const warn = (e: BeforeUnloadEvent) => {
       if (!dirty) return
@@ -381,24 +492,47 @@
   const profileChoices = $derived(keepUnavailable(profileOptions, profile))
   const implementerChoices = $derived(keepUnavailable(profileOptions, implementerProfile))
   const reviewerChoices = $derived(keepUnavailable(profileOptions, reviewerProfile))
+  /**
+   * The overrides the current controls would save. A field left on "inherit"
+   * is absent from the record, so the session's reported default still reaches
+   * it; a non-numeric cap is left out of the description and reported by the
+   * save instead of being clamped.
+   */
+  // What each role resolves to right now, and where every field came from. On
+  // this screen the project's own record is the most specific layer, so a field
+  // it states is explicit; the session's reported defaults are named as the
+  // source and never guessed at.
+  const implementerSubagentsView = $derived(resolveSubagentRole('implementer', { item: subagentOverridesOfControls(implementerSubagentsEnabled, implementerSubagentsModel, implementerSubagentsConcurrency) }))
+  const reviewerSubagentsView = $derived(resolveSubagentRole('reviewer', { item: subagentOverridesOfControls(reviewerSubagentsEnabled, reviewerSubagentsModel, reviewerSubagentsConcurrency) }))
+  const subagentEffective = (view: SubagentRoleView): string => subagentFieldLines(view, PROJECT_SUBAGENT_SOURCES)
+  const subagentUnsupported = (view: SubagentRoleView): string =>
+    view.fields.find((f) => f.unsupported)?.unsupported ?? ''
+  /** Profiles a subagent model control offers; a saved one the picker lost stays visible. */
+  const subagentModelChoices = (value: string) => keepUnavailable(profileOptions, value === SUBAGENT_INHERIT ? '' : value)
   // What each factory choice resolves to right now, inherited or overridden.
   const following = (own: string, inherited: string) => (own ? `${own} (own choice)` : `Following the project default: ${inherited || 'Not configured'}`)
   const effectiveWorkspace = $derived(following(factoryWorkspace, workspace))
   const effectiveImplementer = $derived(following(implementerProfile, profile))
   const effectiveReviewer = $derived(following(reviewerProfile, profile))
   const repoChoices = $derived([...new Set([...repos.map((r) => r.id), ...(repoId ? [repoId] : [])])])
+  // A designated client the list no longer offers stays selected and labelled,
+  // so saving an unrelated field cannot silently clear the designation.
+  const clientChoices = $derived(keepUnavailable(clients.map((c) => ({ value: c.id, label: c.name || c.id })), delegateClient))
   const canReload = $derived(stale || (loaded && !saved))
   const field = 'w-full min-w-0 rounded border border-border bg-bg p-2 text-sm'
 </script>
 
 <div class="mx-auto flex max-w-5xl flex-col gap-4 p-3 sm:p-6">
   <header class="min-w-0">
-    <p class="text-xs text-muted"><a class="text-accent hover:underline" href="#projects" onclick={(e) => { e.preventDefault(); navigate('#projects') }}>Projects</a> /</p>
+    <p class="text-xs text-muted"><a class="text-accent hover:underline" href="#projects" onclick={(e) => { e.preventDefault(); onNavigate('#projects') }}>Projects</a> /</p>
     <h1 class="text-lg font-semibold" title={root}>{shortName(root)}</h1>
     <p class="truncate font-mono text-xs text-muted">{root}</p>
   </header>
 
-  <a class="text-sm text-accent underline" href={`#factory/new?project=${encodeURIComponent(root)}`} onclick={(e) => { e.preventDefault(); navigate(`#factory/new?project=${encodeURIComponent(root)}`) }}>Create factory work item for this project{repoId ? ` (${repoId})` : ''}</a>
+  <div class="flex flex-wrap items-center gap-3 text-sm">
+    <a class="text-accent underline" href={`#factory/new?project=${encodeURIComponent(root)}`} onclick={(e) => { e.preventDefault(); onNavigate(`#factory/new?project=${encodeURIComponent(root)}`) }}>Create factory work item for this project{repoId ? ` (${repoId})` : ''}</a>
+    <a class="text-accent underline" href={formatFactoryRoute({ projectRoot: root })} onclick={(e) => { e.preventDefault(); onNavigate(formatFactoryRoute({ projectRoot: root })) }}>Open project factory</a>
+  </div>
   <Tabs label="Project" tabs={[{ value: 'overview', label: 'Overview' }, { value: 'session', label: 'Session sheet' }, { value: 'automations', label: 'Automations' }]} value={tab} onchange={(t) => (tab = t as 'overview' | 'session' | 'automations')} />
 
   {#if error}
@@ -468,9 +602,102 @@
         <label class="flex min-w-0 flex-col gap-1 text-xs">Reviewer instructions
           <textarea aria-label="Reviewer instructions" bind:value={reviewerInstructions} class="min-h-24 w-full min-w-0 rounded border border-border bg-bg p-2"></textarea>
         </label>
+        <!--
+          Subagent settings, per role. Each field is a tri-state control whose
+          own "inherit" value is a real choice: an explicit false and an
+          explicit empty model are stated choices, never absences.
+        -->
+        <fieldset class="flex min-w-0 flex-col gap-2 border-t border-line pt-3" data-testid="subagents-implementer">
+          <legend class="text-xs font-medium">
+            <span class="sm:hidden">Implementer</span>
+            <span class="hidden sm:inline">Implementer subagents</span>
+          </legend>
+          <label class="flex min-w-0 flex-col gap-1 text-xs">Enabled
+            <select aria-label="Implementer subagents enabled" bind:value={implementerSubagentsEnabled} class={field}>
+              <option value="inherit">Inherit from the session</option>
+              <option value="on">On</option>
+              <option value="off">Off — stated, not inherited</option>
+            </select>
+          </label>
+          <label class="flex min-w-0 flex-col gap-1 text-xs">Model
+            <select aria-label="Implementer subagents model" bind:value={implementerSubagentsModel} class={field}>
+              <option value={SUBAGENT_INHERIT}>Inherit from the session</option>
+              <option value="">Normal child routing</option>
+              {#each subagentModelChoices(implementerSubagentsModel) as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+            </select>
+          </label>
+          <label class="flex min-w-0 flex-col gap-1 text-xs">Concurrency (1–8)
+            <input
+              aria-label="Implementer subagents concurrency"
+              type="number"
+              min="1"
+              max="8"
+              value={implementerSubagentsConcurrency}
+              oninput={(e) => (implementerSubagentsConcurrency = e.currentTarget.value)}
+              placeholder="Inherit from the session"
+              class={field}
+            />
+          </label>
+          <p class="text-xs text-muted" data-testid="subagents-implementer-effective">{subagentEffective(implementerSubagentsView)}</p>
+          {#if subagentUnsupported(implementerSubagentsView)}
+            <p class="text-xs text-attention" data-testid="subagents-implementer-unsupported">{subagentUnsupported(implementerSubagentsView)}</p>
+          {/if}
+        </fieldset>
+        <fieldset class="flex min-w-0 flex-col gap-2 border-t border-line pt-3" data-testid="subagents-reviewer">
+          <legend class="text-xs font-medium">
+            <span class="sm:hidden">Reviewer</span>
+            <span class="hidden sm:inline">Reviewer subagents</span>
+          </legend>
+          <label class="flex min-w-0 flex-col gap-1 text-xs">Enabled
+            <select aria-label="Reviewer subagents enabled" bind:value={reviewerSubagentsEnabled} class={field}>
+              <option value="inherit">Inherit from the session</option>
+              <option value="on">On</option>
+              <option value="off">Off — stated, not inherited</option>
+            </select>
+          </label>
+          <label class="flex min-w-0 flex-col gap-1 text-xs">Model
+            <select aria-label="Reviewer subagents model" bind:value={reviewerSubagentsModel} class={field}>
+              <option value={SUBAGENT_INHERIT}>Inherit from the session</option>
+              <option value="">Normal child routing</option>
+              {#each subagentModelChoices(reviewerSubagentsModel) as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+            </select>
+          </label>
+          <label class="flex min-w-0 flex-col gap-1 text-xs">Concurrency (1–8)
+            <input
+              aria-label="Reviewer subagents concurrency"
+              type="number"
+              min="1"
+              max="8"
+              value={reviewerSubagentsConcurrency}
+              oninput={(e) => (reviewerSubagentsConcurrency = e.currentTarget.value)}
+              placeholder="Inherit from the session"
+              class={field}
+            />
+          </label>
+          <p class="text-xs text-muted" data-testid="subagents-reviewer-effective">{subagentEffective(reviewerSubagentsView)}</p>
+          {#if subagentUnsupported(reviewerSubagentsView)}
+            <p class="text-xs text-attention" data-testid="subagents-reviewer-unsupported">{subagentUnsupported(reviewerSubagentsView)}</p>
+          {/if}
+        </fieldset>
         <label class="flex min-w-0 flex-col gap-1 text-xs">Max rounds
           <input aria-label="Max rounds" type="number" min="1" value={maxRoundsText} oninput={(e) => (maxRoundsText = e.currentTarget.value)} placeholder="Follow the handoff" class={field} />
         </label>
+        <label class="flex min-w-0 flex-col gap-1 text-xs">Automatic plan assessment
+          <select aria-label="Automatic plan assessment" bind:value={autoAssessMode} class={field}>
+            <option value="default">On — the default when nothing is set</option>
+            <option value="on">On — your explicit choice</option>
+            <option value="off">Off — assess only when asked</option>
+          </select>
+        </label>
+        <p class="text-xs text-muted" data-testid="auto-assess-effective">
+          {#if autoAssessMode === 'off'}
+            Effective now: off. A proposed plan change is only assessed when someone asks for an assessment.
+          {:else if autoAssessMode === 'on'}
+            Effective now: on, because you turned it on. Every proposal is assessed automatically.
+          {:else}
+            Effective now: on. Projects assess plan changes unless they explicitly turn it off, and this one does not.
+          {/if}
+        </p>
         <details class="min-w-0">
           <summary class="cursor-pointer text-xs text-muted">Advanced</summary>
           <div class="mt-2 flex flex-col gap-3">
@@ -555,6 +782,27 @@
         <div><Button onclick={saveIntake} disabled={saving || !saved}>Save intake</Button></div>
       </Card>
 
+      <Card class="flex min-w-0 flex-col gap-3" data-testid="delegation-card">
+        <h2 class="text-sm font-semibold">Planner delegation</h2>
+        <p class="text-xs text-muted">
+          Off by default. When on, the one client you designate may answer this project's planner questions
+          on your behalf; it cannot approve or queue work from that, and the delegation is recorded as the
+          planner's answer, not as your own.
+        </p>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" bind:checked={delegation} />
+          Allow one MCP client to answer planner questions
+        </label>
+        <label class="flex min-w-0 flex-col gap-1 text-xs">Designated MCP client
+          <select aria-label="Designated MCP client" bind:value={delegateClient} disabled={!delegation} class={field}>
+            <option value="">No client designated</option>
+            {#each clientChoices as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+          </select>
+        </label>
+        {#if delegationIncomplete}<p class="text-xs text-attention">Choose the client that may answer before saving; delegation with nobody designated answers nothing.</p>{/if}
+        <div><Button onclick={saveDelegation} disabled={saving || !saved || delegationIncomplete}>Save delegation</Button></div>
+      </Card>
+
       <Card class="flex min-w-0 flex-col gap-3" data-testid="health-card">
         <div class="flex items-center justify-between">
           <h2 class="text-sm font-semibold">Health</h2>
@@ -577,7 +825,7 @@
         <div class="flex items-center justify-between">
           <h2 class="text-sm font-semibold">Policy</h2>
           {#if designerHash}
-            <a class="text-sm text-accent hover:underline" href={designerHash} onclick={(e) => { e.preventDefault(); navigate(designerHash) }}>Edit in designer</a>
+            <a class="text-sm text-accent hover:underline" href={designerHash} onclick={(e) => { e.preventDefault(); onNavigate(designerHash) }}>Edit in designer</a>
           {/if}
         </div>
         {#if policy}
@@ -591,6 +839,25 @@
           <p class="text-sm text-muted">{policyNote}</p>
         {/if}
       </Card>
+
+      <!--
+        The project's default read and write/approval authority: the level every
+        session of this project inherits, edited through the same controls the
+        session surface uses for its own overrides.
+      -->
+      {#if studioProjectId}
+        <MarshalAccessPanel
+          projectId={studioProjectId}
+          levels={['project']}
+          heading="Studio access"
+          testId="project-studio-access"
+        />
+      {:else}
+        <Card class="flex min-w-0 flex-col gap-3" data-testid="project-studio-access-unavailable">
+          <h2 class="text-sm font-semibold">Studio access</h2>
+          <p class="text-sm text-muted">This bridge has no Studio project ID for this project yet, so there are no defaults to edit.</p>
+        </Card>
+      {/if}
     </div>
   {:else if tab === 'automations'}
     <div class="grid gap-4 lg:grid-cols-2" data-testid="automations-tab">
@@ -598,7 +865,7 @@
         <Card class="flex min-w-0 flex-col gap-2">
           <div class="flex items-center gap-2"><h2 class="text-sm font-semibold">{a.title}</h2><Tag tone={a.on ? 'ok' : 'neutral'}>{a.on ? 'on' : 'off'}</Tag></div>
           <p class="text-sm text-muted">{a.blurb}</p>
-          <a class="text-sm text-accent hover:underline" href={formatAutomationRoute(root, a.page as AutomationPage)} onclick={(e) => { e.preventDefault(); navigate(formatAutomationRoute(root, a.page as AutomationPage)) }}>Open {a.title}</a>
+          <a class="text-sm text-accent hover:underline" href={formatAutomationRoute(root, a.page as AutomationPage)} onclick={(e) => { e.preventDefault(); onNavigate(formatAutomationRoute(root, a.page as AutomationPage)) }}>Open {a.title}</a>
         </Card>
       {/each}
     </div>
@@ -609,7 +876,7 @@
           <h2 class="text-sm font-semibold">{agent.name || agent.id}</h2>
           <Tag tone="neutral">{agent.status}</Tag>
           <span class="flex-1"></span>
-          <a class="text-sm text-accent hover:underline" href="#chat/{agent.id}" onclick={(e) => { e.preventDefault(); navigate(`#chat/${agent.id}`) }}>Open session</a>
+          <a class="text-sm text-accent hover:underline" href="#chat/{agent.id}" onclick={(e) => { e.preventDefault(); onNavigate(`#chat/${agent.id}`) }}>Open session</a>
         </div>
         <section aria-label="Context">
           <h3 class="mb-1 text-xs tracking-wide text-muted uppercase">Context</h3>

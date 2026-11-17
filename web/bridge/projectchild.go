@@ -21,6 +21,12 @@ var projectLinger = 30 * time.Second
 // sockets live in (P4 D2).
 const viewerSocketDir = "v"
 
+// projectChildEnv marks the child the bridge starts for a project, the only
+// one that keeps a start record (P6 B3). It is a literal because everything
+// under web/ is standard-library only and so may not import the agent's
+// package that declares the constant; the agent-side test pins the name.
+const projectChildEnv = "MARSHAL_ACP_PROJECT_CHILD"
+
 // projectChild is one project root's `marshal acp --viewers` child (P4 D2).
 type projectChild struct {
 	root    string
@@ -65,6 +71,13 @@ func viewerSocketPath(stateDir, root string) string {
 	return filepath.Join(stateDir, viewerSocketDir, hex.EncodeToString(sum[:8])+".sock")
 }
 
+// agentViewerSocketPath is <stateDir>/v/a-<16 hex of sha256(agentID)>.sock
+// (decision 1).
+func agentViewerSocketPath(stateDir, agentID string) string {
+	sum := sha256.Sum256([]byte(agentID))
+	return filepath.Join(stateDir, viewerSocketDir, "a-"+hex.EncodeToString(sum[:8])+".sock")
+}
+
 // buildProjectChild returns root's Child, unstarted: newProjectChild's when
 // set, else a local process running marshalBin in root with --viewers. The
 // warning is the environment's: why the child's Env fell back, empty when it
@@ -81,14 +94,33 @@ func (f *Fleet) buildProjectChild(ctx context.Context, root, socket string) (*Ch
 	if err != nil {
 		return nil, "", err
 	}
+	// Only a project child keeps a start record (P6 B3): mark this child so
+	// the marshal acp it runs takes one, whether its environment resolves or
+	// falls back. A fleet agent's own child, built in fleet.go, stays
+	// unmarked.
+	child.Env = markProjectChildEnv(child.Env)
 	if f.projectEnv == nil {
 		return child, "", nil
 	}
 	// The resolver applies to whatever was built, the test seam's fake
 	// included, so the wiring is testable without a process (decision 7).
 	env, warning := f.projectEnv.Resolve(ctx, root)
-	child.Env = env
+	child.Env = markProjectChildEnv(env)
 	return child, warning, nil
+}
+
+// markProjectChildEnv copies env and adds the project-child marker. A nil env
+// means the child inherits this process's environment (Child), so the copy is
+// based on the real one: a marker appended to nil would leave the process
+// nothing but the marker. A resolved env is cloned rather than appended into,
+// so the resolver's own slice is never written to.
+func markProjectChildEnv(env []string) []string {
+	if env == nil {
+		env = os.Environ()
+	}
+	marked := make([]string, 0, len(env)+1)
+	marked = append(marked, env...)
+	return append(marked, projectChildEnv+"=1")
 }
 
 // projectChildForRoot builds root's child from the seam when a test set one,

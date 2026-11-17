@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -18,14 +19,20 @@ import (
 	"marshal/internal/app"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/tui"
+	"marshal/internal/app/tui/fleet"
+	"marshal/internal/fleetprofile"
 )
 
 // ProgramResult is the value returned by a ProgramRunner. It carries the
 // program's outcome plus an optional request to resume another session.
 type ProgramResult struct {
 	Err           error
-	ResumeSession string // non-empty => tear down and restart WithExistingSession
-	Detached      string // the session a detach left running; "" otherwise
+	ResumeSession string       // non-empty => tear down and restart WithExistingSession
+	Detached      string       // the session a detach left running; "" otherwise
+	ToFleet       bool         // the session screen ended with /fleet
+	Open          fleet.Target // the fleet program's target; zero means quit
+	Draft         tui.Draft    // the session screen's draft when it ended
+	GaveUp        bool         // the waiting screen ended because the user gave up
 }
 
 // ProgramRunner runs the TUI program. The default runs a tea.Program; tests
@@ -53,6 +60,31 @@ type options struct {
 	// fleetClient replaces the client the fleet screen builds for the socket;
 	// tests inject it.
 	fleetClient acpclient.Fleet
+	// notifyOff turns the fleet's notifications off. The zero value keeps them
+	// on, which is WithNotify's default, so no constructor literal sets it.
+	notifyOff bool
+	// notifyRun runs a desktop notification's command. The default runs it;
+	// tests replace it so no test spawns a real osascript or notify-send.
+	notifyRun func(ctx context.Context, name string, args ...string) error
+	// onFleetWiring sees the fleet client and the watch each program the
+	// daemon loop runs is given; tests read what the loop wired without
+	// driving a real program.
+	onFleetWiring func(client acpclient.Fleet, watch *fleet.Watch)
+
+	// reconnectWindow, reconnectFirst and reconnectMax are the reconnect's
+	// window and the waits between its attempts (decision 7). Zero values mean
+	// production's 60s, 1s and 5s, so no constructor literal sets them.
+	reconnectWindow time.Duration
+	reconnectFirst  time.Duration
+	reconnectMax    time.Duration
+
+	// remote is a server profile's loop: the transports the loop dials
+	// instead of the local daemon (decision 8). nil for the local daemon.
+	remote *remoteTarget
+	// tokenStore and tokenRunner replace the keychain and token_cmd's runner
+	// a server profile's token comes from; tests inject them.
+	tokenStore  fleetprofile.OpenStore
+	tokenRunner fleetprofile.CommandRunner
 }
 
 type Option func(*options)
@@ -64,6 +96,14 @@ func WithProgramRunner(runner ProgramRunner) Option {
 			return
 		}
 		opts.programRunner = runner
+	}
+}
+
+// WithNotify turns the fleet's notifications on or off. On by default;
+// plan 7 sets it from fleet.toml.
+func WithNotify(on bool) Option {
+	return func(o *options) {
+		o.notifyOff = !on
 	}
 }
 
@@ -93,8 +133,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	// P4 D5: a local daemon that answers serves the TUI over its relay.
 	// Anything else runs embedded, exactly as it did before.
 	if runOpts.daemonSocket != "" {
-		if _, _, onDaemon := chooseDaemon(ctx, &runOpts); onDaemon {
-			return runDaemon(ctx, stdout, &runOpts, "")
+		if root, _, onDaemon := chooseDaemon(ctx, &runOpts); onDaemon {
+			return runDaemon(ctx, stdout, &runOpts, daemonStep{root: root})
 		}
 	}
 
@@ -223,6 +263,18 @@ func runProgram(ctx context.Context, model tea.Model, output io.Writer) ProgramR
 	}
 	if detacher, ok := finalModel.(interface{ Detached() string }); ok {
 		res.Detached = detacher.Detached()
+	}
+	if toFleeter, ok := finalModel.(interface{ ToFleet() bool }); ok {
+		res.ToFleet = toFleeter.ToFleet()
+	}
+	if opener, ok := finalModel.(interface{ Open() fleet.Target }); ok {
+		res.Open = opener.Open()
+	}
+	if drafter, ok := finalModel.(interface{ Draft() tui.Draft }); ok {
+		res.Draft = drafter.Draft()
+	}
+	if giver, ok := finalModel.(interface{ GaveUp() bool }); ok {
+		res.GaveUp = giver.GaveUp()
 	}
 	return res
 }

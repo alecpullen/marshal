@@ -30,6 +30,25 @@ type ScaffoldResult struct {
 	Existed bool   `json:"existed,omitempty"`
 }
 
+// The project methods a project child serves on the bridge's own connection
+// (B3).
+const (
+	MethodProjectState = "project/state"
+	MethodProjectNote  = "project/note"
+)
+
+// ProjectState is project/state's answer (B3).
+type ProjectState struct {
+	Stale   []string `json:"stale,omitempty"`
+	Busy    []string `json:"busy,omitempty"`
+	Version string   `json:"version"`
+}
+
+// ProjectNoteParams is project/note's.
+type ProjectNoteParams struct {
+	Text string `json:"text"`
+}
+
 // DiffQuery names the range Session.Diff renders, Base..Head.
 type DiffQuery struct {
 	Base string `json:"base"`

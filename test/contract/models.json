@@ -1,0 +1,119 @@
+{
+  "ProviderView": {
+    "type": "ollama",
+    "baseUrl": "http://127.0.0.1:11434",
+    "toolCalling": true,
+    "hasKey": false,
+    "keySource": "none"
+  },
+  "ProviderWrite": {
+    "type": "openai",
+    "baseUrl": "https://api.example.com/v1",
+    "apiKeyEnv": "EXAMPLE_API_KEY",
+    "toolCalling": true
+  },
+  "ProvidersUpdate": {
+    "providers": {
+      "local": {
+        "type": "ollama",
+        "baseUrl": "http://127.0.0.1:11434",
+        "toolCalling": true
+      }
+    }
+  },
+  "Preset": {
+    "provider": "local",
+    "model": "qwen3-coder",
+    "contextWindow": 131072,
+    "maxOutputTokens": 8192,
+    "toolCalling": "native",
+    "thinking": "high",
+    "temperature": 0.2,
+    "verificationGate": false
+  },
+  "PresetsUpdate": {
+    "presets": {
+      "local/qwen": {
+        "provider": "local",
+        "model": "qwen3-coder"
+      }
+    }
+  },
+  "Binding": {
+    "preset": "local/qwen"
+  },
+  "RoutingUpdate": {
+    "profiles": {
+      "default": {
+        "implementer": {
+          "preset": "local/qwen"
+        }
+      }
+    },
+    "defaultProfile": "default",
+    "activePreset": "local/qwen"
+  },
+  "ProviderKey": {
+    "key": "sk-test-only"
+  },
+  "ProbeRequest": {
+    "name": "local"
+  },
+  "ProbeModel": {
+    "id": "qwen3-coder",
+    "contextWindow": 131072
+  },
+  "ProbeResult": {
+    "models": [
+      {
+        "id": "qwen3-coder",
+        "contextWindow": 131072
+      }
+    ]
+  },
+  "ModelsConfig": {
+    "providers": {
+      "local": {
+        "type": "ollama",
+        "baseUrl": "http://127.0.0.1:11434",
+        "toolCalling": true,
+        "hasKey": false,
+        "keySource": "none"
+      }
+    },
+    "presets": {
+      "local/qwen": {
+        "provider": "local",
+        "model": "qwen3-coder"
+      }
+    },
+    "profiles": {
+      "default": {
+        "implementer": {
+          "preset": "local/qwen"
+        }
+      }
+    },
+    "customAgents": [],
+    "defaultProfile": "default",
+    "activePreset": "local/qwen",
+    "roles": [
+      "implementer",
+      "reviewer"
+    ],
+    "budgets": {
+      "dailyUsd": 5,
+      "perAgentUsd": 2,
+      "onDailyCap": "warn",
+      "onAgentCap": "block"
+    }
+  },
+  "BudgetsUpdate": {
+    "budgets": {
+      "dailyUsd": 5,
+      "perAgentUsd": 2,
+      "onDailyCap": "warn",
+      "onAgentCap": "block"
+    }
+  }
+}

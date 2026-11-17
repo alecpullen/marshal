@@ -57,6 +57,47 @@ func TestStatusUpdateRoundTrips(t *testing.T) {
 	}
 }
 
+// TestAPendingRestartRoundTrips pins the wire shape of a stale child's
+// restart as its sessions carry it (B3): both fields survive, and a status
+// without one keeps it nil.
+func TestAPendingRestartRoundTrips(t *testing.T) {
+	want := SessionStatus{
+		WorkingDir: "/tmp/w",
+		Restart:    &PendingRestart{Reason: "config changed", WaitingFor: "turn"},
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got SessionStatus
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Restart == nil {
+		t.Fatalf("restart is nil after the round trip, want %#v", want.Restart)
+	}
+	if *got.Restart != *want.Restart {
+		t.Fatalf("restart = %#v, want %#v", *got.Restart, *want.Restart)
+	}
+}
+
+// TestAStatusWithoutARestartOmitsIt pins the absent case: a current child
+// carries no restart key at all, so a reader sees it missing rather than
+// empty (B3).
+func TestAStatusWithoutARestartOmitsIt(t *testing.T) {
+	raw, err := json.Marshal(SessionStatus{WorkingDir: "/tmp/w"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := fields["restart"]; ok {
+		t.Errorf("%q is present in %s, want it omitted", "restart", raw)
+	}
+}
+
 // TestAStatusWithoutRunsOmitsThem pins the absent case: a session with no run
 // in flight and no finished run carries neither key, so a reader sees them
 // missing rather than zero (P4 D4).

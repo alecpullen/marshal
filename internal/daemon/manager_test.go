@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -474,4 +475,81 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(data)
+}
+
+// TestLingerReadsAndSetsTheUsersBit: loginctl's answer is the state, and
+// enabling is a command that runs only when the bit is off.
+func TestLingerReadsAndSetsTheUsersBit(t *testing.T) {
+	const uid = 4242
+	show := "loginctl show-user 4242 -p Linger"
+	enable := "loginctl enable-linger 4242"
+
+	for _, tc := range []struct {
+		name    string
+		goos    string
+		answers map[string]scripted
+		want    LingerState
+		enable  bool
+	}{
+		{
+			name:    "already enabled",
+			goos:    "linux",
+			answers: map[string]scripted{show: {out: "Linger=yes\n"}},
+			want:    LingerState{Supported: true, Enabled: true},
+		},
+		{
+			name:    "disabled, then enabled",
+			goos:    "linux",
+			answers: map[string]scripted{show: {out: "Linger=no\n"}},
+			want:    LingerState{Supported: true},
+			enable:  true,
+		},
+		{
+			name: "loginctl is missing",
+			goos: "linux",
+			answers: map[string]scripted{
+				show: {
+					out: `exec: "loginctl": executable file not found in $PATH`,
+					err: exec.ErrNotFound,
+				},
+			},
+			want: LingerState{},
+		},
+		{
+			name: "darwin has no linger",
+			goos: "darwin",
+			want: LingerState{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeRunner{answers: tc.answers}
+			m := &Manager{GOOS: tc.goos, UID: uid, Run: runner.run}
+
+			got, err := m.Linger(context.Background())
+			if err != nil {
+				t.Fatalf("Linger: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("Linger = %+v, want %+v", got, tc.want)
+			}
+
+			if tc.enable {
+				if err := m.EnableLinger(context.Background()); err != nil {
+					t.Fatalf("EnableLinger: %v", err)
+				}
+			}
+
+			// darwin answers without running anything, which is the point.
+			var wantCalls []string
+			if tc.goos == "linux" {
+				wantCalls = append(wantCalls, show)
+				if tc.enable {
+					wantCalls = append(wantCalls, enable)
+				}
+			}
+			if !equalLines(runner.calls, wantCalls) {
+				t.Errorf("commands = %v, want %v", runner.calls, wantCalls)
+			}
+		})
+	}
 }

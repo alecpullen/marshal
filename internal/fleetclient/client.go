@@ -4,6 +4,7 @@ package fleetclient
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +54,30 @@ func Socket(path string) Transport {
 			},
 		},
 		Local: true,
+	}
+}
+
+// tlsHandshakeTimeout bounds a server profile's TLS handshake, so an endpoint
+// that accepts the connection and then says nothing cannot hold a connect open.
+const tlsHandshakeTimeout = 10 * time.Second
+
+// HTTPS is a server profile's transport: the bridge at base, over tlsConfig
+// (nil for a loopback http base), with the token on every request.
+func HTTPS(name, base string, tlsConfig *tls.Config, token func(ctx context.Context) (string, error)) Transport {
+	return Transport{
+		Server:  name,
+		BaseURL: strings.TrimSuffix(base, "/"),
+		// No overall timeout: the stream is long-lived. No proxy either: a
+		// server profile names a host, and the environment's proxy is not
+		// part of the configuration the profile carries.
+		HTTP: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig:     tlsConfig,
+				Proxy:               nil,
+				TLSHandshakeTimeout: tlsHandshakeTimeout,
+			},
+		},
+		Token: token,
 	}
 }
 

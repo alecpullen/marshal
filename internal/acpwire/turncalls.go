@@ -15,6 +15,7 @@ const (
 	MethodSetEffort       = "session/set_effort"
 	MethodSetSudoUnlock   = "session/set_sudo_unlock"
 	MethodSubagentCancel  = "session/subagent_cancel"
+	MethodSubagentSteer   = "session/subagent_steer"
 	MethodSDDClear        = "session/sdd_clear"
 	MethodWatchResumeTake = "session/watch_resume_take"
 	MethodWorkList        = "session/work_list"
@@ -44,13 +45,14 @@ type TextBlock struct {
 }
 
 // PromptCallParams is session/prompt's params from a marshal client: ACP's
-// session and prompt blocks, plus PromptParams' queued text and watch resume.
-// The client sends PromptParams.Text as one text block.
+// session and prompt blocks, plus PromptParams' queued text, its images and
+// its watch resume. The client sends PromptParams.Text as one text block.
 type PromptCallParams struct {
-	SessionID   string       `json:"sessionId"`
-	Prompt      []TextBlock  `json:"prompt"`
-	Queued      bool         `json:"queued,omitempty"`
-	WatchResume *WatchResume `json:"watchResume,omitempty"`
+	SessionID   string        `json:"sessionId"`
+	Prompt      []TextBlock   `json:"prompt"`
+	Queued      bool          `json:"queued,omitempty"`
+	Images      []PromptImage `json:"images,omitempty"`
+	WatchResume *WatchResume  `json:"watchResume,omitempty"`
 }
 
 // StopParams is session/stop's params.
@@ -127,6 +129,26 @@ type SubagentCancelParams struct {
 type SubagentCancelResult struct {
 	Cancelled bool `json:"cancelled"`
 }
+
+// SubagentSteerParams is session/subagent_steer's params: one user instruction
+// for a live child, named by the request ID that makes it a single delivery.
+type SubagentSteerParams struct {
+	SessionID  string `json:"sessionId"`
+	SubagentID int64  `json:"subagentId"`
+	RequestID  string `json:"requestId"`
+	Message    string `json:"message"`
+}
+
+// SubagentSteerResult is session/subagent_steer's result.
+type SubagentSteerResult struct {
+	RequestID string `json:"requestId"`
+	Status    string `json:"status"` // accepted; model consumption is separate
+}
+
+// SubagentSteerStatusAccepted is SubagentSteerResult.Status when the child's
+// steering queue took the instruction. Acceptance is not consumption: the child
+// reads it at its next step, and a child that settles before then never does.
+const SubagentSteerStatusAccepted = "accepted"
 
 // WatchResumeTakeResult is session/watch_resume_take's result.
 type WatchResumeTakeResult struct {

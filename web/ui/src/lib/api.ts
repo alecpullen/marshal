@@ -1,27 +1,51 @@
 import type { AuditEvent } from './audit'
-import { accessPatchBody, type AccessPatch, type AccessStateWire, type ModeAccessChoice } from './interaction'
+import { accessPatchBody, type AccessPatch, type AccessStateWire } from './interaction'
 import type {
   AgentStatus as ContractAgentStatus,
+  Answer as ContractAnswer,
+  Answers as ContractAnswers,
   ApproveResult as ContractApproveResult,
   BudgetAgentSpend as ContractBudgetAgentSpend,
   BudgetReport as ContractBudgetReport,
   Budgets as ContractBudgets,
+  CallDetail as ContractCallDetail,
   CommitDraft as ContractCommitDraft,
+  CompletionDetail as ContractCompletionDetail,
+  Decision as ContractDecision,
   DiffFile as ContractDiffFile,
   DiffResult as ContractDiffResult,
+  ExecutionDetail as ContractExecutionDetail,
   ExitResult as ContractExitResult,
+  FileContent as ContractFileContent,
+  FileList as ContractFileList,
   GateRecord as ContractGateRecord,
   GateResult as ContractGateResult,
   Inbox as ContractInbox,
   InboxDelta as ContractInboxDelta,
   InboxGroups as ContractInboxGroups,
   InboxItem as ContractInboxItem,
+  LastRequest as ContractLastRequest,
   MergeResult as ContractMergeResult,
+  ModelRequest as ContractModelRequest,
+  NodeDetail as ContractNodeDetail,
+  NodeDetailResponse as ContractNodeDetailResponse,
+  NoticeDetail as ContractNoticeDetail,
   PendingRequest as ContractPendingRequest,
   PendingSubmission as ContractPendingSubmission,
   ProjectStatus as ContractProjectStatus,
+  RelationDetail as ContractRelationDetail,
+  RequestMessage as ContractRequestMessage,
+  RequestTool as ContractRequestTool,
+  ReviewComment as ContractReviewComment,
+  ReviewCommentRequest as ContractReviewCommentRequest,
   SpawnRequest as ContractSpawnRequest,
   SpawnResult as ContractSpawnResult,
+  StepDetail as ContractStepDetail,
+  StepDiff as ContractStepDiff,
+  StepDiffs as ContractStepDiffs,
+  SymbolDetail as ContractSymbolDetail,
+  ThoughtDetail as ContractThoughtDetail,
+  TodoDetail as ContractTodoDetail,
 } from './contract'
 
 /*
@@ -31,11 +55,14 @@ import type {
   Do not hand-write these again: change web/bridge/contract and regenerate.
 */
 export type AgentStatus = ContractAgentStatus
+export type Answer = ContractAnswer
+export type Answers = ContractAnswers
 export type ApproveResult = ContractApproveResult
 export type BudgetAgent = ContractBudgetAgentSpend
 /** `GET /api/budgets` (bridge budgetReport). `loaded` is false while the caps could not be read, so `budgets` is zeroes, not the real caps. */
 export type BudgetStatus = ContractBudgetReport
 export type Budgets = ContractBudgets
+export type Decision = ContractDecision
 export type DiffFile = ContractDiffFile
 export type DiffResult = ContractDiffResult
 export type ExitResult = ContractExitResult
@@ -122,6 +149,40 @@ export function setToken(token: string): void {
   } catch {
     // ignore
   }
+}
+
+/**
+ * Adopt a token handed over in the URL, and take it back out of the address
+ * bar.
+ *
+ * `marshal studio` opens the local daemon's Studio as `/?token=<token>`, so the
+ * page starts authenticated against the daemon the TUI talks to, with nothing
+ * typed and no prompt. The query is rewritten before the app mounts, so a
+ * reload still finds the token in sessionStorage and the URL left in history —
+ * the one a user might copy — carries no credential.
+ *
+ * A token that is present but unusable (an empty `?token=`) is still removed
+ * from the URL: leaving it would keep a blank credential in history for no
+ * benefit.
+ */
+export function adoptTokenFromURL(): void {
+  let url: URL
+  try {
+    url = new URL(window.location.href)
+  } catch {
+    return
+  }
+  const raw = url.searchParams.get('token')
+  if (raw === null) return
+  url.searchParams.delete('token')
+  try {
+    window.history.replaceState(null, '', url.toString())
+  } catch {
+    // A sandboxed frame can refuse the rewrite; the token is adopted either
+    // way, which is the part that matters.
+  }
+  const token = normalizeToken(raw)
+  if (token) setToken(token)
 }
 
 /** Drop the token from memory and storage, so the next call prompts again. */
@@ -364,35 +425,23 @@ export async function getStack(sessionId: string, subagentId?: number): Promise<
   return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/stack${q}`))
 }
 
-export interface CallDetail {
-  callId?: string
-  stepId?: number
-  toolName: string
-  args?: string
-  originalArgs?: string
-  output?: string
-  diff?: string
-  error?: string
-  exitCode?: number
-  model?: string
-  finishReason?: string
-  rewritten?: boolean
-  hooks?: unknown[]
-  sandbox?: unknown
-  symbols?: { file: string; name: string; kind?: string }[]
-  notice?: { kind: string; text: string }
-}
-export interface ThoughtDetail { text: string; durationMs?: number }
-export interface TodoDetail { id: string; content: string; status: string; startedAt?: number; completedAt?: number }
-export interface RelationDetail { causedBy?: string[]; fixedBy?: string[] }
-export interface NodeDetail {
-  calls?: CallDetail[]
-  narration?: string[]
-  thinking?: ThoughtDetail[]
-  todo?: TodoDetail
-  relations?: RelationDetail
-}
-export interface NodeDetailResponse { node: import('./stack').WireNode; detail: NodeDetail }
+/*
+  One node's detail, the newest model request, the by-step diffs and the
+  file browser are the generated contract (web/bridge/contract): the names
+  below are the shapes the Studio's screens already use, so a screen did not
+  change when the declarations moved out of this file.
+*/
+export type CallDetail = ContractCallDetail
+export type ExecutionDetail = ContractExecutionDetail
+export type NoticeDetail = ContractNoticeDetail
+export type SymbolDetail = ContractSymbolDetail
+export type ThoughtDetail = ContractThoughtDetail
+export type TodoDetail = ContractTodoDetail
+export type RelationDetail = ContractRelationDetail
+export type StepDetail = ContractStepDetail
+export type CompletionDetail = ContractCompletionDetail
+export type NodeDetail = ContractNodeDetail
+export type NodeDetailResponse = ContractNodeDetailResponse
 
 export async function getNode(sessionId: string, nodeId: string, subagentId?: number): Promise<NodeDetailResponse | 'unsupported'> {
   const q = subagentId ? `?subagent=${subagentId}` : ''
@@ -401,48 +450,35 @@ export async function getNode(sessionId: string, nodeId: string, subagentId?: nu
   )
 }
 
-export interface RequestMessage {
-  role: string
-  content: string
-  toolCalls?: { id: string; name: string; args: string }[]
-  toolCallId?: string
-  truncated?: boolean
-  omittedBytes?: number
-}
-export interface RequestJSON {
-  attemptId: number
-  at?: number
-  provider?: string
-  model?: string
-  messages: RequestMessage[]
-  tools: { name: string; description?: string; parameters?: string }[]
-  options: { thinking?: string; streaming: boolean; maxTokens?: number; temperature?: number; responseFormat?: string; toolChoice?: string }
-  outcome: { status: string; err?: string; at?: number }
-  truncated?: boolean
-  packTokens?: number
-  packWindow?: number
-  packKnown?: boolean
-}
+export type RequestMessage = ContractRequestMessage
+export type RequestTool = ContractRequestTool
+export type RequestJSON = ContractModelRequest
 
+/**
+ * The newest model request, or 'unsupported' for an agent that predates
+ * session/last_request. The route answers `{request}`; a session that has
+ * made no request answers a null one, which this client reports as
+ * 'unsupported'.
+ */
 export async function getLastRequest(sessionId: string): Promise<RequestJSON | 'unsupported'> {
-  return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/last-request`))
+  const r = await orUnsupported(() =>
+    request<ContractLastRequest>('GET', `/api/sessions/${encodeURIComponent(sessionId)}/last-request`),
+  )
+  return r === 'unsupported' ? r : (r?.request ?? 'unsupported')
 }
 
-export interface StepDiff {
-  stepNode: string
-  turnNode: string
-  headline: string
-  at?: number
-  files: string[]
-  diff: string
-}
+export type StepDiff = ContractStepDiff
 
+/** The session's steps and their parts of the diff. The route answers `{steps}`. */
 export async function getStepDiffs(sessionId: string): Promise<StepDiff[] | 'unsupported'> {
-  return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/step-diffs`))
+  const r = await orUnsupported(() =>
+    request<ContractStepDiffs>('GET', `/api/sessions/${encodeURIComponent(sessionId)}/step-diffs`),
+  )
+  return r === 'unsupported' ? r : (r?.steps ?? [])
 }
 
-export interface FileList { root?: string; path?: string; entries: { name: string; dir: boolean; size: number }[] }
-export interface FileView { path: string; size: number; binary: boolean; truncated: boolean; content: string }
+export type FileList = ContractFileList
+export type FileView = ContractFileContent
 
 export async function listFiles(agentId: string, path = ''): Promise<FileList | 'unsupported'> {
   return orUnsupported(() => request('GET', `/api/agents/${encodeURIComponent(agentId)}/files?path=${encodeURIComponent(path)}`))
@@ -487,28 +523,8 @@ export async function patchAccess(sessionId: string, patch: AccessPatch): Promis
   return request('PATCH', `/api/sessions/${encodeURIComponent(sessionId)}/access`, accessPatchBody(patch))
 }
 
-export interface Decision {
-  approved: boolean
-  edited?: string
-  /**
-   * The typed capability choice. It carries the presented identity and
-   * committed tuple; the agent validates them before applying anything.
-   */
-  modeAccess?: ModeAccessChoice
-}
-
 export async function resolvePermission(toolCallId: string, decision: Decision): Promise<void> {
   await request('POST', `/api/permissions/${encodeURIComponent(toolCallId)}`, decision)
-}
-
-export interface Answer {
-  question: string
-  answer: string | string[]
-}
-
-export interface Answers {
-  answers?: Answer[]
-  declined?: boolean
 }
 
 export async function resolveQuestion(questionId: string, answers: Answers): Promise<void> {
@@ -549,6 +565,205 @@ export async function createClient(opts: {
 
 export async function deleteClient(id: string): Promise<void> {
   await request('DELETE', `/api/clients/${encodeURIComponent(id)}`)
+}
+
+/**
+ * One MCP client's factory authority over one project, mirroring
+ * `web/bridge/client.go`. Every capability is independent, and the approval
+ * authority is independent of them: a client may read and draft without ever
+ * being allowed to approve. `projectId` is the opaque `mcpProjectId`, never a
+ * host path.
+ */
+export interface MCPFactoryProjectGrant {
+  projectId: string
+  read: boolean
+  createDraft: boolean
+  editDraft: boolean
+  answerQuestion: boolean
+  approveAndQueue: boolean
+  approvalAuthority: 'none' | 'user_directed' | 'standing'
+  /**
+   * Revision authority. Both are optional so a grant written before they
+   * existed round trips unchanged: absent is the zero value, which grants
+   * nothing, so an old grant keeps exactly the permissions it had.
+   */
+  assessPlanChanges?: boolean
+  approveRoutineRevision?: boolean
+}
+
+/** One (client, project) pair's stored grant and the opaque version a write must name. */
+export interface FactoryGrantState {
+  clientId: string
+  projectId: string
+  grant: MCPFactoryProjectGrant
+  version: string
+}
+
+/** The grant a pair that was never granted has: no capability and no authority, which is not an error. */
+export function emptyFactoryGrant(projectId: string): MCPFactoryProjectGrant {
+  return {
+    projectId,
+    read: false,
+    createDraft: false,
+    editDraft: false,
+    answerQuestion: false,
+    approveAndQueue: false,
+    approvalAuthority: 'none',
+  }
+}
+
+/** A 409 from a grant write, carrying the state that won so the editor can keep the unsaved edit. */
+export class FactoryGrantConflictError extends APIError {
+  state: FactoryGrantState | null
+  constructor(body: unknown) {
+    super(409, body)
+    this.name = 'FactoryGrantConflictError'
+    const state = body as FactoryGrantState | undefined
+    this.state = state && typeof state === 'object' && state.grant && typeof state.version === 'string' ? state : null
+  }
+}
+
+/** `GET /api/clients/{clientId}/factory-grants/{projectId}`; a valid pair with nothing stored reports the zero grant. */
+export async function getFactoryGrant(clientId: string, projectId: string): Promise<FactoryGrantState> {
+  return request('GET', `/api/clients/${encodeURIComponent(clientId)}/factory-grants/${encodeURIComponent(projectId)}`)
+}
+
+/**
+ * `PUT` the whole grant plus the version it was edited from. A 409 rejects with
+ * a {@link FactoryGrantConflictError}: the bridge sends the value that won, and
+ * re-reading blind would discard what the user typed.
+ */
+export async function putFactoryGrant(
+  clientId: string,
+  projectId: string,
+  grant: MCPFactoryProjectGrant,
+  version: string,
+): Promise<FactoryGrantState> {
+  try {
+    return await request('PUT', `/api/clients/${encodeURIComponent(clientId)}/factory-grants/${encodeURIComponent(projectId)}`, { grant, version })
+  } catch (e) {
+    if (e instanceof APIError && e.status === 409) throw new FactoryGrantConflictError(e.body)
+    throw e
+  }
+}
+
+/*
+  The built-in session's own access. This is a Studio management surface: every
+  one of these helpers calls an /api/ route the model-facing MCP endpoint cannot
+  reach, and a session's model never sees or names one.
+*/
+
+/** One capability of a built-in session's factory authority. An unset field inherits the layer beneath it; `false` is a denial that stays one until it is reset. */
+export interface MarshalAccess {
+  read?: boolean
+  createDraft?: boolean
+  editDraft?: boolean
+  answerQuestion?: boolean
+  approveAndQueue?: boolean
+  /** `none`, `user_directed` or `standing`. Unset inherits. */
+  approvalAuthority?: string
+}
+
+/** One level's stored access and the opaque version a write to it must name. */
+export interface MarshalAccessLayer {
+  access: MarshalAccess
+  version: string
+}
+
+/**
+ * One session's Studio connection and the access it inherits or overrides.
+ *
+ * `state` is `connected`, `ambiguous`, `unavailable`, `unsupported` or
+ * `unauthorized`; it describes the connection, never the policy. `source` names
+ * the levels that contributed (`project`, `session`), and `candidates` are the
+ * projects the server tracks the session for when it refuses to guess between
+ * them.
+ */
+export interface MarshalAccessView {
+  state: string
+  reason?: string
+  instanceId?: string
+  generation?: string
+  projectId?: string
+  sessionId?: string
+  workerId?: string
+  candidates?: string[]
+  selectedProjectId?: string
+  selectionVersion?: string
+  default: MarshalAccessLayer
+  override?: MarshalAccessLayer
+  overrideVersion?: string
+  effective: MarshalAccess
+  source?: Record<string, string>
+  editable?: boolean
+  stale?: boolean
+}
+
+/** A 409 from an access write, carrying the value that won so the editor can keep the unsaved edit. */
+export class MarshalAccessConflictError extends APIError {
+  view: MarshalAccessView | null
+  constructor(body: unknown) {
+    super(409, body)
+    this.name = 'MarshalAccessConflictError'
+    const view = body as MarshalAccessView | undefined
+    this.view = view && typeof view === 'object' && view.default && typeof view.default.version === 'string' ? view : null
+  }
+}
+
+/**
+ * `GET /api/marshal/access`: one session's connection and access, or a
+ * project's defaults when no session is named. Every state is an answer, so a
+ * caller renders it instead of handling an error.
+ */
+export async function getMarshalAccess(query: { projectId?: string; sessionId?: string; workerId?: string } = {}): Promise<MarshalAccessView> {
+  const params = new URLSearchParams()
+  if (query.projectId) params.set('projectId', query.projectId)
+  if (query.sessionId) params.set('sessionId', query.sessionId)
+  if (query.workerId) params.set('workerId', query.workerId)
+  const suffix = params.toString()
+  return request('GET', `/api/marshal/access${suffix ? `?${suffix}` : ''}`)
+}
+
+/**
+ * `PUT /api/marshal/access/default`: the whole project-default layer plus the
+ * version it was edited from. A 409 rejects with a
+ * {@link MarshalAccessConflictError} carrying the value that won.
+ */
+export async function putMarshalAccessDefault(projectId: string, access: MarshalAccess, version: string): Promise<MarshalAccessView> {
+  try {
+    return await request('PUT', '/api/marshal/access/default', { projectId, access, version })
+  } catch (e) {
+    if (e instanceof APIError && e.status === 409) throw new MarshalAccessConflictError(e.body)
+    throw e
+  }
+}
+
+/**
+ * `PUT /api/marshal/access/override`: one session's (or worker's) override and
+ * the version it was edited from. An access with no field set is the reset that
+ * restores inheritance.
+ */
+export async function putMarshalAccessOverride(projectId: string, sessionId: string, access: MarshalAccess, version: string, workerId = ''): Promise<MarshalAccessView> {
+  try {
+    return await request('PUT', '/api/marshal/access/override', { projectId, sessionId, workerId, access, version })
+  } catch (e) {
+    if (e instanceof APIError && e.status === 409) throw new MarshalAccessConflictError(e.body)
+    throw e
+  }
+}
+
+/**
+ * `PUT /api/marshal/access/selection`: the project a person picked for a
+ * session whose enrollment was ambiguous. An empty `projectId` clears the
+ * choice, which makes the session ambiguous again.
+ */
+export async function putMarshalSelection(sessionId: string, projectId: string, version: string): Promise<MarshalAccessView> {
+  try {
+    return await request('PUT', '/api/marshal/access/selection', { sessionId, projectId, version })
+  } catch (e) {
+    if (e instanceof APIError && e.status === 409) throw new MarshalAccessConflictError(e.body)
+    throw e
+  }
 }
 
 export async function listPending(): Promise<PendingSubmission[]> {
@@ -669,18 +884,11 @@ export async function getRoster(sessionId: string): Promise<Roster | 'unsupporte
   return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/roster`))
 }
 
-export interface ReviewComment {
-  id: string
-  agentId: string
-  path: string
-  line: number
-  side: 'old' | 'new'
-  quote: string
-  body: string
-  createdAt: string
-  sentAt: string
-  resolvedAt?: string
-}
+/** A line comment on a diff, and the thread it starts. */
+export type ReviewComment = ContractReviewComment
+
+/** The fields of a comment the operator supplies. */
+export type ReviewCommentRequest = ContractReviewCommentRequest
 
 /** The agent's drafted commit message, or 'unsupported' for an agent that cannot draft one. */
 export async function getCommitDraft(agentId: string): Promise<string | 'unsupported'> {
@@ -693,10 +901,7 @@ export async function listReviewComments(agentId: string): Promise<ReviewComment
   return r?.comments ?? []
 }
 
-export async function postReviewComment(
-  agentId: string,
-  c: { path: string; line: number; side: 'old' | 'new'; quote: string; body: string },
-): Promise<ReviewComment> {
+export async function postReviewComment(agentId: string, c: ReviewCommentRequest): Promise<ReviewComment> {
   return request('POST', `/api/agents/${encodeURIComponent(agentId)}/review/comments`, c)
 }
 
@@ -1115,11 +1320,25 @@ export interface ProjectSettings {
   intake: { repoId?: string; labels?: string[]; clients?: string[] }
   automations?: { reviewBot?: ReviewBotSettings; ciFixer?: CIFixerSettings }
   /**
+   * Planner delegation (MCP factory handoff): when true, the one designated MCP
+   * client may answer this project's planner questions. Both fields are
+   * omitted by default, so a record written before they existed is unchanged
+   * and delegation stays off with no client designated.
+   */
+  plannerDelegationEnabled?: boolean
+  designatedMCPClientId?: string
+  /**
    * This project's factory defaults. Absent fields follow the handoff, or the
    * project's agent defaults where those apply; never materialise a fallback
    * into one of them.
    */
   factoryDefaults?: FactoryDefaults
+  /**
+   * Automatic assessment of proposed plan changes. Absent means on, which is
+   * the handoff's default; `false` is a deliberate override. A save that did
+   * not touch it must not write it.
+   */
+  autoAssessPlanChanges?: boolean
 }
 export interface ProjectHealth {
   /** The project's verify-gate commands; both empty means the gate has nothing to run. */
@@ -1192,6 +1411,18 @@ async function requestVersioned<T = unknown>(method: string, path: string, body?
 export async function getVersionedProjectSettings(root: string): Promise<VersionedProjectSettings> {
   const { data, etag } = await requestVersioned<Partial<ProjectSettings> | null>('GET', `/api/projects/settings${query({ root })}`)
   return { settings: { ...data, intake: data?.intake ?? {} }, etag }
+}
+
+/**
+ * `GET /api/factory/settings-version`: the combined version a factory review
+ * displays and an approval echoes back. It is the project's settings ETag plus,
+ * when the control session reports subagent defaults, the digest of those
+ * defaults — so a change on either side makes a reviewed version stale. The
+ * bridge composes it; a client never builds one of its own.
+ */
+export async function getFactorySettingsVersion(root: string): Promise<string> {
+  const body = await request<{ settingsVersion: string }>('GET', `/api/factory/settings-version${query({ projectRoot: root })}`)
+  return body.settingsVersion
 }
 
 /** `PUT /api/projects/settings` with `If-Match`; a 412 rejects with that APIError, retaining nothing. */
@@ -1406,7 +1637,7 @@ export async function listStatusLinks(): Promise<StatusLink[]> { return (await r
 export async function revokeStatusLink(id: string): Promise<void> { await request('DELETE', `/api/status-links/${q(id)}`) }
 
 
-import type { FactoryItem, FactoryCreate, FactoryCommand, FactoryDefaults } from './factory'
+import type { FactoryItem, FactoryCreate, FactoryCommand, FactoryDefaults, FactoryRevisionCommand } from './factory'
 import type { PreviewReport } from './preview'
 export async function listFactoryItems(): Promise<FactoryItem[]> {
   return (await request<{ items: FactoryItem[] | null }>('GET', '/api/factory/items')).items ?? []
@@ -1421,7 +1652,205 @@ export async function createFactoryItem(req: FactoryCreate): Promise<FactoryItem
 export async function commandFactoryItem(id: string, cmd: FactoryCommand): Promise<FactoryItem> {
   return (await request<{ item: FactoryItem }>('POST', `/api/factory/items/${encodeURIComponent(id)}/commands`, cmd)).item
 }
+/**
+ * Attach one revision lifecycle command to the envelope the item view builds.
+ * The revision rides in `FactoryCommand.revision` beside the request id, the
+ * version it was reviewed against and the decision it answers, so a proposal,
+ * its assessment and its delivery are never sent as separate commands.
+ */
+export function factoryRevisionCommand(cmd: FactoryCommand, revision: FactoryRevisionCommand): FactoryCommand {
+  return { ...cmd, revision }
+}
+
+import type {
+  WorkingDraft,
+  WorkingDraftContent,
+  WorkingDraftConvertRequest,
+  WorkingDraftConvertResult,
+  WorkingDraftCreateRequest,
+  WorkingDraftRemoveRequest,
+  WorkingDraftSaveRequest,
+} from './working-drafts'
+import { WorkingDraftConflictError } from './working-drafts'
+
+/** `{draft}` on a write, the bare draft on a read: accept both, name the draft once. */
+function unwrapWorkingDraft(body: unknown): WorkingDraft {
+  if (body && typeof body === 'object') {
+    const wrapped = (body as { draft?: WorkingDraft | null }).draft
+    if (wrapped) return wrapped
+    if ('id' in body && 'version' in body) return body as WorkingDraft
+  }
+  throw new APIError(204, { error: 'The bridge returned no working draft.' })
+}
+
+/** The current draft a 409 reports, in either shape the route may use. */
+function conflictCurrent(body: unknown): WorkingDraft | null {
+  if (!body || typeof body !== 'object') return null
+  const wrapped = (body as { draft?: WorkingDraft | null; current?: WorkingDraft | null })
+  const draft = wrapped.draft ?? wrapped.current
+  if (draft) return draft
+  return 'id' in body && 'version' in body ? (body as WorkingDraft) : null
+}
+
+/**
+ * A stale version is not a plain error: the refusal carries the server's
+ * current draft, and the caller has to show it beside the local content rather
+ * than retry. Everything else is rethrown untouched.
+ */
+function asDraftConflict(e: unknown): unknown {
+  if (e instanceof APIError && e.status === 409) {
+    return new WorkingDraftConflictError(errMessage(e), conflictCurrent(e.body))
+  }
+  return e
+}
+
+const workingDraftPath = (id: string) => `/api/factory/working-drafts/${encodeURIComponent(id)}`
+
+/**
+ * The authenticated bridge's stable installation identity. Local draft records
+ * are keyed by it, so it must come from the bridge that answered: a URL is
+ * shared by several bridges and says nothing about which drafts belong here.
+ */
+export async function getWorkingDraftInstallation(): Promise<string> {
+  const r = await request<{ installationId?: string } | null>('GET', '/api/factory/working-drafts/installation')
+  const id = r?.installationId
+  if (!id) throw new APIError(500, { error: 'The bridge returned no installation identity.' })
+  return id
+}
+
+/** Pass the same request object on a retry: the request id is what makes it a replay. */
+export async function createWorkingDraft(req: WorkingDraftCreateRequest): Promise<WorkingDraft> {
+  return unwrapWorkingDraft(await request('POST', '/api/factory/working-drafts', req))
+}
+
+/** The project's non-deleted drafts, including the ones converted into factory items. */
+export async function listWorkingDrafts(projectRoot: string): Promise<WorkingDraft[]> {
+  const r = await request<{ drafts?: WorkingDraft[] | null } | WorkingDraft[] | null>('GET', `/api/factory/working-drafts${query({ projectRoot })}`)
+  if (Array.isArray(r)) return r
+  return r?.drafts ?? []
+}
+
+export async function getWorkingDraft(id: string): Promise<WorkingDraft> {
+  return unwrapWorkingDraft(await request('GET', workingDraftPath(id)))
+}
+
+/** A stale `expectedVersion` rejects with `WorkingDraftConflictError` carrying the server's draft. */
+export async function saveWorkingDraft(id: string, req: WorkingDraftSaveRequest): Promise<WorkingDraft> {
+  try {
+    return unwrapWorkingDraft(await request('PUT', workingDraftPath(id), req))
+  } catch (e) {
+    throw asDraftConflict(e)
+  }
+}
+
+/** Records a tombstone; the draft's body is returned when the route sends one. */
+export async function removeWorkingDraft(id: string, req: WorkingDraftRemoveRequest): Promise<WorkingDraft | null> {
+  try {
+    const body = await request<unknown>('DELETE', workingDraftPath(id), req)
+    return body && typeof body === 'object' && Object.keys(body).length > 0 ? unwrapWorkingDraft(body) : null
+  } catch (e) {
+    throw asDraftConflict(e)
+  }
+}
+
+/** `item` is present once the conversion is confirmed; a retry returns the same item. */
+export async function convertWorkingDraft(id: string, req: WorkingDraftConvertRequest): Promise<WorkingDraftConvertResult> {
+  try {
+    const r = await request<{ draft?: WorkingDraft | null; item?: WorkingDraftConvertResult['item'] | null } | null>(
+      'POST',
+      `${workingDraftPath(id)}/convert`,
+      req,
+    )
+    const draft = unwrapWorkingDraft(r)
+    return r?.item ? { draft, item: r.item } : { draft }
+  } catch (e) {
+    throw asDraftConflict(e)
+  }
+}
+
+export type { WorkingDraft, WorkingDraftContent }
 
 export async function getPreviewEnvironments(repoId: string, ref: string): Promise<PreviewReport> {
   return request<PreviewReport>('GET', `/api/repos/${encodeURIComponent(repoId)}/preview-environments${ref ? `?ref=${encodeURIComponent(ref)}` : ''}`)
+}
+
+import type {
+  PlannerContextView,
+  PlannerCreateRequest,
+  PlannerEvent,
+  PlannerPromptRequest,
+  PlannerSnapshotReply,
+  PlannerSnapshotRequest,
+  PlannerSnapshotView,
+  PlannerTurnReply,
+  PlannerView,
+} from './planner'
+
+const plannerPath = (id: string) => `/api/planners/${encodeURIComponent(id)}`
+
+/** Starts a planner. A 409 carrying `occupancy` is a workspace question, not a failure. */
+export async function createPlanner(req: PlannerCreateRequest): Promise<PlannerView> {
+  return request('POST', '/api/planners', req)
+}
+
+export async function getPlanner(id: string): Promise<PlannerView> {
+  return request('GET', plannerPath(id))
+}
+
+/** Pass the same request object on a retry: the request id is what makes it a replay. */
+export async function promptPlanner(id: string, req: PlannerPromptRequest): Promise<PlannerTurnReply> {
+  return request('POST', `${plannerPath(id)}/prompt`, req)
+}
+
+export async function cancelPlanner(id: string): Promise<void> {
+  await request('POST', `${plannerPath(id)}/cancel`)
+}
+
+/** Answers one open request; `response` is passed through to the backend unchanged. */
+export async function answerPlanner(id: string, requestId: string, response: unknown): Promise<void> {
+  await request('POST', `${plannerPath(id)}/requests/${encodeURIComponent(requestId)}`, { response })
+}
+
+/**
+ * The bounded replay after `sequence`. A read never dispatches anything, so a
+ * reconnect re-reads from here instead of resending a prompt.
+ */
+export async function plannerEvents(id: string, sequence = 0): Promise<PlannerEvent[]> {
+  return (await request<PlannerEvent[] | null>('GET', `${plannerPath(id)}/events?after=${sequence}`)) ?? []
+}
+
+export async function endPlanner(id: string): Promise<void> {
+  await request('DELETE', plannerPath(id))
+}
+
+/** Freezes one handoff for review; an empty `paths` is a documents-only snapshot. */
+export async function createPlannerSnapshot(id: string, req: PlannerSnapshotRequest): Promise<PlannerSnapshotReply> {
+  const reply = await request<PlannerSnapshotReply | null>('POST', `${plannerPath(id)}/snapshots`, req)
+  if (!reply) throw new APIError(500, { error: 'The bridge returned no snapshot.' })
+  return { ...reply, artifacts: reply.artifacts ?? [], files: reply.files ?? [], rejected: reply.rejected ?? [] }
+}
+
+export async function getPlannerSnapshot(id: string, snapshotId: string): Promise<PlannerSnapshotView> {
+  const view = await request<PlannerSnapshotView | null>('GET', `${plannerPath(id)}/snapshots/${encodeURIComponent(snapshotId)}`)
+  if (!view) throw new APIError(500, { error: 'The bridge returned no snapshot.' })
+  return { ...view, artifacts: view.artifacts ?? [], files: view.files ?? [] }
+}
+
+export async function plannerContext(id: string): Promise<PlannerContextView> {
+  const view = await request<Partial<PlannerContextView> | null>('GET', `${plannerPath(id)}/context`)
+  return {
+    artifacts: view?.artifacts ?? [],
+    decisions: view?.decisions ?? [],
+    unresolved: view?.unresolved ?? [],
+    absent: view?.absent ?? [],
+  }
+}
+
+/**
+ * Creates the factory draft one reviewed snapshot approves. The body is a
+ * normal factory create, so the draft this makes is the same draft the manual
+ * handoff form would have made.
+ */
+export async function handoffPlanner(id: string, snapshotId: string, req: FactoryCreate): Promise<FactoryItem> {
+  return (await request<{ item: FactoryItem }>('POST', `${plannerPath(id)}/snapshots/${encodeURIComponent(snapshotId)}/handoff`, req)).item
 }

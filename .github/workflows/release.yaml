@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - 'v*'
+  # A published release is a draft a human has just made public: the only
+  # moment the installer smoke test can reach its assets, because a draft's
+  # assets are not publicly downloadable. See install-smoke below.
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'published tag to install (for example v0.9.1)'
+        required: true
 
 permissions:
   contents: read
@@ -14,19 +24,303 @@ jobs:
 
   release:
     needs: checks
+    # Only a tag push cuts a release. The published and manual runs exist for
+    # install-smoke and must not try to cut an existing tag again.
+    if: github.event_name == 'push'
     permissions:
       contents: write
     runs-on: ubuntu-latest
     container:
-      image: goreleaser/goreleaser-cross:latest
+      image: goreleaser/goreleaser-cross:v1.27.3
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Trust the workspace checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # The Studio's build is embedded by `go:embed`: it must be in place
+      # before GoReleaser builds webbridge.
+      - uses: actions/download-artifact@v4
+        with:
+          name: studio-web
+          path: web/bridge/static-next
+      - name: Decide optional publishers
+        id: optional
+        env:
+          TAP: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP" ]; then
+            echo "skip=--skip=homebrew" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=" >> "$GITHUB_OUTPUT"
+          fi
       # Registry publishing is not configured; create a binaries-only draft.
       - name: Run GoReleaser
-        run: goreleaser release --clean --skip=docker
+        run: goreleaser release --clean --skip=docker ${{ steps.optional.outputs.skip }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # The notarize gate keys on MACOS_SIGN_P12. An unset secret expands
+          # to an empty string here, and isEnvSet counts empty as unset, so
+          # mapping all five is safe in a repository that has none.
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+
+  # The Studio's Flutter web build, which `go:embed` bakes into webbridge in
+  # the release job below. It is its own job because the goreleaser container
+  # has no Flutter, and the Studio is built from app/.
+  studio-web:
+    name: Studio web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.50.0'
+          channel: stable
+      - name: Build the Studio for /next/
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter build web --base-href /next/ --no-web-resources-cdn --output ../web/bridge/static-next
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studio-web
+          path: web/bridge/static-next
+
+  # The app bundle carries the two binaries the release job just built, so it
+  # cannot start until that release exists. Both jobs read the drafted release
+  # by tag and add their own asset to it; nothing is published until the draft
+  # is, which is what `draft: true` in .goreleaser.yaml buys.
+  app-darwin:
+    name: Tray app (macOS)
+    needs: release
+    permissions:
+      contents: write
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      # The same secrets GoReleaser's notarize block reads, so one set of
+      # repository secrets signs the daemon binaries and the app that bundles
+      # them. Unset on a fork: the app is still built and tested, nothing is
+      # uploaded, and the log says why — an unsigned .app is refused by
+      # Gatekeeper and looks like a Marshal bug.
+      MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+      MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+      MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+      MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+      MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.50.0'
+          cache: true
+      - name: Fetch the daemon binaries this tag released
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64 | aarch64) arch=arm64 ;;
+            x86_64 | amd64) arch=amd64 ;;
+            *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          mkdir -p dist app-bins
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern "*darwin_${arch}.tar.gz" --dir dist
+          tar -xzf dist/*"_darwin_${arch}.tar.gz" -C app-bins marshal webbridge
+      - name: Build the app bundle
+        working-directory: app
+        env:
+          # The menu shows `daemon V (app W)` only when the two differ, so this
+          # is stripped of the tag's leading `v`: `marshal --version` reports
+          # GoReleaser's {{ .Version }}, which has none.
+          APP_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          flutter pub get
+          flutter test
+          flutter build macos --release \
+            --dart-define=APP_VERSION="${APP_VERSION#v}"
+      - name: Bundle the daemon binaries
+        run: |
+          set -euo pipefail
+          bundle="app/build/macos/Build/Products/Release/Marshal.app"
+          mkdir -p "$bundle/Contents/Resources/bin"
+          cp app-bins/marshal app-bins/webbridge "$bundle/Contents/Resources/bin/"
+          chmod 755 "$bundle/Contents/Resources/bin/marshal" \
+            "$bundle/Contents/Resources/bin/webbridge"
+      - name: Sign, notarize, staple, and package
+        if: env.MACOS_SIGN_P12 != ''
+        run: |
+          set -euo pipefail
+          bundle="app/build/macos/Build/Products/Release/Marshal.app"
+
+          # The certificate the Go release signs the daemon binaries with, in a
+          # keychain that exists for this job only. The password is generated
+          # here: nothing else needs to know it, and the keychain is deleted
+          # with the runner.
+          keychain="$RUNNER_TEMP/marshal-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 16)"
+          # GoReleaser reads this secret as a base64-encoded .p12, which is the
+          # form `security import` needs after decoding.
+          printf '%s' "$MACOS_SIGN_P12" | base64 -D -o "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$MACOS_SIGN_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" \
+            $(security list-keychains -d user | tr -d '"')
+
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/.*"\(.*\)"/\1/p' | head -1)"
+          [ -n "$identity" ] || { echo "no signing identity in the imported certificate" >&2; exit 1; }
+
+          # Inside-out, and the order is the whole point: a nested Mach-O signed
+          # after the bundle that encloses it invalidates that bundle's
+          # signature, and notarization then fails on a signature nobody
+          # touched by hand. Frameworks first, then the bundled binaries, then
+          # the app.
+          sign() {
+            codesign --force --options runtime --timestamp \
+              --keychain "$keychain" --sign "$identity" "$1"
+          }
+          for framework in "$bundle/Contents/Frameworks/"*.framework; do
+            sign "$framework"
+          done
+          sign "$bundle/Contents/Resources/bin/marshal"
+          sign "$bundle/Contents/Resources/bin/webbridge"
+          sign "$bundle"
+
+          # Notarize the zip and staple the bundle inside it: the ticket rides
+          # with the app, so a first launch on an offline Mac works.
+          ditto -c -k --keepParent "$bundle" "$RUNNER_TEMP/Marshal.zip"
+          umask 077
+          printf '%s' "$MACOS_NOTARY_KEY" > "$RUNNER_TEMP/AuthKey.p8"
+          xcrun notarytool submit "$RUNNER_TEMP/Marshal.zip" \
+            --issuer "$MACOS_NOTARY_ISSUER_ID" \
+            --key-id "$MACOS_NOTARY_KEY_ID" \
+            --key "$RUNNER_TEMP/AuthKey.p8" \
+            --wait
+          xcrun stapler staple "$bundle"
+          xcrun stapler validate "$bundle"
+
+          hdiutil create -volname Marshal -srcfolder "$bundle" \
+            -ov -format UDZO "$RUNNER_TEMP/Marshal.dmg"
+          # --clobber: a re-run of this job replaces its own asset rather than
+          # failing on it.
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/Marshal.dmg" --clobber
+      - name: Report an unsigned build
+        if: env.MACOS_SIGN_P12 == ''
+        run: |
+          echo "unsigned: not uploaded"
+
+  app-linux:
+    name: Tray app (Linux)
+    needs: release
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      # The GTK and AppIndicator headers tray_manager's Linux half compiles
+      # against. They are needed only to build the runner, not to test the
+      # Dart, which is why the checks workflow needs none of this.
+      - name: Install the GTK and AppIndicator development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config \
+            libgtk-3-dev libayatana-appindicator3-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.50.0'
+          cache: true
+      - name: Fetch the daemon binaries this tag released
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64 | aarch64) arch=arm64 ;;
+            x86_64 | amd64) arch=amd64 ;;
+            *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          mkdir -p dist app-bins
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern "*linux_${arch}.tar.gz" --dir dist
+          tar -xzf dist/*"_linux_${arch}.tar.gz" -C app-bins marshal webbridge
+      - name: Build the app bundle
+        working-directory: app
+        env:
+          APP_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          flutter pub get
+          flutter test
+          flutter build linux --release \
+            --dart-define=APP_VERSION="${APP_VERSION#v}"
+      - name: Bundle the daemon binaries and package
+        run: |
+          set -euo pipefail
+          bundle="app/build/linux/x64/release/bundle"
+          mkdir -p "$bundle/bin"
+          cp app-bins/marshal app-bins/webbridge "$bundle/bin/"
+          chmod 755 "$bundle/bin/marshal" "$bundle/bin/webbridge"
+          tarball="marshal-app_${GITHUB_REF_NAME}_linux_x64.tar.gz"
+          tar -czf "$RUNNER_TEMP/$tarball" -C "$(dirname "$bundle")" bundle
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/$tarball" --clobber
+
+  install-smoke:
+    name: Installer smoke (${{ matrix.os }})
+    # Releases are cut as drafts (.goreleaser.yaml `release.draft`) and a
+    # draft's assets are not publicly downloadable, while install.sh fetches
+    # them with a plain unauthenticated curl. So this job cannot belong to the
+    # tag run — it could never pass. It runs when a human publishes the draft,
+    # at which point the assets are genuinely public, and by hand with
+    # workflow_dispatch.
+    #
+    # The tradeoff is recorded in docs/distribution/d2-packaging.md: a broken
+    # installer is caught immediately *after* publishing rather than before,
+    # which is the only honest option while releases are drafts. The other
+    # option — teaching install.sh to authenticate — is refused on purpose: a
+    # `curl | sh` installer that accepts a token is a foot-gun.
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decide which tag to install
+        id: tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${RELEASE_TAG:-${INPUT_TAG:-}}"
+          if [ -z "$tag" ]; then
+            echo "no tag to install: dispatch this workflow with a published tag" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+      # --version is pinned so this exercises the same download, checksum and
+      # extract path a user gets, not the /releases/latest redirect.
+      - name: Install the published release
+        run: |
+          prefix="$RUNNER_TEMP/marshal-bin"
+          ./scripts/install.sh --no-daemon --version "${{ steps.tag.outputs.tag }}" --prefix "$prefix"
+          "$prefix/marshal" --version
+          "$prefix/webbridge" --version

@@ -112,15 +112,22 @@ ordered.
 
 The newest writer is exempt from its own write: a path whose recorded writer is
 the calling agent needs no re-read. An external change after that write still
-makes it stale, because the recorded write time no longer matches the file's
-modification time. The exemption compares modification time with the recorded
-write time; on a filesystem whose timestamps are too coarse to separate an
-external write from the recorded one, that change is indistinguishable from the
-writer's own commit, while the revision epoch still orders session writes. Any
-read clears the epoch for all agents: a full `file.read` and the region embedded
-in a stale error both record the write revision they observed for the path,
-together with the time they observed it, so one agent's read satisfies the guard
-for the rest.
+makes it stale, because the recorded write stamp no longer matches the file's
+modification time — the ledger records the version the write committed, not the
+instant the call ran. The exemption compares modification times; on a filesystem
+whose timestamps are too coarse to separate an external write from the recorded
+one, that change is indistinguishable from the writer's own commit, while the
+revision epoch still orders session writes. Any read clears the epoch for all
+agents — the writer included: a read is checked before the exemption, so a read
+of the version now on disk always licenses the edit. Without that ordering the
+exemption would ignore every read mark, and a path that changed once after the
+agent's own write (a formatter, a checkout, a shell-side edit) could never be
+edited again in that session. A full `file.read` and the region embedded in a
+stale error both record the write revision they observed for the path together
+with the modification time of the version they displayed. The edit is licensed
+when that stamp equals the file's current one: a version stamped ahead of this
+process's clock is editable after a read, while a version that landed after the
+read — whatever its stamp — is refused.
 
 When the staleness check does fire, the error carries what the caller needs to
 act on it instead of paying for a whole-file re-read:

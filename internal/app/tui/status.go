@@ -18,6 +18,7 @@ import (
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/interaction"
 	"marshal/internal/strutil"
+	"marshal/web/bridge/contract"
 )
 
 const (
@@ -118,42 +119,51 @@ func identityStyle() lipgloss.Style {
 func (m Model) statusClusters(width int) (left, right string) {
 	segs := m.statusLeftSegments()
 	left = joinSegs(segs)
-	right = m.statusRightSegment()
+	// The fleet's count names work waiting on another screen, which no other
+	// cue on this line reports, so it is never shed with the hints: it sits
+	// before the session's own right-hand segment whatever happens to that
+	// segment (decision 9). The child's pending restart is pinned the same
+	// way, beside the count: it is the one cue that the running child is no
+	// longer the one on disk, and it must survive a narrow terminal.
+	aside := joinRight(m.needsYouSegment(), m.restartSegment())
+	own := m.sessionRightSegment()
+	right = joinRight(aside, own)
 
 	// When the terminal is narrow, drop the button-hint cluster first so
 	// that project path, worktree, and other identity segments remain
 	// visible. Approval/error indicators are never dropped this way.
-	if right != "" && !m.hasPendingApproval() && !m.noticeVisible() && m.ctrlCArmed() == ctrlCNone {
+	if own != "" && !m.hasPendingApproval() && !m.noticeVisible() && m.ctrlCArmed() == ctrlCNone {
 		fits := func(s string) bool {
-			return visibleRunes(left)+visibleRunes(s)+statusHorizontalPadding+statusMinGap <= width
+			return visibleRunes(left)+visibleRunes(joinRight(aside, s))+statusHorizontalPadding+statusMinGap <= width
 		}
 		// Shed the optional mouse hint before sacrificing the whole
 		// cluster: dropping "clear queue" to keep a mouse-mode reminder is
 		// the wrong trade, and the cluster is one string that goes as a unit.
-		if !fits(right) {
+		if !fits(own) {
 			hints := m.footerHints()
 			hints.SuppressMouseHint = true
-			right = help.Footer(hints)
+			own = help.Footer(hints)
 		}
-		if !fits(right) {
+		if !fits(own) {
 			hints := m.footerHints()
 			hints.SuppressMouseHint = true
 			hints.SuppressBrowseHint = true
-			right = help.Footer(hints)
+			own = help.Footer(hints)
 		}
 		// While a turn runs, the stop key outranks every other hint: a
 		// terminal too narrow for the cluster keeps the one pair that
 		// unsticks the turn, and the segment shedding below makes room for
 		// it out of the left cluster.
-		if !fits(right) {
+		if !fits(own) {
 			if m.busy {
 				hints := m.footerHints()
 				hints.StopOnly = true
-				right = help.Footer(hints)
+				own = help.Footer(hints)
 			} else {
-				right = ""
+				own = ""
 			}
 		}
+		right = joinRight(aside, own)
 	}
 
 	for len(segs) > 1 && visibleRunes(left)+visibleRunes(right)+statusHorizontalPadding+statusMinGap > width {
@@ -249,7 +259,7 @@ func modeSegmentFor(access acpwire.Interaction) string {
 // questions.
 //
 // There is deliberately no "edit cmd" cue: an approval edit only exists while
-// its approval is still pending, and statusRightSegment reports that pending
+// its approval is still pending, and sessionRightSegment reports that pending
 // decision first. Replacing it with the edit cue would hide the one persistent
 // reminder that a decision is outstanding.
 func (m Model) transientStatusSegment() string {
@@ -288,6 +298,14 @@ func (m Model) statusLeftSegments() []statusSeg {
 	st := m.sess.Status()
 	segs := []statusSeg{
 		{text: m.modeSegmentStyle().Render(modeSegmentFor(st.Interaction)), priority: 0, pinned: true},
+	}
+
+	// A fleet agent's session names its agent right after the mode cue: which
+	// agent is running is the identity of the screen, not a metric, so it
+	// sheds only after everything else and is never pinned in place of the
+	// conversation's own state.
+	if m.agentSessionID != "" {
+		segs = append(segs, statusSeg{text: identityStyle().Render(glyph.Agent + " " + m.agentSessionName), priority: 0})
 	}
 
 	if !st.Trusted {
@@ -500,7 +518,62 @@ func browserStatusText(bi acpwire.Browser) string {
 	return g + " " + url
 }
 
-func (m Model) statusRightSegment() string {
+// joinRight puts the fleet's count before the session's own right-hand
+// segment. Either side may be empty: the count is present without a hint
+// cluster, and the cluster is present with nothing waiting elsewhere.
+func joinRight(count, own string) string {
+	switch {
+	case count == "":
+		return own
+	case own == "":
+		return count
+	}
+	return count + dimSeparator + own
+}
+
+// needsYouSegment is the fleet's queue as a count, apart from this screen's own
+// agent, in the warning colour (decision 9). It is empty when there is no fleet
+// — embedded mode has none — and when nothing waits.
+func (m Model) needsYouSegment() string {
+	if n := m.needsYouCount(); n > 0 {
+		return warningStyle().Render(fmt.Sprintf("needs you %d", n))
+	}
+	return ""
+}
+
+// restartSegment is the child's pending restart in the warning colour: the
+// running child is no longer the one on disk, and the sessions sheet says
+// why. Empty while the child is current. It is pinned beside the fleet's
+// count, outside the hint shedding, so a narrow terminal keeps it.
+func (m Model) restartSegment() string {
+	if m.sess.Status().Restart == nil {
+		return ""
+	}
+	return warningStyle().Render("restart pending")
+}
+
+// needsYouCount is how many queued items are not the shown agent's own. On a
+// session that is not an agent's, every item counts: AgentSession is "" and
+// nothing is subtracted.
+func (m Model) needsYouCount() int {
+	if m.fleet == nil {
+		return 0
+	}
+	shown := m.AgentSession()
+	n := 0
+	for _, item := range m.fleet.State().Inbox.Queue {
+		if shown != "" && item.Kind == contract.InboxItemAgent && item.AgentID == shown {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// sessionRightSegment is the session's own right-hand segment: the interrupt
+// and decision cues, the notice indicator, a flash, a transient cue, or the
+// footer hints.
+func (m Model) sessionRightSegment() string {
 	switch m.ctrlCArmed() {
 	case ctrlCStop:
 		return warningStyle().Render("Ctrl+C again to stop the turn")
@@ -529,6 +602,12 @@ func (m Model) statusRightSegment() string {
 		}
 		return errorStyle().Render("✘ error")
 	}
+	if m.browsePending != "" {
+		// A browse action is waiting on the session: the detail fetch, the copy
+		// or the open runs off the Update goroutine, and this is what the user
+		// sees instead of a frozen screen (AUD-10).
+		return dimStyle().Render(m.browsePending)
+	}
 	if m.flashActive() {
 		return dimStyle().Render(m.flash)
 	}
@@ -552,7 +631,7 @@ func (m Model) accessRequestQueued() bool {
 }
 
 // noticeVisible reports whether a session notice is currently up. The
-// error indicator in statusRightSegment is never shed for width, so the
+// error indicator in sessionRightSegment is never shed for width, so the
 // hint-cluster drop logic must skip it when a notice is visible.
 func (m Model) noticeVisible() bool {
 	return m.sess.Status().Notice != nil
@@ -592,7 +671,10 @@ func (m Model) footerHints() help.FooterHints {
 		PopupOpen:            m.activeCompletionPopup() != nil,
 		IdleRollbackEligible: !m.busy && st.HasBackup,
 		CtrlXHint:            m.ctrlXHint(st),
-		MouseReleased:        m.mouseReleased || !m.sess.Config().TUI.MouseCapture,
+		MouseReleased:        m.mouseReleased,
+		// Capture off in config means the terminal owns the mouse and Ctrl+S
+		// is refused, so neither mouse hint would be true.
+		MouseCaptureDisabled: !m.sess.Config().TUI.MouseCapture,
 		RunActive:            st.SubagentRunning,
 		Browsing:             m.browsing,
 		// The interruption hint is only advertised when the runtime can honour

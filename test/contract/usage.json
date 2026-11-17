@@ -1,0 +1,53 @@
+{
+  "UsageTotals": {
+    "costUsd": 12.4,
+    "promptTokens": 820000,
+    "completionTokens": 96000,
+    "agentHours": 6.5,
+    "prsShipped": 3
+  },
+  "UsagePoint": {
+    "key": "go-service",
+    "costUsd": 7.25,
+    "tokens": 610000
+  },
+  "UsageReport": {
+    "range": "7d",
+    "totals": {
+      "costUsd": 12.4,
+      "promptTokens": 820000,
+      "completionTokens": 96000,
+      "agentHours": 6.5,
+      "prsShipped": 3
+    },
+    "series": [
+      {
+        "key": "go-service",
+        "costUsd": 7.25,
+        "tokens": 610000
+      },
+      {
+        "key": "widgets",
+        "costUsd": 5.15,
+        "tokens": 306000
+      }
+    ]
+  },
+  "AuditEvent": {
+    "ts": "2026-11-17T03:00:00Z",
+    "event": "prune",
+    "ownerId": "owner-1",
+    "bytes": 1048576
+  },
+  "DiskStatus": {
+    "repos": 734003200,
+    "work": 209715200,
+    "total": 943718400,
+    "measuredAt": "2026-11-17T04:00:00Z",
+    "budgetMB": 4096
+  },
+  "PruneResult": {
+    "reclaimed": 1048576,
+    "total": 942669824
+  }
+}

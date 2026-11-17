@@ -8,6 +8,7 @@ package fleet
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -49,12 +50,22 @@ type Model struct {
 	// selected is the selected row's ID — an agent's or a session's — so the
 	// selection survives a reorder.
 	selected string
+	// startSelected is WithSelected's ID until a loaded state lists it: the
+	// cursor starts there, once.
+	startSelected string
+	// notice is WithNotice's line, added to Events when the model starts.
+	notice string
+	// target is what the program ended to open. Only ⏎ sets it, so the quit
+	// keys end with the zero target.
+	target Target
 	// agentCursor indexes the Agents panel's selectable rows, never a group
 	// header. needsCursor indexes the Needs you panel's queue.
 	agentCursor int
 	needsCursor int
-	// tab is the right panel's tab: 1 Activity, 3 Info.
+	// tab is the right panel's tab: 1 Activity, 2 Diff, 3 Info.
 	tab int
+	// diff is the Diff tab's state for the shown agent.
+	diff diffView
 
 	zoom      bool
 	help      bool
@@ -67,10 +78,76 @@ type Model struct {
 
 	width, height int
 
+	modal  modal  // nil when no modal is open
+	answer string // the agent whose approval is open inline; "" for none
+	status statusLine
+
+	// actions numbers the actions dispatched, so a slow answer cannot undo a
+	// newer one. It is shared by pointer: Model is a value, and every copy
+	// must number from the same count.
+	actions *actionTally
+
 	// done releases the wait command when the program quits, so the wait
 	// cannot block a program that has stopped reading its messages. It is
 	// held by pointer: Model is a value, and every copy shares one release.
 	done *quitGate
+
+	// watch is the loop's watch, which every program on the loop observes
+	// through. It is nil when the model was built without one: the Events
+	// lines are the model's own, and no notification is sent.
+	watch *Watch
+}
+
+// modal is one open modal: the question, the spawn form or the intake
+// prompt. Each takes the keys while it is open.
+type modal interface {
+	update(m Model, msg tea.KeyPressMsg) (Model, tea.Cmd)
+	view(m Model, width, height int) string
+}
+
+// statusLine is the footer's message: an action's failure, or a refusal
+// while down, shown until until.
+type statusLine struct {
+	text  string
+	until time.Time
+}
+
+// actionDoneMsg is one action's answer.
+type actionDoneMsg struct {
+	what string // the Events line's verb: "answer", "spawn", "cancel", …
+	name string // the agent's or submission's name
+	err  error
+	// selectID is the row to select once it appears; "" for none.
+	selectID string
+	warning  string
+	// seq is the action's number, from nextActionSeq; 0 for a message no
+	// action dispatched.
+	seq uint64
+}
+
+// actionTally numbers the actions dispatched since the screen opened.
+type actionTally struct {
+	seq atomic.Uint64
+}
+
+// next hands out the next action's number.
+func (t *actionTally) next() uint64 { return t.seq.Add(1) }
+
+// current is the last number handed out.
+func (t *actionTally) current() uint64 { return t.seq.Load() }
+
+// nextActionSeq numbers one action at the moment it is dispatched.
+func (m Model) nextActionSeq() uint64 {
+	if m.actions == nil {
+		return 0
+	}
+	return m.actions.next()
+}
+
+// staleAction reports whether a newer action was dispatched after this one:
+// its answer no longer describes the screen.
+func (m Model) staleAction(seq uint64) bool {
+	return seq != 0 && m.actions != nil && seq < m.actions.current()
 }
 
 // quitGate releases the wait command when the program quits. The close is
@@ -85,6 +162,15 @@ func newQuitGate() *quitGate { return &quitGate{ch: make(chan struct{})} }
 
 // release closes the gate, once.
 func (g *quitGate) release() { g.once.Do(func() { close(g.ch) }) }
+
+// Target is what the fleet program ended to open (P5 F5). The zero value
+// means quit.
+type Target struct {
+	AgentID   string // an agent's session, through the agent attach
+	AgentName string
+	Root      string // the project: an agent's, or a daemon session's child
+	SessionID string // a daemon session, through the project attach; "" for an agent
+}
 
 // Option configures a Model.
 type Option func(*Model)
@@ -103,17 +189,36 @@ func WithNow(now func() time.Time) Option {
 	}
 }
 
+// WithSelected starts the cursor on the row with this ID — an agent's, or a
+// daemon session's — as soon as a loaded state lists it.
+func WithSelected(id string) Option {
+	return func(m *Model) { m.startSelected = id }
+}
+
+// WithNotice adds a line to the Events ring when the model starts: the loop
+// says why the fleet screen came back. It is not a transition, so the baseline
+// rule does not apply to it.
+func WithNotice(line string) Option {
+	return func(m *Model) { m.notice = line }
+}
+
+// WithWatch gives the fleet model the loop's watch.
+func WithWatch(w *Watch) Option {
+	return func(m *Model) { m.watch = w }
+}
+
 // New builds the fleet screen over f. It resolves the theme from the TUI config
 // (decision 13) and publishes it, so the shared chrome helpers paint with it,
 // exactly as the session screen's loadTheme does.
 func New(f acpclient.Fleet, opts ...Option) Model {
 	m := &Model{
-		fleet:  f,
-		now:    time.Now,
-		cfg:    config.Default().TUI,
-		tab:    1,
-		dimmed: true,
-		done:   newQuitGate(),
+		fleet:   f,
+		now:     time.Now,
+		cfg:     config.Default().TUI,
+		tab:     1,
+		dimmed:  true,
+		done:    newQuitGate(),
+		actions: &actionTally{},
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -127,8 +232,20 @@ func New(f acpclient.Fleet, opts ...Option) Model {
 	m.dimmed = m.state.Conn != acpclient.FleetConnected
 	m.th = theme.LoadWithConfig(m.cfg.Theme, m.cfg.Mode, theme.ParseDepth(m.cfg.Depth), theme.PaletteOverrides(m.cfg.Palette))
 	theme.Reload(m.th)
+	// The notice is the loop's line, not a transition: it goes in before the
+	// first read can add one of its own.
+	if m.notice != "" {
+		m.addEvent(m.notice)
+	}
 	return *m
 }
+
+// Open is the target the program ended to open: the row ⏎ chose. The zero
+// target means the program ended without opening anything.
+func (m Model) Open() Target { return m.target }
+
+// Selected is the selected row's ID: an agent's or a daemon session's.
+func (m Model) Selected() string { return m.selected }
 
 // Theme is the theme the model resolved from its TUI config.
 func (m Model) Theme() theme.Theme { return m.th }
@@ -186,10 +303,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 	case changedMsg:
-		m.applyState()
-		return m, m.waitForChange()
+		bell := m.applyState()
+		// The wait is armed beside the Diff tab's reads: a state can change
+		// the agent the tab shows, or its changed-files count.
+		read := m.syncDiff()
+		return m, tea.Batch(m.waitForChange(), bell, read)
 	case tickMsg:
 		return m, tickCmd()
+	case diffReadMsg:
+		return m.handleDiffRead(msg)
+	case actionDoneMsg:
+		m.actionDone(msg)
+		return m, nil
+	case finishDraftMsg:
+		return m.handleFinishDraft(msg)
+	case finishDoneMsg:
+		return m.handleFinishDone(msg)
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -197,8 +326,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // applyState reads the client's state, reports what changed since the last
-// read, and re-arms the selection over the new rows.
-func (m *Model) applyState() {
+// read, and re-arms the selection over the new rows. It returns the bell
+// command when the loop's watch passed a notification: the Events lines are
+// the model's own, the notification is the watch's (decisions 4–6).
+func (m *Model) applyState() tea.Cmd {
 	prev, next := m.state, m.fleet.State()
 	m.addConnectionEvents(prev, next)
 	for _, t := range transitions(prev, next) {
@@ -207,6 +338,21 @@ func (m *Model) applyState() {
 	m.state = next
 	m.dimmed = next.Conn != acpclient.FleetConnected
 	m.reconcile()
+	return m.ring(next)
+}
+
+// ring hands the state just read to the loop's watch and rings the bell once
+// for what it passed. The state the model is seeded with is not observed: the
+// watch outlives a program, and a program that has just started must compare
+// against what the program before it read (decision 3).
+func (m Model) ring(state acpclient.FleetState) tea.Cmd {
+	if m.watch == nil {
+		return nil
+	}
+	if len(m.watch.Observe(state)) == 0 {
+		return nil
+	}
+	return tea.Raw(bell)
 }
 
 // reconcile holds the selection by ID across a rebuilt row list. A selection
@@ -214,6 +360,7 @@ func (m *Model) applyState() {
 // index, clamped to the list.
 func (m *Model) reconcile() {
 	_, rows := m.agentLines()
+	m.restoreStart(rows)
 	switch {
 	case len(rows) == 0:
 		m.agentCursor = 0
@@ -231,6 +378,51 @@ func (m *Model) reconcile() {
 	} else {
 		m.needsCursor = clamp(m.needsCursor, 0, n-1)
 	}
+}
+
+// restoreStart applies WithSelected: the cursor starts on the row with its ID
+// the first time a loaded state lists it, and never again, so a later reorder
+// leaves the operator's own move alone.
+func (m *Model) restoreStart(rows []agentRow) {
+	if m.startSelected == "" {
+		return
+	}
+	idx, ok := rowIndex(rows, m.startSelected)
+	if !ok {
+		return
+	}
+	m.agentCursor = idx
+	m.selected = rows[idx].id
+	m.startSelected = ""
+}
+
+// openTarget is what ⏎ opens from the current selection, over the rows the view
+// already built. An agent row gives its ID, its name and its project root; a
+// Sessions row gives its child's root and its session ID; a Needs you agent
+// item gives that agent's target. An intake item, and an empty selection, open
+// nothing: plan 5 gives intake items approve and deny.
+func (m Model) openTarget(rows []agentRow) Target {
+	id := m.selected
+	if m.focus == focusNeedsYou {
+		queue := m.state.Inbox.Queue
+		if m.needsCursor < 0 || m.needsCursor >= len(queue) {
+			return Target{}
+		}
+		item := queue[m.needsCursor]
+		if item.Kind != contract.InboxItemAgent || item.AgentID == "" {
+			return Target{}
+		}
+		id = item.AgentID
+	}
+	idx, ok := rowIndex(rows, id)
+	if !ok {
+		return Target{}
+	}
+	row := rows[idx]
+	if row.session {
+		return Target{Root: row.project, SessionID: row.id}
+	}
+	return Target{AgentID: row.id, AgentName: row.name, Root: row.project}
 }
 
 // agentRow is one selectable row in the Agents panel: an agent from a group of

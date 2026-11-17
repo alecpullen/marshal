@@ -20,6 +20,16 @@ import (
 const (
 	containerSocketDir  = "/run/marshal"
 	containerSocketName = "agent.sock"
+	// containerViewersName is the viewer socket the agent serves beside its
+	// control socket, in the same socket directory on both sides of the
+	// boundary (decision 6).
+	containerViewersName = "viewers.sock"
+	// containerViewersEnv names the environment variable the agent reads at
+	// startup to learn where to serve viewers (decision 3). It is a literal
+	// because everything under web/ is standard-library only and so may not
+	// import marshal/internal/acp. An image whose marshal predates it ignores
+	// the variable and starts as before, with no viewer socket.
+	containerViewersEnv = "MARSHAL_ACP_VIEWERS"
 	containerWorkDir    = "/work"
 	// containerConfigDir and containerDataDir are where the shared homes
 	// mount; XDG_CONFIG_HOME and MARSHAL_DATA_DIR point at them.
@@ -159,6 +169,15 @@ func (c *containerTransport) socketPath() string {
 	return filepath.Join(c.cfg.SocketDir, containerSocketName)
 }
 
+// viewerSocketPath is the host-side path of the container's viewer socket:
+// the same socket directory as the control socket, under the viewer name the
+// agent serves (decision 6). Nothing here removes a stale one; start clears
+// both sockets before the container runs, and the agent removes its own again
+// when it binds.
+func (c *containerTransport) viewerSocketPath() string {
+	return filepath.Join(c.cfg.SocketDir, containerViewersName)
+}
+
 // buildRunArgs assembles the runtime invocation. It deliberately grants
 // no host escape: no docker socket mount, no --privileged, no host
 // networking. Adding any of them defeats the isolation boundary.
@@ -168,7 +187,16 @@ func (c *containerTransport) buildRunArgs() []string {
 		"--name", c.cfg.Name,
 		"-w", containerWorkDir,
 	}
-	args = append(args, c.commonRunArgs()...)
+	// The agent is told where to serve viewers through the environment, not a
+	// flag: a marshal that predates this plan ignores it and starts as
+	// before, where a flag would make it refuse its arguments and every spawn
+	// on an older custom image would fail (decision 3). The value is the
+	// in-container socket, whose directory the control socket shares, so the
+	// host-side path viewerSocketPath names is the same socket. Only this
+	// vector carries it; the setup container serves no viewers.
+	args = append(args, c.commonRunArgs(map[string]string{
+		containerViewersEnv: "unix://" + containerSocketDir + "/" + containerViewersName,
+	})...)
 	args = append(args,
 		c.cfg.Image,
 		"acp",
@@ -190,13 +218,15 @@ func (c *containerTransport) buildSetupArgs(cmd string) []string {
 		"--name", setupContainerPrefix + strings.TrimPrefix(c.cfg.Name, containerNamePrefix),
 		"-w", containerWorkDir,
 	}
-	args = append(args, c.commonRunArgs()...)
+	args = append(args, c.commonRunArgs(nil)...)
 	return append(args, "--entrypoint", "sh", c.cfg.Image, "-c", cmd)
 }
 
 // commonRunArgs is the part of the run vector the agent and its setup
-// step share: mounts, resource caps and environment.
-func (c *containerTransport) commonRunArgs() []string {
+// step share: mounts, resource caps and environment. extraEnv joins the
+// sorted environment for the agent's own vector only, and wins over the
+// configured env so a spawn record can never move the viewer socket.
+func (c *containerTransport) commonRunArgs(extraEnv map[string]string) []string {
 	var args []string
 	if c.cfg.LocalMount != "" {
 		// A LocalPath agent works on the host checkout itself, so its
@@ -235,7 +265,7 @@ func (c *containerTransport) commonRunArgs() []string {
 	}
 	// Sorted so the argument vector is deterministic and testable. The
 	// home env vars join the map first so they sort with the rest.
-	env := make(map[string]string, len(c.cfg.Env)+len(c.cfg.ExtraEnv)+2)
+	env := make(map[string]string, len(c.cfg.Env)+len(c.cfg.ExtraEnv)+len(extraEnv)+2)
 	for k, v := range c.cfg.Env {
 		env[k] = v
 	}
@@ -245,6 +275,9 @@ func (c *containerTransport) commonRunArgs() []string {
 	if c.cfg.HomeConfigSubpath != "" {
 		env["XDG_CONFIG_HOME"] = containerConfigDir
 		env["MARSHAL_DATA_DIR"] = containerDataDir
+	}
+	for k, v := range extraEnv {
+		env[k] = v
 	}
 	keys := make([]string, 0, len(env))
 	for k := range env {
@@ -281,8 +314,11 @@ func (c *containerTransport) start() (io.WriteCloser, io.ReadCloser, io.ReadClos
 		return nil, nil, nil, fmt.Errorf("bridge: create socket dir: %w", err)
 	}
 	// A socket left by a previous generation would be dialed instead of
-	// the new container's.
+	// the new container's. The viewer socket is cleared beside the control
+	// socket's, for the same reason: it is the host side of a socket the
+	// agent rebinds (decision 6).
 	_ = os.Remove(c.socketPath())
+	_ = os.Remove(c.viewerSocketPath())
 
 	out, err := c.exec(c.buildRunArgs()...)
 	if err != nil {

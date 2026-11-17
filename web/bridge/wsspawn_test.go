@@ -293,9 +293,12 @@ func TestSpawnWorkspaceTimeoutPausesTheAgent(t *testing.T) {
 	if _, err := e.f.runtimeForAgent(id); !errors.Is(err, ErrUnknownAgent) {
 		t.Fatalf("agent still running after its deadline: %v", err)
 	}
-	if got := e.agents[id].calls("session/cancel"); len(got) != 1 {
-		t.Fatalf("session/cancel calls = %v", got)
-	}
+	// The cancel is a notification, so Cancel returns as soon as the frame is
+	// written; the fake records it on its own serve goroutine. Poll rather
+	// than read the recording straight after the write.
+	eventually(t, "the agent's session/cancel to be recorded", func() bool {
+		return len(e.agents[id].calls("session/cancel")) == 1
+	})
 	tail, _ := e.f.audit.Tail(10)
 	found := false
 	for _, ev := range tail {

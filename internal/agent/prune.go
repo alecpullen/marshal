@@ -194,9 +194,79 @@ func pruneStaleToolOutputs(wire []schema.ChatMessage, minSize int) ([]schema.Cha
 			ToolCallID: wire[t.msgIdx].ToolCallID,
 			Content:    formatPruneStub(t.tool, t.path, t.content),
 		}
+		// A superseded output's images go with its content: the stub is
+		// text only, so nothing downstream resolves bytes for it.
+		out[t.msgIdx].Images = nil
 		pruned++
 	}
 	return out, pruned
+}
+
+// shedImages drops images oldest-first until the estimated prompt fits
+// budget. It runs only where pruning already runs — after the prompt has
+// overflowed — so the cached prefix is never rewritten on the happy path.
+// Tool results shed before user messages: the user's own screenshots are the
+// thing they asked about.
+func shedImages(wire []schema.ChatMessage, budget int) ([]schema.ChatMessage, int) {
+	// The caller may run this unconditionally (an images-only overflow has
+	// nothing to prune, so it never reaches the prune-gated path), which is
+	// why the under-budget case must be a cheap no-op here rather than a
+	// condition the call sites carry.
+	if estimateTokens(wire) <= budget {
+		return wire, 0
+	}
+	out := append([]schema.ChatMessage(nil), wire...)
+	shed := 0
+	for pass := 0; pass < 2 && estimateTokens(out) > budget; pass++ {
+		for i := range out {
+			if len(out[i].Images) == 0 {
+				continue
+			}
+			if pass == 0 && out[i].Role != schema.RoleTool {
+				continue
+			}
+			out[i].Images = nil
+			out[i].Content += "\n[image omitted to fit context]"
+			shed++
+			if estimateTokens(out) <= budget {
+				break
+			}
+		}
+	}
+	return out, shed
+}
+
+// shrinkOverflowWire applies the overflow gate's two cheap remedies in order:
+// prune superseded tool output, then shed images. Shedding runs whether or not
+// anything was pruned — an images-only overflow has no stale output to prune,
+// and shedImages returns its input untouched when the wire already fits — so a
+// call site must not gate it behind the prune count.
+//
+// The counts are what each step removed, for the caller's log line and notice.
+func shrinkOverflowWire(wire []schema.ChatMessage, budget int) (out []schema.ChatMessage, pruned, shed int) {
+	prunedMsgs, pruned := pruneStaleToolOutputs(wire, pruneMinSizeDefault)
+	// Images cost far more than the summary line that stands in for them, so
+	// they are the second thing to go when the first was not enough.
+	out, shed = shedImages(prunedMsgs, budget)
+	return out, pruned, shed
+}
+
+// overflowDropNotice describes what the overflow gate removed, in the user's
+// transcript. An empty result means nothing was dropped, so a call site can
+// add it unconditionally — dropped context that leaves no trace reads to the
+// user as the model losing track. reason completes the sentence ("to stay
+// within the context budget", "after the provider rejected the prompt as too
+// long").
+func overflowDropNotice(pruned, shed int, reason string) string {
+	switch {
+	case pruned > 0 && shed > 0:
+		return fmt.Sprintf("Pruned %d stale tool result(s) and dropped %d image(s) %s.", pruned, shed, reason)
+	case shed > 0:
+		return fmt.Sprintf("Dropped %d image(s) %s.", shed, reason)
+	case pruned > 0:
+		return fmt.Sprintf("Pruned %d stale tool result(s) %s.", pruned, reason)
+	}
+	return ""
 }
 
 // formatPruneStub builds the visible replacement string. Test pins the

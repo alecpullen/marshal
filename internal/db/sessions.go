@@ -22,6 +22,9 @@ type Message struct {
 	// StepSeq is the step that produced the message (narration only); 0 when
 	// the message belongs to no step.
 	StepSeq int64
+	// ImagesJSON is the JSON array of image refs the message carried; ""
+	// means none. It is stored and returned raw: the session parses it.
+	ImagesJSON string
 }
 
 type Session struct {
@@ -217,6 +220,12 @@ func (db *DB) SaveMessage(sessionID string, role string, content string, content
 // SaveMessageStep is SaveMessage plus the step the message belongs to
 // (stepSeq 0 stores NULL).
 func (db *DB) SaveMessageStep(sessionID string, role string, content string, contentType string, createdAt time.Time, reasoning string, thinkDuration time.Duration, final bool, parentID int64, stepSeq int64) (int64, error) {
+	return db.SaveMessageWithImages(sessionID, role, content, contentType, createdAt, reasoning, thinkDuration, final, parentID, stepSeq, "")
+}
+
+// SaveMessageWithImages is SaveMessageStep plus the message's image refs,
+// already marshalled to JSON. An empty imagesJSON stores ”.
+func (db *DB) SaveMessageWithImages(sessionID, role, content, contentType string, createdAt time.Time, reasoning string, thinkDuration time.Duration, final bool, parentID, stepSeq int64, imagesJSON string) (int64, error) {
 	var reasoningArg sql.NullString
 	if reasoning != "" {
 		reasoningArg = sql.NullString{String: reasoning, Valid: true}
@@ -238,9 +247,9 @@ func (db *DB) SaveMessageStep(sessionID string, role string, content string, con
 		stepArg = sql.NullInt64{Int64: stepSeq, Valid: true}
 	}
 	res, err := db.sqlDB.Exec(
-		`INSERT INTO messages (session_id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id, step_seq)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, role, content, contentTypeArg, reasoningArg, thinkDurationArg, createdAt.UTC().Format(time.RFC3339), final, parentArg, stepArg,
+		`INSERT INTO messages (session_id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id, step_seq, images_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, role, content, contentTypeArg, reasoningArg, thinkDurationArg, createdAt.UTC().Format(time.RFC3339), final, parentArg, stepArg, imagesJSON,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("save message: %w", err)
@@ -253,21 +262,41 @@ func (db *DB) SaveMessageStep(sessionID string, role string, content string, con
 }
 
 // GetLeafMessageID returns the session's current active-branch leaf id.
-// If leaf_message_id was never recorded (e.g. a session created in the
-// same process where SetBranchLeaf was never called), falls back to
-// MAX(id) of the session's messages so cold-start reconstruction still
-// finds the right tip. Returns 0 if the session has no messages.
+//
+// The stored state distinguishes three cases (AUD-09):
+//
+//   - leaf_message_id = N (> 0): the tip is message N.
+//   - branch_emptied = 1 (or a legacy stored 0): the branch was explicitly
+//     rewound to before the first turn, so there is no active branch and 0 is
+//     returned. This must not fall back to MAX(id), which would resurrect the
+//     branch the user rewound away from.
+//   - leaf_message_id IS NULL and branch_emptied = 0: the tip was never
+//     recorded (e.g. a session where SetBranchLeaf was never called), so fall
+//     back to MAX(id) of the session's messages for cold-start
+//     reconstruction.
+//
+// Returns 0 if the session has no messages.
 func (db *DB) GetLeafMessageID(sessionID string) (int64, error) {
 	var leaf sql.NullInt64
-	row := db.sqlDB.QueryRow(`SELECT leaf_message_id FROM agent_sessions WHERE id = ?`, sessionID)
-	if err := row.Scan(&leaf); err != nil {
+	var emptied int64
+	row := db.sqlDB.QueryRow(`SELECT leaf_message_id, branch_emptied FROM agent_sessions WHERE id = ?`, sessionID)
+	if err := row.Scan(&leaf, &emptied); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("get leaf message id: %w", err)
 	}
-	if leaf.Valid && leaf.Int64 > 0 {
-		return leaf.Int64, nil
+	if emptied != 0 {
+		// The branch was explicitly rewound to the empty root.
+		return 0, nil
+	}
+	if leaf.Valid {
+		if leaf.Int64 > 0 {
+			return leaf.Int64, nil
+		}
+		// A stored zero (legacy databases, from before the empty root was
+		// representable) is also an intentional empty root, not "unset".
+		return 0, nil
 	}
 	// Fallback: newest message id in the session.
 	var maxID sql.NullInt64
@@ -281,9 +310,23 @@ func (db *DB) GetLeafMessageID(sessionID string) (int64, error) {
 }
 
 // SetBranchLeaf records leafID as the session's current active branch tip.
+// A leafID <= 0 means "no active branch" (the branch was rewound to before
+// the first turn): it is stored as an explicitly emptied root rather than as
+// leaf_message_id = 0, because that column references messages(id) and a
+// literal 0 violates the foreign key (AUD-09).
 func (db *DB) SetBranchLeaf(sessionID string, leafID int64) error {
-	if _, err := db.sqlDB.Exec(`UPDATE agent_sessions SET leaf_message_id = ? WHERE id = ?`, leafID, sessionID); err != nil {
-		return fmt.Errorf("set branch leaf: %w", err)
+	if leafID > 0 {
+		if _, err := db.sqlDB.Exec(
+			`UPDATE agent_sessions SET leaf_message_id = ?, branch_emptied = 0 WHERE id = ?`,
+			leafID, sessionID); err != nil {
+			return fmt.Errorf("set branch leaf: %w", err)
+		}
+		return nil
+	}
+	if _, err := db.sqlDB.Exec(
+		`UPDATE agent_sessions SET leaf_message_id = NULL, branch_emptied = 1 WHERE id = ?`,
+		sessionID); err != nil {
+		return fmt.Errorf("clear branch leaf: %w", err)
 	}
 	return nil
 }
@@ -298,7 +341,7 @@ WITH RECURSIVE chain(id, parent_id) AS (
      WHERE m.session_id = ?
 )
 SELECT m.id, m.role, m.content, m.content_type, m.reasoning, m.think_duration_ms,
-       m.created_at, m.final, m.parent_id, m.step_seq
+       m.created_at, m.final, m.parent_id, m.step_seq, m.images_json
   FROM messages m
   JOIN chain c ON m.id = c.id
  ORDER BY m.id ASC`
@@ -314,7 +357,7 @@ func scanMessage(rows *sql.Rows) (Message, error) {
 	var final sql.NullInt64
 	var parentID sql.NullInt64
 	var stepSeq sql.NullInt64
-	if err := rows.Scan(&m.ID, &m.Role, &m.Content, &contentType, &reasoning, &thinkDurationMs, &created, &final, &parentID, &stepSeq); err != nil {
+	if err := rows.Scan(&m.ID, &m.Role, &m.Content, &contentType, &reasoning, &thinkDurationMs, &created, &final, &parentID, &stepSeq, &m.ImagesJSON); err != nil {
 		return Message{}, fmt.Errorf("scan message: %w", err)
 	}
 	if contentType.Valid {
@@ -393,7 +436,7 @@ func (db *DB) ListBranches(sessionID string) ([]int64, error) {
 // GetMessages returns all messages for a session in chronological order.
 func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 	rows, err := db.sqlDB.Query(
-		`SELECT id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id, step_seq
+		`SELECT id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id, step_seq, images_json
 		 FROM messages
 		 WHERE session_id = ?
 		 ORDER BY id ASC`,

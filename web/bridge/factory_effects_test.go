@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 func TestFactoryEffectAdapterConstruction(t *testing.T) {
@@ -49,6 +51,9 @@ func (factoryForgeStubs) PostReview(context.Context, Repo, int, Review, Credenti
 }
 func (factoryForgeStubs) ListFailedChecks(context.Context, Repo, string, Credential) ([]CheckInfo, error) {
 	panic("factory effect called Forge.ListFailedChecks")
+}
+func (factoryForgeStubs) ListChecks(context.Context, Repo, string, Credential) ([]contract.PullCheck, error) {
+	panic("factory effect called Forge.ListChecks")
 }
 func (factoryForgeStubs) CheckLog(context.Context, Repo, CheckInfo, Credential) (string, error) {
 	panic("factory effect called Forge.CheckLog")

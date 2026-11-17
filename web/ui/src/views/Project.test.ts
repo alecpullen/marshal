@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import Project from './Project.svelte'
 import * as api from '../lib/api.js'
 import { toRow } from '../lib/fleet'
+import { createNavigationGuard, type RouteLeaveGuard } from '../lib/navigationGuard'
 import { healthChecks, latestAgent, parseWorkspaceRef, autoFrom, autoOf } from '../lib/project/model'
 
 vi.mock('../lib/api.js', async (importActual) => {
@@ -175,6 +176,17 @@ describe('Project overview', () => {
 })
 
 describe('Project factory and agent defaults', () => {
+  it('linksToHandoffAndScopedFactory', async () => {
+    const onNavigate = vi.fn()
+    mount({ onNavigate })
+    // The header carries both factory destinations: creating work for this
+    // project, and the project's own factory dashboard.
+    await fireEvent.click(await screen.findByRole('link', { name: /Create factory work item for this project/ }))
+    expect(onNavigate).toHaveBeenLastCalledWith('#factory/new?project=%2Fhome%2Fu%2Falpha')
+    await fireEvent.click(screen.getByRole('link', { name: 'Open project factory' }))
+    expect(onNavigate).toHaveBeenLastCalledWith('#projects/%2Fhome%2Fu%2Falpha/factory')
+  })
+
   it('followsAgentDefaultsUntilOverridden', async () => {
     ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ workspace: 'go-dev', routing: { profile: 'fast' }, intake: {} }))
     mount()
@@ -333,6 +345,66 @@ describe('Project factory and agent defaults', () => {
     expect(written().factoryDefaults).toMatchObject({ workspace: 'repo:gone', hostId: 'remote', implementerRouting: { profile: 'gone-impl' } })
   })
 
+  it('automaticAssessmentVisibleAndConfigurable', async () => {
+    mount()
+    // Absent means on, and the screen says what that means instead of showing
+    // a blank or a local default it invented.
+    await waitFor(() => expect(screen.getByTestId('auto-assess-effective').textContent).toContain('Effective now: on'))
+    expect((screen.getByLabelText('Automatic plan assessment') as HTMLSelectElement).value).toBe('default')
+    // Nothing is savable until the record (and its version) arrived.
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save defaults' }) as HTMLButtonElement).disabled).toBe(false))
+
+    // Following the handoff writes nothing at all.
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    expect(written()).not.toHaveProperty('autoAssessPlanChanges')
+    expect(written().workspace).toBe('go-dev')
+
+    // Turning it off is a real override, and it is the only thing added.
+    await fireEvent.change(screen.getByLabelText('Automatic plan assessment'), { target: { value: 'off' } })
+    expect(screen.getByTestId('auto-assess-effective').textContent).toContain('Effective now: off')
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    expect(written(1).autoAssessPlanChanges).toBe(false)
+    // Every unrelated setting is carried through exactly as it was read.
+    expect(written(1).workspace).toBe('go-dev')
+    expect(written(1).routing).toEqual(settings.routing)
+    expect(written(1).intake).toEqual(settings.intake)
+
+    // Back to following the handoff removes the override rather than storing
+    // a fallback of the screen's own.
+    await fireEvent.change(screen.getByLabelText('Automatic plan assessment'), { target: { value: 'default' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(3))
+    expect(written(2)).not.toHaveProperty('autoAssessPlanChanges')
+    expect(written(2).workspace).toBe('go-dev')
+  })
+
+  it('projectPreferenceConflictRetainsDraft', async () => {
+    ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ ...settings, autoAssessPlanChanges: false }))
+    ;(api.putVersionedProjectSettings as Mock).mockRejectedValue(new api.APIError(412, { error: 'project settings changed' }))
+
+    mount()
+    await waitFor(() => expect((screen.getByLabelText('Automatic plan assessment') as HTMLSelectElement).value).toBe('off'))
+    expect(screen.getByTestId('auto-assess-effective').textContent).toContain('Effective now: off')
+    await fireEvent.change(screen.getByLabelText('Automatic plan assessment'), { target: { value: 'on' } })
+    await waitFor(() => expect(screen.getByTestId('unsaved')).toBeTruthy())
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('changed elsewhere')
+    // A refusal costs nobody the preference they changed, and nothing was
+    // written behind their back: one attempt, no retry.
+    expect((screen.getByLabelText('Automatic plan assessment') as HTMLSelectElement).value).toBe('on')
+    expect(screen.getByTestId('auto-assess-effective').textContent).toContain('Effective now: on, because you turned it on')
+    expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(1)
+
+    // Only an explicit reload takes the saved value back.
+    await fireEvent.click(within(alert).getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(api.getVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect((screen.getByLabelText('Automatic plan assessment') as HTMLSelectElement).value).toBe('off'))
+  })
+
   it('failedLoadCannotSave', async () => {
     ;(api.getVersionedProjectSettings as Mock).mockRejectedValue(new api.APIError(503, { error: 'settings unavailable' }))
     mount()
@@ -402,28 +474,113 @@ describe('Project factory and agent defaults', () => {
     expect(cleared.reviewerInstructions).toBe('Be strict')
   })
 
-  it('unsavedNavigationRequiresConfirmation', async () => {
+})
+
+describe('Project route guard', () => {
+  /** The shell's guard, plus the registration calls the view makes on it. */
+  const wired = () => {
+    const guard = createNavigationGuard()
+    const registerGuard = vi.fn((fn?: RouteLeaveGuard) => guard.register(fn))
+    return { guard, registerGuard }
+  }
+
+  it('registersAndClearsDirtyGuard', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const onNavigate = vi.fn()
-    mount({ onNavigate })
+    const { guard, registerGuard } = wired()
+    const { unmount } = mount({ registerGuard })
     await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
-    // A pristine screen leaves without asking.
-    await fireEvent.click(screen.getByRole('link', { name: /Create factory work item/ }))
+    // A pristine screen registers itself, and leaving asks nothing.
+    expect(registerGuard).toHaveBeenCalledTimes(1)
+    expect(guard.allow()).toBe(true)
     expect(confirm).not.toHaveBeenCalled()
-    expect(onNavigate).toHaveBeenCalledTimes(1)
-    // An edit is protected by the in-app prompt and the browser's own warning.
+    // An edit is protected by the shell's guard and by the browser's warning.
     await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    await waitFor(() => expect(screen.getByTestId('unsaved')).toBeTruthy())
     const unload = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(unload)
     expect(unload.defaultPrevented).toBe(true)
-    await fireEvent.click(screen.getByRole('link', { name: /Create factory work item/ }))
-    expect(confirm).toHaveBeenCalledTimes(1)
-    expect(onNavigate).toHaveBeenCalledTimes(1)
-    // With confirmation, the edit is only lost deliberately.
-    confirm.mockReturnValue(true)
-    await fireEvent.click(screen.getByRole('link', { name: /Create factory work item/ }))
-    expect(onNavigate).toHaveBeenCalledTimes(2)
+    expect(guard.allow()).toBe(false)
+    expect(confirm).toHaveBeenCalledWith('You have unsaved project settings. Leave without saving them?')
+    // A screen that is gone answers for nothing.
+    unmount()
+    expect(registerGuard).toHaveBeenLastCalledWith(undefined)
+    expect(guard.allow()).toBe(true)
     confirm.mockRestore()
+  })
+
+  it('savedDraftClearsNavigationWarning', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const { guard, registerGuard } = wired()
+    mount({ registerGuard })
+    await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
+    await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    await waitFor(() => expect(screen.getByTestId('unsaved')).toBeTruthy())
+    expect(guard.allow()).toBe(false)
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(screen.queryByTestId('unsaved')).toBeNull())
+    // The stored record matches the drafts again, so leaving is free.
+    expect(guard.allow()).toBe(true)
+    expect(confirm).toHaveBeenCalledTimes(1)
+    confirm.mockRestore()
+  })
+
+  it('cancelledNavigationKeepsAllInput', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const { guard, registerGuard } = wired()
+    const onNavigate = vi.fn()
+    mount({ onNavigate, registerGuard })
+    await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
+    await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    await fireEvent.change(screen.getByLabelText('Ship target'), { target: { value: 'patch' } })
+    // The shell asks the guard before it changes the route; a refusal leaves
+    // the route alone.
+    expect(guard.allow()).toBe(false)
+    expect(onNavigate).not.toHaveBeenCalled()
+    // Every draft is still as the person left it, and nothing was written.
+    expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('act')
+    expect((screen.getByLabelText('Ship target') as HTMLSelectElement).value).toBe('patch')
+    expect(api.putVersionedProjectSettings).not.toHaveBeenCalled()
+    confirm.mockRestore()
+  })
+
+  it('delegationDefaultsOffAndDesignatesClient', async () => {
+    mount()
+    const card = await screen.findByTestId('delegation-card')
+    const toggle = () => screen.getByLabelText('Allow one MCP client to answer planner questions') as HTMLInputElement
+    // Off and unselected by default: absent fields, not stored values.
+    expect(toggle().checked).toBe(false)
+    expect((screen.getByLabelText('Designated MCP client') as HTMLSelectElement).value).toBe('')
+    await waitFor(() => expect((within(card).getByRole('button', { name: 'Save delegation' }) as HTMLButtonElement).disabled).toBe(false))
+
+    await fireEvent.click(within(card).getByRole('button', { name: 'Save delegation' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    // Neither field is written, and every unrelated field round trips as read.
+    expect(written()).not.toHaveProperty('plannerDelegationEnabled')
+    expect(written()).not.toHaveProperty('designatedMCPClientId')
+    expect(written().workspace).toBe('go-dev')
+    expect(written().routing).toEqual(settings.routing)
+    expect(written().intake).toEqual(settings.intake)
+
+    // Delegation with nobody designated would answer nothing, so it is not a
+    // savable state.
+    await fireEvent.click(toggle())
+    const save = within(card).getByRole('button', { name: 'Save delegation' }) as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    await waitFor(() => expect([...(screen.getByLabelText('Designated MCP client') as HTMLSelectElement).options].map((o) => o.value)).toEqual(['', 'c1', 'c2']))
+    await fireEvent.change(screen.getByLabelText('Designated MCP client'), { target: { value: 'c2' } })
+    await fireEvent.click(save)
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    expect(written(1).plannerDelegationEnabled).toBe(true)
+    expect(written(1).designatedMCPClientId).toBe('c2')
+    // The conditional write still names the version the read returned.
+    expect((api.putVersionedProjectSettings as Mock).mock.calls[1][2]).toBe('"v1"+')
+
+    // Turning it off stores no designation either.
+    await fireEvent.click(toggle())
+    await fireEvent.click(within(card).getByRole('button', { name: 'Save delegation' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(3))
+    expect(written(2)).not.toHaveProperty('plannerDelegationEnabled')
+    expect(written(2)).not.toHaveProperty('designatedMCPClientId')
   })
 })
 
@@ -495,5 +652,78 @@ describe('project model helpers', () => {
     // Inherit stays omitted on the wire; an explicit false is a real value.
     expect(JSON.stringify({ auto: autoFrom('default') })).toBe('{}')
     expect(JSON.stringify({ auto: autoFrom('off') })).toBe('{"auto":false}')
+  })
+})
+
+describe('Project subagent defaults', () => {
+  /** A record whose factory defaults state one role's subagent settings. */
+  const withSubagents = (factoryDefaults: NonNullable<api.ProjectSettings['factoryDefaults']>) =>
+    (api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ intake: {}, factoryDefaults }))
+
+  it('loads a stated role and names the source of each field', async () => {
+    withSubagents({ implementerSubagents: { enabled: false, model: '', concurrency: 3 } })
+    mount()
+    // An explicit false is shown as off; an explicit empty model is normal
+    // child routing, which is not the same as following.
+    await waitFor(() => expect((screen.getByLabelText('Implementer subagents enabled') as HTMLSelectElement).value).toBe('off'))
+    expect((screen.getByLabelText('Implementer subagents model') as HTMLSelectElement).value).toBe('')
+    expect((screen.getByLabelText('Implementer subagents concurrency') as HTMLInputElement).value).toBe('3')
+    const effective = screen.getByTestId('subagents-implementer-effective').textContent ?? ''
+    expect(effective).toContain('Enabled: Off — Your project setting')
+    expect(effective).toContain('Model: Normal child routing — Your project setting')
+    expect(effective).toContain('Concurrency: 3 at a time — Your project setting')
+    // The other role states nothing, so the session's defaults decide — and
+    // this screen says it cannot read them rather than inventing a value.
+    expect((screen.getByLabelText('Reviewer subagents enabled') as HTMLSelectElement).value).toBe('inherit')
+    expect(screen.getByTestId('subagents-reviewer-effective').textContent).toContain('Inherited from the session')
+  })
+
+  it('writes only the fields a role states, and keeps the roles separate', async () => {
+    mount()
+    // Nothing may be typed before the record is adopted: a read that lands
+    // afterwards replaces the drafts the person is editing.
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save defaults' }) as HTMLButtonElement).disabled).toBe(false))
+    await waitFor(() => expect([...(screen.getByLabelText('Reviewer subagents model') as HTMLSelectElement).options].map((o) => o.value)).toContain('careful'))
+    await fireEvent.change(screen.getByLabelText('Reviewer subagents enabled'), { target: { value: 'off' } })
+    await fireEvent.change(screen.getByLabelText('Reviewer subagents model'), { target: { value: 'careful' } })
+    await fireEvent.input(screen.getByLabelText('Reviewer subagents concurrency'), { target: { value: '4' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    // The implementer states nothing at all, so it is absent rather than
+    // materialised into a fallback of this screen's own choosing.
+    expect(written().factoryDefaults?.implementerSubagents).toBeUndefined()
+    expect(written().factoryDefaults?.reviewerSubagents).toEqual({ enabled: false, model: 'careful', concurrency: 4 })
+  })
+
+  it('resets one field to inherit without clearing the others', async () => {
+    withSubagents({ implementerSubagents: { enabled: false, concurrency: 3 } })
+    mount()
+    await waitFor(() => expect((screen.getByLabelText('Implementer subagents enabled') as HTMLSelectElement).value).toBe('off'))
+    // Enabled goes back to following; the stated cap stays put.
+    await fireEvent.change(screen.getByLabelText('Implementer subagents enabled'), { target: { value: 'inherit' } })
+    expect(screen.getByTestId('subagents-implementer-effective').textContent).toContain('Enabled: Inherited')
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    expect(written().factoryDefaults?.implementerSubagents).toEqual({ concurrency: 3 })
+    // Resetting the last stated field drops the role entirely.
+    await waitFor(() => expect((screen.getByLabelText('Implementer subagents concurrency') as HTMLInputElement).value).toBe('3'))
+    await fireEvent.input(screen.getByLabelText('Implementer subagents concurrency'), { target: { value: '' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    expect(written(1).factoryDefaults?.implementerSubagents).toBeUndefined()
+  })
+
+  it('shows an unenforceable concurrency as unsupported and never clamps it', async () => {
+    mount()
+    // The record has to be adopted before anything is typed, or the read
+    // replaces the draft this test is editing.
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save defaults' }) as HTMLButtonElement).disabled).toBe(false))
+    await fireEvent.input(screen.getByLabelText('Implementer subagents concurrency'), { target: { value: '9' } })
+    // The backend refuses an out-of-range cap at approval, so the surface says
+    // so instead of silently writing 8.
+    await waitFor(() => expect(screen.getByTestId('subagents-implementer-unsupported').textContent).toContain('1 to 8'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    expect(written().factoryDefaults?.implementerSubagents).toEqual({ concurrency: 9 })
   })
 })

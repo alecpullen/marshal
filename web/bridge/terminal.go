@@ -408,17 +408,17 @@ func (f *Fleet) pumpTerminal(t *terminal) {
 			if first.Len() < 512 {
 				first.Write(chunk)
 			}
-			_, _ = log.Append(t.key, map[string]any{"data": base64.StdEncoding.EncodeToString(chunk)})
+			_, _ = log.Append(t.key, contract.TerminalChunk{Data: base64.StdEncoding.EncodeToString(chunk)})
 		}
 		if err != nil {
 			break
 		}
 	}
 	code := exitCodeOf(t.proc.Wait())
-	ev := map[string]any{"exit": code}
+	ev := contract.TerminalChunk{Exit: &code}
 	if t.bytesOutLoad() < 512 {
 		if msg := scriptMissing(first.String()); msg != "" {
-			ev["error"] = msg
+			ev.Error = msg
 		}
 	}
 	_, _ = log.Append(t.key, ev)
@@ -742,13 +742,8 @@ func (f *Fleet) CloseTerminal(owner, tid string) error {
 
 // ---- HTTP ----
 
-type terminalSizeReq struct {
-	Cols int `json:"cols"`
-	Rows int `json:"rows"`
-}
-
 func (s *Server) terminalOpen(w http.ResponseWriter, r *http.Request) {
-	var req terminalSizeReq
+	var req contract.TerminalResize
 	if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
 		return
 	}
@@ -757,7 +752,7 @@ func (s *Server) terminalOpen(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"terminalId": tid})
+	writeJSON(w, http.StatusOK, contract.TerminalOpened{TerminalID: tid})
 }
 
 func (s *Server) terminalEvents(w http.ResponseWriter, r *http.Request) {
@@ -778,9 +773,7 @@ func (s *Server) terminalInput(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) terminalInputFor(w http.ResponseWriter, r *http.Request, owner string) {
-	var req struct {
-		Data string `json:"data"`
-	}
+	var req contract.TerminalInput
 	// base64 expands by a third; leave room for the JSON envelope.
 	r.Body = http.MaxBytesReader(w, r.Body, int64(maxTerminalInput)*4/3+1024)
 	dec := json.NewDecoder(r.Body)
@@ -805,7 +798,7 @@ func (s *Server) terminalResize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) terminalResizeFor(w http.ResponseWriter, r *http.Request, owner string) {
-	var req terminalSizeReq
+	var req contract.TerminalResize
 	if !decodeJSON(w, r, &req) {
 		return
 	}
@@ -960,7 +953,7 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 }
 
 func (s *Server) workspaceShellOpen(w http.ResponseWriter, r *http.Request) {
-	var req terminalSizeReq
+	var req contract.TerminalResize
 	if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
 		return
 	}
@@ -969,7 +962,7 @@ func (s *Server) workspaceShellOpen(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"terminalId": tid})
+	writeJSON(w, http.StatusOK, contract.TerminalOpened{TerminalID: tid})
 }
 
 func (s *Server) workspaceShellEvents(w http.ResponseWriter, r *http.Request) {

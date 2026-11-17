@@ -91,10 +91,21 @@ func listenAndServeWithConfig(ctx context.Context, ln net.Listener, cfg runConfi
 	// Ensure the listener and any unix socket file are cleaned up on
 	// every return path, including unexpected Accept errors.
 	defer ln.Close()
+	if cfg.viewers != nil {
+		defer cfg.viewers.Close()
+	}
 
 	host, err := newAgentHost(cfg)
 	if err != nil {
 		return err
+	}
+
+	// A viewer socket beside this one is served by RunWithViewers' accept
+	// loop, on the same host (decision 5). Its context is the host's: the
+	// viewers end when the host does, below.
+	var waitViewers func() error
+	if cfg.viewers != nil {
+		waitViewers = host.acceptViewers(context.Background(), cfg.viewers)
 	}
 
 	// Unblock a pending Accept when the caller cancels.
@@ -138,13 +149,69 @@ func listenAndServeWithConfig(ctx context.Context, ln net.Listener, cfg runConfi
 		}
 	}
 
+	// The viewer socket goes first, then the viewers are waited for within the
+	// host's shutdown time, then the host closes (decision 5).
+	var viewerErr error
+	if waitViewers != nil {
+		viewerErr = waitViewers()
+	}
+
 	closeCtx, cancel := context.WithTimeout(context.Background(), host.shutdown)
 	closeErr := host.close(closeCtx)
 	cancel()
 	if cfg.lister != nil {
 		_ = cfg.lister.Close()
 	}
-	return errors.Join(serveErr, closeErr)
+	return errors.Join(serveErr, viewerErr, closeErr)
+}
+
+// ListenAndServeWithViewers is ListenAndServe plus a viewer socket at viewers,
+// every viewer on the allowlist (decisions 4 and 5). The viewer socket binds
+// first, so a viewer cannot arrive before the host that serves it.
+func ListenAndServeWithViewers(ctx context.Context, network, addr, viewers string, stderr io.Writer) error {
+	log := logging.New(stderr, acpLogLevel(), false)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("acp: find home directory: %w", err)
+	}
+	trustStore := trust.NewStore(config.DataDir(home))
+
+	// The viewer socket binds first, so a viewer cannot arrive before the host
+	// that serves it. It is the same prepared unix socket --viewers alone
+	// serves.
+	viewerLn, err := listenUnix(viewers)
+	if err != nil {
+		return err
+	}
+	var ln net.Listener
+	if network == "unix" {
+		ln, err = listenUnix(addr)
+	} else {
+		ln, err = net.Listen(network, addr)
+		if err != nil {
+			err = fmt.Errorf("acp: listen on %s://%s: %w", network, addr, err)
+		}
+	}
+	if err != nil {
+		_ = viewerLn.Close()
+		return err
+	}
+
+	// One project-host registry for the process, shared by every
+	// connection's sessions and closed after all of them (see Run).
+	hosts := app.NewHosts()
+	err = listenAndServeWithConfig(ctx, ln, runConfig{
+		startRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
+			opts = append(opts, app.WithTrustResolver(trust.NewHeadlessResolver(trustStore, log)), app.WithHosts(hosts))
+			return app.StartRuntime(ctx, opts...)
+		},
+		lister:          newPerCwdLister(),
+		shutdown:        connectionShutdownTimeout,
+		logger:          log,
+		viewers:         viewerLn,
+		restrictViewers: true,
+	})
+	return errors.Join(err, closeHosts(hosts))
 }
 
 // ParseListenAddr splits a "unix:///path" or "tcp://host:port" listen

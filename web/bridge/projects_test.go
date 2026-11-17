@@ -58,6 +58,11 @@ func TestProjectSettingsRoundTripAndValidation(t *testing.T) {
 		"repo":       {Intake: ProjectIntake{RepoID: "nope"}},
 		"labels":     {Intake: ProjectIntake{Labels: []string{"x"}}},
 		"routing":    {Routing: json.RawMessage(`[1]`)},
+		// Planner delegation names one client: enabling it with nobody
+		// designated is the state the Studio refuses to save, and a
+		// designation must name a client this bridge has.
+		"delegation without a client": {PlannerDelegationEnabled: true},
+		"delegation to a stranger":    {DesignatedMCPClientID: "nope"},
 	}
 	for name, ps := range bad {
 		if code := putSettings(t, s, root, ps); code != http.StatusBadRequest {
@@ -67,6 +72,27 @@ func TestProjectSettingsRoundTripAndValidation(t *testing.T) {
 	// A refused request leaves the stored settings alone.
 	if st := e.f.ws.ProjectSettingsFor(root); st.Workspace != "svc@2" {
 		t.Fatalf("settings changed by a refused request: %+v", st)
+	}
+	// Delegation to a registered client is a savable state, and it round-trips.
+	if err := e.f.ws.PutClient(MCPClient{ID: "c1", Name: "claude", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+	delegated := good
+	delegated.PlannerDelegationEnabled = true
+	delegated.DesignatedMCPClientID = "c1"
+	if code := putSettings(t, s, root, delegated); code != http.StatusOK {
+		t.Fatalf("delegation to a registered client = %d", code)
+	}
+	if st := e.f.ws.ProjectSettingsFor(root); !st.PlannerDelegationEnabled || st.DesignatedMCPClientID != "c1" {
+		t.Fatalf("delegation stored as %+v", st)
+	}
+	// A client that goes away takes its designation with it, so a project is
+	// never left unable to save its own settings.
+	if err := e.f.ws.DeleteClient("c1"); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.f.ws.ProjectSettingsFor(root); st.PlannerDelegationEnabled || st.DesignatedMCPClientID != "" {
+		t.Fatalf("a deleted client kept its designation: %+v", st)
 	}
 	if code := putSettings(t, s, "/not/registered", good); code != http.StatusBadRequest {
 		t.Fatalf("unregistered root = %d", code)
@@ -358,8 +384,8 @@ func TestProjectSettingsRoundTripFactoryDefaults(t *testing.T) {
 	if err := json.Unmarshal(raw, &stored); err != nil {
 		t.Fatalf("decode workspace file: %v", err)
 	}
-	if stored.Version != 11 {
-		t.Fatalf("workspace version = %d, want 11", stored.Version)
+	if stored.Version != workspaceVersion {
+		t.Fatalf("workspace version = %d, want %d", stored.Version, workspaceVersion)
 	}
 }
 
@@ -887,5 +913,55 @@ func TestProjectSettingsLegacyPut(t *testing.T) {
 	rec = doReq(t, s, http.MethodPut, path, ProjectSettings{Workspace: "svc@2", Mode: "act"}, map[string]string{"If-Match": tag})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("conditional put after a legacy one = %d %s", rec.Code, rec.Body)
+	}
+}
+
+// TestProjectsListNamesTheProjectRepo checks the mapping the Studio's new-work
+// dialog reads: `GET /api/projects` names the registered repo a project's work
+// comes from, because `GET /api/repos/{id}/issues` is keyed by a repo id and a
+// dialog starts from a project. A project that names none reports none — the
+// key is omitted, not empty — rather than an id a client could not use.
+func TestProjectsListNamesTheProjectRepo(t *testing.T) {
+	e, s, root := projectEnv(t)
+	if err := e.f.ws.PutRepo(Repo{ID: "owner/name", URL: "https://github.com/owner/name.git", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+
+	// entry is one project's wire object from GET /api/projects.
+	entry := func(root string) map[string]any {
+		t.Helper()
+		var list []map[string]any
+		decodeBody(t, doReq(t, s, http.MethodGet, "/api/projects", nil, nil), &list)
+		for _, item := range list {
+			if item["root"] == root {
+				return item
+			}
+		}
+		t.Fatalf("GET /api/projects has no entry for %s: %v", root, list)
+		return nil
+	}
+
+	// A project whose settings name no repo reports no repoId at all: that is
+	// what the app reads as "no registered repo for this project".
+	if got, ok := entry(root)["repoId"]; ok {
+		t.Fatalf("a project with no intake reported repoId %v", got)
+	}
+
+	// The repo its intake names is the repo its issues come from.
+	if code := putSettings(t, s, root, ProjectSettings{Intake: ProjectIntake{RepoID: "owner/name"}}); code != http.StatusOK {
+		t.Fatalf("put settings = %d", code)
+	}
+	if got := entry(root)["repoId"]; got != "owner/name" {
+		t.Fatalf("repoId = %v, want owner/name", got)
+	}
+
+	// A repo removed after the settings named it leaves the project naming
+	// none: reporting the stale id would send the dialog to a route that
+	// answers 404.
+	if err := e.f.ws.RemoveRepo("owner/name"); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := entry(root)["repoId"]; ok {
+		t.Fatalf("a removed repo was still reported as %v", got)
 	}
 }

@@ -103,7 +103,7 @@ func runHelperChild(mode string) {
 			})
 			continue
 		}
-		if mode == "registry" || mode == "registry-die" || mode == "registry-merged" || mode == "registry-version" {
+		if mode == "registry" || mode == "registry-die" || mode == "registry-merged" || mode == "registry-version" || mode == "registry-nofollow" {
 			handleRegistryMode(&req, enc, mode)
 			// registry-die kills the process only after session/new, so
 			// the post-restart session/resume survives on generation 2.
@@ -132,6 +132,12 @@ func runHelperChild(mode string) {
 // test/ask_permission_string issues the same permission request under a
 // string id, and test/cancel_request cancels it with $/cancel_request —
 // the pair that exercises the bridge's request cancellation.
+//
+// session/follow answers the empty object a follower's agent returns and
+// records the call on stderr; the "registry-nofollow" mode answers
+// method-not-found instead, standing for an agent older than the method
+// (P5 4c). test/followed_run emits the followed_run update a follower
+// sends, with the state, run id, outcome and error it is given.
 func handleRegistryMode(req *struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
@@ -208,6 +214,64 @@ func handleRegistryMode(req *struct {
 			"jsonrpc": "2.0",
 			"id":      req.ID,
 			"result":  map[string]any{"stopReason": "end_turn"},
+		})
+	case "session/follow":
+		// A follower's request: the empty object an agent with the method
+		// returns, recorded on stderr where a test can count it. The
+		// registry-nofollow mode is an older agent, whose method is absent.
+		var p struct {
+			SessionID string `json:"sessionId"`
+		}
+		_ = json.Unmarshal(req.Params, &p)
+		if mode == "registry-nofollow" {
+			_ = enc.Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req.ID,
+				"error":   map[string]any{"code": -32601, "message": "method not found"},
+			})
+			return
+		}
+		fmt.Fprintf(os.Stderr, "helper followed %s\n", p.SessionID)
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result":  map[string]any{},
+		})
+	case "test/followed_run":
+		// Reply, then emit the followed_run update a follower sends for a run
+		// on another connection, so the registry's observation of it can be
+		// driven from a test (P5 4c).
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result":  map[string]any{},
+		})
+		var p struct {
+			SessionID string `json:"sessionId"`
+			State     string `json:"state"`
+			RunID     string `json:"runId"`
+			RunKind   string `json:"runKind"`
+			Outcome   string `json:"outcome"`
+			Error     string `json:"error"`
+		}
+		_ = json.Unmarshal(req.Params, &p)
+		if p.SessionID == "" {
+			p.SessionID = "s-1"
+		}
+		update := map[string]any{"kind": "followed_run", "state": p.State, "runId": p.RunID}
+		if p.RunKind != "" {
+			update["runKind"] = p.RunKind
+		}
+		if p.Outcome != "" {
+			update["outcome"] = p.Outcome
+		}
+		if p.Error != "" {
+			update["error"] = p.Error
+		}
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "session/update",
+			"params":  map[string]any{"sessionId": p.SessionID, "update": update},
 		})
 	case "test/ask_permission", "test/ask_question":
 		_ = enc.Encode(map[string]any{

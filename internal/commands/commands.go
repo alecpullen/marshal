@@ -59,19 +59,25 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 	commands := []Command{
 		{
 			Name:        "exit",
-			Description: "Exit Marshal",
+			Description: "End this session and quit Marshal",
 			Group:       groupChat,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "quit",
-			Description: "Exit Marshal (alias for /exit)",
+			Description: "End this session and quit Marshal (alias for /exit)",
 			Group:       groupChat,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "detach",
-			Description: "Leave this daemon session running and quit",
+			Description: "Leave this daemon session running and quit Marshal",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
+			Name:        "fleet",
+			Description: "Leave this daemon session running and open the fleet screen",
 			Group:       groupChat,
 			TUIOnly:     true,
 		},
@@ -129,6 +135,13 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "image",
+			Description: "Attach an image file to the next prompt",
+			Args:        "<path>",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "help",
 			Description: "Show available commands",
 			Args:        "[command]",
@@ -171,7 +184,8 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				}
 				res := Panel("Help", false, rows)
 				res.Doc.Footer = "⏎ send · esc close/dismiss · tab/shift+tab mode · alt+m /models · alt+e  cycle reasoning effort\n" +
-					"ctrl+c ctrl+c stop the turn (quit when idle) · ctrl+x clear queue\n" +
+					"ctrl+c ctrl+c stop the turn · ctrl+x clear queue\n" +
+					"idle ctrl+c ctrl+c: quit, or detach a daemon session and leave it running · /detach leaves it running · /exit ends the session\n" +
 					"ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g cycle detail (outline/steps/full) · ctrl+t tasks · ctrl+r rollback\n" +
 					"ctrl+b session sheet · pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom\n" +
 					"browse mode (esc): j/k move · J/K task · ↵ detail · i inspect · y copy · o open · f agent · z fold · ? keys\n" +

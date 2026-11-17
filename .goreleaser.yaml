@@ -96,6 +96,40 @@ archives:
 checksum:
   name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
 
+# The darwin binaries are signed with a Developer ID Application certificate
+# and notarized, so a download runs without a quarantine removal. Absent the
+# secrets this block is skipped, the binaries are unsigned, and the release
+# footer says what to do about it.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      sign:
+        certificate: '{{ .Env.MACOS_SIGN_P12 }}'
+        password: '{{ .Env.MACOS_SIGN_P12_PASSWORD }}'
+      notarize:
+        issuer_id: '{{ .Env.MACOS_NOTARY_ISSUER_ID }}'
+        key_id: '{{ .Env.MACOS_NOTARY_KEY_ID }}'
+        key: '{{ .Env.MACOS_NOTARY_KEY }}'
+
+brews:
+  - name: marshal
+    repository:
+      owner: alecpullen
+      name: homebrew-tap
+      token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
+    directory: Formula
+    homepage: https://github.com/alecpullen/marshal
+    description: A local-friendly TUI coding agent, and the local daemon it drives
+    license: MIT
+    # A prerelease tag must not move the formula.
+    skip_upload: auto
+    install: |
+      bin.install "marshal", "webbridge"
+    caveats: |
+      Run `marshal daemon install` to install and start the background daemon.
+      Do not use `brew services`: the daemon writes its own launchd agent or
+      systemd user unit.
+
 dockers:
   - id: agent-amd64
     ids: [marshal]
@@ -166,12 +200,18 @@ release:
 
     ### Install
 
-    Download the archive for your platform below, then:
-
     ```bash
-    tar -xzf marshal_*_<os>_<arch>.tar.gz
-    ./marshal --version
+    brew install alecpullen/tap/marshal
+    # or
+    curl -fsSL https://raw.githubusercontent.com/alecpullen/marshal/main/scripts/install.sh | sh
     ```
+
+    Both install `marshal` and `webbridge` and run `marshal daemon install`.
+    The archives below are the same two binaries.
+
+    macOS builds are signed and notarized. A release cut without the signing
+    secrets is not: if macOS refuses a quarantined download, remove the
+    attribute with `xattr -d com.apple.quarantine marshal`.
 
 # Release notes are curated by hand in CHANGELOG.md rather than generated from
 # the commit log, which is too granular to be useful to readers.

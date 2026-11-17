@@ -70,9 +70,100 @@ jobs:
           cache-dependency-path: web/ui/package-lock.json
       - run: npm ci
       - run: npm test
+      # The Svelte Studio still holds `/` (F8's cutover is deferred), so its
+      # assets are built with the default base. The committed copy in
+      # web/bridge/static is checked against this build below.
       - run: npm run build
       - name: Check committed embedded assets
         working-directory: .
         run: |
           git diff --exit-code -- web/bridge/static
           test -z "$(git ls-files --others --exclude-standard -- web/bridge/static)"
+
+  # The tray app's Dart tests. `flutter test` here is the pure-Dart half of the
+  # app — the status models, the menu model, and the fixture both languages
+  # read — so it needs no GTK, no display and no build of the desktop runner.
+  # The bundles themselves are built in the release workflow, on the OSes that
+  # can build them.
+  app:
+    name: Tray app tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to the version this app was developed and last verified against,
+      # not a floating channel: a Flutter upgrade changes the analyzer's rules
+      # and the formatter's output, and neither should arrive unannounced on a
+      # branch that did not touch the app. `app/pubspec.lock` is committed, so
+      # `flutter pub get` resolves to the same plugin versions.
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.50.0'
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      # The Flutter Studio is served under /next/ while the cutover is deferred:
+      # its base href is that prefix, and `--no-web-resources-cdn` makes the
+      # build fetch the CanvasKit engine from this server instead of gstatic,
+      # so a private network that cannot reach the CDN still starts it.
+      - name: Build the Studio for /next/
+        run: flutter build web --base-href /next/ --no-web-resources-cdn --output ../web/bridge/static-next
+      - name: The Studio's build embeds
+        working-directory: .
+        run: CGO_ENABLED=1 go build -o /tmp/webbridge ./cmd/webbridge
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed lib test
+
+  release-config:
+    name: Installer and release config
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck the installer
+        run: shellcheck scripts/install.sh
+      - name: Test the installer's uninstall gate
+        run: sh scripts/install_test.sh
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          install-only: true
+      # `check` parses the config only: no build, no C toolchain. It exits 1
+      # on a config that would fail at tag time and 2 when the config parses
+      # but uses a property this GoReleaser deprecates. `brews` is the one
+      # deprecation this repository accepts — the formula still publishes and
+      # the pinned version has no replacement spelling — so exit 2 passes only
+      # when every DEPRECATED line names `brews`. A new, unrelated deprecation
+      # must fail here rather than quietly join the tolerated set. The match on
+      # `DEPRECATED` is case-sensitive on purpose: GoReleaser's own trailing
+      # "configuration is valid, but uses deprecated properties" summary is
+      # lowercase, and it names no property.
+      - name: GoReleaser config
+        run: |
+          set +e
+          out="$(goreleaser check 2>&1)"
+          code=$?
+          set -e
+          printf '%s\n' "$out"
+          case "$code" in
+          0) exit 0 ;;
+          2) ;;
+          *) exit "$code" ;;
+          esac
+          deprecated="$(printf '%s\n' "$out" | grep 'DEPRECATED' || true)"
+          if [ -z "$deprecated" ]; then
+            echo "goreleaser check exited 2 with no DEPRECATED line to inspect" >&2
+            exit 1
+          fi
+          unexpected="$(printf '%s\n' "$deprecated" | grep -v 'brews' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "goreleaser check: deprecations other than 'brews' are not accepted:" >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi

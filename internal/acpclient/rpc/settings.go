@@ -622,6 +622,39 @@ func (s *Session) SaveVerifyCommands(ctx context.Context, build, test string) er
 	return s.conn.Call(ctx, acpwire.MethodSaveVerifyCommands, params, nil)
 }
 
+// MarshalAccess reads the session's Studio connection and built-in access.
+func (s *Session) MarshalAccess(ctx context.Context) (acpwire.MarshalAccessView, error) {
+	var view acpwire.MarshalAccessView
+	params := acpwire.MarshalAccessParams{SessionID: s.id}
+	if err := s.conn.Call(ctx, acpwire.MethodMarshalAccess, params, &view); err != nil {
+		return acpwire.MarshalAccessView{}, err
+	}
+	return view, nil
+}
+
+// SaveMarshalAccess writes one access layer against the version it was read
+// from. A refused stale write is an ordinary answer carrying the value that
+// won, so it is not reported as an error.
+func (s *Session) SaveMarshalAccess(ctx context.Context, params acpwire.SaveMarshalAccessParams) (acpwire.MarshalAccessView, error) {
+	params.SessionID = s.id
+	var view acpwire.MarshalAccessView
+	if err := s.conn.Call(ctx, acpwire.MethodSaveMarshalAccess, params, &view); err != nil {
+		return acpwire.MarshalAccessView{}, err
+	}
+	return view, nil
+}
+
+// SelectMarshalInstance records the project an ambiguous session acts on, or
+// clears the choice when params.ProjectID is empty.
+func (s *Session) SelectMarshalInstance(ctx context.Context, params acpwire.SelectMarshalInstanceParams) (acpwire.MarshalAccessView, error) {
+	params.SessionID = s.id
+	var view acpwire.MarshalAccessView
+	if err := s.conn.Call(ctx, acpwire.MethodSelectMarshalInstance, params, &view); err != nil {
+		return acpwire.MarshalAccessView{}, err
+	}
+	return view, nil
+}
+
 // PrepareMCPLogin checks that the browser sign-in for the MCP server called
 // server can start.
 func (s *Session) PrepareMCPLogin(ctx context.Context, server string) error {

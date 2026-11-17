@@ -39,6 +39,10 @@ type ChatMessage struct {
 	// to the provider that produced it. Nil on non-assistant messages and on
 	// assistant messages Marshal synthesizes.
 	Reasoning *Reasoning
+
+	// Images are attached after Content and never interleaved with it. A
+	// message is text followed by its images.
+	Images []ImageRef
 }
 
 type ToolCall struct {
@@ -96,4 +100,7 @@ type ChatRequest struct {
 	// from their own session identity on endpoints known to accept it;
 	// callers leave it empty. Empty is never sent.
 	PromptCacheKey string
+	// ImageSource resolves every ImageRef in Messages. Nil means this
+	// request cannot carry images.
+	ImageSource ImageSource
 }

@@ -152,6 +152,30 @@ func (m *Model) restoreSendNowDraft(raw string) {
 	m.input.MoveToEnd()
 }
 
+// restoreBusyDraft puts the submitted line back into the composer after a busy
+// refusal, so an argument-heavy draft (/swarm <goal>, /sdd new <goal>,
+// /review <focus>) is not retyped. It is a no-op when the composer already
+// holds something: a line the user typed after submitting is theirs, and the
+// refusal must not overwrite it.
+func (m *Model) restoreBusyDraft() {
+	raw := strings.TrimSpace(m.pendingCommandRaw)
+	if raw == "" || strings.TrimSpace(m.input.Value()) != "" {
+		return
+	}
+	m.input.SetValue(raw)
+	m.input.MoveToEnd()
+}
+
+// refuseBusyCommand reports that cmd cannot start what while a turn is in
+// flight. It names the command, the reason and the next step, and keeps the
+// submitted draft: the Enter handler cleared the composer before dispatch, so
+// without this the line vanished with no explanation (AUD-12).
+func (m *Model) refuseBusyCommand(cmd, what string) {
+	m.note(cmd + " cannot start " + what + " while a turn is running. Wait for the turn to finish, or press Ctrl+C to stop it.")
+	m.restoreBusyDraft()
+	m.refreshViewport()
+}
+
 // newSessionEffect is the shared /new and /clear handler. It records a pending
 // REPLACEMENT whose target (the new session's name) is applied only after the
 // runtime accepts the work membership an end would stop: the current
@@ -162,6 +186,13 @@ func (m *Model) restoreSendNowDraft(raw string) {
 // replacement outright rather than warning about it.
 func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	if m.busy {
+		// /new and /clear share this effect, so the note names the command the
+		// user actually typed.
+		cmd := "/new"
+		if fields := strings.Fields(m.pendingCommandRaw); len(fields) > 0 && strings.HasPrefix(fields[0], "/") {
+			cmd = fields[0]
+		}
+		m.refuseBusyCommand(cmd, "a new conversation")
 		return m, nil
 	}
 	name := strings.TrimSpace(strings.Join(args, " "))
@@ -271,6 +302,24 @@ func init() {
 				m.refreshViewport()
 				return m, nil
 			}
+			return m, m.detach()
+		},
+		"fleet": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			// The fleet screen is the daemon's: an embedded session is this
+			// program alone, with no agents to list.
+			if !m.detachOnQuit {
+				m.note("The fleet screen needs the daemon; this session runs embedded.")
+				m.refreshViewport()
+				return m, nil
+			}
+			// An ending is already settling the session; leaving now would
+			// strand it half-ended with no one to read the outcome.
+			if m.endStage != endIdle {
+				m.note("The conversation is ending; it cannot be detached now.")
+				m.refreshViewport()
+				return m, nil
+			}
+			m.toFleet = true
 			return m, m.detach()
 		},
 		"effort": func(m *Model, args []string) (tea.Model, tea.Cmd) {
@@ -416,6 +465,7 @@ func init() {
 				return m, nil
 			}
 			if m.busy {
+				m.refuseBusyCommand("/swarm", "a swarm run")
 				return m, nil
 			}
 			m.openRunPreflight("swarm", goal, nil)
@@ -445,6 +495,7 @@ func init() {
 				return m, nil
 			}
 			if m.busy {
+				m.refuseBusyCommand("/sdd", "a plan run")
 				return m, nil
 			}
 			// The session inspects the plan and resolves the verify gate the
@@ -487,6 +538,7 @@ func init() {
 		},
 		"review": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			if m.busy {
+				m.refuseBusyCommand("/review", "a review")
 				return m, nil
 			}
 			if !m.sess.Status().AgentReady {

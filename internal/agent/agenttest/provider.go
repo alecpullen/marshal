@@ -20,11 +20,16 @@ type ScriptedProvider struct {
 	Thinking       []string
 	ReasoningItems [][]schema.ReasoningItem
 	Errs           []error
-	Usages         []*schema.TokenUsage
-	Calls          int
-	Requests       []schema.ChatRequest
-	ProviderCaps   schema.ProviderCapabilities
-	OnChat         func(idx int, req schema.ChatRequest)
+	// Interrupted scripts a stream that ends before the provider's protocol
+	// announced completion (AUD-08): the entry at index i emits the
+	// response's deltas, then a ChatEventInterrupted carrying this error,
+	// and no Done. It is how an adapter reports a cut stream.
+	Interrupted  []error
+	Usages       []*schema.TokenUsage
+	Calls        int
+	Requests     []schema.ChatRequest
+	ProviderCaps schema.ProviderCapabilities
+	OnChat       func(idx int, req schema.ChatRequest)
 }
 
 func (p *ScriptedProvider) Name() string { return "scripted" }
@@ -68,6 +73,11 @@ func (p *ScriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	}
 	if content != "" {
 		ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: content}
+	}
+	if idx < len(p.Interrupted) && p.Interrupted[idx] != nil {
+		ch <- schema.ChatEvent{Type: schema.ChatEventInterrupted, Err: p.Interrupted[idx]}
+		close(ch)
+		return ch, nil
 	}
 	done := schema.ChatEvent{Type: schema.ChatEventDone}
 	if idx < len(p.Usages) {

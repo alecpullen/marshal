@@ -26,6 +26,9 @@ type relayPair struct {
 	relayClient net.Conn
 	relayAgent  net.Conn
 	sessionID   string
+	// allow is the list the relay's end carries: nil for a project attach,
+	// containerViewerSet() for a container's (decisions 2 and 6).
+	allow map[string]bool
 }
 
 func newRelayPair(t *testing.T, sessionID string) *relayPair {
@@ -63,8 +66,17 @@ func (p *relayPair) start(reader *bufio.Reader) {
 	if reader == nil {
 		reader = bufio.NewReader(p.relayClient)
 	}
-	go p.fleet.relay(p.pc, p.sessionID, p.relayClient, reader, p.relayAgent)
+	go p.fleet.relay(relayEnd{
+		reg:    p.pc.reg,
+		linger: func() { p.fleet.rearmLinger(p.pc) },
+		root:   p.pc.root,
+		allow:  p.allow,
+	}, p.sessionID, "", p.relayClient, reader, p.relayAgent)
 }
+
+// restricted makes the pair's relay the one a container's attach runs: its end
+// carries the methods a container's viewer may call (decisions 2 and 6).
+func (p *relayPair) restricted() { p.allow = containerViewerSet() }
 
 // write puts raw bytes on one side of the relay.
 func relayWrite(t *testing.T, conn net.Conn, data string) {
@@ -156,6 +168,325 @@ func TestTheRelayChangesNoByte(t *testing.T) {
 			t.Fatalf("the buffered frame changed:\n sent %q\n got  %q", frame, got)
 		}
 	})
+}
+
+// ownedByAgent makes sessionID an agent's on the pair's fleet, as Spawn leaves
+// it: a record naming the session and the classifier's map that names the
+// agent (P4 D10 / decision 2).
+func (p *relayPair) ownedByAgent(t *testing.T, sessionID, id, name string) {
+	t.Helper()
+	if err := p.fleet.ws.PutAgent(Agent{
+		ID: id, Project: p.pc.root, Name: name, SessionID: sessionID,
+		OwnerID: "owner-1", Origin: OriginUI,
+	}); err != nil {
+		t.Fatalf("record agent %s: %v", id, err)
+	}
+	p.fleet.mu.Lock()
+	p.fleet.sessionAgent[sessionID] = id
+	p.fleet.mu.Unlock()
+}
+
+// readLine reads one newline-terminated frame from one side of the relay.
+func readLine(t *testing.T, src *bufio.Reader) string {
+	t.Helper()
+	line, err := src.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read a frame: %v", err)
+	}
+	return line
+}
+
+// readsNothing fails when the side delivers a frame within a short budget.
+func readsNothing(t *testing.T, conn net.Conn) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	buf := make([]byte, 1)
+	n, err := conn.Read(buf)
+	if err == nil {
+		t.Fatalf("the relay forwarded %d bytes: %q", n, buf[:n])
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+}
+
+// checkRefusalAnswer decodes a relay's error answer and asserts its shape: the
+// request's own id, -32000, and the sentence as both the message and the
+// message of an acpwire.Error-shaped data with an empty code, which is how a
+// marshal client reads it as that sentence.
+func checkRefusalAnswer(t *testing.T, answer, wantID, wantSentence string) {
+	t.Helper()
+	var out struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Data    struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(answer), &out); err != nil {
+		t.Fatalf("decode the refusal %q: %v", answer, err)
+	}
+	if out.JSONRPC != "2.0" {
+		t.Errorf("refusal jsonrpc = %q, want 2.0", out.JSONRPC)
+	}
+	if got := compactID(out.ID); got != wantID {
+		t.Errorf("refusal id = %s, want %s", got, wantID)
+	}
+	if out.Error.Code != -32000 {
+		t.Errorf("refusal code = %d, want -32000", out.Error.Code)
+	}
+	if out.Error.Message != wantSentence {
+		t.Errorf("refusal message = %q, want %q", out.Error.Message, wantSentence)
+	}
+	if out.Error.Data.Code != "" {
+		t.Errorf("refusal data code = %q, want empty", out.Error.Data.Code)
+	}
+	if out.Error.Data.Message != wantSentence {
+		t.Errorf("refusal data message = %q, want %q", out.Error.Data.Message, wantSentence)
+	}
+}
+
+// refusedSentence is decision 3's one sentence, named as the fleet names the
+// agent.
+const refusedSentence = "This is agent reviewer's session: finish it from the fleet screen."
+
+// TestAViewerCannotCloseAnAgentsSession: a close naming an agent's session is
+// answered to the client and never reaches the child (decision 1, F5).
+func TestAViewerCannotCloseAnAgentsSession(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.ownedByAgent(t, p.sessionID, "agent-a", "reviewer")
+	p.start(nil)
+
+	relayWrite(t, p.client, `{"jsonrpc":"2.0","id":7,"method":"session/close","params":{"sessionId":"s-1"}}`+"\n")
+
+	answer := readLine(t, bufio.NewReader(p.client))
+	checkRefusalAnswer(t, answer, "7", refusedSentence)
+	readsNothing(t, p.agent)
+}
+
+// TestAViewerCannotReplaceAnAgentsSession: a replacing session/new naming an
+// agent's session is refused the same way, and the child never sees it
+// (decision 1).
+func TestAViewerCannotReplaceAnAgentsSession(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.ownedByAgent(t, p.sessionID, "agent-a", "reviewer")
+	p.start(nil)
+
+	relayWrite(t, p.client, `{"jsonrpc":"2.0","id":8,"method":"session/new","params":{"cwd":"/tmp","replaces":"s-1","mcpServers":[]}}`+"\n")
+
+	answer := readLine(t, bufio.NewReader(p.client))
+	checkRefusalAnswer(t, answer, "8", refusedSentence)
+	readsNothing(t, p.agent)
+}
+
+// TestAProjectViewerCannotCloseAnotherAgentsSession: the rule is one rule, on
+// every relay. A project viewer attached to its own session cannot close a
+// different session a fleet agent owns on the same child (decision 1).
+func TestAProjectViewerCannotCloseAnotherAgentsSession(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.ownedByAgent(t, "s-2", "agent-a", "reviewer")
+	p.start(nil)
+
+	relayWrite(t, p.client, `{"jsonrpc":"2.0","id":9,"method":"session/close","params":{"sessionId":"s-2"}}`+"\n")
+
+	answer := readLine(t, bufio.NewReader(p.client))
+	checkRefusalAnswer(t, answer, "9", refusedSentence)
+	readsNothing(t, p.agent)
+}
+
+// TestOtherFramesStillPass: the refusal is narrow. A prompt and a close of a
+// session no agent owns are forwarded unchanged (decision 1).
+func TestOtherFramesStillPass(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	// An agent owns a different session: the pair's own is nobody's.
+	p.ownedByAgent(t, "agent-a-session", "agent-a", "reviewer")
+	p.start(nil)
+
+	prompt := `{"jsonrpc":"2.0","id":10,"method":"session/prompt","params":{"sessionId":"s-1","prompt":[{"type":"text","text":"hi"}]}}` + "\n"
+	relayWrite(t, p.client, prompt)
+	if got := string(readExactly(t, p.agent, len(prompt))); got != prompt {
+		t.Fatalf("a prompt changed on the way:\n sent %q\n got  %q", prompt, got)
+	}
+
+	closing := `{"jsonrpc":"2.0","id":11,"method":"session/close","params":{"sessionId":"s-1"}}` + "\n"
+	relayWrite(t, p.client, closing)
+	if got := string(readExactly(t, p.agent, len(closing))); got != closing {
+		t.Fatalf("a close of a session no agent owns changed on the way:\n sent %q\n got  %q", closing, got)
+	}
+	// Nothing was answered to the client: the child's answer is the client's
+	// answer, and the relay adds none of its own.
+	readsNothing(t, p.client)
+}
+
+// assertDropped writes frame and then a listed request after it, and asserts
+// the child's next bytes are that request: the relay dropped frame rather than
+// forwarding it, and forwarded what followed.
+func assertDropped(t *testing.T, p *relayPair, frame string) {
+	t.Helper()
+	follow := `{"jsonrpc":"2.0","id":77,"method":"session/status","params":{"sessionId":"s-1"}}` + "\n"
+	relayWrite(t, p.client, frame)
+	relayWrite(t, p.client, follow)
+	if got := string(readExactly(t, p.agent, len(follow))); got != follow {
+		t.Fatalf("the frame was not dropped, or the next frame changed:\n sent %q\n got  %q", follow, got)
+	}
+	// A dropped frame is never answered to the viewer.
+	readsNothing(t, p.client)
+}
+
+// TestARestrictedRelayLogsOneDropPerMethod pins decision 2's once-per-method
+// drop log: a viewer retrying a refused notification gets one line per method
+// per attach, where a line per frame would let it flood the log.
+func TestARestrictedRelayLogsOneDropPerMethod(t *testing.T) {
+	sink := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(sink, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	p := newRelayPair(t, "s-1")
+	p.restricted()
+	p.start(nil)
+
+	// The same unlisted notification twice: both are dropped, the first is
+	// logged.
+	frame := `{"jsonrpc":"2.0","method":"session/reload_config","params":{"sessionId":"s-1"}}` + "\n"
+	assertDropped(t, p, frame)
+	assertDropped(t, p, frame)
+
+	if got := strings.Count(sink.String(), "restricted relay dropped a frame"); got != 1 {
+		t.Fatalf("the relay logged %d drops for one method, want 1:\n%s", got, sink.String())
+	}
+}
+
+// TestARestrictedRelayRefusesAnUnlistedRequest: a container's viewer may not
+// call a method outside its session screen's surface, and the relay answers
+// with decision 2's sentence under the request's own id (W9, the relay's end).
+func TestARestrictedRelayRefusesAnUnlistedRequest(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.restricted()
+	p.start(nil)
+
+	relayWrite(t, p.client, `{"jsonrpc":"2.0","id":21,"method":"config/set_value","params":{"key":"theme","value":"dark"}}`+"\n")
+
+	answer := readLine(t, bufio.NewReader(p.client))
+	checkRefusalAnswer(t, answer, "21", "config/set_value is not available for a containerized agent")
+	readsNothing(t, p.agent)
+}
+
+// TestARestrictedRelayDropsAnUnlistedNotification: a notification the list
+// does not name has no answer: it is dropped, and the child reads nothing
+// (decision 2).
+func TestARestrictedRelayDropsAnUnlistedNotification(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.restricted()
+	p.start(nil)
+
+	assertDropped(t, p, `{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s-1"}}`+"\n")
+}
+
+// TestARestrictedRelayForwardsAListedRequest: a method the list names reaches
+// the child, and its answer comes back, both unchanged (decision 7).
+func TestARestrictedRelayForwardsAListedRequest(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.restricted()
+	p.start(nil)
+
+	request := `{"jsonrpc":"2.0","id":22,"method":"session/status","params":{"sessionId":"s-1"}}` + "\n"
+	relayWrite(t, p.client, request)
+	if got := string(readExactly(t, p.agent, len(request))); got != request {
+		t.Fatalf("a listed request changed:\n sent %q\n got  %q", request, got)
+	}
+
+	answer := `{"jsonrpc":"2.0","id":22,"result":{"status":"idle"}}` + "\n"
+	relayWrite(t, p.agent, answer)
+	if got := string(readExactly(t, p.client, len(answer))); got != answer {
+		t.Fatalf("the answer changed:\n sent %q\n got  %q", answer, got)
+	}
+}
+
+// TestARestrictedRelayForwardsAnswersToTheAgent: an answer to one of the
+// agent's own requests carries no method and passes unchanged, so approvals
+// and questions still reach the viewer and its answers reach the agent
+// (decision 7).
+func TestARestrictedRelayForwardsAnswersToTheAgent(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.restricted()
+	p.start(nil)
+
+	ask := `{"jsonrpc":"2.0","id":"perm-1","method":"session/request_permission","params":{"sessionId":"s-1","options":[]}}` + "\n"
+	relayWrite(t, p.agent, ask)
+	if got := string(readExactly(t, p.client, len(ask))); got != ask {
+		t.Fatalf("the agent's own request changed:\n sent %q\n got  %q", ask, got)
+	}
+
+	answer := `{"jsonrpc":"2.0","id":"perm-1","result":{"outcome":{"outcome":"selected","optionId":"allow"}}}` + "\n"
+	relayWrite(t, p.client, answer)
+	if got := string(readExactly(t, p.agent, len(answer))); got != answer {
+		t.Fatalf("an answer to the agent's own request changed:\n sent %q\n got  %q", answer, got)
+	}
+}
+
+// TestARestrictedRelayDropsABatch: a batch is not one JSON-RPC message, so the
+// restricted relay fails closed and drops it (decision 7).
+func TestARestrictedRelayDropsABatch(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.restricted()
+	p.start(nil)
+
+	assertDropped(t, p, `[{"jsonrpc":"2.0","id":23,"method":"session/status","params":{"sessionId":"s-1"}}]`+"\n")
+}
+
+// TestARestrictedRelayDropsMalformedJSON: a frame that is not JSON is dropped
+// rather than forwarded (decision 7).
+func TestARestrictedRelayDropsMalformedJSON(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.restricted()
+	p.start(nil)
+
+	assertDropped(t, p, `{"jsonrpc":"2.0","id":24,"method":`+"\n")
+}
+
+// TestARestrictedRelayStillRefusesClose: the restriction comes before the
+// close rule, and a listed request still meets it, so a container's viewer can
+// no more finish the agent's session than any other viewer (decision 1).
+func TestARestrictedRelayStillRefusesClose(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.ownedByAgent(t, p.sessionID, "agent-a", "reviewer")
+	p.restricted()
+	p.start(nil)
+
+	relayWrite(t, p.client, `{"jsonrpc":"2.0","id":25,"method":"session/close","params":{"sessionId":"s-1"}}`+"\n")
+
+	answer := readLine(t, bufio.NewReader(p.client))
+	checkRefusalAnswer(t, answer, "25", refusedSentence)
+	readsNothing(t, p.agent)
+}
+
+// TestAnUnrestrictedRelayForwardsEverything: a project attach's relay carries
+// no list, so a method a container's viewer may not call, a notification, a
+// batch and a malformed frame all pass exactly as they did before (decision
+// 6).
+func TestAnUnrestrictedRelayForwardsEverything(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.start(nil)
+
+	frames := []string{
+		`{"jsonrpc":"2.0","id":31,"method":"config/set_value","params":{"key":"theme","value":"dark"}}` + "\n",
+		`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s-1"}}` + "\n",
+		`[{"jsonrpc":"2.0","id":32,"method":"session/status","params":{"sessionId":"s-1"}}]` + "\n",
+		`{"jsonrpc":"2.0","id":33,"method":` + "\n",
+	}
+	for _, frame := range frames {
+		relayWrite(t, p.client, frame)
+		if got := string(readExactly(t, p.agent, len(frame))); got != frame {
+			t.Fatalf("an unrestricted relay changed a frame:\n sent %q\n got  %q", frame, got)
+		}
+	}
+	// The relay answers none of them: the child's answer is the viewer's
+	// answer, and the relay adds none of its own.
+	readsNothing(t, p.client)
 }
 
 // padFrame builds a valid JSON frame of exactly n bytes.

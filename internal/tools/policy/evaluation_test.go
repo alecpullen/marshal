@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/interaction"
+	"marshal/internal/permissions"
 )
 
 func evalShell(t *testing.T, pe *PolicyEngine, state interaction.State, cmd string) Evaluation {
@@ -199,10 +201,10 @@ func TestClonedEngineReadsCurrentConfigSource(t *testing.T) {
 	cfg := config.Default()
 	pe := NewEngine(&cfg, nil)
 	rev := uint64(1)
-	pe.SetConfigSource(func() (config.Config, []string, uint64) { return cfg, nil, rev })
+	pe.SetConfigSource(func() (config.Config, []string, []session.PermissionGrant, uint64) { return cfg, nil, nil, rev })
 	clone := pe.Clone()
 	rev = 2
-	_, _, got := clone.snapshot()
+	_, _, _, got := clone.snapshot()
 	if got != 2 {
 		t.Fatalf("clone source revision = %d, want 2", got)
 	}
@@ -211,7 +213,7 @@ func TestClonedEngineReadsCurrentConfigSource(t *testing.T) {
 func TestEvaluationRejectsMismatchedSourceRevision(t *testing.T) {
 	cfg := config.Default()
 	pe := NewEngine(&cfg, nil)
-	pe.SetConfigSource(func() (config.Config, []string, uint64) { return cfg, nil, 2 })
+	pe.SetConfigSource(func() (config.Config, []string, []session.PermissionGrant, uint64) { return cfg, nil, nil, 2 })
 	a, err := AnalyzeShell(ShellInput{Command: "cat x", WorkspaceRoot: "/repo", Dir: "/repo"})
 	if err != nil {
 		t.Fatalf("AnalyzeShell: %v", err)
@@ -245,5 +247,226 @@ func TestShellApprovedDestructionHasNoSecondGuardrailDeny(t *testing.T) {
 	}
 	if ev.ExactCommandApproval {
 		t.Fatal("Act unexpectedly required an exact approval")
+	}
+}
+
+// TestShellPolicyWrappedCompoundPayloadsFailClosed covers the AUD-01 policy
+// half: a payload with any statement that is not provably read-only can never
+// be admitted as read-only, whatever its first statement looks like.
+func TestShellPolicyWrappedCompoundPayloadsFailClosed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.Deny.Patterns = nil
+	pe := NewEngine(&cfg, nil)
+	ask := interaction.State{Mode: interaction.ModeAsk, Revision: 1}
+	act := interaction.State{Mode: interaction.ModeAct, Revision: 1}
+
+	for _, cmd := range []string{
+		"sh -c 'echo ok; touch x'",
+		"sh -c 'echo ok; sudo rm x'",
+		"eval 'echo ok; rm -rf x'",
+		"sh -c 'echo ok > out.txt'",
+		"sh -c 'echo ok; npm publish'",
+	} {
+		if got := evalShell(t, pe, ask, cmd).Decision; got != DecisionDeny {
+			t.Fatalf("%q in Ask: decision = %q, want deny", cmd, got)
+		}
+	}
+
+	// The catastrophic and privileged statements behind a read are denied in
+	// every mode.
+	for _, cmd := range []string{
+		"sh -c 'echo ok; rm -rf /'",
+		"sh -c 'echo ok; sudo rm x'",
+	} {
+		if got := evalShell(t, pe, act, cmd).Decision; got != DecisionDeny {
+			t.Fatalf("%q in Act: decision = %q, want deny", cmd, got)
+		}
+	}
+
+	if got := evalShell(t, pe, act, "sh -c 'echo ok; touch x'").Decision; got != DecisionAllow {
+		t.Fatalf("wrapped write in Act: decision = %q, want allow", got)
+	}
+	if got := evalShell(t, pe, ask, "sh -c 'echo ok'").Decision; got != DecisionAllow {
+		t.Fatalf("wrapped read in Ask: decision = %q, want allow", got)
+	}
+}
+
+// TestShellPolicyWrappedPayloadMatchesConfiguredFloor covers the second
+// AUD-01 bypass: a configured floor prefix must match a statement inside a
+// wrapped payload, not only the flattened argv's first word.
+func TestShellPolicyWrappedPayloadMatchesConfiguredFloor(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.Deny.Patterns = nil
+	cfg.Tools.Shell.FloorCommands = []string{"npm publish"}
+	pe := NewEngine(&cfg, nil)
+	act := interaction.State{Mode: interaction.ModeAct, Revision: 1}
+
+	for _, cmd := range []string{
+		"sh -c 'echo ok; npm publish'",
+		"eval 'echo ok; npm publish'",
+	} {
+		if ev := evalShell(t, pe, act, cmd); ev.Decision == DecisionAllow {
+			t.Fatalf("%q: decision = %q, want the configured floor to apply", cmd, ev.Decision)
+		}
+	}
+	if ev := evalShell(t, pe, act, "npm publish"); ev.Decision == DecisionAllow {
+		t.Fatalf("bare floored command: decision = %q, want approval", ev.Decision)
+	}
+	if got := evalShell(t, pe, act, "sh -c 'echo ok'").Decision; got != DecisionAllow {
+		t.Fatalf("wrapped read: decision = %q, want allow", got)
+	}
+}
+
+// TestShellPolicyGitConfigMutationsFailClosed covers AUD-04's policy half.
+func TestShellPolicyGitConfigMutationsFailClosed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.Deny.Patterns = nil
+	pe := NewEngine(&cfg, nil)
+	ask := interaction.State{Mode: interaction.ModeAsk, Revision: 1}
+	act := interaction.State{Mode: interaction.ModeAct, Revision: 1}
+
+	for _, cmd := range []string{
+		"git config user.name x",
+		"git config core.hooksPath /p",
+		"git config --unset some.key",
+		"git config --add some.key value",
+		"git config --system user.name x",
+	} {
+		if got := evalShell(t, pe, ask, cmd).Decision; got != DecisionDeny {
+			t.Fatalf("%q in Ask: decision = %q, want deny", cmd, got)
+		}
+	}
+
+	for _, cmd := range []string{
+		"git config --get user.name",
+		"git config --list",
+		"git config",
+		"git status",
+		"git diff",
+		"cat file",
+	} {
+		if got := evalShell(t, pe, ask, cmd).Decision; got != DecisionAllow {
+			t.Fatalf("%q in Ask: decision = %q, want allow", cmd, got)
+		}
+	}
+
+	if ev := evalShell(t, pe, act, "git config --global user.name x"); ev.Decision == DecisionAllow || !ev.Required.System {
+		t.Fatalf("global git config in Act = %+v, want a System requirement", ev)
+	}
+}
+
+// captureAskRules is the configured rule an approval answer of "session" can
+// lift: every capture target asks first.
+func captureAskRules() []permissions.Rule {
+	return []permissions.Rule{{Permission: "image.capture", Pattern: "*", Action: permissions.ActionAsk}}
+}
+
+// TestGrantLiftsConfiguredAsk covers the point of a session grant: the
+// configured ask becomes an allow for the granted target only.
+func TestGrantLiftsConfiguredAsk(t *testing.T) {
+	grants := []session.PermissionGrant{{Permission: "image.capture", Pattern: "active_window"}}
+
+	if got, matched := evaluateSubjects(captureAskRules(), grants, "image.capture", []string{"active_window"}); !matched || got != DecisionAllow {
+		t.Fatalf("granted target = (%q, %v), want (allow, true)", got, matched)
+	}
+	if got, matched := evaluateSubjects(captureAskRules(), grants, "image.capture", []string{"screen"}); !matched || got != DecisionConfirm {
+		t.Fatalf("ungranted target = (%q, %v), want (confirm, true)", got, matched)
+	}
+}
+
+// TestConfigDenyBeatsGrant confirms the precedence rule: a session can grant,
+// never deny, so a configured deny is untouched by any grant.
+func TestConfigDenyBeatsGrant(t *testing.T) {
+	rules := []permissions.Rule{{Permission: "image.capture", Pattern: "screen", Action: permissions.ActionDeny}}
+	grants := []session.PermissionGrant{{Permission: "image.capture", Pattern: "screen"}}
+
+	if got, matched := evaluateSubjects(rules, grants, "image.capture", []string{"screen"}); !matched || got != DecisionDeny {
+		t.Fatalf("denied target = (%q, %v), want (deny, true)", got, matched)
+	}
+}
+
+// TestGrantAloneAllows covers a target no rule mentions at all: the grant is
+// the only reason the tool does not fall through to the secure default.
+func TestGrantAloneAllows(t *testing.T) {
+	grants := []session.PermissionGrant{{Permission: "image.capture", Pattern: "active_window"}}
+
+	if got, matched := evaluateSubjects(nil, grants, "image.capture", []string{"active_window"}); !matched || got != DecisionAllow {
+		t.Fatalf("grant alone = (%q, %v), want (allow, true)", got, matched)
+	}
+	if got, matched := evaluateSubjects(nil, grants, "image.capture", []string{"screen"}); matched {
+		t.Fatalf("no rule for an ungranted target = (%q, true), want no match", got)
+	}
+}
+
+// TestNoGrantKeepsConfirm is the unchanged behaviour: an ask stays a confirm.
+func TestNoGrantKeepsConfirm(t *testing.T) {
+	if got, matched := evaluateSubjects(captureAskRules(), nil, "image.capture", []string{"active_window"}); !matched || got != DecisionConfirm {
+		t.Fatalf("ask without a grant = (%q, %v), want (confirm, true)", got, matched)
+	}
+}
+
+// TestMultiSubjectMostRestrictiveWins pins the multi-subject decision: one
+// patch touching an allowed path and an asking path must still prompt, in
+// either subject order. file.write_patch is the only multi-subject producer.
+func TestMultiSubjectMostRestrictiveWins(t *testing.T) {
+	rules := []permissions.Rule{
+		{Permission: "file.edit", Pattern: "docs/**", Action: permissions.ActionAllow},
+		{Permission: "file.edit", Pattern: "src/**", Action: permissions.ActionAsk},
+	}
+	for _, subjects := range [][]string{
+		{"docs/guide.md", "src/main.go"},
+		{"src/main.go", "docs/guide.md"},
+	} {
+		if got, matched := evaluateSubjects(rules, nil, "file.edit", subjects); !matched || got != DecisionConfirm {
+			t.Fatalf("subjects %v = (%q, %v), want (confirm, true)", subjects, got, matched)
+		}
+	}
+}
+
+// TestAskWithGrantDoesNotOutvoteUngrantedSubject pins that a grant covers only
+// its own subject: the granted target's allow must not lift a sibling that
+// still asks.
+func TestAskWithGrantDoesNotOutvoteUngrantedSubject(t *testing.T) {
+	grants := []session.PermissionGrant{{Permission: "image.capture", Pattern: "active_window"}}
+	for _, subjects := range [][]string{
+		{"active_window", "screen"},
+		{"screen", "active_window"},
+	} {
+		if got, matched := evaluateSubjects(captureAskRules(), grants, "image.capture", subjects); !matched || got != DecisionConfirm {
+			t.Fatalf("subjects %v = (%q, %v), want (confirm, true)", subjects, got, matched)
+		}
+	}
+}
+
+// TestGrantDoesNotCoverAnotherPermission pins PermissionMatches' one-
+// directional bridges: a capture grant lifts no shell or file.write ask, so an
+// unrelated session grant cannot stand in for the tool being evaluated.
+func TestGrantDoesNotCoverAnotherPermission(t *testing.T) {
+	grants := []session.PermissionGrant{{Permission: "image.capture", Pattern: "*"}}
+
+	shellRules := []permissions.Rule{{Permission: "shell", Pattern: "go build ./...", Action: permissions.ActionAsk}}
+	if got, matched := evaluateSubjects(shellRules, grants, "shell", []string{"go build ./..."}); !matched || got != DecisionConfirm {
+		t.Fatalf("shell ask under a capture grant = (%q, %v), want (confirm, true)", got, matched)
+	}
+
+	writeRules := []permissions.Rule{{Permission: "file.write", Pattern: "src/**", Action: permissions.ActionAsk}}
+	if got, matched := evaluateSubjects(writeRules, grants, "file.write", []string{"src/main.go"}); !matched || got != DecisionConfirm {
+		t.Fatalf("file.write ask under a capture grant = (%q, %v), want (confirm, true)", got, matched)
+	}
+}
+
+// TestDefaultCaptureRuleConfirmsBothTargets records that the shipped default
+// prompts for every capture target until a session grant lifts it.
+func TestDefaultCaptureRuleConfirmsBothTargets(t *testing.T) {
+	cfg := config.Default()
+	pe := NewEngine(&cfg, nil)
+	pe.mu.RLock()
+	rules := pe.rules
+	pe.mu.RUnlock()
+
+	for _, target := range []string{"active_window", "screen"} {
+		if got, matched := evaluateSubjects(rules, nil, "image.capture", []string{target}); !matched || got != DecisionConfirm {
+			t.Fatalf("default rule for %q = (%q, %v), want (confirm, true)", target, got, matched)
+		}
 	}
 }

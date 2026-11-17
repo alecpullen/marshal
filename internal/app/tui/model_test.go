@@ -5922,12 +5922,11 @@ func TestBrowserSaveFailureCanBeRetriedWithUnchangedSet(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("browser toggle must emit ChangedMsg")
 	}
-	msg := cmd()
-	changed, ok := msg.(settings.ChangedMsg)
-	if !ok || changed.SaveErr == nil {
-		t.Fatalf("browser save failure = %#v, want ChangedMsg with SaveErr", msg)
+	changed := settingsCommit(t, &m, cmd)
+	if changed.SaveErr == nil {
+		t.Fatalf("browser save failure = %#v, want SaveErr", changed)
 	}
-	updated, _ = m.Update(msg)
+	updated, _ = m.Update(changed)
 	m = updated.(Model)
 
 	if !stateOf(m).Config.Tools.Shell.AllowNetwork {
@@ -6015,15 +6014,13 @@ func TestBrowserRetrySurvivesDockCloseAndReopen(t *testing.T) {
 		if cmd == nil {
 			t.Fatal("confirming an inline edit must emit a command")
 		}
-		msg := cmd()
-		changed, ok := msg.(settings.ChangedMsg)
-		if !ok {
-			t.Fatalf("want settings.ChangedMsg, got %T", msg)
-		}
+		// The write runs off the Update goroutine (AUD-10), so the panel applies
+		// its own result first; settingsCommit drives both hops.
+		changed := settingsCommit(t, &m, cmd)
 		// Route the ChangedMsg back through the model, exactly like the real
 		// bubbletea runtime would, so stateOf(m).Config/m.configSavePending
 		// update the same way they do in production.
-		updated, _ = m.Update(msg)
+		updated, _ = m.Update(changed)
 		m = updated.(Model)
 		return changed
 	}
@@ -7640,12 +7637,8 @@ func TestDockedSettingsBrowserReloadsAndPrintsReceipts(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected toggle to emit ChangedMsg")
 	}
-	msg := cmd()
-	_, ok := msg.(settings.ChangedMsg)
-	if !ok {
-		t.Fatalf("expected ChangedMsg, got %T", msg)
-	}
-	updated, settle := m.Update(msg)
+	changed := settingsCommit(t, &m, cmd)
+	updated, settle := m.Update(changed)
 	m = updated.(Model)
 	// The settings save's reload runs from the call queue.
 	m = settleCalls(t, m, settle)

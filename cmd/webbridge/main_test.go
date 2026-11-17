@@ -15,10 +15,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
 
+	"marshal/internal/buildinfo"
 	"marshal/web/bridge"
 )
 
@@ -333,6 +335,56 @@ func TestWebbridgeReportsItsVersion(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "webbridge") {
 		t.Fatalf("--version output does not contain 'webbridge': %q", out.String())
+	}
+}
+
+// TestDaemonVersionResolvesASourceBuild pins task 3's first step: the
+// bridge's own version — which GET /api/daemon reports and the fleet carries
+// as its buildVersion — is buildinfo.Version(version), so a source build
+// names its commit instead of falling back to plain dev (decision 7).
+func TestDaemonVersionResolvesASourceBuild(t *testing.T) {
+	oldVersion, oldRead := version, buildinfo.ReadBuildInfo
+	t.Cleanup(func() { version, buildinfo.ReadBuildInfo = oldVersion, oldRead })
+
+	version = ""
+	buildinfo.ReadBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "0123456789abcdef0123456789abcdef01234567"},
+		}}, true
+	}
+
+	if got, want := daemonVersion(), "dev+0123456789ab"; got != want {
+		t.Fatalf("daemonVersion() = %q, want %q", got, want)
+	}
+}
+
+// TestTheBridgesSourceRuleMatchesBuildinfo pins the copy: web/bridge cannot
+// import internal/buildinfo (TestWebIsStdlibOnly), so bridge.SourceBuild
+// repeats the rule and this package, which may import both, holds them
+// together (decision 3).
+func TestTheBridgesSourceRuleMatchesBuildinfo(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		source  bool
+	}{
+		{"", false},
+		{"dev", true},
+		{"dev+abc123def456", true},
+		{"dev+abc123def456+dirty", true},
+		{"v1.2.3", false},
+		{"v1.2.3+dirty", false},
+		{"devel", false},
+		{"devx", false},
+	} {
+		if got, want := bridge.SourceBuild(tc.version), buildinfo.IsSource(tc.version); got != want {
+			t.Errorf("SourceBuild(%q) = %v, buildinfo.IsSource = %v", tc.version, got, want)
+		}
+		if got := bridge.SourceBuild(tc.version); got != tc.source {
+			t.Errorf("SourceBuild(%q) = %v, want %v", tc.version, got, tc.source)
+		}
+		if got := buildinfo.IsSource(tc.version); got != tc.source {
+			t.Errorf("buildinfo.IsSource(%q) = %v, want %v", tc.version, got, tc.source)
+		}
 	}
 }
 

@@ -25,6 +25,10 @@ type StatusManagerConfig struct {
 	// Marshal reports whether the connection's client declared the
 	// marshal capability. Nil means it did not.
 	Marshal func() bool
+	// Viewers is the host's count of each session's marshal viewers
+	// (decision 1): a forwarder adds one when it subscribes to a session, so a
+	// wake on a viewers host knows a screen is there. Nil counts nothing.
+	Viewers *marshalViewers
 }
 
 // StatusManager serves session/status and the notice calls for one
@@ -34,6 +38,7 @@ type StatusManager struct {
 	lookup  func(sessionID string) (*service.Session, bool)
 	notify  NotifyFunc
 	marshal func() bool
+	viewers *marshalViewers
 
 	mu         sync.Mutex
 	forwarders map[string]*statusForwarder
@@ -57,6 +62,10 @@ type statusEnvelope struct {
 type statusForwarder struct {
 	cancel context.CancelFunc
 	fence  *fence
+	// release gives back this connection's viewer count for the session
+	// (decision 1). It is idempotent, so Close and the forwarder's own end can
+	// both call it.
+	release func()
 }
 
 // NewStatusManager builds one connection's status handlers.
@@ -65,6 +74,7 @@ func NewStatusManager(cfg StatusManagerConfig) *StatusManager {
 		lookup:     cfg.Lookup,
 		notify:     cfg.Notify,
 		marshal:    cfg.Marshal,
+		viewers:    cfg.Viewers,
 		forwarders: map[string]*statusForwarder{},
 	}
 }
@@ -146,11 +156,20 @@ func (m *StatusManager) Close() {
 	}
 	m.closed = true
 	cancels := make([]context.CancelFunc, 0, len(m.forwarders))
+	releases := make([]func(), 0, len(m.forwarders))
 	for id, f := range m.forwarders {
 		cancels = append(cancels, f.cancel)
+		releases = append(releases, f.release)
 		delete(m.forwarders, id)
 	}
 	m.mu.Unlock()
+	// This connection's viewer count goes with it (decision 1): the session's
+	// screen is gone, so a later wake has none to wait for.
+	for _, release := range releases {
+		if release != nil {
+			release()
+		}
+	}
 	for _, cancel := range cancels {
 		cancel()
 	}
@@ -203,7 +222,7 @@ func (m *StatusManager) ensureForwarder(sessionID string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	f := &statusForwarder{cancel: cancel, fence: newFence()}
+	f := &statusForwarder{cancel: cancel, fence: newFence(), release: m.viewers.add(sessionID)}
 	m.forwarders[sessionID] = f
 	m.fences.add(sessionID, f.fence)
 	m.mu.Unlock()
@@ -219,10 +238,24 @@ func (m *StatusManager) ensureForwarder(sessionID string) {
 func (m *StatusManager) runForwarder(sessionID string, f *statusForwarder, ctx context.Context) {
 	defer func() {
 		m.mu.Lock()
-		delete(m.forwarders, sessionID)
+		// Qualified: a forwarder that ended because its session went must not
+		// delete a younger one that replaced it in the map meanwhile (review
+		// A3). The newer forwarder would become uncancellable, and its viewer
+		// count would outlive it — a phantom screen suppressing every detached
+		// wake of that session.
+		if m.forwarders[sessionID] == f {
+			delete(m.forwarders, sessionID)
+		}
 		m.mu.Unlock()
 		m.fences.remove(sessionID, f.fence)
 		f.fence.close()
+		// A forwarder that ends because its session went gives its viewer count
+		// back too, so a session that comes back is not left looking at a
+		// screen that is no longer there (decision 1). The release is
+		// idempotent, so Close may have taken it already.
+		if f.release != nil {
+			f.release()
+		}
 	}()
 
 	// sent says a status has been sent on this connection, so last is the

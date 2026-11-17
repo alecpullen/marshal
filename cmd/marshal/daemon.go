@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -17,6 +19,7 @@ import (
 
 	"marshal/internal/app"
 	"marshal/internal/app/config"
+	"marshal/internal/buildinfo"
 	"marshal/internal/daemon"
 	"marshal/internal/llm/provider"
 	"marshal/internal/repo"
@@ -71,7 +74,7 @@ var daemonStartTimeout = 5 * time.Second
 // stderr) so main.go's dispatch is uniform and tests can substitute streams.
 func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("marshal daemon: a subcommand is required (install|start|stop|status|pin|unpin|uninstall)")
+		return errors.New("marshal daemon: a subcommand is required (install|start|stop|status|pin|unpin|spawn|uninstall)")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -85,10 +88,12 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return runDaemonPin(ctx, rest, true, stdout, stderr)
 	case "unpin":
 		return runDaemonPin(ctx, rest, false, stdout, stderr)
+	case "spawn":
+		return runDaemonSpawn(ctx, rest, stdout, stderr)
 	case "refresh":
 		return runDaemonRefresh(ctx, rest, stderr)
 	default:
-		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|pin|unpin|uninstall)", sub)
+		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|pin|unpin|spawn|uninstall)", sub)
 	}
 }
 
@@ -140,11 +145,12 @@ func runDaemonRefresh(ctx context.Context, args []string, stderr io.Writer) erro
 
 // runDaemonInstall renders and loads the unit.
 //
-// Usage: marshal daemon install [--webbridge PATH]
+// Usage: marshal daemon install [--webbridge PATH] [--no-linger]
 func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("daemon install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	webbridge := fs.String("webbridge", "", "the webbridge binary to run (default: beside marshal, else on PATH)")
+	noLinger := fs.Bool("no-linger", false, "do not enable systemd's linger for this user (Linux)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -169,13 +175,73 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	fmt.Fprintf(stdout, "unit: %s\n", m.UnitPath())
 	fmt.Fprintf(stdout, "socket: %s\n", spec.Paths.Socket)
+	daemonEnsureLinger(ctx, m, *noLinger, stdout)
 	daemonReadyNote(ctx, spec.Paths, stdout)
 	return nil
 }
 
+// daemonEnsureLinger enables the user's linger bit on Linux and says what it
+// found. It never fails the install: the unit is written and loaded by the
+// time it runs, so linger decides only whether the daemon survives logout.
+func daemonEnsureLinger(ctx context.Context, m *daemon.Manager, skip bool, stdout io.Writer) {
+	if m.GOOS != "linux" {
+		return
+	}
+	if skip {
+		fmt.Fprintln(stdout, "linger: left off (--no-linger)")
+		return
+	}
+	state, err := m.Linger(ctx)
+	if err != nil {
+		fmt.Fprintf(stdout, "linger: not enabled (read Linger: %v)\n", err)
+		return
+	}
+	if !state.Supported {
+		// Supported is false for two causes — loginctl missing, and no
+		// logind to answer for this user — so the parenthetical names
+		// neither.
+		fmt.Fprintln(stdout, "linger: not supported (loginctl unavailable)")
+		return
+	}
+	if state.Enabled {
+		fmt.Fprintln(stdout, "linger: already enabled")
+		return
+	}
+	if err := m.EnableLinger(ctx); err != nil {
+		fmt.Fprintf(stdout, "linger: not enabled (%v)\n", err)
+		return
+	}
+	fmt.Fprintln(stdout, "linger: enabled")
+}
+
+// daemonLingerLine is daemon status's linger line, and whether this platform
+// has one at all. macOS has no equivalent, so it gets no line rather than a
+// "not supported" one for something it does not need.
+func daemonLingerLine(ctx context.Context, m *daemon.Manager) (string, bool) {
+	if m.GOOS != "linux" {
+		return "", false
+	}
+	// status has to answer even when loginctl hangs: the socket read below
+	// is bounded the same way, so a stuck read is a line, not a wait.
+	lingerCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
+	defer cancel()
+	state, err := m.Linger(lingerCtx)
+	if err != nil {
+		return fmt.Sprintf("linger: unknown (%v)", err), true
+	}
+	if !state.Supported {
+		return "linger: not supported (loginctl unavailable)", true
+	}
+	if state.Enabled {
+		return "linger: enabled", true
+	}
+	return "linger: disabled (the daemon stops at logout)", true
+}
+
 // daemonUnitSpec is decision 10's unit: the webbridge, the resolved marshal,
-// the paths internal/daemon resolves, the location environment, and the idle
-// session timeout the user config gives.
+// the paths internal/daemon resolves, the location environment, the idle
+// session timeout the user config gives, and the loopback address the Studio
+// is served on.
 func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 	webbridge, err := daemon.FindWebbridge(webbridgeOverride)
 	if err != nil {
@@ -192,13 +258,61 @@ func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 	if err != nil {
 		return daemon.UnitSpec{}, fmt.Errorf("read the user config: %w", err)
 	}
+	studioAddr, err := daemonStudioAddr(cfg.Daemon.StudioAddr)
+	if err != nil {
+		return daemon.UnitSpec{}, err
+	}
 	return daemon.UnitSpec{
 		Webbridge:          webbridge,
 		Marshal:            marshal,
 		Paths:              daemon.PathsFor(home),
 		Env:                daemonEnv(),
 		IdleSessionTimeout: cfg.Daemon.IdleSessionTimeout,
+		StudioAddr:         studioAddr,
 	}, nil
+}
+
+// daemonStudioAddr validates daemon.studio_addr and returns the address to
+// serve on, or "" for none.
+//
+// The Studio is the daemon's own HTTP face, so it is loopback-only: this
+// daemon runs host processes with the user's full authority and has no
+// authentication but a bearer token in a 0600 file. Binding it to a routable
+// address would publish that authority, so an address that is not loopback is
+// refused here rather than written into the unit and discovered later.
+func daemonStudioAddr(setting string) (string, error) {
+	addr := strings.TrimSpace(setting)
+	switch addr {
+	case "", "off", "none":
+		return "", nil
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("daemon.studio_addr %q: %w", setting, err)
+	}
+	if port == "" {
+		return "", fmt.Errorf("daemon.studio_addr %q: a port is required", setting)
+	}
+	if host == "" {
+		return "", fmt.Errorf("daemon.studio_addr %q: the Studio is loopback-only; give an address like 127.0.0.1:7788", setting)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		resolved, err := net.LookupIP(host)
+		if err != nil {
+			return "", fmt.Errorf("daemon.studio_addr %q: %w", setting, err)
+		}
+		for _, candidate := range resolved {
+			if !candidate.IsLoopback() {
+				return "", fmt.Errorf("daemon.studio_addr %q: the Studio is loopback-only; %s resolves to %s", setting, host, candidate)
+			}
+		}
+		return addr, nil
+	}
+	if !ip.IsLoopback() {
+		return "", fmt.Errorf("daemon.studio_addr %q: the Studio is loopback-only", setting)
+	}
+	return addr, nil
 }
 
 // resolvedExecutable is the running marshal with symlinks resolved and made
@@ -284,6 +398,11 @@ func runDaemonService(ctx context.Context, sub string, args []string, stdout, st
 			return err
 		}
 		fmt.Fprintf(stdout, "uninstalled; data kept in %s\n", daemon.PathsFor(home).Dir)
+		// The linger bit is per user, not per unit: Marshal set it at
+		// install, but other user units depend on it, so it stays.
+		if state, err := m.Linger(ctx); err == nil && state.Supported && state.Enabled {
+			fmt.Fprintln(stdout, "linger: left enabled (per user, not per unit)")
+		}
 	}
 	return nil
 }
@@ -328,16 +447,23 @@ func daemonAnswers(ctx context.Context, socket string) bool {
 // status
 // ---------------------------------------------------------------------------
 
-// runDaemonStatus prints decision 12's three lines: the service state, the
-// socket and whether it answered, and — for an answering daemon — its version
-// against this marshal's, its start time, and its projects.
+// runDaemonStatus prints decision 12's lines, or writes the JSON document
+// the tray app reads.
 //
-// It exits non-zero when the socket does not answer, but only after printing
-// what it found: a service that is loaded and silent is exactly the case the
-// user is running `status` for.
+// Text mode prints the service state, the linger line where the platform has
+// one, the socket and whether it answered, and — for an answering daemon —
+// its version against this marshal's, its start time, its refresh helper, its
+// projects and each project child. It exits non-zero when the socket does not
+// answer, but only after printing what it found: a service that is loaded and
+// silent is exactly the case the user is running `status` for.
+//
+// With --json it exits 0 whenever it wrote the document: the answer to
+// "is the daemon answering" is in the document, so a machine consumer must
+// not have to read an exit code for it.
 func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("daemon status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "write the status as one JSON document")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -359,12 +485,33 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return fmt.Errorf("read the marshal daemon service: %w", err)
 	}
-	fmt.Fprintln(stdout, daemonServiceLine(state))
+
+	status := daemon.Status{SchemaVersion: daemon.StatusSchema, Service: state}
 
 	infoCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
 	defer cancel()
-	info, err := daemonClientFor(paths.Socket).Info(infoCtx)
-	if err != nil {
+	info, infoErr := daemonClientFor(paths.Socket).Info(infoCtx)
+	if infoErr == nil {
+		status.Answering = true
+		status.Daemon = &info
+	}
+
+	if *asJSON {
+		// One loginctl call per invocation: text mode asks
+		// daemonLingerLine instead of reading it here.
+		if m.GOOS == "linux" {
+			if linger, err := m.Linger(ctx); err == nil {
+				status.Linger = linger
+			}
+		}
+		return json.NewEncoder(stdout).Encode(status)
+	}
+
+	fmt.Fprintln(stdout, daemonServiceLine(state))
+	if line, ok := daemonLingerLine(ctx, m); ok {
+		fmt.Fprintln(stdout, line)
+	}
+	if infoErr != nil {
 		fmt.Fprintf(stdout, "socket: %s (not answering)\n", paths.Socket)
 		return fmt.Errorf("the daemon is not answering on %s", paths.Socket)
 	}
@@ -556,13 +703,11 @@ func sessionCount(n int) string {
 	return "sessions"
 }
 
-// daemonVersion is this marshal's version, with the same `dev` fallback
-// versionString uses for an unstamped build.
+// daemonVersion is this marshal's version, as run computes it for the banner,
+// the User-Agent and the agent: a stamped release, else the dev form naming
+// the commit (decision 2).
 func daemonVersion() string {
-	if version == "" {
-		return "dev"
-	}
-	return version
+	return buildinfo.Version(version)
 }
 
 // daemonHome is where PathsFor and NewManager anchor.

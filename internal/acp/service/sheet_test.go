@@ -268,6 +268,27 @@ func TestRefreshSheetOnAReplacedSessionFails(t *testing.T) {
 	}
 }
 
+// TestSheetCarriesTheSessionPermissionRules pins the sheet's permission
+// section: the session's grants, beside the command rules unchanged.
+func TestSheetCarriesTheSessionPermissionRules(t *testing.T) {
+	state := newState(t, "s1")
+	state.AddSessionRule("go build ./...")
+	state.AddSessionPermissionRule(session.PermissionGrant{
+		Permission: "image.capture",
+		Pattern:    "active_window",
+	})
+	_, sess := New(Deps{State: state})
+
+	got := sess.Sheet(0)
+	want := []acpwire.SheetPermissionRule{{Permission: "image.capture", Pattern: "active_window", Scope: "session"}}
+	if !reflect.DeepEqual(got.Permissions, want) {
+		t.Errorf("Permissions = %+v, want %+v", got.Permissions, want)
+	}
+	if wantRules := []string{"go build ./..."}; !reflect.DeepEqual(got.Rules, wantRules) {
+		t.Errorf("Rules = %v, want the command rules unchanged: %v", got.Rules, wantRules)
+	}
+}
+
 // TestASubagentSheetHasTheSessionsFleetAndRepo pins that a subagent's sheet
 // carries the session's fleet and repo counts, and none of the session's
 // changed files, turns or totals.

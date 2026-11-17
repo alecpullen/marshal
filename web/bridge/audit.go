@@ -65,6 +65,13 @@ const (
 	AuditReviewDiscarded    = "review_discarded"
 	AuditReviewSentToAuthor = "review_sent_to_author"
 	AuditCIFixerResult      = "ci_fixer_result"
+
+	// The pull request fix path: every dispatch, stop, granted round and
+	// outcome is recorded with who asked.
+	AuditPullFixDispatched = "pull_fix_dispatched"
+	AuditPullFixGranted    = "pull_fix_granted"
+	AuditPullFixStopped    = "pull_fix_stopped"
+	AuditPullFixOutcome    = "pull_fix_outcome"
 )
 
 // defaultAuditMaxBytes is when a file rotates. Records are small, so a

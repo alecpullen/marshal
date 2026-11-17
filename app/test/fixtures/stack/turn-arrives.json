@@ -1,0 +1,192 @@
+{
+  "snapshot": {
+    "sessionId": "s-1",
+    "rev": 1,
+    "roots": [
+      "turn:1"
+    ],
+    "nodes": [
+      {
+        "id": "turn:1",
+        "kind": "turn",
+        "children": [
+          "step:1"
+        ]
+      },
+      {
+        "id": "step:1",
+        "kind": "step",
+        "parent": "turn:1",
+        "step": {
+          "headline": "Reading the parser.",
+          "stepIds": [
+            1
+          ],
+          "owner": "assistant",
+          "roleWord": "assistant",
+          "role": "assistant",
+          "model": "qwen3-coder",
+          "provider": "local",
+          "startedAt": 1700000000000,
+          "endedAt": 1700000009000,
+          "narration": [
+            "Reading the parser."
+          ]
+        }
+      }
+    ]
+  },
+  "patches": [
+    {
+      "kind": "stack_patch",
+      "rev": 2,
+      "baseRev": 1,
+      "roots": [
+        "turn:1"
+      ],
+      "upsert": [
+        {
+          "id": "turn:1",
+          "kind": "turn",
+          "children": [
+            "step:1",
+            "tool:1:call_0"
+          ]
+        },
+        {
+          "id": "tool:1:call_0",
+          "kind": "tool",
+          "parent": "turn:1",
+          "tool": {
+            "name": "file.read",
+            "display": "Read file",
+            "verb": "read",
+            "calls": [
+              {
+                "callId": "call_0",
+                "output": "package parser\n",
+                "approval": "allow",
+                "durationMs": 40,
+                "at": 1700000002000
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "kind": "stack_patch",
+      "rev": 3,
+      "baseRev": 2,
+      "roots": [
+        "turn:1"
+      ],
+      "upsert": [
+        {
+          "id": "turn:1",
+          "kind": "turn",
+          "children": [
+            "step:1",
+            "tool:1:call_0",
+            "completion:job:3"
+          ]
+        },
+        {
+          "id": "completion:job:3",
+          "kind": "completion",
+          "parent": "turn:1",
+          "completion": {
+            "source": "job",
+            "id": "job-3",
+            "label": "shell.run",
+            "outcome": "done",
+            "exitCode": 0,
+            "startedAt": 1700000004000,
+            "endedAt": 1700000005000,
+            "durationMs": 1000,
+            "command": "go vet ./...",
+            "output": "ok\n"
+          }
+        }
+      ]
+    },
+    {
+      "kind": "stack_patch",
+      "rev": 4,
+      "baseRev": 3,
+      "roots": [
+        "turn:1"
+      ],
+      "upsert": [
+        {
+          "id": "turn:1",
+          "kind": "turn",
+          "children": [
+            "step:1",
+            "tool:1:call_0"
+          ]
+        }
+      ],
+      "remove": [
+        "completion:job:3"
+      ]
+    }
+  ],
+  "final": {
+    "sessionId": "s-1",
+    "rev": 4,
+    "roots": [
+      "turn:1"
+    ],
+    "nodes": [
+      {
+        "id": "turn:1",
+        "kind": "turn",
+        "children": [
+          "step:1",
+          "tool:1:call_0"
+        ]
+      },
+      {
+        "id": "step:1",
+        "kind": "step",
+        "parent": "turn:1",
+        "step": {
+          "headline": "Reading the parser.",
+          "stepIds": [
+            1
+          ],
+          "owner": "assistant",
+          "roleWord": "assistant",
+          "role": "assistant",
+          "model": "qwen3-coder",
+          "provider": "local",
+          "startedAt": 1700000000000,
+          "endedAt": 1700000009000,
+          "narration": [
+            "Reading the parser."
+          ]
+        }
+      },
+      {
+        "id": "tool:1:call_0",
+        "kind": "tool",
+        "parent": "turn:1",
+        "tool": {
+          "name": "file.read",
+          "display": "Read file",
+          "verb": "read",
+          "calls": [
+            {
+              "callId": "call_0",
+              "output": "package parser\n",
+              "approval": "allow",
+              "durationMs": 40,
+              "at": 1700000002000
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

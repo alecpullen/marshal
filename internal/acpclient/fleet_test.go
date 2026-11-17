@@ -104,6 +104,20 @@ func TestFleetDocsNameTheirRoutes(t *testing.T) {
 	}
 }
 
+// TestAFleetErrorNamesTheBridgesSentence keeps the error's text the bridge's
+// own sentence, with the status only when the bridge sent none (decision 2).
+func TestAFleetErrorNamesTheBridgesSentence(t *testing.T) {
+	sentenced := &FleetError{Status: 409, Message: "an agent with that name already exists"}
+	if got, want := sentenced.Error(), "an agent with that name already exists"; got != want {
+		t.Errorf("a FleetError with a message reads %q, want %q", got, want)
+	}
+
+	silent := &FleetError{Status: 503}
+	if got, want := silent.Error(), "status 503"; got != want {
+		t.Errorf("a FleetError without a message reads %q, want %q", got, want)
+	}
+}
+
 // fleetRowsFor returns the rows of FleetRoutes naming one Fleet method.
 func fleetRowsFor(name string) []FleetRoute {
 	var rows []FleetRoute

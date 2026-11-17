@@ -18,6 +18,148 @@ func loopItem() FactoryItem {
 	req.Config.TargetBranch = "main"
 	return FactoryItem{ID: "item", Title: req.Title, State: "queued", Draft: req, RepoID: req.Config.RepoID, Branch: "marshal/factory/item", BaseSHA: "base", Approvals: []FactoryApproval{{Revision: 1, Plan: req.Plan, Spec: req.Spec, PlanHash: FactoryPlanHash(req.Plan, req.Spec), Config: req.Config, ApprovedAt: now}}, Grants: []FactoryGrant{{ID: "initial", AdditionalRounds: 5, At: now}}, ApprovedAt: now}
 }
+
+// TestFactoryEarlyReportNotAccepted proves the gate at the controller: a worker
+// turn that launched children it had not proven settled does not complete the
+// effect that dispatched it. The early report never reaches CompleteFactoryEffect,
+// the effect keeps the dispatch and candidate identity it was given, and the
+// waiting turn is journalled beside it so the item cannot advance.
+func TestFactoryEarlyReportNotAccepted(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenFactoryStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(factoryReq(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dw := newDelegatedWorkers(t, created.ID, "s1")
+	// The turn writes a complete, otherwise acceptable report and leaves child 7
+	// running: only the child can stop that report from being the effect's result.
+	dw.script(t, 0,
+		delegatedTurnStack(t, "turn:1", nil, ""),
+		delegatedTurnStack(t, "turn:2", []int64{7}, delegatedReport("op1")),
+		delegatedStatus(t, true, delegatedChild(7, "running")))
+	item, err := store.Update(created.ID, "dispatch", created.Version, json.RawMessage(`{"dispatch":true}`), func(dst *FactoryItem) error {
+		req := factoryReq()
+		req.Config.TargetBranch = "main"
+		dst.Approvals = []FactoryApproval{{Revision: 1, Plan: req.Plan, Spec: req.Spec, PlanHash: FactoryPlanHash(req.Plan, req.Spec), Config: req.Config, ApprovedAt: time.Now()}}
+		dst.State = "implementing"
+		dst.Branch = "marshal/factory/" + created.ID
+		dst.BaseSHA = "base"
+		dst.Workers = append([]FactoryWorker(nil), dw.workers...)
+		dst.Rounds = []FactoryRound{{Number: 1, ApprovalRevision: 1, BaseSHA: "base"}}
+		dst.Effects = []FactoryEffect{{ID: "op1", Kind: "implement", Status: "dispatched", WorkerRole: "implementer", Round: 1, ApprovalRevision: 1, Worker: &dst.Workers[0], ExpectedBase: "base"}}
+		return nil
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewFactoryController(store, &factoryEffects{fleet: dw.fleet, workers: newFactoryWorkers(dw.fleet)}, time.Now)
+	if err := c.finishDispatch(context.Background(), item, item.Effects[len(item.Effects)-1]); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := saved.Effects[len(saved.Effects)-1]
+	if last.Status != "dispatched" {
+		t.Fatalf("the effect completed on an early report: %q", last.Status)
+	}
+	if last.Outcome != nil {
+		t.Fatalf("the early report reached the effect's outcome: %+v", last.Outcome)
+	}
+	if last.Worker == nil || last.Worker.SessionID != "s1" || last.ExpectedBase != "base" {
+		t.Fatalf("the effect lost its worker or candidate identity: %+v", last)
+	}
+	d := last.Delegated
+	if d == nil {
+		t.Fatal("the waiting turn was not journalled beside the effect")
+	}
+	if d.State != "waiting" || d.EffectID != "op1" || d.SessionID != "s1" || d.WorkerID != dw.workers[0].AgentID {
+		t.Fatalf("journalled delegated turn = %+v", d)
+	}
+	if len(d.ChildIDs) != 1 || d.ChildIDs[0] != 7 {
+		t.Fatalf("journalled children = %v, want child 7", d.ChildIDs)
+	}
+	if saved.State != "implementing" || len(saved.Rounds) != 1 || saved.Rounds[0].Implementation != nil {
+		t.Fatalf("the item advanced on an early report: state=%s rounds=%+v", saved.State, saved.Rounds)
+	}
+	// Nothing can be derived while the effect is unsettled, so the item is not
+	// schedulable and no continuation has been invented here.
+	if next, e, err := AdvanceFactory(saved, FactoryObservation{}, time.Now()); err != nil || e != nil || next.State != saved.State {
+		t.Fatalf("a waiting item advanced: state=%s effect=%+v err=%v", next.State, e, err)
+	}
+	// The waiting turn survives the journal's replay, which re-marshals every
+	// record and compares it with the stored bytes.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := OpenFactoryStore(dir)
+	if err != nil {
+		t.Fatalf("the journal did not replay a delegated turn: %v", err)
+	}
+	defer replayed.Close()
+	again, err := replayed.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := again.Effects[len(again.Effects)-1].Delegated; got == nil || got.State != "waiting" || len(got.ChildIDs) != 1 {
+		t.Fatalf("replayed delegated turn = %+v", got)
+	}
+}
+
+// TestFactoryEffectWithoutDelegatedTurnKeepsLegacyBytes proves the new field does
+// not change the record an effect written before delegated turns existed has: the
+// journal replays by re-marshalling each record and comparing it with the stored
+// bytes, so an effect that delegated nothing has to write exactly what it always
+// did.
+func TestFactoryEffectWithoutDelegatedTurnKeepsLegacyBytes(t *testing.T) {
+	legacy := func() json.RawMessage {
+		raw, err := json.Marshal(struct {
+			Outcome          *FactoryOutcome `json:"outcome"`
+			ID               string          `json:"id"`
+			Kind             string          `json:"kind"`
+			Status           string          `json:"status"`
+			WorkerRole       string          `json:"workerRole"`
+			Round            int             `json:"round"`
+			ApprovalRevision uint64          `json:"approvalRevision"`
+			Worker           *FactoryWorker  `json:"worker"`
+			ExpectedHead     string          `json:"expectedHead"`
+			ExpectedBase     string          `json:"expectedBase"`
+			CreatedAt        time.Time       `json:"createdAt"`
+		}{ID: "op1", Kind: "implement", Status: "completed", WorkerRole: "implementer", Round: 1, ExpectedBase: "base"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}()
+	raw, err := json.Marshal(FactoryEffect{ID: "op1", Kind: "implement", Status: "completed", WorkerRole: "implementer", Round: 1, ExpectedBase: "base"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != string(legacy) {
+		t.Fatalf("an effect that delegated nothing wrote %s, want %s", raw, legacy)
+	}
+	// A waiting effect states its delegated turn, and reads back as one.
+	waiting := FactoryEffect{ID: "op1", Kind: "implement", Status: "dispatched", Delegated: &FactoryDelegatedTurn{
+		EffectID: "op1", WorkerID: "a1", SessionID: "s1", ParentTurnID: "turn:2", ChildIDs: []int64{7}, State: "waiting",
+	}}
+	raw, err = json.Marshal(waiting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back FactoryEffect
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Delegated == nil || back.Delegated.State != "waiting" || back.Delegated.ChildIDs[0] != 7 || back.Delegated.ParentTurnID != "turn:2" {
+		t.Fatalf("waiting effect round-tripped as %+v", back.Delegated)
+	}
+}
+
 func TestFactoryLoopHappyAndRepair(t *testing.T) {
 	now := time.Now().UTC()
 	i := loopItem()
@@ -705,7 +847,13 @@ func TestFactoryLoopReadyMonitorDuringModelTurn(t *testing.T) {
 	deadline := time.After(time.Second)
 	for {
 		item, _ := s.Get(ready.ID)
-		if item.State != "ready" && len(item.Effects) == 2 && item.Effects[1].Kind == "set_draft" && item.Effects[1].Status == "prepared" {
+		// The controller executes a prepared set_draft in the same tick that
+		// creates it, so "prepared" is a transient stage this poll usually
+		// loses: finding the effect already completed is stronger evidence the
+		// monitor ran, not a failure. Its presence at this position — after the
+		// set_ready the item started with — is what proves the ready PR was
+		// observed while the model turn was blocked.
+		if item.State != "ready" && len(item.Effects) == 2 && item.Effects[1].Kind == "set_draft" {
 			return
 		}
 		select {

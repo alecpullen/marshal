@@ -140,6 +140,9 @@ type ollamaMessage struct {
 	Content   string           `json:"content"`
 	Thinking  string           `json:"thinking,omitempty"`
 	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+	// Images carries base64 image bytes on the message itself: the native
+	// API attaches them to the turn, whichever role that is.
+	Images []string `json:"images,omitempty"`
 }
 
 type ollamaToolCall struct {
@@ -182,7 +185,7 @@ type ollamaChatChunkMessage struct {
 
 // --- request building ---
 
-func (p *OllamaNative) buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
+func (p *OllamaNative) buildChatRequestBody(ctx context.Context, req schema.ChatRequest) ([]byte, error) {
 	if req.Model == "" {
 		return nil, errors.New("chat request: model is required")
 	}
@@ -192,6 +195,14 @@ func (p *OllamaNative) buildChatRequestBody(req schema.ChatRequest) ([]byte, err
 	messages := make([]ollamaMessage, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		om := ollamaMessage{Role: string(m.Role), Content: m.Content}
+		// The native API takes images on the message itself, on any role.
+		for _, img := range m.Images {
+			b64, err := imageB64(ctx, req.ImageSource, img)
+			if err != nil {
+				return nil, err
+			}
+			om.Images = append(om.Images, b64)
+		}
 		if p.replayThinking && m.Role == schema.RoleAssistant && m.Reasoning != nil {
 			om.Thinking = m.Reasoning.Text
 		}
@@ -356,7 +367,7 @@ func (p *OllamaNative) chat(ctx context.Context, req schema.ChatRequest) (<-chan
 	if len(req.Tools) > 0 && !p.modelSupportsTools(ctx, req.Model) {
 		req.Tools = nil
 	}
-	body, err := p.buildChatRequestBody(req)
+	body, err := p.buildChatRequestBody(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)
 	}
@@ -427,6 +438,7 @@ func (p *OllamaNative) streamChatEvents(body io.ReadCloser, capture *wireCapture
 	var toolCalls []schema.ToolCall
 	var usage *schema.TokenUsage
 	var finishReason string
+	var completion streamCompletion
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -463,6 +475,10 @@ func (p *OllamaNative) streamChatEvents(body io.ReadCloser, capture *wireCapture
 		if chunk.Done {
 			finishReason = chunk.DoneReason
 			usage = ollamaUsageFrom(chunk)
+			// "done":true is the protocol's terminal marker. done_reason is
+			// optional — older servers omit it — so it must not be the
+			// marker.
+			completion.mark()
 		}
 		if !chunk.Done && chunk.Message.Thinking == "" && chunk.Message.Content == "" && len(chunk.Message.ToolCalls) == 0 {
 			capture.annotate("[unrecognized-chunk]", line)
@@ -470,6 +486,13 @@ func (p *OllamaNative) streamChatEvents(body io.ReadCloser, capture *wireCapture
 	}
 	if err := scanner.Err(); err != nil {
 		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("read stream: %w", err)}
+		return
+	}
+	if !completion.seen {
+		// The stream ended without a done:true chunk: it was cut short.
+		// No tool calls are reported — a truncated call must not be
+		// handed to the executor as if it were complete.
+		events <- completion.interrupted("done:true", nil)
 		return
 	}
 	events <- schema.ChatEvent{

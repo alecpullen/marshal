@@ -58,6 +58,11 @@ type AgentStatus struct {
 	ContextPct   int          `json:"contextPct,omitempty"`
 	ChangedFiles int          `json:"changedFiles,omitempty"`
 	Interrupted  bool         `json:"interrupted,omitempty"`
+	// VersionWarning, when non-empty, says the agent runs a marshal other
+	// than the daemon's, in the daemon's own words: "agent runs marshal
+	// <theirs>; the daemon is <ours>". It is empty when the versions agree,
+	// or when either side named none. The fleet screen shows it as it is.
+	VersionWarning string `json:"versionWarning,omitempty"`
 	// Held is true while a terminal is holding the agent (the agent is
 	// paused for someone typing), so a reloaded page shows it without
 	// waiting for the next "hold" delta.

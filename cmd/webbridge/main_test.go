@@ -24,6 +24,19 @@ import (
 	"marshal/web/bridge"
 )
 
+// TestMain lets this test binary stand in for webbridge: the restart test
+// starts a copy of this executable and expects a daemon, not a test run. The
+// variable is how the copy knows which it is.
+func TestMain(m *testing.M) {
+	if os.Getenv(testAsBinaryEnv) == "1" {
+		// The copy's arguments are webbridge's, so main serves until it is
+		// asked to stop or re-execute itself.
+		main()
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 func TestParseConfigDefaults(t *testing.T) {
 	// Ensure env vars do not leak host state into the defaults test.
 	for _, k := range []string{"WEBBRIDGE_ADDR", "WEBBRIDGE_TOKEN", "WEBBRIDGE_MARSHAL_BIN", "WEBBRIDGE_CWD_ROOT", "WEBBRIDGE_PROFILE", "WEBBRIDGE_SOCKET"} {

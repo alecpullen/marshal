@@ -19,6 +19,12 @@ type DaemonChild = contract.DaemonChild
 // DaemonRestart is contract.DaemonRestart; see that declaration.
 type DaemonRestart = contract.DaemonRestart
 
+// DaemonRestartRequest is contract.DaemonRestartRequest; see that declaration.
+type DaemonRestartRequest = contract.DaemonRestartRequest
+
+// DaemonRestartProgress is contract.DaemonRestartProgress; see that declaration.
+type DaemonRestartProgress = contract.DaemonRestartProgress
+
 // SetDaemonInfo makes GET /api/daemon answer info; without it the route
 // answers 404 (decision 8).
 func (s *Server) SetDaemonInfo(info DaemonInfo) {

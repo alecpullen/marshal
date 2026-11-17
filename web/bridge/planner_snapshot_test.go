@@ -258,7 +258,13 @@ func TestPlannerSnapshotSelectedOnly(t *testing.T) {
 	// else: recomputing it is the check a reviewer performs.
 	edit := EditSnapshot{BaseCommit: reply.BaseCommit}
 	for _, file := range reply.Files {
-		edit.Files = append(edit.Files, file.SelectedFile)
+		edit.Files = append(edit.Files, SelectedFile{
+			Path:          file.Path,
+			Operation:     file.Operation,
+			BaseSHA256:    file.BaseSHA256,
+			ContentSHA256: file.ContentSHA256,
+			Executable:    file.Executable,
+		})
 	}
 	wantDigest, err := plannerSnapshotDigest(edit)
 	if err != nil {

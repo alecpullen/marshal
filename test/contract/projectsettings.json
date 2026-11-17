@@ -1,0 +1,149 @@
+{
+  "DiscoveryCapability": {
+    "detail": "The forge answered",
+    "key": "forge_metadata",
+    "state": "supported"
+  },
+  "DiscoveryCapabilityState": "supported",
+  "DiscoveryFact": {
+    "kind": "file",
+    "origin": "detected",
+    "section": "checkout_instructions",
+    "source": "checkout:AGENTS.md",
+    "value": "present"
+  },
+  "DiscoveryGap": {
+    "detail": "No forge token is configured",
+    "key": "forge_metadata",
+    "section": "forge",
+    "state": "unconfigured"
+  },
+  "DiscoveryRecommendation": {
+    "kind": "file",
+    "origin": "recommended",
+    "reason": "A project instruction file is read at the start of every turn",
+    "section": "checkout_instructions",
+    "value": "AGENTS.md"
+  },
+  "DiscoveryReport": {
+    "branch": "main",
+    "capabilities": [
+      {
+        "detail": "The forge answered",
+        "key": "forge_metadata",
+        "state": "supported"
+      }
+    ],
+    "facts": [
+      {
+        "kind": "file",
+        "origin": "detected",
+        "section": "checkout_instructions",
+        "source": "checkout:AGENTS.md",
+        "value": "present"
+      }
+    ],
+    "forge": "github",
+    "gaps": [
+      {
+        "detail": "No forge token is configured",
+        "key": "forge_metadata",
+        "section": "forge",
+        "state": "unconfigured"
+      }
+    ],
+    "recommended": [
+      {
+        "kind": "file",
+        "origin": "recommended",
+        "reason": "A project instruction file is read at the start of every turn",
+        "section": "checkout_instructions",
+        "value": "AGENTS.md"
+      }
+    ],
+    "repoId": "repo-1",
+    "revision": "abc123",
+    "status": "ok",
+    "worktree": {
+      "branch": "main",
+      "dirty": false,
+      "head": "abc123",
+      "path": "/home/u/marshal"
+    }
+  },
+  "DiscoveryWorktree": {
+    "branch": "main",
+    "dirty": false,
+    "head": "abc123",
+    "path": "/home/u/marshal"
+  },
+  "FactoryDefaults": {
+    "hostId": "local",
+    "maxRounds": 3,
+    "targetBranch": "main"
+  },
+  "MirrorHealth": {
+    "ageSeconds": 120,
+    "head": "main",
+    "present": true,
+    "repoId": "repo-1"
+  },
+  "ProjectHealth": {
+    "gateRunnable": "yes",
+    "mirrorFresh": [
+      {
+        "ageSeconds": 120,
+        "head": "main",
+        "present": true,
+        "repoId": "repo-1"
+      }
+    ],
+    "orphanWorktrees": [],
+    "trust": "trusted",
+    "verify": {
+      "build": "go build ./...",
+      "test": "go test ./..."
+    },
+    "workspaceResolves": {
+      "built": true,
+      "ref": "workspace-1",
+      "resolves": true
+    }
+  },
+  "ProjectIntake": {
+    "labels": [
+      "intake"
+    ],
+    "repoId": "repo-1"
+  },
+  "ProjectSettings": {
+    "autoAssessPlanChanges": true,
+    "auto": true,
+    "designatedMCPClientId": "client-1",
+    "factoryDefaults": {
+      "hostId": "local",
+      "maxRounds": 3,
+      "targetBranch": "main"
+    },
+    "intake": {
+      "labels": [
+        "intake"
+      ],
+      "repoId": "repo-1"
+    },
+    "isolated": true,
+    "mode": "act",
+    "plannerDelegationEnabled": true,
+    "shipTarget": "merge",
+    "workspace": "workspace-1"
+  },
+  "VerifyCommands": {
+    "build": "go build ./...",
+    "test": "go test ./..."
+  },
+  "WorkspaceHealth": {
+    "built": true,
+    "ref": "workspace-1",
+    "resolves": true
+  }
+}

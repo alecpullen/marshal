@@ -3,7 +3,6 @@ package bridge
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -82,24 +81,8 @@ type factorySubagentFreeze struct {
 // NoRequiredCIAcknowledged are absent because their false is a meaningful
 // choice, and the handoff's plain FactoryConfig cannot tell "unset" from
 // "explicitly false".
-type FactoryDefaults struct {
-	TargetBranch         string            `json:"targetBranch,omitempty"`
-	Workspace            string            `json:"workspace,omitempty"`
-	HostID               string            `json:"hostId,omitempty"`
-	ImplementerRouting   json.RawMessage   `json:"implementerRouting,omitempty"`
-	ReviewerRouting      json.RawMessage   `json:"reviewerRouting,omitempty"`
-	ReviewerInstructions string            `json:"reviewerInstructions,omitempty"`
-	ExpectedChecks       []FactoryCheckKey `json:"expectedChecks,omitempty"`
-	MaxRounds            int               `json:"maxRounds,omitempty"`
-	CIPollSeconds        int               `json:"ciPollSeconds,omitempty"`
-	CIWaitSeconds        int               `json:"ciWaitSeconds,omitempty"`
-	// ImplementerSubagents and ReviewerSubagents are the project's subagent
-	// overrides. They are pointers for the same reason the handoff's are: an
-	// absent field inherits the session's reported defaults, and an explicit
-	// false is not an absence.
-	ImplementerSubagents *FactorySubagentOverrides `json:"implementerSubagents,omitempty"`
-	ReviewerSubagents    *FactorySubagentOverrides `json:"reviewerSubagents,omitempty"`
-}
+// FactoryDefaults is contract.FactoryDefaults: the defaults a handoff inherits.
+type FactoryDefaults = contract.FactoryDefaults
 
 // The delegated turn's states. A waiting turn is not an outcome: the report it
 // wrote is early. A continuation is journaled as prepared before anything is

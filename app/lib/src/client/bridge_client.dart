@@ -126,6 +126,18 @@ class BridgeClient {
     MergeRequest(commitMessage: commitMessage ?? ''),
   );
 
+  /// POST /api/factory/items: create a work item from a handoff review. The
+  /// route answers `{"item": {...}}`, and 201 the first time.
+  Future<FactoryItem> createFactoryItem(FactoryCreate draft) async {
+    final body = await _objectOf<Map<String, dynamic>>(
+      '/api/factory/items',
+      (json) => json,
+      method: 'POST',
+      body: draft,
+    );
+    return FactoryItem.fromJson(body['item'] as Map<String, dynamic>);
+  }
+
   /// Sets one project's automatic pull-request fixing: it reads the project's
   /// whole settings document, changes `automations.autoFix` and writes it
   /// back, naming the ETag it read.
@@ -850,6 +862,230 @@ class BridgeClient {
     return FactoryItem.fromJson(body['item'] as Map<String, dynamic>);
   }
 
+  // A project's settings, its health and its discovery report (F6).
+
+  /// One settings document and the ETag that names it.
+  ///
+  /// The tag is what a conditional write compares against: a write that names
+  /// a tag the bridge no longer holds is refused rather than overwriting a
+  /// change the person has not seen.
+  static ProjectSettingsVersion version(
+    ProjectSettings settings, {
+    String? etag,
+  }) => ProjectSettingsVersion(settings: settings, etag: etag);
+
+  /// GET /api/projects/settings: the document and the ETag naming exactly it.
+  /// The body and the tag come from one read, so a conditional write compares
+  /// against what was shown.
+  Future<ProjectSettingsVersion> projectSettings(String root) =>
+      _settingsOf('/api/projects/settings', query: {'root': root});
+
+  /// PUT /api/projects/settings: a conditional write when [etag] is given.
+  /// A stale write is refused with 412, changing nothing.
+  Future<ProjectSettingsVersion> putProjectSettings(
+    String root,
+    ProjectSettings settings, {
+    String? etag,
+  }) => _settingsOf(
+    '/api/projects/settings',
+    method: 'PUT',
+    query: {'root': root},
+    body: settings,
+    headers: {if (etag != null && etag.isNotEmpty) 'If-Match': etag},
+  );
+
+  /// GET /api/projects/health: the gate, the mirrors, the index, the retained
+  /// workspaces, the forge connection and the workspace.
+  Future<ProjectHealth> projectHealth(String root) => _objectOf(
+    '/api/projects/health',
+    ProjectHealth.fromJson,
+    query: {'root': root},
+  );
+
+  /// POST /api/repos/{id}/discover: the discovery report, which never writes
+  /// anything.
+  Future<DiscoveryReport> discoverRepo(String repoID) => _objectOf(
+    '/api/repos/${Uri.encodeComponent(repoID)}/discover',
+    DiscoveryReport.fromJson,
+    method: 'POST',
+  );
+
+  /// GET /api/runs: every plan run the bridge knows, with the digest each
+  /// agent last sent (F6 decision 11). A run's entry carries the whole digest,
+  /// so a thread opened from this list draws the run without a second read.
+  Future<List<RunListEntry>> runs() =>
+      _listOf('/api/runs', RunListEntry.fromJson);
+
+  /// POST /api/runs/{agentId}/answer: answers the question a run stopped on.
+  /// The bridge accepts it and the run's next digest carries the outcome.
+  Future<void> answerRun(String agentID, String answer) => _post(
+    '/api/runs/${Uri.encodeComponent(agentID)}/answer',
+    {'answer': answer},
+  );
+
+  /// One settings read or write, with the ETag the answer named.
+  Future<ProjectSettingsVersion> _settingsOf(
+    String path, {
+    Map<String, String> query = const {},
+    String method = 'GET',
+    Object? body,
+    Map<String, String> headers = const {},
+  }) async {
+    final response = await _send(
+      Request(
+        method: method,
+        path: path,
+        query: query,
+        body: body,
+        headers: headers,
+      ),
+    );
+    return ProjectSettingsVersion(
+      settings: ProjectSettings.fromJson(_object(response)),
+      etag: response.headers['etag'] ?? response.headers['ETag'],
+    );
+  }
+
+  // Working drafts (F6). An unfinished handoff the bridge keeps, so a draft
+  // edited on one device is not lost on another and never overwritten
+  // silently.
+
+  /// POST /api/factory/working-drafts: create an unfinished handoff.
+  Future<WorkingDraft> createWorkingDraft(WorkingDraftCreateRequest request) =>
+      _draftOf('/api/factory/working-drafts', method: 'POST', body: request);
+
+  /// GET /api/factory/working-drafts?projectRoot=: the project's drafts, the
+  /// tombstones excluded.
+  Future<List<WorkingDraft>> workingDrafts(String projectRoot) async {
+    final body = await _objectOf<Map<String, dynamic>>(
+      '/api/factory/working-drafts',
+      (json) => json,
+      query: {'projectRoot': projectRoot},
+    );
+    return List.unmodifiable([
+      for (final value in (body['drafts'] as List<dynamic>? ?? const []))
+        WorkingDraft.fromJson(value as Map<String, dynamic>),
+    ]);
+  }
+
+  /// GET /api/factory/working-drafts/{id}: one draft, tombstones included.
+  Future<WorkingDraft> workingDraft(String id) =>
+      _draftOf('/api/factory/working-drafts/${Uri.encodeComponent(id)}');
+
+  /// PUT /api/factory/working-drafts/{id}: replace the content, but only if
+  /// the draft is still the version the editor read.
+  Future<WorkingDraft> saveWorkingDraft(
+    String id,
+    WorkingDraftSaveRequest request,
+  ) => _draftOf(
+    '/api/factory/working-drafts/${Uri.encodeComponent(id)}',
+    method: 'PUT',
+    body: request,
+  );
+
+  /// DELETE /api/factory/working-drafts/{id}: record a tombstone.
+  Future<WorkingDraft> deleteWorkingDraft(
+    String id,
+    WorkingDraftDeleteRequest request,
+  ) => _draftOf(
+    '/api/factory/working-drafts/${Uri.encodeComponent(id)}',
+    method: 'DELETE',
+    body: request,
+  );
+
+  /// The `{"draft": {...}}` envelope every working-draft write answers with.
+  Future<WorkingDraft> _draftOf(
+    String path, {
+    String method = 'GET',
+    Object? body,
+  }) async {
+    final answer = await _objectOf<Map<String, dynamic>>(
+      path,
+      (json) => json,
+      method: method,
+      body: body,
+    );
+    return WorkingDraft.fromJson(answer['draft'] as Map<String, dynamic>);
+  }
+
+  // The planner (F6). A planning thread is one of the bridge's own agent
+  // sessions: its routes are `/api/planners`, and it is driven by prompts,
+  // answers and a journal read back by sequence.
+
+  /// POST /api/planners: start a planner in a fresh checkout of the project.
+  Future<PlannerView> createPlanner(PlannerCreateRequest request) => _objectOf(
+    '/api/planners',
+    PlannerView.fromJson,
+    method: 'POST',
+    body: request,
+  );
+
+  /// GET /api/planners/{id}: one planner as the bridge reports it.
+  Future<PlannerView> planner(String id) => _objectOf(
+    '/api/planners/${Uri.encodeComponent(id)}',
+    PlannerView.fromJson,
+  );
+
+  /// POST /api/planners/{id}/prompt: dispatch a prompt, or replay its outcome.
+  Future<PlannerTurnReply> promptPlanner(
+    String id,
+    PlannerPromptRequest request,
+  ) => _objectOf(
+    '/api/planners/${Uri.encodeComponent(id)}/prompt',
+    PlannerTurnReply.fromJson,
+    method: 'POST',
+    body: request,
+  );
+
+  /// POST /api/planners/{id}/cancel: stop the turn in flight.
+  Future<void> cancelPlanner(String id) =>
+      _post('/api/planners/${Uri.encodeComponent(id)}/cancel', null);
+
+  /// POST /api/planners/{id}/requests/{requestId}: answer one agent request.
+  /// The response is the chosen payload, passed through to the backend.
+  Future<void> answerPlanner(String id, String requestId, Object? response) =>
+      _post(
+        '/api/planners/${Uri.encodeComponent(id)}/requests/'
+        '${Uri.encodeComponent(requestId)}',
+        PlannerAnswerRequest(response: response),
+      );
+
+  /// GET /api/planners/{id}/events?after=N: the journal from [after] on.
+  Future<List<PlannerEvent>> plannerEvents(String id, {int after = 0}) async {
+    final response = await _send(
+      Request(
+        path: '/api/planners/${Uri.encodeComponent(id)}/events',
+        query: {if (after > 0) 'after': '$after'},
+      ),
+    );
+    final values = _decode(response) as List<dynamic>;
+    return List.unmodifiable([
+      for (final value in values)
+        PlannerEvent.fromJson(value as Map<String, dynamic>),
+    ]);
+  }
+
+  /// POST /api/planners/{id}/snapshots: freeze the plan, the spec and the
+  /// selected files for review.
+  Future<PlannerSnapshotReply> createPlannerSnapshot(
+    String id,
+    PlannerSnapshotRequest request,
+  ) => _objectOf(
+    '/api/planners/${Uri.encodeComponent(id)}/snapshots',
+    PlannerSnapshotReply.fromJson,
+    method: 'POST',
+    body: request,
+  );
+
+  /// GET /api/planners/{id}/snapshots/{snapshotId}: one frozen snapshot, with
+  /// every blob verified against the hash it recorded.
+  Future<PlannerSnapshotView> plannerSnapshot(String id, String snapshotID) =>
+      _objectOf(
+        '/api/planners/${Uri.encodeComponent(id)}/snapshots/'
+        '${Uri.encodeComponent(snapshotID)}',
+        PlannerSnapshotView.fromJson,
+      );
+
   Future<Response> _send(Request request) async {
     final response = await _transport.send(request);
     if (!response.ok) {
@@ -897,4 +1133,20 @@ class BridgeClient {
   }) async {
     await _send(Request(method: 'POST', path: path, query: query, body: body));
   }
+}
+
+/// One settings document and the ETag that names exactly it (F6 decision 12).
+///
+/// The tag is a header, never part of the body, so it travels beside the
+/// document: a conditional write sends it back as `If-Match`, and the bridge
+/// refuses a write that names a value it no longer holds rather than
+/// overwriting a change the person has not seen.
+class ProjectSettingsVersion {
+  const ProjectSettingsVersion({required this.settings, this.etag});
+
+  /// The document the bridge answered with.
+  final ProjectSettings settings;
+
+  /// The tag naming it, or null when the bridge sent none.
+  final String? etag;
 }

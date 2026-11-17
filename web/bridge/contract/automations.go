@@ -7,6 +7,12 @@ import "encoding/json"
 type Automations struct {
 	ReviewBot *ReviewBotSettings `json:"reviewBot,omitempty"`
 	CIFixer   *CIFixerSettings   `json:"ciFixer,omitempty"`
+	// AutoFix fixes a failing check on any of this project's Marshal pull
+	// requests without being asked, exactly as a click would. It is off by
+	// default: a bridge that changes a pull request on its own is a surprise
+	// unless the project asked for it. Factory items are unaffected, because
+	// they already repair inside their own allowance.
+	AutoFix bool `json:"autoFix,omitempty"`
 }
 
 // ReviewBotSettings configures the pull-request review bot.

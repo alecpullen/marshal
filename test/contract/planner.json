@@ -1,0 +1,197 @@
+{
+  "PlannerArtifact": {
+    "kind": "plan",
+    "label": "The approved plan",
+    "ref": "state/planners/p-1/plan.md"
+  },
+  "PlannerAnswerRequest": {
+    "response": {
+      "optionId": "allow"
+    }
+  },
+  "PlannerContextArtifact": {
+    "approved": true,
+    "kind": "plan",
+    "sha256": "9f2c1a",
+    "snapshotId": "snap-1",
+    "source": "snapshot"
+  },
+  "PlannerContextDecision": {
+    "at": "2026-11-17T03:55:00Z",
+    "method": "session/request_permission",
+    "requestId": "req-1",
+    "source": "journal",
+    "state": "answered"
+  },
+  "PlannerContextQuestion": {
+    "at": "2026-11-17T03:58:00Z",
+    "requestId": "req-2",
+    "source": "journal",
+    "state": "pending"
+  },
+  "PlannerContextView": {
+    "absent": [
+      "artifacts"
+    ],
+    "artifacts": [],
+    "decisions": [],
+    "unresolved": []
+  },
+  "PlannerCreateRequest": {
+    "mode": "bypassPermissions",
+    "projectRoot": "/home/u/src/marshal",
+    "repoId": "repo-1"
+  },
+  "PlannerDecision": {
+    "at": "2026-11-17T03:55:00Z",
+    "method": "session/request_permission",
+    "requestId": "req-1",
+    "response": {
+      "optionId": "allow"
+    },
+    "state": "answered"
+  },
+  "PlannerEvent": {
+    "data": {
+      "text": "I will read the intake path first."
+    },
+    "kind": "turn.text",
+    "sequence": 7
+  },
+  "PlannerOccupancy": "free",
+  "PlannerPromptRequest": {
+    "context": "One task at a time.",
+    "requestId": "req-3",
+    "text": "Plan the work item thread."
+  },
+  "PlannerRejection": {
+    "path": "internal/acp/../../etc/passwd",
+    "reason": "a path outside the workspace"
+  },
+  "PlannerSnapshotArtifact": {
+    "content": "## Task 1\nRead the item.\n",
+    "kind": "plan",
+    "sha256": "9f2c1a"
+  },
+  "PlannerSnapshotFile": {
+    "baseSha256": "0a1b2c",
+    "contentSha256": "3d4e5f",
+    "diff": "@@ -1,1 +1,2 @@\n a\n+b\n",
+    "executable": false,
+    "operation": "modify",
+    "path": "internal/acp/session.go"
+  },
+  "PlannerSnapshotReply": {
+    "artifacts": [
+      {
+        "content": "## Task 1\nRead the item.\n",
+        "kind": "plan",
+        "sha256": "9f2c1a"
+      }
+    ],
+    "baseCommit": "base-1",
+    "createdAt": "2026-11-17T04:00:00Z",
+    "files": [
+      {
+        "baseSha256": "0a1b2c",
+        "contentSha256": "3d4e5f",
+        "diff": "@@ -1,1 +1,2 @@\n a\n+b\n",
+        "executable": false,
+        "operation": "modify",
+        "path": "internal/acp/session.go"
+      }
+    ],
+    "id": "snap-1",
+    "rejected": [
+      {
+        "path": "internal/acp/../../etc/passwd",
+        "reason": "a path outside the workspace"
+      }
+    ],
+    "sha256": "9f2c1a"
+  },
+  "PlannerSnapshotRequest": {
+    "paths": [
+      "internal/acp/session.go"
+    ],
+    "plan": "## Task 1\nRead the item.\n",
+    "spec": "Ship the work item thread."
+  },
+  "PlannerSnapshotView": {
+    "artifacts": [
+      {
+        "content": "## Task 1\nRead the item.\n",
+        "kind": "plan",
+        "sha256": "9f2c1a"
+      }
+    ],
+    "baseCommit": "base-1",
+    "createdAt": "2026-11-17T04:00:00Z",
+    "files": [
+      {
+        "baseSha256": "0a1b2c",
+        "contentSha256": "3d4e5f",
+        "diff": "@@ -1,1 +1,2 @@\n a\n+b\n",
+        "executable": false,
+        "operation": "modify",
+        "path": "internal/acp/session.go"
+      }
+    ],
+    "id": "snap-1",
+    "sha256": "9f2c1a"
+  },
+  "PlannerTurn": {
+    "at": "2026-11-17T03:50:00Z",
+    "requestId": "req-3",
+    "state": "done",
+    "stopReason": "end_turn",
+    "textHash": "5a6b7c"
+  },
+  "PlannerTurnReply": {
+    "requestId": "req-3",
+    "state": "dispatched"
+  },
+  "PlannerView": {
+    "backendId": "b-1",
+    "capabilities": {
+      "cancel": true,
+      "modes": [
+        "default",
+        "bypassPermissions"
+      ],
+      "permissionRequests": true,
+      "prompt": true,
+      "sessionLoad": false,
+      "workspaceEdits": true
+    },
+    "confirmedMode": "bypassPermissions",
+    "createdAt": "2026-11-17T03:40:00Z",
+    "eventSequence": 7,
+    "id": "p-1",
+    "live": true,
+    "modeConfirmed": true,
+    "occupancy": "free",
+    "projectRoot": "/home/u/src/marshal",
+    "repoId": "repo-1",
+    "requestedMode": "bypassPermissions",
+    "resumeAvailable": false,
+    "resumeReason": "This backend cannot load a session.",
+    "sessionId": "s-1",
+    "sessionLoad": false,
+    "state": "active",
+    "trust": "trusted",
+    "updatedAt": "2026-11-17T04:00:00Z",
+    "workspaceId": "w-1"
+  },
+  "WorkerCapabilities": {
+    "cancel": true,
+    "modes": [
+      "default",
+      "bypassPermissions"
+    ],
+    "permissionRequests": true,
+    "prompt": true,
+    "sessionLoad": false,
+    "workspaceEdits": true
+  }
+}

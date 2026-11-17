@@ -34,6 +34,8 @@ import 'package:marshal_app/src/model/terminal_session.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/place.dart';
+import 'package:marshal_app/src/model/planning_model.dart';
+import 'package:marshal_app/src/model/run_model.dart';
 import 'package:marshal_app/src/model/recipes_model.dart';
 import 'package:marshal_app/src/model/schedules_model.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
@@ -61,11 +63,19 @@ import 'package:marshal_app/src/ui/inspector/preview_tab.dart';
 import 'package:marshal_app/src/ui/inspector/terminal_tab.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/overview/overview.dart';
+import 'package:marshal_app/src/ui/project/project_page.dart';
 import 'package:marshal_app/src/ui/pulls/pulls_place.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
+import 'package:marshal_app/src/ui/factory/planning_screen.dart';
+import 'package:marshal_app/src/ui/factory/run_screen.dart';
 import 'package:marshal_app/src/ui/factory/work_item_screen.dart';
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
+import 'package:marshal_app/src/client/bridge_client.dart'
+    show ProjectSettingsVersion;
+import 'package:marshal_app/src/model/project_model.dart';
+
+import '../model/support.dart' show agent, factoryItem;
 
 /// One screen the enforcement tests pump: its ready state with fixture data,
 /// and one case for each §7 state it handles.
@@ -809,6 +819,53 @@ final screens = <ScreenCase>[
     },
   ),
   ScreenCase(
+    name: 'planning',
+    ready: () => _planningScreen(),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _planningScreen(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'plan run',
+    ready: () => _runScreen(),
+    states: {
+      for (final kind in requiredStates) kind: () => _runScreen(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'project · work',
+    ready: () => _projectScreen(),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _projectScreen(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'project · automations',
+    ready: () => _projectScreen(tab: 1),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _projectScreen(tab: 1, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'project · defaults',
+    ready: () => _projectScreen(tab: 2),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _projectScreen(tab: 2, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'project · health',
+    ready: () => _projectScreen(tab: 3),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _projectScreen(tab: 3, state: kind),
+    },
+  ),
+  ScreenCase(
     name: 'shell',
     ready: () => _shell(),
     states: {
@@ -1283,4 +1340,271 @@ Widget _workItemScreen({StateKind? state}) => WorkItemScreen(
   item: wmodel.WorkItemView.of('local', _workItem()),
   state: state,
   now: shellNow,
+);
+
+/// A planner whose routes answer from the fixture: one journaled turn, one
+/// question waiting on a person, and one frozen snapshot.
+PlanningModel _planningModel() => PlanningModel(
+  plannerID: 'p-1',
+  events: (after) async => [
+    contract.PlannerEvent(
+      sequence: 1,
+      kind: 'planner.started',
+      data: const {'mode': 'bypassPermissions', 'workspaceId': 'w-1'},
+    ),
+    contract.PlannerEvent(
+      sequence: 2,
+      kind: 'turn.text',
+      data: const {'text': 'I read the intake path. The plan has two tasks.'},
+    ),
+    contract.PlannerEvent(
+      sequence: 3,
+      kind: 'turn.question',
+      data: const {
+        'requestId': 'req-1',
+        'method': 'session/request_question',
+        'params': {
+          'questions': [
+            {'question': 'Should the inspector dock or open as a sheet?'},
+          ],
+        },
+      },
+    ),
+  ],
+  promptPlanner: (request) async => contract.PlannerTurnReply(
+    requestID: request.requestID,
+    state: 'dispatched',
+  ),
+  cancelPlanner: () async {},
+  answerPlanner: (requestID, response) async {},
+  capture: (request) async => contract.PlannerSnapshotReply(
+    id: 'snap-1',
+    sha256: '9f2c1a55',
+    baseCommit: 'base-1',
+    artifacts: [
+      contract.PlannerSnapshotArtifact(
+        kind: 'plan',
+        content: '## Task 1\nRead the item.\n## Task 2\nApprove it.\n',
+        sha256: 'a1',
+      ),
+      contract.PlannerSnapshotArtifact(
+        kind: 'spec',
+        content: 'Ship the work item thread.',
+        sha256: 'a2',
+      ),
+    ],
+    files: const [],
+    createdAt: '2026-11-17T04:00:00Z',
+    rejected: const [],
+  ),
+);
+
+/// A plan run: two tasks, the first passed with a repair round, the second
+/// running, and a question waiting on a person.
+RunModel _runModel() => RunModel(
+  agentID: 'a-1',
+  run: contract.SDDRun.fromJson({
+    'active': true,
+    'planName': 'F6 plan 2',
+    'branch': 'sdd/run-1',
+    'totalTasks': 2,
+    'doneTasks': 1,
+    'currentTask': 2,
+    'phase': 'verify',
+    'detail': 'go test ./... is running',
+    'fixRound': 0,
+    'maxFixRounds': 3,
+    'tokensUsed': 12000,
+    'tokensMax': 200000,
+    'finished': false,
+    'succeeded': false,
+    'startedAt': 1763351900000,
+    'phaseStartedAt': 1763352000000,
+    'tasks': [
+      {
+        'n': 1,
+        'title': 'Read the item',
+        'dependsOn': <int>[],
+        'status': 'done',
+        'startedAt': 1763351900000,
+        'endedAt': 1763351990000,
+        'fixRounds': 1,
+        'commit': {'base': 'base-1', 'head': 'head-1'},
+        'stages': [
+          {'name': 'implement', 'state': 'done'},
+          {'name': 'verify', 'state': 'done', 'detail': 'go test ./... passed'},
+          {'name': 'review', 'state': 'done'},
+          {'name': 'commit', 'state': 'done'},
+        ],
+      },
+      {
+        'n': 2,
+        'title': 'Approve it',
+        'dependsOn': [1],
+        'status': 'active',
+        'startedAt': 1763352000000,
+        'fixRounds': 0,
+        'stages': [
+          {'name': 'implement', 'state': 'active'},
+        ],
+      },
+    ],
+    'gate': {
+      'taskN': 2,
+      'question': 'Should the fixtures be regenerated in the same commit?',
+    },
+  }),
+  answer: (answer) async {},
+);
+
+/// The plan run, or one of its §7 states.
+Widget _runScreen({StateKind? state}) =>
+    RunScreen(model: _runModel(), state: state, now: shellNow);
+
+/// The planning thread, or one of its §7 states.
+Widget _planningScreen({StateKind? state}) => PlanningScreen(
+  plan: _planningModel(),
+  title: 'Planning',
+  subtitle: 'Permissive · planning in w-1',
+  state: state,
+  now: shellNow,
+  onHandToFactory: () {},
+);
+
+/// One project's page state as the enforcement tests pump it: settings with an
+/// inherited factory role, a health report, one plan run and a discovery report
+/// the person can ask for.
+ProjectModel _projectModel() => ProjectModel(
+  root: '/home/u/alpha',
+  name: 'alpha',
+  now: () => shellNow,
+  read: () async => ProjectSettingsVersion(
+    settings: contract.ProjectSettings.fromJson({
+      'routing': {'profile': 'balanced'},
+      'mode': 'act',
+      'auto': true,
+      'shipTarget': 'merge',
+      'intake': {
+        'repoId': 'repo-1',
+        'labels': ['studio'],
+      },
+      'factoryDefaults': {
+        'targetBranch': 'main',
+        'maxRounds': 3,
+        'ciPollSeconds': 30,
+        'ciWaitSeconds': 900,
+        'reviewerInstructions': 'Look for missing tests.',
+      },
+      'automations': {
+        'reviewBot': {'enabled': true, 'repoId': 'repo-1', 'autoPost': false},
+        'ciFixer': {
+          'enabled': false,
+          'repoId': 'repo-1',
+          'branches': ['main'],
+        },
+      },
+    }),
+    etag: 'v1',
+  ),
+  write: (next, etag) async =>
+      ProjectSettingsVersion(settings: next, etag: 'v2'),
+  readHealth: () async => contract.ProjectHealth.fromJson({
+    'gateRunnable': 'yes',
+    'mirrorFresh': [
+      {
+        'repoId': 'repo-1',
+        'present': true,
+        'ageSeconds': 480,
+        'head': 'abc1234',
+      },
+    ],
+    'orphanWorktrees': <Object?>[],
+    'trust': 'trusted',
+    'workspaceResolves': {'ref': 'repo:alpha', 'resolves': true, 'built': true},
+    'verify': {'build': 'go build ./...', 'test': 'go test ./...'},
+  }),
+  readRuns: () async => [
+    contract.RunListEntry.fromJson({
+      'agentId': 'a-run',
+      'name': 'Plan run',
+      'project': '/home/u/alpha',
+      'run': {
+        'active': true,
+        'planName': 'F6 plan 2',
+        'branch': 'sdd/run-1',
+        'totalTasks': 3,
+        'doneTasks': 1,
+        'fixRound': 0,
+        'maxFixRounds': 3,
+        'tokensUsed': 0,
+        'tokensMax': 200000,
+        'finished': false,
+        'succeeded': false,
+        'tasks': <Object?>[],
+      },
+      'at': 1763352000000,
+    }),
+  ],
+  discover: (repoID) async => contract.DiscoveryReport.fromJson({
+    'repoId': repoID,
+    'forge': 'github',
+    'status': 'ok',
+    'branch': 'main',
+    'revision': 'abc1234f',
+    'capabilities': [
+      {
+        'key': 'forge_metadata',
+        'state': 'supported',
+        'detail': 'The forge answered',
+      },
+    ],
+    'facts': [
+      {
+        'origin': 'detected',
+        'section': 'checkout_instructions',
+        'kind': 'file',
+        'value': 'present',
+        'source': 'checkout:AGENTS.md',
+      },
+    ],
+    'recommended': <Object?>[],
+    'gaps': <Object?>[],
+  }),
+);
+
+/// The project's page, or one of its §7 states, on one tab.
+Widget _projectScreen({int tab = 0, StateKind? state}) => ProjectPage(
+  model: _projectModel(),
+  items: [
+    for (final item in [
+      factoryItem(id: 'item-1', title: 'Draft the intake', state: 'queued'),
+      factoryItem(
+        id: 'item-2',
+        title: 'Reliable session recovery',
+        state: 'implementing',
+      ),
+      factoryItem(
+        id: 'item-3',
+        title: 'Review the inspector',
+        state: 'reviewing',
+      ),
+      factoryItem(id: 'item-4', title: 'Ready to land', state: 'ready'),
+    ])
+      wmodel.WorkItemView.of('local', item),
+  ],
+  agents: [
+    model.threadFor(
+      'local',
+      agent(
+        id: 'a-1',
+        name: 'Recovery',
+        project: '/home/u/alpha',
+        status: contract.AgentState.agentRunning,
+        activity: 'Reading internal/acp',
+      ),
+    ),
+  ],
+  state: state,
+  now: shellNow,
+  initialTab: tab,
 );

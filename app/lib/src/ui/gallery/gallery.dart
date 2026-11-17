@@ -7,6 +7,7 @@
 /// first entry in the registry of screens the enforcement tests pump.
 library;
 
+import '../../model/run_model.dart' show RunLane;
 import '../../model/section_model.dart';
 import '../kit/kit.dart';
 import '../sections/section_page.dart';
@@ -89,6 +90,8 @@ class _GalleryState extends State<Gallery> {
         ..._section('Tabs', _tabs()),
         ..._section('Segments', _segments()),
         ..._section('Activity', _activity()),
+        ..._section('Lanes', _lanes()),
+        ..._section('TaskGraph', _graphs()),
         ..._section('Meter', _meters()),
         ..._section('Spark', _spark()),
         ..._section('CheckStrip', _strips()),
@@ -117,6 +120,58 @@ class _GalleryState extends State<Gallery> {
   }
 
   /// One section: its label, then its specimens a gap apart.
+  /// The lanes view of a run: two tasks, each with what its four roles did.
+  List<Widget> _lanes() => [
+    Lanes(
+      lanes: RunLane.all,
+      rows: const [
+        LaneRow(
+          title: 'Task 1 · Read the item',
+          detail: 'Committed',
+          cells: [
+            LaneCell(status: Status.ready, words: 'Passed'),
+            LaneCell(
+              status: Status.ready,
+              words: 'Passed',
+              note: 'go test ./... passed',
+            ),
+            LaneCell(status: Status.ready, words: 'Approved'),
+            LaneCell(status: Status.ready, words: 'Passed', note: 'a1b2c3d'),
+          ],
+        ),
+        LaneRow(
+          title: 'Task 2 · Approve it',
+          detail: 'Repairing',
+          cells: [
+            LaneCell(status: Status.running, words: 'Running'),
+            LaneCell(status: Status.idle, words: 'Pending'),
+            LaneCell(status: Status.failed, words: 'Failed', note: '1 round'),
+            LaneCell(status: Status.idle, words: 'Pending'),
+          ],
+        ),
+      ],
+    ),
+  ];
+
+  /// The graph view: three tasks in two dependency layers, with straight edges.
+  List<Widget> _graphs() => [
+    TaskGraph(
+      nodes: const [
+        GraphNode(number: 1, label: '1 · Read', layer: 0, index: 0),
+        GraphNode(number: 2, label: '2 · Approve', layer: 1, index: 0),
+        GraphNode(
+          number: 3,
+          label: '3 · Ship',
+          layer: 2,
+          index: 0,
+          status: Status.running,
+        ),
+      ],
+      edges: const [GraphEdge(from: 1, to: 2), GraphEdge(from: 2, to: 3)],
+    ),
+    const TaskGraph(nodes: [], edges: []),
+  ];
+
   List<Widget> _section(String name, List<Widget> specimens) => [
     Label(name),
     const SizedBox(height: Space.s12),

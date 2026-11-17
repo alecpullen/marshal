@@ -206,6 +206,14 @@ export interface RecentPrompts {
 export interface Automations {
   reviewBot?: ReviewBotSettings;
   ciFixer?: CIFixerSettings;
+  /**
+   * AutoFix fixes a failing check on any of this project's Marshal pull
+   * requests without being asked, exactly as a click would. It is off by
+   * default: a bridge that changes a pull request on its own is a surprise
+   * unless the project asked for it. Factory items are unaffected, because
+   * they already repair inside their own allowance.
+   */
+  autoFix?: boolean;
 }
 
 /**
@@ -522,6 +530,75 @@ export interface PinState {
   root: string;
   pinned: boolean;
   running: boolean;
+}
+
+/**
+ * WorkingDraftContent is one draft's editor state.
+ */
+export interface WorkingDraftContent {
+  title: string;
+  plan: string;
+  spec: string;
+  repoId: string;
+  targetBranchOverride: string;
+  workspaceOverride: string;
+  implementerOverride: string;
+  reviewerOverride: string;
+  reviewerInstructions: string;
+  maxRoundsOverride: string;
+  ciPollOverride: string;
+  ciWaitOverride: string;
+  checksMode: string;
+  expectedChecksText: string;
+  native: boolean;
+  nativeChosen: boolean;
+  implementerAuto: boolean;
+  noRequiredCiAcknowledged: boolean;
+}
+
+/**
+ * WorkingDraft is one durable draft. ProjectRoot is the store's identity for
+ * the draft's project and is never derived from content; the browser cannot
+ * move a draft between projects.
+ */
+export interface WorkingDraft {
+  id: string;
+  projectRoot: string;
+  version: number;
+  state: string;
+  content: WorkingDraftContent;
+  updatedAt: string;
+  factoryItemId?: string;
+  error?: string;
+}
+
+/**
+ * WorkingDraftCreateRequest is the POST /api/factory/working-drafts body.
+ */
+export interface WorkingDraftCreateRequest {
+  projectRoot: string;
+  requestId: string;
+  content: WorkingDraftContent;
+}
+
+/**
+ * WorkingDraftSaveRequest is the PUT /api/factory/working-drafts/{id} body:
+ * the version the editor last read, so a save made against a draft that has
+ * moved is refused rather than overwriting it.
+ */
+export interface WorkingDraftSaveRequest {
+  requestId: string;
+  expectedVersion: number;
+  content: WorkingDraftContent;
+}
+
+/**
+ * WorkingDraftDeleteRequest is the DELETE /api/factory/working-drafts/{id}
+ * body: a tombstone is a versioned write like any other.
+ */
+export interface WorkingDraftDeleteRequest {
+  requestId: string;
+  expectedVersion: number;
 }
 
 /**
@@ -1981,6 +2058,290 @@ export interface MemoryConfidence {
 }
 
 /**
+ * PlannerOccupancy is how a workspace looks to a new planner. Ownership is
+ * never inferred from a missing record.
+ */
+export type PlannerOccupancy = 'free' | 'in_use' | 'unknown';
+
+/**
+ * WorkerCapabilities is what a running worker session can actually do. It is
+ * per session rather than per backend: the same backend can offer workspace
+ * edits in one session and merely prompt in another.
+ */
+export interface WorkerCapabilities {
+  prompt: boolean;
+  cancel: boolean;
+  permissionRequests: boolean;
+  sessionLoad: boolean;
+  workspaceEdits: boolean;
+  modes: string[];
+}
+
+/**
+ * PlannerArtifact is a reference to something the planner produced. The record
+ * persists the reference only; captured text lives on a snapshot instead.
+ */
+export interface PlannerArtifact {
+  kind: string;
+  ref: string;
+  label?: string;
+}
+
+/**
+ * PlannerTurn is one dispatched prompt. TextHash is the digest of the text the
+ * request ID was first used for, so a replay of the same request ID can be
+ * recognised without storing the prompt twice.
+ */
+export interface PlannerTurn {
+  requestId: string;
+  textHash: string;
+  state: string;
+  stopReason?: string;
+  reason?: string;
+  at: string;
+}
+
+/**
+ * PlannerDecision is one agent request and its single settlement. The chosen
+ * response is kept verbatim so a browser that reconnects learns what was
+ * decided rather than asking again.
+ */
+export interface PlannerDecision {
+  requestId: string;
+  method?: string;
+  state: string;
+  response?: unknown;
+  reason?: string;
+  at: string;
+}
+
+/**
+ * PlannerView is a planner as the routes report it: the durable record
+ * projected for the browser, plus what the bridge can say about it right now.
+ * Resume is reported separately from the capability so an absent capability is
+ * never read as an offer.
+ */
+export interface PlannerView {
+  id: string;
+  projectRoot: string;
+  repoId: string;
+  backendId: string;
+  workspaceId: string;
+  occupancy: PlannerOccupancy;
+  owners?: string[];
+  sessionId?: string;
+  requestedMode: string;
+  confirmedMode?: string;
+  modeConfirmed: boolean;
+  state: string;
+  live: boolean;
+  eventSequence: number;
+  capabilities: WorkerCapabilities;
+  sessionLoad: boolean;
+  /**
+   * ResumeAvailable is true only for a backend that can load a session and a
+   * replay this bridge actually performed. It is false today, with
+   * ResumeReason saying why, so the browser offers a new planner instead.
+   */
+  resumeAvailable: boolean;
+  resumeReason?: string;
+  trust?: string;
+  turns?: PlannerTurn[];
+  requests?: PlannerDecision[];
+  artifacts?: PlannerArtifact[];
+  reason?: string;
+  createdAt: string;
+  updatedAt: string;
+  endedAt?: string;
+}
+
+/**
+ * PlannerCreateRequest is the POST /api/planners body. WorkspaceID names a
+ * workspace the bridge returned earlier; a filesystem path is never accepted
+ * in its place. ProceedShared is what a caller sets after seeing an in_use or
+ * unknown occupancy; it is never implied.
+ */
+export interface PlannerCreateRequest {
+  projectRoot: string;
+  repoId: string;
+  workspaceId?: string;
+  proceedShared?: boolean;
+  mode?: string;
+}
+
+/**
+ * PlannerPromptRequest is the POST /api/planners/{id}/prompt body. Context is
+ * the additional bounded text a user supplied alongside the prompt: it is
+ * composed into the dispatched text after the prompt's own text, and the
+ * journal keeps only its hash and length.
+ */
+export interface PlannerPromptRequest {
+  requestId: string;
+  text: string;
+  context?: string;
+}
+
+/**
+ * PlannerAnswerRequest is the POST /api/planners/{id}/requests/{requestId}
+ * body: the chosen response, passed through to the backend unchanged.
+ */
+export interface PlannerAnswerRequest {
+  response: unknown;
+}
+
+/**
+ * PlannerTurnReply is what a prompt answers: the dispatch of a new turn, or
+ * the outcome already recorded for a replayed request ID.
+ */
+export interface PlannerTurnReply {
+  requestId: string;
+  state: string;
+  stopReason?: string;
+}
+
+/**
+ * PlannerEvent is one journaled event. Sequence is the planner's own strictly
+ * increasing counter, not the backend's; Truncated marks a payload that
+ * exceeded the journal's per-event bound and was replaced by its marker.
+ */
+export interface PlannerEvent {
+  sequence: number;
+  kind: string;
+  data?: unknown;
+  truncated?: boolean;
+}
+
+/**
+ * PlannerSnapshotArtifact is one piece of text a snapshot froze: the plan or
+ * the spec the user approved. Its content is stored with the snapshot record
+ * and its SHA256 is verified on every read, so a review never shows bytes that
+ * differ from the hash it reports.
+ */
+export interface PlannerSnapshotArtifact {
+  kind: string;
+  content: string;
+  sha256: string;
+}
+
+/**
+ * PlannerSnapshotRequest is the POST /api/planners/{id}/snapshots body: the
+ * exact plan and spec text the user approved, and the repository-relative
+ * paths they selected. An empty Paths list is a documents-only snapshot.
+ */
+export interface PlannerSnapshotRequest {
+  plan: string;
+  spec: string;
+  paths: string[];
+}
+
+/**
+ * PlannerRejection names one path a capture refused and why. A selected path
+ * is either captured or reported here; it is never silently dropped.
+ */
+export interface PlannerRejection {
+  path: string;
+  reason: string;
+}
+
+/**
+ * PlannerSnapshotFile is one captured file as a review reports it: the frozen
+ * metadata plus its diff against the base commit. The diff is the text that
+ * was built at capture time, so the review still works after the workspace it
+ * came from is gone.
+ *
+ * It flattens SelectedFile, which the bridge embeds: the wire shape is
+ * SelectedFile's fields followed by Diff.
+ */
+export interface PlannerSnapshotFile {
+  path: string;
+  operation: string;
+  baseSha256?: string;
+  contentSha256?: string;
+  executable: boolean;
+  diff: string;
+}
+
+/**
+ * PlannerSnapshotView is a snapshot as the routes report it. It carries no
+ * absolute host path: every path in it is the repository-relative one the
+ * caller selected.
+ */
+export interface PlannerSnapshotView {
+  id: string;
+  sha256: string;
+  baseCommit: string;
+  artifacts: PlannerSnapshotArtifact[];
+  files: PlannerSnapshotFile[];
+  createdAt: string;
+}
+
+/**
+ * PlannerSnapshotReply is what a capture answers: the snapshot it froze and
+ * the paths it refused.
+ *
+ * It flattens PlannerSnapshotView, which the bridge embeds: the wire shape is
+ * the view's fields followed by Rejected.
+ */
+export interface PlannerSnapshotReply {
+  id: string;
+  sha256: string;
+  baseCommit: string;
+  artifacts: PlannerSnapshotArtifact[];
+  files: PlannerSnapshotFile[];
+  createdAt: string;
+  rejected: PlannerRejection[];
+}
+
+/**
+ * PlannerContextArtifact is one artifact source a briefing found. Approved is
+ * true only for text a user captured in a snapshot; a reference the planner
+ * record merely names is reported as unapproved, carrying no captured content
+ * and no hash this bridge can vouch for.
+ */
+export interface PlannerContextArtifact {
+  kind: string;
+  sha256?: string;
+  source: string;
+  approved: boolean;
+  snapshotId?: string;
+  ref?: string;
+}
+
+/**
+ * PlannerContextDecision is one settled agent request a briefing reports, with
+ * the request it came from as its source.
+ */
+export interface PlannerContextDecision {
+  source: string;
+  requestId: string;
+  method?: string;
+  state: string;
+  at: string;
+}
+
+/**
+ * PlannerContextQuestion is one recorded question that is still unresolved.
+ */
+export interface PlannerContextQuestion {
+  source: string;
+  requestId: string;
+  method?: string;
+  state: string;
+  at: string;
+}
+
+/**
+ * PlannerContextView is the bounded briefing a planner record supports. Absent
+ * names the sources it does not hold: nothing here is invented to fill one in.
+ */
+export interface PlannerContextView {
+  artifacts: PlannerContextArtifact[];
+  decisions: PlannerContextDecision[];
+  unresolved: PlannerContextQuestion[];
+  absent: string[];
+}
+
+/**
  * TrustState is a project's trust decision.
  */
 export type TrustState = 'na' | 'untrusted' | 'trusted';
@@ -2020,6 +2381,218 @@ export interface ProjectStatus {
    * claims. Reported, never deleted — they may hold uncommitted work.
    */
   orphanWorktrees?: string[];
+}
+
+/**
+ * ProjectIntake is the project's default intake configuration.
+ */
+export interface ProjectIntake {
+  repoId?: string;
+  labels?: string[];
+  clients?: string[];
+}
+
+/**
+ * FactoryDefaults is a project's default factory configuration: every field a
+ * handoff inherits unless it states its own.
+ */
+export interface FactoryDefaults {
+  targetBranch?: string;
+  workspace?: string;
+  hostId?: string;
+  implementerRouting?: unknown;
+  reviewerRouting?: unknown;
+  reviewerInstructions?: string;
+  expectedChecks?: FactoryCheckKey[];
+  maxRounds?: number;
+  ciPollSeconds?: number;
+  ciWaitSeconds?: number;
+  implementerSubagents?: FactorySubagentOverrides;
+  reviewerSubagents?: FactorySubagentOverrides;
+}
+
+/**
+ * ProjectSettings is one project's settings document. The ETag that names a
+ * particular value is a header, never part of the body.
+ */
+export interface ProjectSettings {
+  workspace?: string;
+  routing?: unknown;
+  mode?: string;
+  /**
+   * Auto accompanies Mode as a starting default. It is a pointer so an
+   * absent value stays distinguishable from an explicit false.
+   */
+  auto?: boolean;
+  /**
+   * Isolated is the default isolation; nil leaves the caller's default.
+   */
+  isolated?: boolean;
+  shipTarget?: string;
+  intake: ProjectIntake;
+  automations?: Automations;
+  /**
+   * FactoryDefaults are the project's default factory configuration. A
+   * handoff inherits every field it leaves unset.
+   */
+  factoryDefaults?: FactoryDefaults;
+  /**
+   * PlannerDelegationEnabled lets one designated MCP client answer the
+   * planner's questions for this project.
+   */
+  plannerDelegationEnabled?: boolean;
+  /**
+   * DesignatedMCPClientID names the one client that may answer while
+   * delegation is enabled. Empty means no client is designated.
+   */
+  designatedMCPClientId?: string;
+  /**
+   * AutoAssessPlanChanges turns automatic assessment of a proposed factory
+   * plan revision on or off. Nil means the default, which is on.
+   */
+  autoAssessPlanChanges?: boolean;
+}
+
+/**
+ * MirrorHealth is whether a repository's mirror exists and how fresh it is.
+ */
+export interface MirrorHealth {
+  repoId: string;
+  /**
+   * Present is false when the repo has no mirror yet.
+   */
+  present: boolean;
+  /**
+   * AgeSeconds is the time since the mirror last fetched.
+   */
+  ageSeconds?: number;
+  head?: string;
+}
+
+/**
+ * WorkspaceHealth is whether a project's default workspace is usable.
+ */
+export interface WorkspaceHealth {
+  ref: string;
+  resolves: boolean;
+  built: boolean;
+  error?: string;
+}
+
+/**
+ * VerifyCommands is a project's configured gate commands. Empty strings mean
+ * unset, in which case the gate is skipped unless the engine detects a
+ * default.
+ */
+export interface VerifyCommands {
+  build: string;
+  test: string;
+}
+
+/**
+ * ProjectHealth is GET /api/projects/health.
+ */
+export interface ProjectHealth {
+  /**
+   * GateRunnable is "yes", "no" (the last verify was skipped: nothing to
+   * run) or "unknown" (no agent of the project has verified).
+   */
+  gateRunnable: string;
+  mirrorFresh: MirrorHealth[];
+  orphanWorktrees: string[];
+  trust: string;
+  workspaceResolves?: WorkspaceHealth;
+  /**
+   * Verify is the project's verify-gate commands from [sdd.verify] in
+   * .marshal/config.toml. Only reported for a trusted project, since the
+   * engine ignores an untrusted project's config.
+   */
+  verify: VerifyCommands;
+}
+
+/**
+ * DiscoveryCapabilityState is the outcome of one read-only capability probe.
+ */
+export type DiscoveryCapabilityState = 'supported' | 'unconfigured' | 'insufficient_permission' | 'temporarily_unavailable' | 'unsupported';
+
+/**
+ * DiscoveryCapability is one capability the discovery probe tested.
+ */
+export interface DiscoveryCapability {
+  key: string;
+  state: DiscoveryCapabilityState;
+  detail?: string;
+}
+
+/**
+ * DiscoveryFact is something detected in the checkout. Origin distinguishes a
+ * detected fact from a recommendation.
+ */
+export interface DiscoveryFact {
+  origin: string;
+  section: string;
+  kind: string;
+  value: string;
+  source: string;
+  revision?: string;
+  size?: number;
+  detail?: string;
+}
+
+/**
+ * DiscoveryRecommendation is an advisory setup option. It is never applied by
+ * discovery.
+ */
+export interface DiscoveryRecommendation {
+  origin: string;
+  section: string;
+  kind: string;
+  value: string;
+  reason: string;
+}
+
+/**
+ * DiscoveryGap explains a capability that is not supported, so the UI can turn
+ * it into an actionable next step.
+ */
+export interface DiscoveryGap {
+  key: string;
+  section: string;
+  state: DiscoveryCapabilityState;
+  detail: string;
+}
+
+/**
+ * DiscoveryWorktree is the locally observable Git state of a linked checkout.
+ * Dirty is a pointer: nil means not determined, which differs from a known
+ * clean checkout.
+ */
+export interface DiscoveryWorktree {
+  path: string;
+  branch?: string;
+  head?: string;
+  dirty: boolean | null;
+  dirtyFiles?: string[];
+  detail?: string;
+}
+
+/**
+ * DiscoveryReport is the single document `POST /api/repos/{id}/discover`
+ * returns. Status is "ok", "degraded" or "unavailable"; the report slices are
+ * always non-nil so the wire shape stays stable.
+ */
+export interface DiscoveryReport {
+  repoId: string;
+  forge: string;
+  status: string;
+  error?: string;
+  revision?: string;
+  branch?: string;
+  worktree?: DiscoveryWorktree;
+  capabilities: DiscoveryCapability[];
+  facts: DiscoveryFact[];
+  recommended: DiscoveryRecommendation[];
+  gaps: DiscoveryGap[];
 }
 
 /**
@@ -2279,6 +2852,98 @@ export interface ReviewCommentRequest {
   side: string;
   quote: string;
   body: string;
+}
+
+/**
+ * RunStage is one stage of one task: the implementer's work, the verify gate,
+ * the reviewer's reading and the commit.
+ */
+export interface RunStage {
+  name: string;
+  state: string;
+  detail?: string;
+}
+
+/**
+ * RunCommit is the range a task's commit covers: the base it started from and
+ * the head it reached.
+ */
+export interface RunCommit {
+  base: string;
+  head: string;
+}
+
+/**
+ * RunTask is one task of a plan run, with what each of its stages reported.
+ */
+export interface RunTask {
+  n: number;
+  title: string;
+  dependsOn: number[];
+  status: string;
+  startedAt?: number;
+  endedAt?: number;
+  execType?: string;
+  commit?: RunCommit;
+  fixRounds: number;
+  stages: RunStage[];
+}
+
+/**
+ * RunGate is the question a run stops on, when it stops on one.
+ */
+export interface RunGate {
+  taskN: number;
+  question: string;
+}
+
+/**
+ * SDDRun is a plan run as `session/run` reports it: the whole digest, so a
+ * client that missed a delta can draw the run from one read.
+ */
+export interface SDDRun {
+  active: boolean;
+  planName?: string;
+  planPath?: string;
+  branch?: string;
+  totalTasks: number;
+  doneTasks: number;
+  currentTask: number;
+  phase?: string;
+  detail?: string;
+  fixRound: number;
+  maxFixRounds: number;
+  tokensUsed: number;
+  tokensMax: number;
+  finished: boolean;
+  succeeded: boolean;
+  baseRef?: string;
+  startedAt?: number;
+  endedAt?: number;
+  phaseStartedAt?: number;
+  error?: string;
+  tasks: RunTask[];
+  gate?: RunGate;
+}
+
+/**
+ * RunListEntry is one run as `GET /api/runs` lists it: the agent it runs on,
+ * the digest it last sent, and where it came from.
+ */
+export interface RunListEntry {
+  agentId: string;
+  name?: string;
+  project: string;
+  /**
+   * Run is the agent's last run digest, as it sent it.
+   */
+  run: unknown;
+  /**
+   * At is when the digest arrived, in Unix milliseconds, like the run delta
+   * and the usage rows.
+   */
+  at: number;
+  error?: string;
 }
 
 /**

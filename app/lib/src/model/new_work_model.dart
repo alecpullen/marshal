@@ -158,61 +158,63 @@ class NewWorkModel extends ChangeNotifier {
 
   /// The dialog a project's own routes back.
   ///
-  /// [repoId] is a registered repo's id — what `GET /api/repos` reports, and
-  /// what `GET /api/repos/{id}/issues` is keyed by. No bridge route names the
-  /// repo of a project root yet, so a caller that has none passes none, and
-  /// the Issues list is then empty for a stated reason (a project with no
-  /// registered repo) rather than an invented one.
+  /// The Issues list comes from the project's own repo id: `ProjectStatus`
+  /// reports `repoId` — the registered repo its settings' intake names — and
+  /// `GET /api/repos/{id}/issues` is keyed by exactly that id. A project that
+  /// names none (a local checkout with no remote) asks for nothing, and the
+  /// list is then empty for a stated reason rather than an invented one.
   factory NewWorkModel.forProject(
     ProjectStatus project,
     BridgeClient client, {
     String host = 'local',
-    String? repoId,
-  }) => NewWorkModel(
-    defaults: NewWorkDefaults.fromProject(project, host: host),
-    recentPrompts: () => client.recentPrompts(),
-    issues: (root) async {
-      final id = repoId;
-      if (id == null || id.isEmpty) return const [];
-      try {
-        return await client.issues(id);
-      } on BridgeFailure {
-        // A repo whose registration names no forge, or whose forge refused
-        // the credentials, serves no issues: the dialog says so and its other
-        // lists still load.
-        return const [];
-      }
-    },
-    recipes: () async {
-      try {
-        return await client.recipes();
-      } on BridgeFailure {
-        return const [];
-      }
-    },
-    spawn: (request) => client.spawn(request),
-    issuesFromRepo: repoId != null && repoId.isNotEmpty,
-    // What a menu can offer this phase, from data that exists: the two
-    // permission modes the session's mode route takes, the two workspaces
-    // the project's isolation answer allows, and the daemon's own projects.
-    options: {
-      'Permission mode': const ['Ask'],
-      'Workspace': project.isolation == 'available'
-          ? const [NewWorkDefaults.projectWorkspace]
-          : const [],
-    },
-    // The rest have one value this phase, and a pill says why rather than
-    // opening a menu that changes nothing.
-    notes: {
-      'Base branch': 'The project default branch; F6 brings the choice',
-      'Environment': 'A local spawn; F6 brings the choice',
-      'Model': 'The project default; F6 brings the models by role',
-      'Host': 'The thread runs here; F7 lists hosts',
-      if (project.isolation != 'available' && project.isolation.isNotEmpty)
-        'Workspace': project.isolation,
-    },
-    projects: () async => [for (final p in await client.projects()) p.root],
-  );
+  }) {
+    final repoId = project.repoID;
+    final fromRepo = repoId != null && repoId.isNotEmpty;
+    return NewWorkModel(
+      defaults: NewWorkDefaults.fromProject(project, host: host),
+      recentPrompts: () => client.recentPrompts(),
+      issues: (root) async {
+        if (!fromRepo) return const [];
+        try {
+          return await client.issues(repoId);
+        } on BridgeFailure {
+          // A repo whose registration names no forge, or whose forge refused
+          // the credentials, serves no issues: the dialog says so and its other
+          // lists still load.
+          return const [];
+        }
+      },
+      recipes: () async {
+        try {
+          return await client.recipes();
+        } on BridgeFailure {
+          return const [];
+        }
+      },
+      spawn: (request) => client.spawn(request),
+      issuesFromRepo: fromRepo,
+      // What a menu can offer this phase, from data that exists: the two
+      // permission modes the session's mode route takes, the two workspaces
+      // the project's isolation answer allows, and the daemon's own projects.
+      options: {
+        'Permission mode': const ['Ask'],
+        'Workspace': project.isolation == 'available'
+            ? const [NewWorkDefaults.projectWorkspace]
+            : const [],
+      },
+      // The rest have one value this phase, and a pill says why rather than
+      // opening a menu that changes nothing.
+      notes: {
+        'Base branch': 'The project default branch; F6 brings the choice',
+        'Environment': 'A local spawn; F6 brings the choice',
+        'Model': 'The project default; F6 brings the models by role',
+        'Host': 'The thread runs here; F7 lists hosts',
+        if (project.isolation != 'available' && project.isolation.isNotEmpty)
+          'Workspace': project.isolation,
+      },
+      projects: () async => [for (final p in await client.projects()) p.root],
+    );
+  }
 
   /// The values the dialog opened with.
   final NewWorkDefaults defaults;

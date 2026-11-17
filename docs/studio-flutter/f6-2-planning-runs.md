@@ -122,8 +122,11 @@ settled here, the deviations from its letter, and what is not done.
   here (no CMake/GTK3/display). The flows are driven by widget and model tests
   instead, as above.
 - `flutter test --platform chrome` cannot run here (no browser).
-- The gallery goldens are Linux-pinned and unchanged by this plan (no kit
-  component was added).
+- The gallery goldens are Linux-pinned. This plan changed both of them: `Lanes`
+  and `TaskGraph` are new kit components, declared in `design-system.md` §5 and
+  §10 and registered as sections in `lib/src/ui/gallery/gallery.dart`, so
+  `gallery_light.png` and `gallery_dark.png` were regenerated on Linux and their
+  `test/kit/` component tests added with them (§10).
 - `web/ui`'s `npm run check` has the pre-existing five errors and five warnings
   the task brief names, and no new ones.
 

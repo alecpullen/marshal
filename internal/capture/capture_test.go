@@ -287,3 +287,33 @@ func TestDetect(t *testing.T) {
 		})
 	}
 }
+
+// TestDetectWithRunnerUsesTheSuppliedRunner proves the tool layer's injection
+// point is real: the backend DetectWithRunner returns must run the caller's
+// runner, not the package's exec-backed default.
+func TestDetectWithRunnerUsesTheSuppliedRunner(t *testing.T) {
+	png := []byte("\x89PNG sway")
+	r := &fakeRunner{outputs: map[string][]byte{"swaymsg": []byte(swayTreeFocused), "grim": png}}
+	env := Env{GOOS: "linux", Getenv: func(k string) string {
+		if k == "SWAYSOCK" {
+			return "/run/user/1000/sway-ipc.sock"
+		}
+		return ""
+	}}
+
+	b, err := DetectWithRunner(env, "", r.run)
+	if err != nil {
+		t.Fatalf("DetectWithRunner: %v", err)
+	}
+	img, err := b.Capture(context.Background(), TargetActiveWindow)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if string(img.PNG) != string(png) {
+		t.Errorf("PNG = %q, want the runner's output", img.PNG)
+	}
+	if img.Backend != "sway" {
+		t.Errorf("backend = %q, want sway", img.Backend)
+	}
+	r.assertCalls(t, "swaymsg -t get_tree -r", "grim -g 1440,0 1440x900 -")
+}

@@ -62,25 +62,32 @@ func defaultRunner(ctx context.Context, name string, args ...string) ([]byte, er
 
 // Detect picks a backend for this session, or says why none can run.
 func Detect(env Env, forced string) (Backend, error) {
+	return DetectWithRunner(env, forced, defaultRunner)
+}
+
+// DetectWithRunner is Detect for a caller that supplies its own command runner.
+// The tool layer uses it so a capture helper can be injected in tests without
+// reaching the session this process happens to run in.
+func DetectWithRunner(env Env, forced string, run Runner) (Backend, error) {
 	switch forced {
 	case "sway":
-		return &wlrootsBackend{kind: "sway", run: defaultRunner, env: env}, nil
+		return &wlrootsBackend{kind: "sway", run: run, env: env}, nil
 	case "hyprland":
-		return &wlrootsBackend{kind: "hyprland", run: defaultRunner, env: env}, nil
+		return &wlrootsBackend{kind: "hyprland", run: run, env: env}, nil
 	case "darwin":
-		return &darwinBackend{run: defaultRunner}, nil
+		return &darwinBackend{run: run}, nil
 	case "":
 	default:
 		return nil, fmt.Errorf("%w: unknown backend %q", ErrNoBackend, forced)
 	}
 	if env.Getenv("SWAYSOCK") != "" {
-		return &wlrootsBackend{kind: "sway", run: defaultRunner, env: env}, nil
+		return &wlrootsBackend{kind: "sway", run: run, env: env}, nil
 	}
 	if env.Getenv("HYPRLAND_INSTANCE_SIGNATURE") != "" {
-		return &wlrootsBackend{kind: "hyprland", run: defaultRunner, env: env}, nil
+		return &wlrootsBackend{kind: "hyprland", run: run, env: env}, nil
 	}
 	if env.GOOS == "darwin" {
-		return &darwinBackend{run: defaultRunner}, nil
+		return &darwinBackend{run: run}, nil
 	}
 	return nil, fmt.Errorf("%w: looked for SWAYSOCK, HYPRLAND_INSTANCE_SIGNATURE and GOOS=darwin; screen capture needs sway, Hyprland or macOS", ErrNoBackend)
 }

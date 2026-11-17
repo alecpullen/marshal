@@ -8,9 +8,10 @@ daemon's socket and never reads its files: everything it knows comes from
 `marshal daemon status --json` and the commands it runs, so the app works
 against the same daemon the terminal does and cannot drift from it.
 
-The Studio is being built in this same project
-([`docs/studio-flutter/`](../docs/studio-flutter/programme.md)); until its
-window ships, the tray is the only thing the app runs.
+The Studio is built in this same project
+([`docs/studio-flutter/`](../docs/studio-flutter/programme.md)): it is the SPA
+`webbridge` serves at `/`, and F8's cutover removed the Svelte client it
+replaced. The tray remains the other thing the app runs.
 
 ## Layout and the boundary rule
 

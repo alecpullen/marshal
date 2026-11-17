@@ -55,36 +55,27 @@ daemon), `fleet` (the fleet screen on the local daemon), `history`, `plugin`,
 ### Web control plane
 
 ```bash
-cd app && flutter build web --base-href / --output ../web/bridge/static-next
+cd app && flutter build web --base-href / --no-web-resources-cdn --output ../web/bridge/static
 go build ./cmd/webbridge                    # embeds the Studio
 ```
 
 The Studio is the Flutter app in `app/` (`docs/studio-flutter/`), and `/`
-serves it from F8 on. `web/bridge/static-next/` is its build; in a Go-only
-checkout it holds a placeholder index. The app job and the release build both
-run that command before building `webbridge`, because `//go:embed` bakes it in.
+serves it: F8's cutover retired the Svelte Studio and its Node toolchain, so
+there is no `web/ui`, no `npm` step, and no second client to keep in step.
+`web/bridge/static/` is the build; in a Go-only checkout it holds a placeholder
+index, so `go build` still embeds a page. The app job and the release's
+`studio-web` job both run that command before building `webbridge`, because
+`//go:embed` bakes it in. An old `/next/…` link redirects permanently to the
+same place at `/`.
 
-The Svelte Studio is frozen from F2 on: bug fixes only. For the length of the
-trial release it is served beside the Studio under `/classic/`, and `/next/…`
-redirects permanently to the same place at `/`. Its build carries that prefix:
+`--no-web-resources-cdn` is not optional: without it the build fetches the
+CanvasKit engine from gstatic, and a private network that cannot reach that CDN
+never starts the Studio. The e2e suite checks the served build for a CDN URL.
 
-```bash
-cd web/ui && npm install && npm run build -- --base=/classic/
-go build ./cmd/webbridge
-```
-
-`web/bridge/static/` is that build, and the web job checks its committed copy
-against a fresh one. The SPA is baked in with `//go:embed`, so a change under
-`web/ui/src` is **invisible until `npm run build` reruns and the binary is
-rebuilt**.
-
-`web/bridge/contract` holds the fleet loop's wire types. `web/ui/src/lib/contract.ts`
-is generated from it: regenerate with
-`go test ./web/bridge/contract/tsgen -run TestTypeScriptContractIsCurrent -update`.
-`npm run check` type-checks the web UI. The same package generates the app's
+`web/bridge/contract` holds the fleet loop's wire types and generates the app's
 Dart module, `app/lib/src/client/contract.g.dart`: regenerate with
 `go test ./web/bridge/contract/dartgen -run TestDartContractIsCurrent -update`.
-Both currency tests fail on a contract change that is not regenerated.
+That currency test fails on a contract change that is not regenerated.
 
 `webbridge --profile local` is the user's local daemon (P4): a unix socket,
 host processes only, and no container machinery. Each project runs its own
@@ -242,15 +233,16 @@ Tools & safety
 
 Web control plane
   cmd/webbridge/           HTTP + SSE server supervising `marshal acp` children
-  web/bridge/              bridge subsystems (see the boundary rule below)
-  web/ui/                  Svelte 5 + Vite SPA (dev-only Node toolchain)
+  web/bridge/              bridge subsystems (see the boundary rule below);
+                           `static/` is the embedded Studio build
 
 Native app
   app/                     Flutter app (3.50; Material and Cupertino from the
-                           material_ui / cupertino_ui packages): today the tray
+                           material_ui / cupertino_ui packages): the tray
                            screen — a menu-bar item whose menu reports the
                            daemon's state and runs its commands — and the
-                           Studio's foundations. lib/src has four lanes:
+                           Studio, which is the SPA webbridge serves. lib/src
+                           has four lanes:
                            daemon/ + menu/ (the tray), client/ (the only code
                            that opens a socket), model/ (stores and view models) and ui/
                            (widgets). `dart:io` only in daemon/cli.dart and

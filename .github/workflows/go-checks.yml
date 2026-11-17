@@ -54,39 +54,14 @@ jobs:
           path: ${{ runner.temp }}/marshal-usability/
           if-no-files-found: ignore
 
-  web:
-    name: Web UI tests and build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: web/ui
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/ui/package-lock.json
-      - run: npm ci
-      - run: npm test
-      # The Svelte Studio still holds `/` (F8's cutover is deferred), so its
-      # assets are built with the default base. The committed copy in
-      # web/bridge/static is checked against this build below.
-      - run: npm run build
-      - name: Check committed embedded assets
-        working-directory: .
-        run: |
-          git diff --exit-code -- web/bridge/static
-          test -z "$(git ls-files --others --exclude-standard -- web/bridge/static)"
-
-  # The tray app's Dart tests. `flutter test` here is the pure-Dart half of the
-  # app — the status models, the menu model, and the fixture both languages
-  # read — so it needs no GTK, no display and no build of the desktop runner.
-  # The bundles themselves are built in the release workflow, on the OSes that
-  # can build them.
+  # The app's Dart tests and the Studio's web build. `flutter test` here is the
+  # pure-Dart half of the app — the status models, the menu model, the Studio's
+  # models and the fixture both languages read — so it needs no GTK, no display
+  # and no build of the desktop runner. The Studio's web build is made here
+  # because it is what `go:embed` bakes into webbridge; the bundles themselves
+  # are built in the release workflow, on the OSes that can build them.
   app:
-    name: Tray app tests
+    name: App tests and Studio build
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -107,15 +82,30 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
-      # The Flutter Studio is served under /next/ while the cutover is deferred:
-      # its base href is that prefix, and `--no-web-resources-cdn` makes the
-      # build fetch the CanvasKit engine from this server instead of gstatic,
-      # so a private network that cannot reach the CDN still starts it.
-      - name: Build the Studio for /next/
-        run: flutter build web --base-href /next/ --no-web-resources-cdn --output ../web/bridge/static-next
+      # The Studio's build is the one `go:embed` bakes into webbridge. Its base
+      # href is `/`, and `--no-web-resources-cdn` makes the build fetch the
+      # CanvasKit engine from this server instead of gstatic, so a private
+      # network that cannot reach the CDN still starts it.
+      - name: Build the Studio for /
+        run: flutter build web --base-href / --no-web-resources-cdn --output ../web/bridge/static
       - name: The Studio's build embeds
         working-directory: .
         run: CGO_ENABLED=1 go build -o /tmp/webbridge ./cmd/webbridge
+      # F8's cutover removed the Svelte Studio with its toolchain: the Studio is
+      # the Flutter one, and a reintroduced Node project under web/ would be a
+      # second Studio nobody builds. This fails rather than letting one rot in
+      # the tree. `scripts/uishot` is not covered: it renders TUI screenshots
+      # and has nothing to do with the Studio.
+      - name: No Svelte source, and no Node project under web/
+        working-directory: .
+        run: |
+          svelte="$(git ls-files '*.svelte')"
+          node="$(git ls-files -- web | grep -E '(^|/)(package\.json|package-lock\.json)$' || true)"
+          if [ -n "$svelte$node" ]; then
+            echo "the Studio is Flutter; these belong to no build and must go:" >&2
+            printf '%s\n%s\n' "$svelte" "$node" >&2
+            exit 1
+          fi
       - name: Check formatting
         run: dart format --output=none --set-exit-if-changed lib test
 

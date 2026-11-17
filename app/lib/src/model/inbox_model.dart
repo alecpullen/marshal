@@ -1,0 +1,589 @@
+import 'package:flutter/foundation.dart';
+
+import '../client/bridge_client.dart';
+import '../client/contract.g.dart';
+import '../client/transport.dart';
+import 'fleet_store.dart';
+import 'thread_ref.dart';
+
+/// What an ask is (F2 decision 7). The fleet contract carries exactly these
+/// three in this phase: an agent's approval, an agent's question, and an
+/// intake submission. Factory asks join in F6 and review drafts in F7, which
+/// is an addition here, not a rewrite.
+enum AskKind { approval, question, intake }
+
+/// Where an answer has got to. A posted answer stays sending until the
+/// stream stops reporting the ask: a sent message is not shown as done work
+/// (design-system.md §7).
+enum AskState { waiting, sending, failed }
+
+/// What choosing an action does, which is how its answer is built.
+enum AskActionKind {
+  /// Answers one question with the option's own wire value.
+  option,
+
+  /// Answers one question with what the person typed.
+  reply,
+
+  /// Posts the answer collected for every question of a multi-question ask.
+  answer,
+
+  /// Declines the whole request. The agent reads `declined` as the sentinel
+  /// answer for each of its questions, so every question is declined.
+  decline,
+}
+
+/// One answer an ask offers. The first is the primary one (§5: at most one
+/// primary in a group, and it comes first).
+@immutable
+class AskAction {
+  const AskAction(
+    this.label, {
+    this.primary = false,
+    this.kind = AskActionKind.option,
+  });
+
+  final String label;
+  final bool primary;
+  final AskActionKind kind;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AskAction &&
+      other.label == label &&
+      other.primary == primary &&
+      other.kind == kind;
+
+  @override
+  int get hashCode => Object.hash(label, primary, kind);
+
+  @override
+  String toString() => 'AskAction("$label"${primary ? ', primary' : ''})';
+}
+
+/// One option a question offers, as the request carries it: the label a
+/// person reads, and the value the agent reads. They are the same when the
+/// payload names no value.
+@immutable
+class AskOption {
+  const AskOption(this.label, {String? value}) : value = value ?? label;
+
+  final String label;
+  final String value;
+
+  @override
+  String toString() => 'AskOption("$label" = "$value")';
+}
+
+/// One question of a request, projected from its payload.
+@immutable
+class AskQuestion {
+  const AskQuestion({
+    required this.text,
+    this.options = const [],
+    this.multi = false,
+  });
+
+  /// What is asked.
+  final String text;
+
+  /// The answers offered, in the request's order. Empty for a free-text
+  /// question.
+  final List<AskOption> options;
+
+  /// The answer names several options, joined with commas as the TUI records
+  /// them.
+  final bool multi;
+
+  @override
+  String toString() =>
+      'AskQuestion("$text", ${options.length} options'
+      '${multi ? ', multi' : ''})';
+}
+
+/// Something waiting on the user, projected from what the fleet reports.
+@immutable
+class Ask {
+  const Ask({
+    required this.host,
+    required this.id,
+    required this.kind,
+    required this.thread,
+    required this.title,
+    required this.body,
+    required this.actions,
+    required this.since,
+    this.questions = const [],
+    this.state = AskState.waiting,
+    this.error,
+  });
+
+  /// The host whose fleet reported it.
+  final String host;
+
+  /// The id an answer is posted to: the tool call, the question, or the
+  /// submission.
+  final String id;
+
+  final AskKind kind;
+
+  /// The thread it belongs to; null for an intake, which has no agent yet.
+  final ThreadRef? thread;
+
+  /// What is being asked: a command for an approval, the question itself, a
+  /// submission's title.
+  final String title;
+
+  /// The context an answer needs, in one line. Empty when there is none.
+  final String body;
+
+  final List<AskAction> actions;
+
+  /// The questions a question ask carries, in the request's order; empty for
+  /// an approval or an intake.
+  ///
+  /// The agent requires exactly one answer per question, in this order, and
+  /// treats anything else as declined (`internal/acp/questions.go`), so a
+  /// card for a request with more than one must collect all of them.
+  final List<AskQuestion> questions;
+
+  /// When it was asked.
+  final DateTime since;
+
+  final AskState state;
+
+  /// Why the last answer failed, in the bridge's words.
+  final String? error;
+
+  Ask withState(AskState state, {String? error}) => Ask(
+    host: host,
+    id: id,
+    kind: kind,
+    thread: thread,
+    title: title,
+    body: body,
+    actions: actions,
+    since: since,
+    questions: questions,
+    state: state,
+    error: error,
+  );
+
+  @override
+  String toString() => 'Ask($host/$id, ${kind.name}, ${state.name})';
+}
+
+/// The fleet's asks as cards a person can answer (F2 decision 7).
+///
+/// It projects the store's needs-you queue and each agent's pending request
+/// into [Ask]s, oldest first, and posts an answer through the bridge. It
+/// writes no fleet state: the store is still the only writer, and an ask
+/// leaves when the stream stops reporting it.
+class InboxModel extends ChangeNotifier {
+  InboxModel(this._store, {required this.client}) {
+    _store.addListener(_rebuild);
+    _rebuild();
+  }
+
+  final FleetStore _store;
+
+  /// The client that reaches a host, for the answer an ask posts.
+  final BridgeClient Function(String host) client;
+  final _overlays = <String, ({AskState state, String? error})>{};
+  List<Ask> _asks = const [];
+
+  /// Every ask, oldest first.
+  List<Ask> get asks => _asks;
+
+  /// Posts [action] for [ask], with [reply] when the answer is free text and
+  /// [answers] when a multi-question ask collected one per question.
+  ///
+  /// The ask shows as sending at once; a failure keeps it with the bridge's
+  /// own words and a retry. Nothing is removed here: only the stream saying
+  /// the ask is gone removes it.
+  Future<void> answer(
+    Ask ask,
+    AskAction action, {
+    String? reply,
+    List<String>? answers,
+  }) async {
+    final key = _key(ask);
+    if (ask.state == AskState.sending) return;
+    // A question's body is built here, before the card is marked as sending:
+    // an answer with nothing in it is not worth a round trip, and a partial
+    // one is worse than none — the agent reads it as every question declined
+    // (internal/acp/questions.go).
+    final Answers? body = ask.kind == AskKind.question
+        ? _answersToPost(ask, action, reply: reply, answers: answers)
+        : null;
+    if (ask.kind == AskKind.question && body == null) return;
+    _overlays[key] = (state: AskState.sending, error: null);
+    _reflow();
+    try {
+      await _post(ask, action, body);
+    } on BridgeFailure catch (failure) {
+      _overlays[key] = (
+        state: AskState.failed,
+        error: describeFailure(failure),
+      );
+      _reflow();
+      return;
+    } catch (error) {
+      _overlays[key] = (state: AskState.failed, error: error.toString());
+      _reflow();
+      return;
+    }
+    // Posted: it stays sending until the store says it is gone.
+  }
+
+  /// The body a question's answer posts: exactly one [Answer] per question,
+  /// in the request's order, as the agent requires.
+  ///
+  /// Null when there is nothing to send: a reply with no words, or a
+  /// collected answer that does not cover every question. Posting a short
+  /// list is what the agent reads as a decline, so it is never posted.
+  Answers? _answersToPost(
+    Ask ask,
+    AskAction action, {
+    String? reply,
+    List<String>? answers,
+  }) {
+    switch (action.kind) {
+      case AskActionKind.decline:
+        return const Answers(declined: true);
+      case AskActionKind.answer:
+        final questions = ask.questions;
+        if (answers == null || answers.length != questions.length) {
+          return null;
+        }
+        final words = [
+          for (final (index, answer) in answers.indexed)
+            _wireValue(questions[index], answer),
+        ];
+        if (words.any((word) => word.isEmpty)) return null;
+        return Answers(
+          answers: [
+            for (final (index, question) in questions.indexed)
+              Answer(question: question.text, answer: words[index]),
+          ],
+        );
+      case AskActionKind.option:
+      case AskActionKind.reply:
+        final value = action.kind == AskActionKind.reply
+            ? (reply ?? '').trim()
+            : _optionValue(ask, action.label) ?? action.label;
+        if (value.isEmpty) return null;
+        // A question carries its own text; a request this build could not
+        // read falls back to the ask's title, so the answer still names it.
+        final text = ask.questions.isEmpty
+            ? ask.title
+            : ask.questions.first.text;
+        return Answers(
+          answers: [Answer(question: text, answer: value)],
+        );
+    }
+  }
+
+  Future<void> _post(Ask ask, AskAction action, Answers? body) async {
+    final client = this.client(ask.host);
+    switch (ask.kind) {
+      case AskKind.approval:
+        await client.answerPermission(
+          ask.id,
+          Decision(approved: action.label != _deny),
+        );
+      case AskKind.question:
+        await client.answerQuestion(ask.id, body!);
+      case AskKind.intake:
+        if (action.label == _decline) {
+          await client.denyIntake(ask.id);
+        } else {
+          await client.approveIntake(ask.id);
+        }
+    }
+  }
+
+  /// The wire value of the option labelled [label], when the request carries
+  /// one: a `{label, value}` pair may name them differently, and it is the
+  /// value the agent reads.
+  static String? _optionValue(Ask ask, String label) {
+    if (ask.questions.isEmpty) return null;
+    return _labelValue(ask.questions.first, label);
+  }
+
+  /// One collected answer, as the agent reads it: a typed option label
+  /// becomes that option's wire value, and free text is kept as typed.
+  ///
+  /// A question that accepts several is answered with commas, as the TUI
+  /// records it (internal/app/tui/question.go), so each part is mapped.
+  static String _wireValue(AskQuestion question, String answer) {
+    final text = answer.trim();
+    if (question.options.isEmpty) return text;
+    if (!question.multi) return _labelValue(question, text) ?? text;
+    return [
+      for (final part in text.split(','))
+        if (part.trim().isNotEmpty)
+          _labelValue(question, part.trim()) ?? part.trim(),
+    ].join(', ');
+  }
+
+  /// The wire value of the option [question] offers under [label].
+  static String? _labelValue(AskQuestion question, String label) {
+    for (final option in question.options) {
+      if (option.label == label) return option.value;
+    }
+    return null;
+  }
+
+  String _key(Ask ask) => '${ask.host}|${ask.id}';
+
+  void _reflow() {
+    _asks = List.unmodifiable([for (final ask in _asks) _withOverlay(ask)]);
+    notifyListeners();
+  }
+
+  Ask _withOverlay(Ask ask) {
+    final overlay = _overlays[_key(ask)];
+    return overlay == null
+        ? ask
+        : ask.withState(overlay.state, error: overlay.error);
+  }
+
+  /// Projects what the store holds into asks: the queue's entries, and any
+  /// request an agent is parked on that the queue has not caught up with, so
+  /// a person is never left with work waiting that nothing shows.
+  void _rebuild() {
+    if (_disposed) return;
+    final asks = <Ask>[];
+    final seen = <String>{};
+    for (final host in _store.hosts) {
+      final agents = {
+        for (final agent in _store.agents(host: host.name)) agent.id: agent,
+      };
+      for (final item in _store.inbox(host: host.name)) {
+        final ask = _askForItem(host.name, item, agents);
+        if (ask == null) continue;
+        if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
+      }
+      for (final agent in agents.values) {
+        final pending = agent.pending;
+        if (pending == null) continue;
+        final ask = _askForPending(host.name, agent, pending, null);
+        if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
+      }
+    }
+    asks.sort((a, b) {
+      final byTime = a.since.compareTo(b.since);
+      return byTime != 0 ? byTime : a.id.compareTo(b.id);
+    });
+    _asks = List.unmodifiable(asks);
+    _overlays.removeWhere((key, _) => !seen.contains(key));
+    notifyListeners();
+  }
+
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _store.removeListener(_rebuild);
+    super.dispose();
+  }
+
+  /// One queue entry as an ask, or null when it names something this build
+  /// cannot answer — an agent that is not in the fleet, or an item kind it
+  /// does not know.
+  Ask? _askForItem(
+    String host,
+    InboxItem item,
+    Map<String, AgentStatus> agents,
+  ) {
+    switch (item.kind) {
+      case InboxItemKind.inboxItemAgent:
+        final agent = agents[item.agentID];
+        final pending = agent?.pending;
+        if (agent == null || pending == null) return null;
+        return _askForPending(host, agent, pending, _time(item.at));
+      case InboxItemKind.inboxItemIntake:
+        final submission = item.submission;
+        if (submission == null) return null;
+        return _askForIntake(host, submission, _time(item.at));
+      case InboxItemKind.unknown:
+        return null;
+    }
+  }
+
+  /// One agent's parked request as an ask.
+  Ask _askForPending(
+    String host,
+    AgentStatus agent,
+    PendingRequest pending,
+    DateTime? since,
+  ) {
+    final approval = pending.kind != PendingKind.pendingQuestion;
+    final questions = approval ? const <AskQuestion>[] : _questionsOf(pending);
+    return Ask(
+      host: host,
+      id: pending.id,
+      kind: approval ? AskKind.approval : AskKind.question,
+      thread: threadFor(host, agent),
+      title: describePending(pending),
+      body: approval ? _approvalBody(pending) : _questionBody(questions),
+      actions: approval ? _approvalActions : _questionActions(questions),
+      questions: questions,
+      since: since ?? lastActiveOf(agent),
+    );
+  }
+
+  /// The questions a request carries, in its own order.
+  ///
+  /// The payload's shape is `{question, options, multi}`, where an option is
+  /// a plain string or a `{label, value}` pair
+  /// (`internal/app/session/pending.go`). A question this build cannot read
+  /// is dropped rather than guessed at.
+  static List<AskQuestion> _questionsOf(PendingRequest pending) {
+    final params = pending.params;
+    if (params is! Map) return const [];
+    final questions = params['questions'];
+    if (questions is! List) return const [];
+    final projected = <AskQuestion>[];
+    for (final question in questions) {
+      if (question is! Map) continue;
+      final text = question['question'];
+      if (text is! String || text.trim().isEmpty) continue;
+      final options = <AskOption>[];
+      final raw = question['options'];
+      if (raw is List) {
+        for (final option in raw) {
+          if (option is String && option.trim().isNotEmpty) {
+            options.add(AskOption(option.trim()));
+          } else if (option is Map) {
+            final label = option['label'] ?? option['value'];
+            if (label is! String || label.trim().isEmpty) continue;
+            final value = option['value'];
+            options.add(
+              AskOption(
+                label.trim(),
+                value: value is String && value.trim().isNotEmpty
+                    ? value.trim()
+                    : null,
+              ),
+            );
+          }
+        }
+      }
+      projected.add(
+        AskQuestion(
+          text: text.trim(),
+          options: List.unmodifiable(options),
+          multi: question['multi'] == true,
+        ),
+      );
+    }
+    return List.unmodifiable(projected);
+  }
+
+  /// One submission as an ask. A submission's title comes from the calling
+  /// agent and is therefore text, never markup (web/bridge/intake.go).
+  Ask _askForIntake(String host, PendingSubmission submission, DateTime since) {
+    final ask = Ask(
+      host: host,
+      id: submission.id,
+      kind: AskKind.intake,
+      thread: null,
+      title: submission.title,
+      body: '${submission.repoID} · ${_submissionSummary(submission)}',
+      actions: _intakeActions,
+      since: since,
+    );
+    return ask;
+  }
+
+  /// The context an approval needs: why the agent asks, when it said.
+  static String _approvalBody(PendingRequest pending) {
+    final params = pending.params;
+    if (params is! Map) return '';
+    final reason = params['reason'];
+    if (reason is String && reason.trim().isNotEmpty) return reason.trim();
+    final tool = params['toolName'];
+    if (tool is String && tool.trim().isNotEmpty) return tool.trim();
+    return '';
+  }
+
+  /// The context a question needs: how many more it asks, when it asks more
+  /// than one.
+  static String _questionBody(List<AskQuestion> questions) {
+    if (questions.length < 2) return '';
+    final more = questions.length - 1;
+    return more == 1 ? '1 more question' : '$more more questions';
+  }
+
+  /// A plan is summarised by its task count, so the operator can judge the
+  /// scale before opening it (web/ui/src/lib/pending.ts).
+  static String _submissionSummary(PendingSubmission submission) {
+    final plan = submission.plan;
+    if (plan.isNotEmpty) {
+      final tasks = RegExp(
+        r'^#{2,3} Task \d+',
+        multiLine: true,
+      ).allMatches(plan).length;
+      return 'plan · $tasks ${tasks == 1 ? 'task' : 'tasks'}';
+    }
+    return 'prompt';
+  }
+
+  static DateTime _time(String at) =>
+      DateTime.tryParse(at) ??
+      DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+
+  /// An approval offers the decision the bridge can carry: allow this one
+  /// action, or deny it.
+  ///
+  /// Approving "always, with the derived pattern" is not offered: the
+  /// permission route carries `approved`, `edited` and a typed capability
+  /// choice and nothing else (web/bridge/contract/answers.go), so an action
+  /// labelled for a standing grant would report a one-off approval. It is a
+  /// wire change first.
+  static const _approvalActions = [
+    AskAction('Approve once', primary: true),
+    AskAction('Deny'),
+  ];
+
+  static const _deny = 'Deny';
+  static const _reply = 'Reply';
+  static const _decline = 'Decline';
+  static const _answer = 'Answer';
+
+  /// A question with one answer offers its own options, then a free reply:
+  /// choosing an option is the answer.
+  ///
+  /// A request that asks more than one question cannot answer on a single
+  /// tap — the agent wants one [Answer] per question, in order, and reads
+  /// anything else as a decline — so it offers one action that posts the
+  /// answer collected for each of them, and a decline that says so outright.
+  static List<AskAction> _questionActions(List<AskQuestion> questions) {
+    if (questions.length > 1) {
+      return const [
+        AskAction(_answer, primary: true, kind: AskActionKind.answer),
+        AskAction(_decline, kind: AskActionKind.decline),
+      ];
+    }
+    final options = questions.isEmpty
+        ? const <AskOption>[]
+        : questions.first.options;
+    return [
+      for (final (index, option) in options.indexed)
+        AskAction(option.label, primary: index == 0),
+      const AskAction(_reply, kind: AskActionKind.reply),
+    ];
+  }
+
+  /// An intake offers to start the work or to refuse it.
+  ///
+  /// Editing the submission first is not offered: the approve route takes no
+  /// body (web/bridge/http.go), so there is nothing to send an edit through.
+  static const _intakeActions = [
+    AskAction('Start', primary: true),
+    AskAction(_decline),
+  ];
+}

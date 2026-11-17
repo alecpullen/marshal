@@ -177,6 +177,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Spark` | A small line | One series, `fg`, no axes |
 | `CheckStrip` | One block per CI check | Order is the forge's order; tooltip names each check |
 | `Rows` | A list of name, description, value | Every settings-style list |
+| `NavRow` | A row of the sidebar | An icon, a label, an optional count; a project's row has a disclosure chevron instead of an icon. Only threads carry a status, in a `ThreadRow` |
 | `PageBody` | Title, subtitle, actions, content | Every page that is not a thread |
 | `AskCard` | Something waiting on the user | The only way an ask is shown |
 | `PrCard` | A pull request with its CI | The only way a pull request is shown in a list |
@@ -185,6 +186,11 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Field` | A text input | Border only; the label is above it |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
 | `Sheet` | A dialog or bottom sheet; it dims what is behind it with `scrim` | One per screen at most |
+
+Added in F2: `NavRow`, the sidebar's row (an icon or a disclosure chevron, a
+label, an optional count; the selected row is filled and its icon is
+`accent`). A thread is never a `NavRow`: it is a `ThreadRow`, which carries
+its status.
 
 Variants as built in F0, beyond the table: `Box.flush` (no inner padding,
 for rows separated by `Hairline`s, as `Rows` uses); `Btn` and `Btn.primary`;

@@ -42,6 +42,7 @@ export 'hairline.dart';
 export 'icon_btn.dart';
 export 'label.dart';
 export 'menu.dart';
+export 'nav_row.dart';
 export 'meter.dart';
 export 'page_body.dart';
 export 'pill.dart';

@@ -104,6 +104,13 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
+      # The Studio is served at /next/ beside the Svelte one (F2): the build
+      # is embedded by `go:embed`, so it is built before the Go binary is.
+      - name: Build the Studio for /next/
+        run: flutter build web --base-href /next/ --output ../web/bridge/static-next
+      - name: The Studio's build embeds
+        working-directory: .
+        run: CGO_ENABLED=1 go build -o /tmp/webbridge ./cmd/webbridge
       - name: Check formatting
         run: dart format --output=none --set-exit-if-changed lib test
 

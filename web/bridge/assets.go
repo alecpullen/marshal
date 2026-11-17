@@ -23,6 +23,58 @@ var staticFS embed.FS
 // path cleaning and prefix stripping are handled by the fs.Sub layer.
 var staticRoot, _ = fs.Sub(staticFS, "static")
 
+// staticNextFS embeds the Flutter Studio's build output (F2). During Go-only
+// development it contains a placeholder index.html; the real Studio is written
+// here by `flutter build web --base-href /next/` in app/.
+//
+//go:embed static-next
+var staticNextFS embed.FS
+
+// staticNextRoot is the sub-tree rooted at "static-next".
+var staticNextRoot, _ = fs.Sub(staticNextFS, "static-next")
+
+// nextPrefix is where the Flutter Studio is served, beside the Svelte one.
+// Its place is the URL path under it: /next/, /next/inbox,
+// /next/project/<id>, /next/thread/<host>/<id> (F2 decision 9).
+const nextPrefix = "/next"
+
+// isNextPath reports whether a request is for the Studio.
+func isNextPath(p string) bool {
+	return p == nextPrefix || strings.HasPrefix(p, nextPrefix+"/")
+}
+
+// nextHandler serves the embedded Flutter Studio under /next/. Paths that do
+// not match a real asset fall back to its index.html, exactly as
+// staticHandler does for the Svelte build, so the Studio's own router can
+// render the place in the URL.
+func nextHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.TrimPrefix(r.URL.Path, nextPrefix)
+		// Nothing under /next/ may stand in front of the bridge's API, and
+		// nothing there may answer for it: the route is the mux's, or it is
+		// not found.
+		if strings.HasPrefix(rest, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+		p := path.Clean("/" + rest)[1:]
+		if p == "" || p == "." {
+			p = "index.html"
+		}
+		f, err := staticNextRoot.Open(p)
+		if err == nil {
+			serveFile(w, r, p, f)
+			return
+		}
+		f, err = staticNextRoot.Open("index.html")
+		if err != nil {
+			http.Error(w, "index.html not found in the embedded Studio assets", http.StatusInternalServerError)
+			return
+		}
+		serveFile(w, r, "index.html", f)
+	})
+}
+
 // staticHandler serves the embedded SPA. Non-API paths that do not match a
 // real static asset fall back to index.html so client-side routing works.
 func staticHandler() http.Handler {
@@ -160,4 +212,9 @@ func base64url(s string) bool {
 // openStatic is exposed for tests that need to inspect the embedded tree.
 func openStatic(name string) (fs.File, error) {
 	return staticRoot.Open(name)
+}
+
+// openStaticNext is the same for the Studio's tree.
+func openStaticNext(name string) (fs.File, error) {
+	return staticNextRoot.Open(name)
 }

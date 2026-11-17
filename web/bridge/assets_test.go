@@ -112,3 +112,72 @@ func TestStaticHandlerFallbackToIndex(t *testing.T) {
 		t.Errorf("fallback did not serve index.html")
 	}
 }
+
+// TestNextServesItsIndex pins the Studio's entry point: /next/ answers the
+// embedded Flutter build's index, never cached, the way the Svelte Studio's
+// own index is served.
+func TestNextServesItsIndex(t *testing.T) {
+	for _, p := range []string{"/next", "/next/"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		nextHandler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200", p, rec.Code)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "Marshal Studio") {
+			t.Errorf("GET %s: body missing the Studio's title; got %q", p, body)
+		}
+		if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
+			t.Errorf("GET %s: cache-control = %q, want no-cache", p, cc)
+		}
+	}
+}
+
+// TestNextFallsBackToIndex pins the Studio's own routing: /next/thread/local/a-1
+// is a place in the URL, not a file on disk, so the index is what answers and
+// the Studio renders the place (F2 decision 9).
+func TestNextFallsBackToIndex(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/next/thread/local/a-1", nil)
+	nextHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "Marshal Studio") {
+		t.Errorf("body missing the Studio's title; got %q", body)
+	}
+}
+
+// TestNextDoesNotShadowAPI pins the boundary: the bridge's API is the mux's,
+// and a path under /next/ that names one is not found rather than answered
+// with a page. http.go's route sends /api/ to the mux before either static
+// handler sees it.
+func TestNextDoesNotShadowAPI(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/next/api/agents", nil)
+	nextHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /next/api/agents: status = %d, want 404", rec.Code)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "Marshal Studio") {
+		t.Errorf("an API path was answered with the Studio's page")
+	}
+}
+
+// TestIsNextPath pins the prefix the router matches on: /next and everything
+// under it, and nothing that merely starts with the same letters.
+func TestIsNextPath(t *testing.T) {
+	for _, p := range []string{"/next", "/next/", "/next/inbox", "/next/thread/local/a-1"} {
+		if !isNextPath(p) {
+			t.Errorf("isNextPath(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"/", "/nextdoor", "/api/agents", "/static/next"} {
+		if isNextPath(p) {
+			t.Errorf("isNextPath(%q) = true, want false", p)
+		}
+	}
+}

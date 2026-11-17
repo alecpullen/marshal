@@ -1,10 +1,14 @@
+import 'src/client/contract.g.dart';
 import 'src/client/host.dart';
 import 'src/client/host_discovery_stub.dart'
     if (dart.library.io) 'src/client/host_discovery_io.dart';
 import 'src/menu/desktop_stub.dart'
     if (dart.library.io) 'src/menu/desktop.dart';
 import 'src/model/fleet_store.dart';
+import 'src/model/composer_model.dart';
 import 'src/model/inbox_model.dart';
+import 'src/model/new_work_model.dart';
+import 'src/model/stack_store.dart';
 import 'src/ui/kit/kit.dart';
 import 'src/ui/shell/shell.dart';
 
@@ -26,7 +30,37 @@ Future<void> main() async {
   );
   runApp(
     EmberApp(
-      home: Studio(store: store, inbox: inbox, read: hosts.discover),
+      home: Studio(
+        store: store,
+        inbox: inbox,
+        read: hosts.discover,
+        // A thread place opens its own session's transcript on the client
+        // that reaches its host (F3): the same client the inbox answers with.
+        threadStore: (thread) => StackStore(
+          hosts.hosts.firstWhere((host) => host.name == thread.host).client,
+          thread.id,
+        ),
+        composerFor: (thread, view) => ComposerModel.forSession(
+          hosts.hosts.firstWhere((host) => host.name == thread.host).client,
+          thread.id,
+          view: view,
+        ),
+        newWorkFor: (thread) => NewWorkModel.forProject(
+          store
+              .projects(host: thread.host)
+              .firstWhere(
+                (project) => project.root == thread.project,
+                orElse: () => ProjectStatus(
+                  root: thread.project,
+                  available: true,
+                  trust: TrustState.trustNA,
+                  isolation: 'available',
+                ),
+              ),
+          hosts.hosts.firstWhere((host) => host.name == thread.host).client,
+          host: thread.host,
+        ),
+      ),
     ),
   );
   await startTray();

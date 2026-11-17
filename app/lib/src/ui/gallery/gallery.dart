@@ -29,6 +29,17 @@ class _GalleryState extends State<Gallery> {
   int _filter = 0;
   bool _boxOpened = false;
 
+  /// The composer specimen's text, which the gallery never edits.
+  late final TextEditingController _composer = TextEditingController();
+
+  static void _noop() {}
+
+  @override
+  void dispose() {
+    _composer.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final e = Ember.of(context);
@@ -83,6 +94,13 @@ class _GalleryState extends State<Gallery> {
         ..._section('AskCard', _asks()),
         ..._section('PrCard', _pulls()),
         ..._section('ThreadRow', _threads()),
+        ..._section('TurnPrompt', _turnPrompts()),
+        ..._section('StepHeader', _stepHeaders()),
+        ..._section('ToolRow', _toolRows()),
+        ..._section('Narration', _narrations()),
+        ..._section('OutputBlock', _outputBlocks()),
+        ..._section('LiveRow', _liveRows()),
+        ..._section('Composer', _composers()),
         ..._section('StateMessage', _states()),
         ..._section('Field', _fields()),
         ..._section('Menu', _menus()),
@@ -726,6 +744,191 @@ class _GalleryState extends State<Gallery> {
             Btn('All hosts', icon: Glyphs.chevron_down, onTap: toggle),
       ),
     ]),
+  ];
+
+  /// The transcript rows (F3): what the user said, a step's header, its calls,
+  /// the agent's words and output, the live row, and the field that drives it.
+  List<Widget> _turnPrompts() => [
+    _narrow(
+      Layout.reading,
+      const Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TurnPrompt(text: 'Clean up test fixtures nobody uses any more.'),
+          TurnPrompt(text: 'Two lines\nstay two lines'),
+        ],
+      ),
+    ),
+  ];
+
+  List<Widget> _stepHeaders() => [
+    _narrow(
+      Layout.reading,
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const StepHeader(
+            number: '1',
+            headline: 'Mapped the fixtures and who reads them',
+            took: '41s',
+          ),
+          const StepHeader(
+            number: '2',
+            headline: 'Removed the fixtures that are plainly dead',
+            took: '1m 08s',
+            foldable: true,
+            onTap: _noop,
+          ),
+          const StepHeader(
+            number: '3',
+            headline: 'Waiting for your call on testdata/legacy',
+            live: true,
+          ),
+          StepHeader(
+            number: '4',
+            headline: 'Ran the suite',
+            took: '2m 01s',
+            foldable: true,
+            folded: true,
+            onTap: _noop,
+          ),
+        ],
+      ),
+    ),
+  ];
+
+  List<Widget> _toolRows() => [
+    _narrow(
+      Layout.reading,
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ToolRow(
+            verb: 'read',
+            target: 'internal/acp/acptest/fixtures.go',
+            result: '148 lines',
+            onTap: _noop,
+          ),
+          ToolRow(
+            verb: 'shell',
+            target: 'scripts/test.sh',
+            result: '412 passed',
+            onTap: _noop,
+          ),
+          ToolRow(
+            verb: 'shell',
+            target: 'go test ./internal/nope',
+            result: 'exit 1',
+            outcome: ToolOutcome.failed,
+            onTap: _noop,
+          ),
+          ToolRow(
+            verb: 'search',
+            target: 'testdata/ --type go',
+            result: 'running',
+            outcome: ToolOutcome.running,
+            selected: true,
+            onTap: _noop,
+          ),
+        ],
+      ),
+    ),
+  ];
+
+  List<Widget> _narrations() => [
+    _narrow(
+      Layout.reading,
+      const Narration(
+        text:
+            'There are **96** fixture files. `82` are loaded by a test.\n\n'
+            '- 82 are loaded\n'
+            '- 14 are referenced nowhere\n\n'
+            '1. Remove them\n'
+            '2. Run the suite\n\n'
+            '> The legacy directory is different.\n\n'
+            '```\nok  marshal/internal/viewmodel  0.12s\n```',
+      ),
+    ),
+  ];
+
+  List<Widget> _outputBlocks() => [
+    _narrow(
+      Layout.reading,
+      const Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          OutputBlock(
+            text:
+                'ok  marshal/internal/viewmodel\t0.12s\n'
+                'FAIL marshal/internal/repo\t0.44s',
+          ),
+          SizedBox(height: Space.s12),
+          OutputBlock(text: '… 4096 bytes kept', truncated: true),
+        ],
+      ),
+    ),
+  ];
+
+  List<Widget> _liveRows() => [
+    _narrow(
+      Layout.reading,
+      const Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          LiveRow(
+            headline: 'Running the tests',
+            detail: 'ok marshal/internal/viewmodel',
+            mono: true,
+          ),
+          LiveRow(
+            headline: 'Waiting for your call',
+            detail: 'Approval needed for shell.run',
+          ),
+          LiveRow(
+            headline: 'The command failed',
+            detail: 'exit 1',
+            mono: true,
+            failed: true,
+          ),
+        ],
+      ),
+    ),
+  ];
+
+  List<Widget> _composers() => [
+    _narrow(
+      Layout.reading,
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Composer(
+            controller: _composer,
+            hint: 'Reply to the agent…',
+            mode: 'Act',
+            model: 'qwen3-coder',
+            onSend: _noop,
+          ),
+          const SizedBox(height: Space.s16),
+          Composer(
+            controller: _composer,
+            hint: 'Steer the agent…',
+            running: true,
+            mode: 'Auto',
+            model: 'qwen3-coder',
+            onSend: _noop,
+            onStop: _noop,
+          ),
+          const SizedBox(height: Space.s16),
+          Composer(
+            controller: _composer,
+            hint: 'Reply to the agent…',
+            readOnly: true,
+            readOnlyReason:
+                'This session is in ask mode with no editing granted.',
+          ),
+        ],
+      ),
+    ),
   ];
 
   /// A tooltip a screen adds itself: the exact time behind a relative one.

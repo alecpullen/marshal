@@ -239,6 +239,12 @@ final class Ember {
   /// Code, paths, identifiers, counts and durations.
   static const monoFamily = 'Geist Mono';
 
+  /// The symbol fallback, bundled from `assets/fonts/` (pubspec.yaml):
+  /// Noto Sans Symbols 2, under its OFL licence. Geist has no glyph for
+  /// ⌘ ⌥ ⏎ ✓ ✗ ▸ ▾ ⋯ and the transcript needs them, so every role falls
+  /// back to it rather than drawing tofu. It is never a role's first family.
+  static const symbols = 'Noto Sans Symbols 2';
+
   TextStyle _sans(
     double size,
     FontWeight weight, {
@@ -248,6 +254,7 @@ final class Ember {
     inherit: false,
     color: fg,
     fontFamily: sans,
+    fontFamilyFallback: const [symbols],
     fontSize: size,
     fontWeight: weight,
     height: height,
@@ -261,6 +268,7 @@ final class Ember {
     inherit: false,
     color: fg,
     fontFamily: monoFamily,
+    fontFamilyFallback: const [symbols],
     fontSize: size,
     fontWeight: FontWeight.w400,
     height: height,

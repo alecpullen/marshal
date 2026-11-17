@@ -1,0 +1,59 @@
+{
+  "SessionSummary": {
+    "sessionId": "s-1",
+    "title": "fix the login bug",
+    "updatedAt": 1700000009000,
+    "messageCount": 42
+  },
+  "SessionList": {
+    "sessions": [
+      {
+        "sessionId": "s-1",
+        "title": "fix the login bug",
+        "updatedAt": 1700000009000,
+        "messageCount": 42
+      }
+    ]
+  },
+  "PromptRequest": {
+    "text": "fix the login bug"
+  },
+  "SteerRequest": {
+    "text": "use the existing session store"
+  },
+  "ModeRequest": {
+    "mode": "act"
+  },
+  "Roster": {
+    "roles": [
+      {
+        "role": "implementer",
+        "profile": "balanced",
+        "provider": "local",
+        "model": "qwen3-coder",
+        "localOnly": true
+      }
+    ],
+    "swarmBudget": {
+      "maxFixRounds": 3,
+      "maxTotalTokens": 120000
+    },
+    "sddBudget": {
+      "maxFixRounds": 2,
+      "maxTotalTokens": 60000
+    }
+  },
+  "RosterRole": {
+    "role": "implementer",
+    "profile": "balanced",
+    "provider": "local",
+    "model": "qwen3-coder",
+    "presetName": "coder",
+    "customAgent": "reviewer",
+    "localOnly": true
+  },
+  "RosterBudget": {
+    "maxFixRounds": 3,
+    "maxTotalTokens": 120000
+  }
+}

@@ -113,6 +113,7 @@ class Ask {
     required this.body,
     required this.actions,
     required this.since,
+    this.step,
     this.questions = const [],
     this.state = AskState.waiting,
     this.error,
@@ -139,6 +140,10 @@ class Ask {
 
   final List<AskAction> actions;
 
+  /// The step that raised it, when the request names one: the transcript
+  /// pins the card there (F3 decision 9).
+  final String? step;
+
   /// The questions a question ask carries, in the request's order; empty for
   /// an approval or an intake.
   ///
@@ -164,6 +169,7 @@ class Ask {
     body: body,
     actions: actions,
     since: since,
+    step: step,
     questions: questions,
     state: state,
     error: error,
@@ -432,6 +438,7 @@ class InboxModel extends ChangeNotifier {
       actions: approval ? _approvalActions : _questionActions(questions),
       questions: questions,
       since: since ?? lastActiveOf(agent),
+      step: _stepOf(pending),
     );
   }
 
@@ -497,6 +504,15 @@ class InboxModel extends ChangeNotifier {
       since: since,
     );
     return ask;
+  }
+
+  /// The step a pending request names, when it names one.
+  static String? _stepOf(PendingRequest pending) {
+    final params = pending.params;
+    if (params is! Map) return null;
+    final step = params['stepId'];
+    if (step == null) return null;
+    return '$step';
   }
 
   /// The context an approval needs: why the agent asks, when it said.

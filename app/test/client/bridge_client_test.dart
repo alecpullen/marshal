@@ -224,6 +224,48 @@ void main() {
     expect(fake.requests.single.uri, '/api/prompts/recent');
   });
 
+  test('recipes decodes the bridge store', () async {
+    fake.reply(
+      'GET',
+      '/api/recipes',
+      const FakeReply(
+        200,
+        body:
+            '[{"name":"fix-a-bug","title":"Fix a bug","kind":"prompt",'
+            '"prompt":"Find the bug and add a test.","builtin":true}]',
+      ),
+    );
+
+    final recipes = await client.recipes();
+
+    expect(recipes.single.name, 'fix-a-bug');
+    expect(recipes.single.title, 'Fix a bug');
+    expect(recipes.single.prompt, contains('add a test'));
+    expect(recipes.single.builtin, isTrue);
+    expect(fake.requests.single.uri, '/api/recipes');
+  });
+
+  test('issues asks the repo route, escaping the id', () async {
+    fake.reply(
+      'GET',
+      '/api/repos/owner%2Fname/issues',
+      const FakeReply(
+        200,
+        body:
+            '[{"Number":42,"Title":"Fix the login redirect",'
+            '"Body":"The return path is lost.",'
+            '"URL":"https://example.test/issues/42","Labels":["bug"]}]',
+      ),
+    );
+
+    final issues = await client.issues('owner/name');
+
+    expect(issues.single.number, 42);
+    expect(issues.single.title, 'Fix the login redirect');
+    expect(issues.single.labels, ['bug']);
+    expect(fake.requests.single.uri, '/api/repos/owner%2Fname/issues');
+  });
+
   test('fleetEvents streams the bridge events', () async {
     final frames = fake.stream('GET', '/api/events');
     frames.write('id: 9\n');

@@ -495,15 +495,18 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.projectsWithFactoryIDs())
 }
 
-// projectsWithFactoryIDs is the project list with each entry's stable factory
-// project ID attached. The ID is what a grant is keyed by and what an MCP
-// client may name; every other field is exactly what the fleet reported.
+// projectsWithFactoryIDs is the project list with each entry's derived ids
+// attached: its stable factory project ID (what a grant is keyed by and what
+// an MCP client may name) and the registered repo its work comes from (what
+// `GET /api/repos/{id}/issues` is keyed by). Every other field is exactly
+// what the fleet reported.
 func (s *Server) projectsWithFactoryIDs() []contract.ProjectStatus {
 	statuses := s.fleet.ProjectStatus()
 	for i := range statuses {
 		if id, ok := s.fleet.ws.ProjectID(statuses[i].Root); ok {
 			statuses[i].MCPProjectID = id
 		}
+		statuses[i].RepoID = s.fleet.projectRepoID(statuses[i].Root)
 	}
 	return statuses
 }
@@ -1004,9 +1007,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "turn already in flight"})
 		return
 	}
-	var body struct {
-		Text string `json:"text"`
-	}
+	var body contract.PromptRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -1038,9 +1039,7 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 
 // steer redirects the in-flight turn.
 func (s *Server) steer(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Text string `json:"text"`
-	}
+	var body contract.SteerRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -1248,9 +1247,7 @@ func subagentRefusalCode(message string) string {
 // forwarded as an atomic patch and the full committed state is returned.
 // New clients use the access routes and never need a dummy mode.
 func (s *Server) setMode(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Mode string `json:"mode"`
-	}
+	var body contract.ModeRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}

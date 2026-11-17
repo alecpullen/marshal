@@ -208,6 +208,34 @@ void main() {
     expect(found, isEmpty, reason: found.join('\n'));
   });
 
+  test('xterm is imported by terminal_view.dart and no other file', () {
+    // f4-inspector.md decision 9 states one file imports xterm, and the
+    // plan, the record and the file's own doc comment repeat it. The rule is
+    // only worth stating if it holds, so it is checked here: a second
+    // importer would be a second place the package's types leak through.
+    const terminalView = '$ui/inspector/terminal_view.dart';
+    final found = offenders(
+      (file) => file.path != terminalView,
+      (_, uri) => uri.startsWith('package:xterm/'),
+    );
+    expect(
+      found,
+      isEmpty,
+      reason:
+          'only $terminalView may import xterm:\n'
+          '${found.join('\n')}',
+    );
+    expect(
+      dartFilesUnder('$ui/inspector')
+          .firstWhere((file) => file.path == terminalView)
+          .directiveUris,
+      contains('package:xterm/xterm.dart'),
+      reason:
+          '$terminalView is named as the file that imports xterm, and it '
+          'must, so this rule is not vacuous',
+    );
+  });
+
   test('every exemption points at something that exists', () {
     // Without this, renaming or deleting what a rule exempts would turn the
     // rule into a no-op that still passes.

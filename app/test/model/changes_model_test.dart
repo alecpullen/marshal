@@ -366,18 +366,49 @@ void main() {
       ShipOutcome.patch,
     );
 
-    // A forge that refuses is an error from the bridge: nothing was pushed.
+    // A bridge that refuses before pushing answers 4xx: nothing was pushed,
+    // and the reason is the bridge's.
     bridge.reply(
       'POST',
       '/api/agents/a-1/exit',
-      const FakeReply(502, body: '{"error":"forge: no credential"}'),
+      const FakeReply(409, body: '{"error":"bridge: the branch moved"}'),
     );
     final forge = await ChangesModel(
       client,
       agentId: 'a-1',
     ).ship(message: 'm', openPr: true);
     expect(forge.outcome, ShipOutcome.forgeRefused);
-    expect(forge.message, contains('no credential'));
+    expect(forge.message, contains('the branch moved'));
+  });
+
+  test('a server failure or a dropped connection is not a refusal', () async {
+    // The bridge pushes before it answers, so a 5xx says nothing about
+    // whether the work reached the forge: it must not claim "Nothing was
+    // pushed" (decision 7).
+    bridge.reply(
+      'POST',
+      '/api/agents/a-1/exit',
+      const FakeReply(502, body: '{"error":"bridge: child is down"}'),
+    );
+    final failed = await ChangesModel(
+      client,
+      agentId: 'a-1',
+    ).ship(message: 'm', openPr: true);
+    expect(failed.outcome, ShipOutcome.failed);
+    expect(failed.message, contains('child is down'));
+
+    // No answer at all — the connection went away mid-exit.
+    final unreachable = await ChangesModel(
+      BridgeClient(
+        serverTransport(
+          Uri.parse('http://127.0.0.1:1'),
+          token: () async => 'unused',
+        ),
+      ),
+      agentId: 'a-1',
+    ).ship(message: 'm', openPr: true);
+    expect(unreachable.outcome, ShipOutcome.failed);
+    expect(unreachable.message, isNotEmpty);
   });
 
   test('discard posts, then empties the change set', () async {

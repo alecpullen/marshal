@@ -615,7 +615,10 @@ class BridgeClient {
       ),
     );
     final json = _object(response);
-    return (json['url'] ?? json['previewUrl'] ?? '') as String;
+    // The route answers {"url": …} (web/bridge/preview.go): nothing else is
+    // sent, so a shape change fails here rather than yielding an empty URL
+    // from a key nobody writes.
+    return (json['url'] ?? '') as String;
   }
 
   /// POST /api/agents/{id}/exit: commits, verifies and ships the work.

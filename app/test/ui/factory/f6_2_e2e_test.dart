@@ -20,12 +20,15 @@ import '../../support/fake_bridge.dart';
 ///
 /// It is a model-level end-to-end rather than `integration_test`: this machine
 /// has no Linux toolchain for a device app (recorded in
-/// `docs/studio-flutter/f6-2-planning-runs.md`), and a widget test cannot host
-/// these flows — a request posted from a tapped callback runs in the test's
-/// fake-async zone, where the fixture bridge's real HTTP never completes. The
-/// screens' drawing and their actions are covered by `planning_test.dart`,
-/// `handoff_sheet_test.dart`, `project_page_test.dart` and
-/// `f6_1_e2e_test.dart`'s neighbours; this file covers the flows themselves.
+/// `docs/studio-flutter/f6-2-planning-runs.md`). A widget test does host the
+/// loop a tap starts — `tester.runAsync` lets the fixture bridge's real socket
+/// answer, which `planning_test.dart`'s snapshot and `project_page_test.dart`'s
+/// discovery tap both use — so what this file adds is the flows that cross
+/// models and places: one plan through the planner, the sheet and the store,
+/// and one run through its first commit and its gate. The screens' drawing and
+/// their actions are covered by `planning_test.dart`, `handoff_sheet_test.dart`,
+/// `project_page_test.dart` and `f6_1_e2e_test.dart`'s neighbours; this file
+/// covers the flows themselves.
 void main() {
   test('a plan becomes a work item through one sheet', () async {
     final fixture = await ModelFixture.start([

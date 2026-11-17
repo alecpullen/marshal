@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart'
     show ProjectSettingsVersion;
@@ -14,6 +16,7 @@ import 'package:marshal_app/src/ui/shell/shell.dart';
 
 import '../../model/support.dart'
     show FixtureHost, ModelFixture, agent, factoryItem, project;
+import '../../support/fake_bridge.dart' show FakeReply;
 
 /// The moment the page's fixtures are measured against.
 final _now = DateTime.utc(2026, 11, 17, 4, 12);
@@ -232,5 +235,138 @@ void main() {
         reason: 'the project page has a $label tab',
       );
     }
+  });
+
+  testWidgets('the discovery tap asks the bridge and draws its answer', (
+    tester,
+  ) async {
+    // The page's whole loop: the button's callback asks the model, the model
+    // asks the bridge through its client, and the bridge's answer is what the
+    // tab then draws. It runs inside `runAsync` because the fixture bridge is
+    // a real socket that a widget test's own clock never drives
+    // (test/ui/pulls/fix_dispatch_test.dart does the same for a dispatch).
+    final fixture = (await tester.runAsync(
+      () => ModelFixture.start([
+        FixtureHost(
+          name: 'local',
+          projects: [project('/home/u/alpha')],
+          agents: [agent(id: 'a-1', project: '/home/u/alpha')],
+        ),
+      ]),
+    ))!;
+    await tester.runAsync(() => fixture.refresh());
+
+    final bridge = fixture.bridges['local']!;
+    const json = {'content-type': 'application/json'};
+    bridge
+      ..reply(
+        'GET',
+        '/api/projects/settings',
+        FakeReply(
+          200,
+          headers: const {...json, 'etag': '"v1"'},
+          body: jsonEncode(
+            contract.ProjectSettings.fromJson({
+              'workspace': 'alpha',
+              'intake': {'repoId': 'repo-1'},
+            }).toJson(),
+          ),
+        ),
+      )
+      ..reply(
+        'GET',
+        '/api/projects/health',
+        FakeReply(
+          200,
+          headers: json,
+          body: jsonEncode(
+            contract.ProjectHealth.fromJson({
+              'gateRunnable': 'yes',
+              'mirrorFresh': <Object?>[],
+              'orphanWorktrees': <Object?>[],
+              'trust': 'trusted',
+              'verify': {'build': 'go build ./...', 'test': ''},
+            }).toJson(),
+          ),
+        ),
+      )
+      ..reply(
+        'POST',
+        '/api/repos/repo-1/discover',
+        FakeReply(
+          200,
+          headers: json,
+          body: jsonEncode(
+            contract.DiscoveryReport.fromJson({
+              'repoId': 'repo-1',
+              'forge': 'github',
+              'status': 'ok',
+              'branch': 'main',
+              'revision': 'abc1234f',
+              'capabilities': [
+                {
+                  'key': 'forge_metadata',
+                  'state': 'supported',
+                  'detail': 'It answered',
+                },
+              ],
+              'facts': <Object?>[],
+              'recommended': <Object?>[],
+              'gaps': <Object?>[],
+            }).toJson(),
+          ),
+        ),
+      );
+
+    // The page's own client over that bridge: the one the shell wires.
+    final client = fixture.clientFor('local');
+    final model = ProjectModel(
+      root: '/home/u/alpha',
+      name: 'alpha',
+      now: () => _now,
+      read: () => client.projectSettings('/home/u/alpha'),
+      write: (settings, etag) =>
+          client.putProjectSettings('/home/u/alpha', settings, etag: etag),
+      readHealth: () => client.projectHealth('/home/u/alpha'),
+      readRuns: () async => const <contract.RunListEntry>[],
+      discover: (repoID) => client.discoverRepo(repoID),
+    );
+    addTearDown(model.dispose);
+
+    await tester.runAsync(() async {
+      await model.load();
+      await model.loadHealth();
+    });
+    await _pumpTall(
+      tester,
+      ProjectPage(model: model, initialTab: 3, now: _now),
+    );
+    await tester.pump();
+    expect(find.text('Run discovery'), findsOneWidget);
+
+    // The tap posts a real request, so the test waits for its answer instead
+    // of for a clock it controls.
+    await tester.runAsync(() async {
+      await tester.tap(find.text('Run discovery'));
+      for (var i = 0; i < 200 && model.discovery == null; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+    });
+    await tester.pump();
+
+    expect(model.discoveryError, isNull);
+    expect(model.discovery, isNotNull);
+    expect(
+      bridge.requests.any(
+        (request) =>
+            request.method == 'POST' &&
+            request.uri == '/api/repos/repo-1/discover',
+      ),
+      isTrue,
+      reason: 'the tap reached the bridge',
+    );
+    expect(find.text('DISCOVERY REPORT'), findsOneWidget);
+    expect(find.text('forge_metadata'), findsOneWidget);
+    expect(find.text('supported'), findsOneWidget);
   });
 }

@@ -92,12 +92,15 @@ settled here, the deviations from its letter, and what is not done.
 - **The Automations tab is a summary and a link.** The place exists (F7), so the
   tab states what the project configured and offers the way there rather than
   embedding a second editor.
-- **The end-to-end is a model-level flow test**, for the reason F6 plan 1
-  recorded: `integration_test` needs a Linux device toolchain this machine does
-  not have, and a widget test cannot host the flow, because a request posted
-  from a tapped callback runs in the test's fake-async zone where the fixture
-  bridge's real HTTP never completes. `test/ui/factory/f6_2_e2e_test.dart`
-  drives both flows; the drawing and the actions are covered by
+- **The end-to-end is a model-level flow test**, because `integration_test`
+  needs a Linux device toolchain this machine does not have. A widget test does
+  host the loop a tap starts: `tester.runAsync` lets the fixture bridge's real
+  socket answer, which `planning_test.dart` uses for a snapshot and
+  `project_page_test.dart` for the discovery action — tap, model, bridge, and
+  the answer drawn. What the model-level flow adds is the sequences that cross
+  models and places: one plan through the planner's journal, one review sheet,
+  and the approval the store opens as a work item. `test/ui/factory/
+  f6_2_e2e_test.dart` drives both; the drawing and the actions are covered by
   `planning_test.dart`, `handoff_sheet_test.dart`, `run_model_test.dart`,
   `project_model_test.dart` and `project_page_test.dart`.
 

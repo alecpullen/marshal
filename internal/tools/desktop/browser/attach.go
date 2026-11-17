@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -110,10 +111,30 @@ func (b *AttachBackend) NewPage(ctx context.Context, opts PageOptions) (PageHand
 	// user's session may already be running in it — so a requested viewport is
 	// resized in place, best-effort: a context that refuses the size leaves the
 	// page on the size the browser already had rather than failing creation.
-	if opts.Viewport != nil && opts.Viewport.Width > 0 && opts.Viewport.Height > 0 {
-		_ = page.SetViewport(ctx, *opts.Viewport)
+	// The exception is the device scale factor, which is a context option this
+	// page was created without: swallowing that refusal would leave the caller
+	// believing the factor took effect, so it is reported instead.
+	if err := applyAttachedViewport(ctx, page, opts.Viewport); err != nil {
+		return nil, err
 	}
 	return page, nil
+}
+
+// applyAttachedViewport applies a requested viewport to a page in the user's
+// attached browser. A resize is best-effort; a device scale factor the page's
+// context cannot take is an error the caller has to read, because attach mode
+// can never honour it.
+func applyAttachedViewport(ctx context.Context, page PageHandle, v *Viewport) error {
+	if v == nil || v.Width <= 0 || v.Height <= 0 {
+		return nil
+	}
+	if err := page.SetViewport(ctx, *v); err != nil {
+		if errors.Is(err, ErrViewportNeedsRecreate) {
+			_ = page.Close()
+			return fmt.Errorf("browser: an attached page cannot apply device_scale_factor %g; omit it", v.DeviceScaleFactor)
+		}
+	}
+	return nil
 }
 
 func (b *AttachBackend) Close() error {

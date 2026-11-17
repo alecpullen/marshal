@@ -27,7 +27,7 @@ func NewSession(backend BrowserBackend) *Session {
 // Page returns the session's page, creating it with opts when there is none
 // yet. A live page is resized in place for a new viewport, but a different
 // device scale factor is a context option: the page is recreated with opts and
-// re-navigated to LastURL instead, so the caller keeps its document.
+// re-navigated to the document it was showing instead, so the caller keeps it.
 func (s *Session) Page(ctx context.Context, opts PageOptions) (PageHandle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -95,24 +95,33 @@ func (s *Session) createLocked(ctx context.Context, opts PageOptions) (PageHandl
 }
 
 // recreateLocked replaces the current page with one created for opts and
-// re-navigates it to lastURL: a recreation exists to change a context option,
-// and must not cost the caller the document it was reading. The caller holds
-// s.mu.
+// re-navigates it to the document the caller was reading: a recreation exists
+// to change a context option, and must not cost the caller that document. The
+// live page's URL is the truth — a click, a submit or a redirect can move the
+// page without this session hearing about it — and lastURL is the fallback for
+// a page whose URL cannot be read. The caller holds s.mu.
 func (s *Session) recreateLocked(ctx context.Context, opts PageOptions) (PageHandle, error) {
+	target := s.lastURL
 	if s.page != nil {
+		if liveURL, err := s.page.URL(ctx); err == nil && liveURL != "" {
+			target = liveURL
+		}
 		// Best-effort: the page is being replaced, so a failed close must not
 		// stop the replacement.
 		_ = s.page.Close()
 		s.page = nil
 		s.pageViewport = nil
 	}
+	// Record what the new page is navigated to, so a later recreation starts
+	// from the same document.
+	s.lastURL = target
 	page, err := s.createLocked(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
-	if s.lastURL != "" {
-		if err := page.Navigate(ctx, s.lastURL); err != nil {
-			return nil, fmt.Errorf("re-navigate to %s: %w", s.lastURL, err)
+	if target != "" {
+		if err := page.Navigate(ctx, target); err != nil {
+			return nil, fmt.Errorf("re-navigate to %s: %w", target, err)
 		}
 	}
 	return page, nil

@@ -116,6 +116,18 @@ func TestURLAllowedFileURL(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Fatalf("create symlink: %v", err)
 	}
+	scratch := filepath.Join(root, "scratch")
+	if err := os.MkdirAll(scratch, 0o755); err != nil {
+		t.Fatalf("create scratch dir: %v", err)
+	}
+	scratchFile := filepath.Join(scratch, "x.html")
+	if err := os.WriteFile(scratchFile, []byte("<html></html>"), 0o644); err != nil {
+		t.Fatalf("write scratch file: %v", err)
+	}
+	otherFile := filepath.Join(root, "other.html")
+	if err := os.WriteFile(otherFile, []byte("<html></html>"), 0o644); err != nil {
+		t.Fatalf("write other file: %v", err)
+	}
 
 	fileURL := func(path string) string {
 		return (&url.URL{Scheme: "file", Path: path}).String()
@@ -160,6 +172,55 @@ func TestURLAllowedFileURL(t *testing.T) {
 		}
 		if err := urlAllowed(fileURL(inside), nil, []string{resolved}, root); err == nil {
 			t.Fatal("denylist should block the resolved path")
+		}
+	})
+
+	t.Run("denylist matches a workspace-relative entry", func(t *testing.T) {
+		// A user writes the workspace-relative form; it must block the file it
+		// names, as the analogous http prefix would.
+		if err := urlAllowed(fileURL(scratchFile), nil, []string{"scratch/**"}, root); err == nil {
+			t.Fatal("a workspace-relative denylist entry should block scratch/x.html")
+		}
+	})
+
+	t.Run("workspace-relative denylist spares a file outside it", func(t *testing.T) {
+		if err := urlAllowed(fileURL(otherFile), nil, []string{"scratch/**"}, root); err != nil {
+			t.Fatalf("scratch/** must not block a file outside scratch/: %v", err)
+		}
+	})
+
+	t.Run("percent-encoded traversal is blocked", func(t *testing.T) {
+		// The escape is spelled %2e%2e so it survives the URL as written; the
+		// path it resolves to still lands outside the workspace.
+		encoded := "file://" + filepath.ToSlash(root) + "/%2e%2e/outside.html"
+		if err := urlAllowed(encoded, nil, nil, root); err == nil {
+			t.Fatal("a percent-encoded .. escape should be blocked")
+		}
+	})
+
+	t.Run("a symlinked workspace root still allows a file inside it", func(t *testing.T) {
+		realRoot := filepath.Join(base, "realws")
+		if err := os.MkdirAll(realRoot, 0o755); err != nil {
+			t.Fatalf("create real workspace root: %v", err)
+		}
+		realFile := filepath.Join(realRoot, "page.html")
+		if err := os.WriteFile(realFile, []byte("<html></html>"), 0o644); err != nil {
+			t.Fatalf("write real workspace file: %v", err)
+		}
+		linkRoot := filepath.Join(base, "ws-link")
+		if err := os.Symlink(realRoot, linkRoot); err != nil {
+			t.Fatalf("create workspace root symlink: %v", err)
+		}
+		// Both sides resolve, so the file is inside the root however it is
+		// spelled.
+		if err := urlAllowed(fileURL(filepath.Join(linkRoot, "page.html")), nil, nil, linkRoot); err != nil {
+			t.Fatalf("a file inside a symlinked workspace root should be allowed: %v", err)
+		}
+	})
+
+	t.Run("a nonexistent path fails closed", func(t *testing.T) {
+		if err := urlAllowed(fileURL(filepath.Join(root, "missing.html")), nil, nil, root); err == nil {
+			t.Fatal("a path that does not exist should be blocked")
 		}
 	})
 }

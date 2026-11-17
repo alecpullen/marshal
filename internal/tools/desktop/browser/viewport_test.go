@@ -73,6 +73,48 @@ func TestDeviceScaleFactorRecreatesAndRenavigates(t *testing.T) {
 	}
 }
 
+// TestRecreateUsesLiveURLWhenThePageMoved: a click, a submit or a redirect can
+// move the page without the session hearing about it, so a recreation must
+// re-navigate to where the page actually is, not to the last URL the session
+// was told about.
+func TestRecreateUsesLiveURLWhenThePageMoved(t *testing.T) {
+	backend := &FakeBackend{}
+	page := &FakePage{URLVal: "https://example.com/a"}
+	backend.Page = page
+	s := NewSession(backend)
+
+	if _, err := s.Page(context.Background(), PageOptions{Viewport: &Viewport{Width: 800, Height: 600}}); err != nil {
+		t.Fatalf("Page: %v", err)
+	}
+	if err := s.Navigate(context.Background(), "https://example.com/a"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	// A click moved the page on; the session never learned the new URL.
+	page.URLVal = "https://example.com/b"
+	page.NavigatedTo = ""
+
+	if _, err := s.Page(context.Background(), PageOptions{Viewport: &Viewport{Width: 800, Height: 600, DeviceScaleFactor: 2}}); err != nil {
+		t.Fatalf("Page with new scale factor: %v", err)
+	}
+	if got, want := page.NavigatedTo, "https://example.com/b"; got != want {
+		t.Fatalf("recreated page navigated to %q, want the live URL %q", got, want)
+	}
+	if got, want := s.LastURL(), "https://example.com/b"; got != want {
+		t.Fatalf("LastURL = %q, want the live URL %q", got, want)
+	}
+
+	// The session is truthful now, so a second recreation stays on the same
+	// document even when the page's own URL cannot be read.
+	page.URLVal = ""
+	page.NavigatedTo = ""
+	if _, err := s.Page(context.Background(), PageOptions{Viewport: &Viewport{Width: 800, Height: 600}}); err != nil {
+		t.Fatalf("Page with reverted scale factor: %v", err)
+	}
+	if got, want := page.NavigatedTo, "https://example.com/b"; got != want {
+		t.Fatalf("second recreation navigated to %q, want %q from lastURL", got, want)
+	}
+}
+
 // TestSetViewportErrorFallsBackToRecreate: when the page reports that the
 // viewport cannot be applied in place, the session recreates and re-navigates
 // rather than surfacing the sentinel to the caller.

@@ -333,7 +333,7 @@ func (ts *toolSet) screenshotTool() registry.Tool {
 			`"selector":{"type":"string","description":"CSS selector to clip the capture to"},` +
 			`"viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1}},"required":["width","height"],"additionalProperties":false},` +
 			`"device_scale_factor":{"type":"number","exclusiveMinimum":0},` +
-			`"settle_ms":{"type":"integer","minimum":0},` +
+			`"settle_ms":{"type":"integer","minimum":0,"maximum":5000},` +
 			`"format":{"type":"string","enum":["png","jpeg"]},` +
 			`"quality":{"type":"integer","minimum":1,"maximum":100},` +
 			`"label":{"type":"string"}` +

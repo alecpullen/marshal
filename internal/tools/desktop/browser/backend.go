@@ -65,6 +65,12 @@ type ScreenshotOpts struct {
 
 const DefaultSettleMS = 150
 
+// MaxSettleMS ceilings the settle a caller can ask for: the wait runs on every
+// capture, so an unreasonable value must not be able to stall the tool. The
+// settle_ms schema carries the same bound, so an absurd value is rejected
+// rather than silently clamped.
+const MaxSettleMS = 5000
+
 // ErrViewportNeedsRecreate reports that the requested viewport cannot be applied
 // to the current page in place, because the device scale factor is a context
 // option. The caller recreates the page and re-navigates.

@@ -231,12 +231,23 @@ func (p *standalonePage) Screenshot(ctx context.Context, opts ScreenshotOpts) ([
 	if settle <= 0 {
 		settle = DefaultSettleMS
 	}
+	if settle > MaxSettleMS {
+		settle = MaxSettleMS
+	}
 	// document.fonts.ready resolves once the page's font loads have settled, so
 	// waiting on it keeps a late webfont out of the capture. A page without
-	// fonts — or without the API — is not a failure: the sleep below still
+	// fonts — or without the API — is not a failure: the wait below still
 	// gives a late layout its moment.
 	_, _ = p.page.Evaluate("() => document.fonts.ready", nil)
-	time.Sleep(time.Duration(settle) * time.Millisecond)
+	// The settle is cancellable: a capture the caller has given up on must not
+	// hold the tool for the rest of the wait.
+	timer := time.NewTimer(time.Duration(settle) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+	}
 
 	pwOpts := playwright.PageScreenshotOptions{
 		FullPage: playwright.Bool(opts.FullPage),
@@ -244,9 +255,11 @@ func (p *standalonePage) Screenshot(ctx context.Context, opts ScreenshotOpts) ([
 	}
 	if opts.Format == "jpeg" {
 		pwOpts.Type = playwright.ScreenshotTypeJpeg
-	}
-	if opts.Quality > 0 {
-		pwOpts.Quality = playwright.Int(opts.Quality)
+		// quality is a JPEG-only option: playwright rejects it for a PNG
+		// capture.
+		if opts.Quality > 0 {
+			pwOpts.Quality = playwright.Int(opts.Quality)
+		}
 	}
 	if opts.Selector != "" {
 		box, err := p.boundingBox(opts.Selector)

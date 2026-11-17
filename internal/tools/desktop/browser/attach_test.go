@@ -2,10 +2,45 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 )
+
+// TestApplyAttachedViewportRejectsDeviceScaleFactor: an attached page's context
+// scale factor is not this process's to set, so a request for a different one
+// must fail loudly instead of being swallowed — a swallowed refusal leaves the
+// session recording a viewport the page never took, and recreating it on every
+// later call.
+func TestApplyAttachedViewportRejectsDeviceScaleFactor(t *testing.T) {
+	page := &FakePage{SetViewportErr: ErrViewportNeedsRecreate}
+	err := applyAttachedViewport(context.Background(), page, &Viewport{Width: 800, Height: 600, DeviceScaleFactor: 2})
+	if err == nil {
+		t.Fatal("a device scale factor request against an attached page must fail")
+	}
+	for _, want := range []string{"device_scale_factor 2", "omit it", "attached"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
+	}
+	if !page.Closed {
+		t.Error("the page it could not configure should be closed, not left open in the user's browser")
+	}
+}
+
+// TestApplyAttachedViewportResizeIsBestEffort: a plain resize failure keeps
+// today's behaviour — the page stays on the size the browser already had
+// rather than failing creation.
+func TestApplyAttachedViewportResizeIsBestEffort(t *testing.T) {
+	page := &FakePage{SetViewportErr: errors.New("cannot resize")}
+	if err := applyAttachedViewport(context.Background(), page, &Viewport{Width: 800, Height: 600}); err != nil {
+		t.Fatalf("a resize failure should be best-effort, got: %v", err)
+	}
+	if page.Closed {
+		t.Error("a resize failure must not close the page")
+	}
+}
 
 func TestAttachBackendEmptyCDPURL(t *testing.T) {
 	_, err := NewAttachBackend("", 30*time.Second)

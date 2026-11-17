@@ -68,8 +68,17 @@ func fileAllowed(u *url.URL, denylist []string, workspaceRoot string) error {
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("navigation blocked: %q is outside the workspace", u.String())
 	}
+	relSlash := filepath.ToSlash(rel)
 	for _, entry := range denylist {
 		if permissions.Matches(entry, resolved) {
+			return fmt.Errorf("navigation blocked by policy (denylist): %s", u.String())
+		}
+		// A relative entry names a workspace-relative path — the form a user
+		// writes, "scratch/**" — and permissions.Matches anchors a pattern
+		// containing "/" at the subject's start, which the absolute path above
+		// can never be. Matching it against rel as well keeps a workspace entry
+		// able to block the file it names.
+		if !filepath.IsAbs(entry) && permissions.Matches(entry, relSlash) {
 			return fmt.Errorf("navigation blocked by policy (denylist): %s", u.String())
 		}
 	}

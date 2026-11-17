@@ -7,10 +7,10 @@ import 'fleet_store.dart';
 import 'thread_ref.dart';
 
 /// What an ask is (F2 decision 7). The fleet contract carries an agent's
-/// approval, an agent's question and an intake submission; F7 adds the review
-/// bot's held draft, which a person posts, sends to the author's agent or
-/// discards.
-enum AskKind { approval, question, intake, reviewDraft }
+/// approval, an agent's question and an intake submission; F5 adds a pull
+/// request's failed fix; F7 adds the review bot's held draft, which a person
+/// posts, sends to the author's agent or discards.
+enum AskKind { approval, question, intake, pull, reviewDraft }
 
 /// Where an answer has got to. A posted answer stays sending until the
 /// stream stops reporting the ask: a sent message is not shown as done work
@@ -31,6 +31,17 @@ enum AskActionKind {
   /// Declines the whole request. The agent reads `declined` as the sentinel
   /// answer for each of its questions, so every question is declined.
   decline,
+
+  /// Opens the pull request the ask names. It posts nothing: the screen
+  /// navigates, because a place is not something a model holds.
+  open,
+
+  /// Asks a worker again for the same failing check.
+  retry,
+
+  /// Closes the ask here. The bridge has no dismissal route, so the ask
+  /// comes back when the bridge reports a new one.
+  dismiss,
 }
 
 /// One answer an ask offers. The first is the primary one (§5: at most one
@@ -115,6 +126,7 @@ class Ask {
     required this.since,
     this.step,
     this.questions = const [],
+    this.pull,
     this.state = AskState.waiting,
     this.error,
   });
@@ -155,6 +167,11 @@ class Ask {
   /// When it was asked.
   final DateTime since;
 
+  /// The pull request's failed fix, when this is one (F5 decision 6): which
+  /// check, what became of it, what was tried, what it found and what the
+  /// person can do. Null for every other kind of ask.
+  final PullAsk? pull;
+
   final AskState state;
 
   /// Why the last answer failed, in the bridge's words.
@@ -171,6 +188,7 @@ class Ask {
     since: since,
     step: step,
     questions: questions,
+    pull: pull,
     state: state,
     error: error,
   );
@@ -200,6 +218,12 @@ class InboxModel extends ChangeNotifier {
   /// The review bot's held drafts, by host, as `showHeldDrafts` last reported
   /// them.
   final _drafts = <String, List<ReviewDraft>>{};
+
+  /// The pull request asks this app closed, by host, pull and the ask's own
+  /// time. The bridge has no dismissal route (F5 plan 1), so a dismissal is
+  /// the app's: the ask stays gone until the bridge reports a new one, which
+  /// carries a new time.
+  final _dismissals = <String>{};
   List<Ask> _asks = const [];
 
   /// Every ask, oldest first.
@@ -230,6 +254,26 @@ class InboxModel extends ChangeNotifier {
   }) async {
     final key = _key(ask);
     if (ask.state == AskState.sending) return;
+    if (ask.kind == AskKind.pull) {
+      switch (action.kind) {
+        case AskActionKind.open:
+          // Opening a pull request is the screen's, not this model's: a
+          // place is not something a model holds.
+          return;
+        case AskActionKind.dismiss:
+          final pull = ask.pull!;
+          _dismissals.add(_pullKey(ask.host, pull));
+          _rebuild();
+          return;
+        case AskActionKind.retry:
+          break;
+        case AskActionKind.option:
+        case AskActionKind.reply:
+        case AskActionKind.answer:
+        case AskActionKind.decline:
+          return;
+      }
+    }
     // A question's body is built here, before the card is marked as sending:
     // an answer with nothing in it is not worth a round trip, and a partial
     // one is worse than none — the agent reads it as every question declined
@@ -243,6 +287,17 @@ class InboxModel extends ChangeNotifier {
     try {
       await _post(ask, action, body);
     } on BridgeFailure catch (failure) {
+      if (failure.status == 409 && ask.kind == AskKind.pull) {
+        // A worker is already on this check: the bridge refuses a second
+        // dispatch with 409, which is the same thing the card's own fix
+        // control means by it. The ask did not fail — it still waits — so it
+        // goes back to waiting and the fleet is read again, so what it shows
+        // is what the bridge holds rather than the retry that was refused.
+        _overlays.remove(key);
+        await _store.refresh(ask.host);
+        _reflow();
+        return;
+      }
       _overlays[key] = (
         state: AskState.failed,
         error: describeFailure(failure),
@@ -272,6 +327,11 @@ class InboxModel extends ChangeNotifier {
     switch (action.kind) {
       case AskActionKind.decline:
         return const Answers(declined: true);
+      case AskActionKind.open:
+      case AskActionKind.retry:
+      case AskActionKind.dismiss:
+        // A pull request's ask offers these; a question's does not.
+        return null;
       case AskActionKind.answer:
         final questions = ask.questions;
         if (answers == null || answers.length != questions.length) {
@@ -330,6 +390,13 @@ class InboxModel extends ChangeNotifier {
           case _discardLabel:
             await client.discardReviewDraft(ask.id);
         }
+      case AskKind.pull:
+        // A pull request's ask was answered in [answer]: open and dismiss post
+        // nothing, so only a retry reaches here.
+        await client.fixPull(
+          ask.id,
+          PullFixRequest(check: ask.pull?.check ?? ''),
+        );
     }
   }
 
@@ -443,14 +510,72 @@ class InboxModel extends ChangeNotifier {
         if (submission == null) return null;
         return _askForIntake(host, submission, _time(item.at));
       case InboxItemKind.inboxItemPull:
-        // A pull item carries a `PullAsk` — the fix a failing check asked for
-        // — and this build has no row to answer it from: the pulls pages
-        // arrive with F5.2.
-        return null;
+        final pull = item.pull;
+        if (pull == null) return null;
+        if (_dismissals.contains(_pullKey(host, pull))) return null;
+        return _askForPull(host, pull, _time(item.at));
       case InboxItemKind.unknown:
         return null;
     }
   }
+
+  /// Where a pull request ask sits in [_dismissals]: the host, the record and
+  /// the time the bridge wrote the ask at. A new ask about the same pull
+  /// request carries a new time, so it shows again.
+  static String _pullKey(String host, PullAsk pull) =>
+      '$host|${pull.pull}|${pull.at ?? 0}';
+
+  /// One pull request's failed fix as an ask (F5 decision 6): the pull
+  /// request and the check, what the worker tried, what it found, and the
+  /// three things a person can do with it.
+  Ask _askForPull(String host, PullAsk pull, DateTime since) {
+    final number = pull.pull.split('#').last;
+    final what = _whatHappened(pull.outcome);
+    return Ask(
+      host: host,
+      id: pull.pull,
+      kind: AskKind.pull,
+      thread: null,
+      title: '#$number · $what',
+      body: _pullBody(pull),
+      actions: _pullActions,
+      since: since,
+      pull: pull,
+    );
+  }
+
+  /// What became of a fix, in the design system's words (§8: say what
+  /// happened, not what the system is).
+  static String _whatHappened(String outcome) => switch (outcome) {
+    'not_reproduced' => 'the worker did not reproduce it',
+    'gave_up' => 'the worker gave up',
+    'forbidden_change' => 'the fix was refused as a forbidden change',
+    'stopped' => 'the fix was stopped',
+    'head_moved' => 'the head moved before the worker started',
+    'investigated' => 'the worker investigated it',
+    _ => 'the fix did not finish',
+  };
+
+  /// The context a pull request ask needs: the check, what was tried, what it
+  /// found, and what the person can do next.
+  static String _pullBody(PullAsk pull) => [
+    if (pull.check.trim().isNotEmpty) pull.check.trim(),
+    if ((pull.tried ?? '').trim().isNotEmpty) pull.tried!.trim(),
+    if ((pull.finding ?? '').trim().isNotEmpty) pull.finding!.trim(),
+    if ((pull.action ?? '').trim().isNotEmpty) pull.action!.trim(),
+  ].join(' · ');
+
+  static const _open = 'Open';
+  static const _retry = 'Try again';
+  static const _dismissPull = 'Dismiss';
+
+  /// A failed fix offers the three things worth doing with it: open the pull
+  /// request, ask a worker again, or close the ask.
+  static const _pullActions = [
+    AskAction(_open, primary: true, kind: AskActionKind.open),
+    AskAction(_retry, kind: AskActionKind.retry),
+    AskAction(_dismissPull, kind: AskActionKind.dismiss),
+  ];
 
   /// One agent's parked request as an ask.
   Ask _askForPending(

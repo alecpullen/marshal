@@ -8,6 +8,8 @@ import 'src/model/fleet_store.dart';
 import 'src/model/composer_model.dart';
 import 'src/model/inbox_model.dart';
 import 'src/model/new_work_model.dart';
+import 'src/model/pulls_model.dart';
+import 'src/model/pulls_store.dart';
 import 'src/model/stack_store.dart';
 import 'src/ui/kit/kit.dart';
 import 'src/ui/shell/shell.dart';
@@ -28,11 +30,19 @@ Future<void> main() async {
     client: (name) =>
         hosts.hosts.firstWhere((host) => host.name == name).client,
   );
+  // The pull requests read the same hosts, follow the same fleet streams, and
+  // post through the same clients (F5).
+  final pulls = PullsModel(
+    PullsStore(hosts, store),
+    client: (name) =>
+        hosts.hosts.firstWhere((host) => host.name == name).client,
+  );
   runApp(
     EmberApp(
       home: Studio(
         store: store,
         inbox: inbox,
+        pulls: pulls,
         read: hosts.discover,
         // A thread place opens its own session's transcript on the client
         // that reaches its host (F3): the same client the inbox answers with.

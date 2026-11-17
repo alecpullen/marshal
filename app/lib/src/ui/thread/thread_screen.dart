@@ -4,12 +4,15 @@ import 'package:flutter/services.dart';
 
 import '../../model/inbox_model.dart' as asks_model;
 import '../../model/inspector_state.dart';
+import '../../model/pulls_model.dart';
 import '../../model/selection.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
 import '../inspector/inspector.dart';
 import '../kit/kit.dart';
+import '../pulls/pull_facts.dart';
+import 'review_head.dart';
 import 'thread_header.dart';
 import 'transcript.dart';
 
@@ -85,6 +88,10 @@ class ThreadScreen extends StatefulWidget {
     this.asks = const [],
     this.onAnswer,
     this.now,
+    this.pull,
+    this.pullActions,
+    this.onMerge,
+    this.onSendBack,
   });
 
   /// The thread this screen is showing.
@@ -145,6 +152,21 @@ class ThreadScreen extends StatefulWidget {
 
   /// What a waiting time is measured against.
   final DateTime? now;
+
+  /// The pull request this thread shipped, when it shipped one: a ready one
+  /// opens with the review head (F5 decision 13), a failing one with its card.
+  final PullView? pull;
+
+  /// The failing card's actions, built by the host that holds the model: one
+  /// click dispatches a worker, so the card cannot build them itself.
+  final PrActions? pullActions;
+
+  /// Merges the pull request. The host confirms first, naming it and its base.
+  final VoidCallback? onMerge;
+
+  /// Steers this thread's own agent with what the person says. Null when the
+  /// agent has ended, and the button then says so instead of doing nothing.
+  final VoidCallback? onSendBack;
 
   @override
   State<ThreadScreen> createState() => _ThreadScreenState();
@@ -370,10 +392,64 @@ class _ThreadScreenState extends State<ThreadScreen> {
     );
   }
 
+  /// The pull request this thread shipped, above its conversation (F5
+  /// decision 13): the review head when it is ready, the failing card when it
+  /// failed. It scrolls within its own band, so a long report never eats the
+  /// conversation.
+  Widget _pullHeader() {
+    final pull = widget.pull;
+    if (pull == null) return const SizedBox.shrink();
+    final Widget head;
+    switch (pull.group) {
+      case PullGroup.ready:
+        head = ReviewHead(
+          pull: pull,
+          now: widget.now ?? DateTime.now(),
+          onReviewChanges: _reviewChanges,
+          onMerge: widget.onMerge,
+          onSendBack: widget.onSendBack,
+        );
+      case PullGroup.failing:
+        head = PrCard(
+          pull: pullFactsOf(pull, now: widget.now ?? DateTime.now()),
+          actions: widget.pullActions ?? const PrActions(),
+        );
+      case PullGroup.beingFixed:
+      case PullGroup.inProgress:
+      case PullGroup.unavailable:
+        // Nothing to review and nothing to fix: the card is the Pull requests
+        // place's, and a thread that opens with one would say nothing new.
+        return const SizedBox.shrink();
+    }
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: Layout.inspector),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(
+          Layout.pageSide,
+          Space.s12,
+          Layout.pageSide,
+          0,
+        ),
+        child: head,
+      ),
+    );
+  }
+
+  /// Review changes expands the inspector on Changes (decision 13).
+  void _reviewChanges() {
+    final inspector = widget.inspector;
+    if (inspector == null) return;
+    inspector.chooseTab(InspectorTab.changes);
+    if (inspector.width == InspectorWidth.collapsed) {
+      inspector.setWidth(InspectorWidth.docked);
+    }
+  }
+
   /// The transcript and the composer: what the thread is for.
   Widget _conversation(StackStore store) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
+      _pullHeader(),
       Expanded(
         child: _rowsOf(store).isEmpty
             ? StateMessage.empty(

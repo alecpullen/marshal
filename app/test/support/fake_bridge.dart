@@ -102,6 +102,7 @@ class FakeBridge {
 
   final String? _socketPath;
   final _routes = <String, FakeReply>{};
+  final _queued = <String, List<FakeReply>>{};
   final _streams = <String, _Scripted>{};
   final _requests = <RecordedRequest>[];
 
@@ -140,6 +141,13 @@ class FakeBridge {
   void reply(String method, String path, FakeReply reply) {
     _routes['$method $path'] = reply;
   }
+
+  /// Answers the next request to `METHOD PATH` with [reply], then falls back
+  /// to the route [reply] set. It is how a test scripts an answer that
+  /// changes between two requests of the same route — a conditional write
+  /// refused with 412 and then accepted.
+  void replyOnce(String method, String path, FakeReply reply) =>
+      _queued.putIfAbsent('$method $path', () => []).add(reply);
 
   /// Answers `METHOD PATH` with a body a test writes to, frame by frame.
   FakeStream stream(
@@ -193,7 +201,13 @@ class FakeBridge {
         return;
       }
 
-      final reply = _routes[key];
+      // A scripted reply comes first, once, and the route's own answer after
+      // it: a conditional write that is refused and then accepted needs two
+      // different answers to the same route.
+      final queued = _queued[key];
+      final reply = queued != null && queued.isNotEmpty
+          ? queued.removeAt(0)
+          : _routes[key];
       if (reply == null) {
         response.statusCode = 404;
         response.headers.contentType = ContentType.json;

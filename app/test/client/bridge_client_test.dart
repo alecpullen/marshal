@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -315,4 +316,145 @@ void main() {
     expect(event.data, '{"kind":"activity"}');
     expect(fake.requests.last.uri, '/api/events');
   });
+
+  test('an automatic-fixing write names the ETag it read', () async {
+    // The settings route is a conditional write: the ETag a GET returns is
+    // what names the version the PUT was decided against, so a save that read
+    // the document before another one wrote it is refused rather than
+    // silently overwriting it (web/bridge/projects.go).
+    final tag = '"${'a' * 64}"';
+    fake
+      ..reply(
+        'GET',
+        '/api/projects/settings',
+        FakeReply(
+          200,
+          headers: {'content-type': 'application/json', 'etag': tag},
+          body:
+              '{"workspace":"alpha","automations":'
+              '{"ciFixer":{"enabled":true},"autoFix":false}}',
+        ),
+      )
+      ..reply(
+        'PUT',
+        '/api/projects/settings',
+        const FakeReply(200, body: '{"workspace":"alpha"}'),
+      );
+
+    await client.setProjectAutoFix('/home/u/alpha', true);
+
+    final put = fake.requests.lastWhere((r) => r.method == 'PUT');
+    expect(put.headers['if-match'], tag);
+    expect(put.uri, contains('root=%2Fhome%2Fu%2Falpha'));
+    final body = jsonDecode(put.body) as Map<String, dynamic>;
+    expect(body['workspace'], 'alpha', reason: 'the document is sent whole');
+    expect((body['automations'] as Map)['ciFixer'], {
+      'enabled': true,
+    }, reason: 'the other automations survive');
+    expect((body['automations'] as Map)['autoFix'], isTrue);
+  });
+
+  test('a settings write that loses the race applies its change to the '
+      'winner and retries once', () async {
+    final read = '"${'1' * 64}"';
+    final won = '"${'2' * 64}"';
+    fake
+      // The document as this save read it...
+      ..replyOnce(
+        'GET',
+        '/api/projects/settings',
+        FakeReply(
+          200,
+          headers: {'content-type': 'application/json', 'etag': read},
+          body: '{"automations":{"ciFixer":{"enabled":false}}}',
+        ),
+      )
+      // ...and, when the refusal sends it back to read again, the value that
+      // won and the ETag naming it.
+      ..replyOnce(
+        'GET',
+        '/api/projects/settings',
+        FakeReply(
+          200,
+          headers: {'content-type': 'application/json', 'etag': won},
+          body:
+              '{"workspace":"beta","automations":'
+              '{"ciFixer":{"enabled":true}}}',
+        ),
+      )
+      // Another save got there first: 412, changing nothing.
+      ..replyOnce(
+        'PUT',
+        '/api/projects/settings',
+        const FakeReply(
+          412,
+          headers: {'content-type': 'application/json'},
+          body: '{"workspace":"beta"}',
+        ),
+      )
+      ..reply(
+        'PUT',
+        '/api/projects/settings',
+        const FakeReply(200, body: '{"workspace":"beta"}'),
+      );
+
+    await client.setProjectAutoFix('/home/u/alpha', true);
+
+    final puts = fake.requests.where((r) => r.method == 'PUT').toList();
+    expect(puts, hasLength(2), reason: 'it retries once, and no more');
+    expect(puts.first.headers['if-match'], read);
+    expect(puts.last.headers['if-match'], won);
+    final body = jsonDecode(puts.last.body) as Map<String, dynamic>;
+    expect(
+      body['workspace'],
+      'beta',
+      reason: 'the change is made to the document that won, not the stale one',
+    );
+    expect((body['automations'] as Map)['ciFixer'], {
+      'enabled': true,
+    }, reason: 'the save that won is not overwritten');
+    expect((body['automations'] as Map)['autoFix'], isTrue);
+  });
+
+  test(
+    'a settings write refused twice fails with the bridge’s answer',
+    () async {
+      final tag = '"${'c' * 64}"';
+      fake
+        ..reply(
+          'GET',
+          '/api/projects/settings',
+          FakeReply(
+            200,
+            headers: {'content-type': 'application/json', 'etag': tag},
+            body: '{"automations":{}}',
+          ),
+        )
+        ..reply(
+          'PUT',
+          '/api/projects/settings',
+          FakeReply(
+            412,
+            headers: {'etag': tag, 'content-type': 'application/json'},
+            body: '{"automations":{"ciFixer":{"enabled":true}}}',
+          ),
+        );
+
+      await expectLater(
+        client.setProjectAutoFix('/home/u/alpha', true),
+        throwsA(
+          isA<BridgeFailure>().having(
+            (failure) => failure.status,
+            'status',
+            412,
+          ),
+        ),
+      );
+      expect(
+        fake.requests.where((r) => r.method == 'PUT'),
+        hasLength(2),
+        reason: 'one retry is all a lost race gets',
+      );
+    },
+  );
 }

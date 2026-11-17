@@ -294,6 +294,7 @@ class _PinnedAsk extends StatelessWidget {
           model.AskKind.approval => AskKind.approval,
           model.AskKind.question => AskKind.question,
           model.AskKind.intake => AskKind.intake,
+          model.AskKind.pull => AskKind.pull,
           model.AskKind.reviewDraft => AskKind.review,
         },
         title: ask.title,

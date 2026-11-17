@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../../model/age.dart';
 import '../../model/composer_model.dart';
 import '../../model/new_work_model.dart';
@@ -7,12 +9,16 @@ import '../../model/inbox_model.dart' as inbox;
 import '../../model/nav_model.dart';
 import '../../model/overview_model.dart' show buildOverview;
 import '../../model/place.dart';
+import '../../model/pulls_model.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
 import '../inbox/inbox.dart' show Inbox;
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
+import '../pulls/fix_control.dart';
+import '../pulls/merge_control.dart';
+import '../pulls/pulls_place.dart';
 import '../sections/unsaved_guard.dart';
 import '../new_work/new_work_dialog.dart';
 import '../thread/thread_composer.dart';
@@ -271,6 +277,7 @@ class Studio extends StatefulWidget {
     super.key,
     required this.store,
     required this.inbox,
+    this.pulls,
     this.read,
     this.threadStore,
     this.composerFor,
@@ -280,6 +287,11 @@ class Studio extends StatefulWidget {
 
   final FleetStore store;
   final InboxModel inbox;
+
+  /// The pull requests: their place, their ready count in the sidebar, and
+  /// the one click a failing card offers. Null leaves the place planned, so a
+  /// host that wires no bridge never draws one as working.
+  final PullsModel? pulls;
 
   /// Reads the fleet: discovery when the app starts, and again when a person
   /// asks.
@@ -346,7 +358,11 @@ class _StudioState extends State<Studio> {
       builder: (context, _) {
         final store = widget.store;
         final place = _place;
-        final nav = buildNavModel(place, store);
+        final nav = buildNavModel(
+          place,
+          store,
+          pullsReady: widget.pulls?.readyCount ?? 0,
+        );
         return Shell(
           nav: nav,
           hosts: store.hosts,
@@ -387,6 +403,7 @@ class _StudioState extends State<Studio> {
         overview: buildOverview(widget.store, widget.inbox),
         now: widget.store.now,
         hosts: widget.store.hosts,
+        pulls: widget.pulls?.views ?? const [],
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
@@ -395,10 +412,31 @@ class _StudioState extends State<Studio> {
     if (place.kind == PlaceKind.inbox) {
       return Inbox(
         asks: widget.inbox.asks,
+        pulls: widget.pulls?.views ?? const [],
         now: widget.store.now,
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
+      );
+    }
+    if (place.kind == PlaceKind.pulls) {
+      final pulls = widget.pulls;
+      // A host with no pull model has no index to draw: the place says which
+      // phase wires it rather than drawing an empty list (§7).
+      if (pulls == null) return plannedPlace(place, nav);
+      return PullsPlace(
+        groups: pulls.groups,
+        now: widget.store.now,
+        onRetry: _reread,
+        actionsFor: (context, pull) => pullCardActions(
+          context,
+          pull: pull,
+          model: pulls,
+          // Reviewing and opening the source land on the thread: its review
+          // head is where a pull request is read (decision 13).
+          review: _openThread(navigation, pull),
+          openSource: _openThread(navigation, pull),
+        ),
       );
     }
     if (place.kind == PlaceKind.thread) {
@@ -421,6 +459,7 @@ class _StudioState extends State<Studio> {
           ],
           onAnswer: widget.inbox.answer,
           now: widget.store.now,
+          pulls: widget.pulls,
         );
       }
       return plannedPlace(place, nav);
@@ -438,6 +477,16 @@ class _StudioState extends State<Studio> {
     }
     return null;
   }
+
+  /// Opens the thread a pull request came from, when the fleet still lists it.
+  /// Null leaves the card's button disabled rather than opening nothing.
+  VoidCallback? _openThread(PlaceNavigation navigation, PullView pull) {
+    final thread = pull.thread;
+    if (thread == null) return null;
+    return () => navigation.go(
+      Place(PlaceKind.thread, host: thread.host, id: thread.id),
+    );
+  }
 }
 
 /// One thread place: the store and the view state a thread's screen owns,
@@ -453,6 +502,7 @@ class _ThreadPlace extends StatefulWidget {
     this.asks = const [],
     this.onAnswer,
     this.now,
+    this.pulls,
   });
 
   final model.ThreadRef thread;
@@ -467,6 +517,10 @@ class _ThreadPlace extends StatefulWidget {
   final List<inbox.Ask> asks;
   final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
   final DateTime? now;
+
+  /// The pull requests this thread shipped: the review head or the failing
+  /// card at the top of its conversation (F5 decision 13).
+  final PullsModel? pulls;
 
   @override
   State<_ThreadPlace> createState() => _ThreadPlaceState();
@@ -523,11 +577,82 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
       asks: widget.asks,
       onAnswer: widget.onAnswer,
       now: widget.now,
+      pull: _pull,
+      pullActions: _pullActions(context),
+      onMerge: _mergeFor(context),
+      onSendBack: _pull == null || widget.pulls == null
+          ? null
+          : () => _sendBack(context),
       onNewWork: widget.newWorkFor == null ? null : () => _openNewWork(context),
       composer: composer == null
           ? null
           : ThreadComposer(model: composer, view: _view),
     );
+  }
+
+  /// The pull request this thread shipped, when it shipped one: the newest, so
+  /// a reopened pull request is the one at the head.
+  PullView? get _pull => widget.pulls?.forThread(widget.thread).firstOrNull;
+
+  /// The failing card's actions: the one click, the caret and the rest.
+  PrActions? _pullActions(BuildContext context) {
+    final pull = _pull;
+    final pulls = widget.pulls;
+    if (pull == null || pulls == null) return null;
+    return pullCardActions(context, pull: pull, model: pulls);
+  }
+
+  /// Merges the pull request, after the confirmation that names it.
+  ///
+  /// A factory item's merge is not offered: it needs the reviewed identity a
+  /// pull record does not carry (F6). The review head draws it disabled.
+  VoidCallback? _mergeFor(BuildContext context) {
+    final pull = _pull;
+    final pulls = widget.pulls;
+    if (pull == null || pulls == null || pull.fromFactoryItem) return null;
+    return () => unawaited(confirmMerge(context, pull: pull, model: pulls));
+  }
+
+  /// Sends the pull request back to this thread's own agent (decision 13).
+  /// The person's words reach a turn in flight as steering, and an idle agent
+  /// as the next thing it is asked to do.
+  Future<void> _sendBack(BuildContext context) async {
+    final pulls = widget.pulls;
+    if (pulls == null) return;
+    final e = Ember.of(context);
+    final controller = TextEditingController();
+    final words = await Sheet.show<String>(
+      context,
+      Sheet(
+        title: 'Send back to the agent',
+        actions: [
+          Btn.primary(
+            'Send it',
+            onTap: () => Navigator.maybePop(context, controller.text.trim()),
+          ),
+        ],
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Field(
+              label: 'What should change?',
+              controller: controller,
+              hint: 'Pin the clock in the fixture rather than widening it',
+            ),
+            const SizedBox(height: Space.s8),
+            Text(
+              'The agent that shipped this pull request reads it in this '
+              'thread.',
+              style: e.small.tint(e.muted),
+            ),
+          ],
+        ),
+      ),
+    );
+    final text = words?.trim() ?? '';
+    controller.dispose();
+    if (text.isEmpty) return;
+    await pulls.sendBack(_pull!, text: text);
   }
 }
 

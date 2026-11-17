@@ -12,7 +12,7 @@ import 'press.dart';
 import 'tip.dart';
 import 'vocabulary.dart';
 
-/// Where a pull request stands, as its card shows it.
+/// Where a pull request stands, as its card shows it (F5 decision 11).
 enum PrState {
   /// Every check passed; it waits for review.
   ready,
@@ -25,6 +25,10 @@ enum PrState {
 
   /// A worker took the failure and is on it.
   fixing,
+
+  /// The checks cannot be read at all, and the card says why. It is its own
+  /// state, never shown as passing (decision 15).
+  unavailable,
 }
 
 /// The facts a [PrCard] shows: one pull request against its current head.
@@ -44,6 +48,9 @@ class PullRequestFacts {
     required this.state,
     this.draft = false,
     this.failureTail,
+    required this.checkSummary,
+    this.sending = false,
+    this.dispatchError,
     required this.sourceKind,
     required this.sourceTitle,
   });
@@ -72,6 +79,19 @@ class PullRequestFacts {
   /// The last lines of the failing check's log.
   final String? failureTail;
 
+  /// The checks in one line, in the words the model built: "9 of 9 checks
+  /// passed", "1 failing: unit", "2 of 5 passed, the rest running", "Checks
+  /// unavailable: …". The card renders it and never re-derives it, so the one
+  /// sentence has one spelling (F5 decision 11).
+  final String checkSummary;
+
+  /// A dispatch for this pull request is in flight: the primary action is
+  /// acknowledged at once and shows as pending (§7), never as done work.
+  final bool sending;
+
+  /// Why the last dispatch was refused, in the bridge's words.
+  final String? dispatchError;
+
   /// The thread this pull request came from.
   final ThreadKind sourceKind;
   final String sourceTitle;
@@ -84,6 +104,7 @@ class PrActions {
   const PrActions({
     this.review,
     this.merge,
+    this.mergeNote,
     this.openOnForge,
     this.fix,
     this.fixChoices = const [],
@@ -95,6 +116,11 @@ class PrActions {
 
   final VoidCallback? review;
   final VoidCallback? merge;
+
+  /// Why Merge is drawn disabled, when it is disabled for a reason worth
+  /// saying. A merge the app cannot perform is drawn saying which phase
+  /// supplies it, not left as a button that would fail (§7).
+  final String? mergeNote;
   final VoidCallback? openOnForge;
 
   /// Fix with a worker: one click, no form.
@@ -175,6 +201,11 @@ class PrCard extends StatelessWidget {
         e.fg,
         'A worker is fixing the failure',
       ),
+      PrState.unavailable => (
+        CheckState.pending.icon,
+        e.muted,
+        'Checks unavailable',
+      ),
     };
     return Row(
       children: [
@@ -224,23 +255,19 @@ class PrCard extends StatelessWidget {
   );
 
   Widget _checks(Ember e) {
-    final total = pull.checks.length;
-    final passed = pull.checks
-        .where((c) => c.state == CheckState.passed)
-        .length;
-    final failed = pull.checks.where((c) => c.state == CheckState.failed);
-    final summary = failed.isNotEmpty
-        ? '${failed.length} failing: ${failed.map((c) => c.name).join(', ')}'
-        : passed == total
-        ? '$total of $total checks passed'
-        : '$passed of $total checks passed, the rest running';
+    final failed = pull.checks.any((c) => c.state == CheckState.failed);
+    final ink = switch (pull.state) {
+      PrState.failing || PrState.fixing when failed => e.err,
+      PrState.unavailable => e.muted,
+      _ => e.fg,
+    };
     return Wrap(
       spacing: Space.s8,
       runSpacing: Space.s4,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        CheckStrip(pull.checks),
-        Text(summary, style: failed.isNotEmpty ? e.body.tint(e.err) : e.body),
+        if (pull.checks.isNotEmpty) CheckStrip(pull.checks),
+        Text(pull.checkSummary, style: e.body.tint(ink)),
         Text('· ${pull.reviews}', style: e.body.tint(e.muted)),
       ],
     );
@@ -284,19 +311,26 @@ class PrCard extends StatelessWidget {
     final buttons = <Widget>[
       if (pull.state == PrState.ready) ...[
         Btn.primary('Review', onTap: actions.review),
-        Btn('Merge', onTap: actions.merge),
+        // A merge this build cannot perform is drawn disabled with the reason,
+        // never as a button that would fail (F5: a factory item's merge needs
+        // the reviewed identity F6's work items carry).
+        if (actions.mergeNote case final note?)
+          Tip(message: note, child: const Btn('Merge'))
+        else
+          Btn('Merge', onTap: actions.merge),
       ] else if (pull.state == PrState.failing) ...[
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Tip(
-              message:
-                  'A worker reproduces the failure, fixes it and pushes to '
-                  'this pull request',
+              message: pull.sending
+                  ? 'The dispatch is on its way to the bridge'
+                  : 'A worker reproduces the failure, fixes it and pushes to '
+                        'this pull request',
               child: Btn.primary(
-                'Fix with a worker',
+                pull.sending ? 'Sending…' : 'Fix with a worker',
                 icon: Glyphs.wrench,
-                onTap: actions.fix,
+                onTap: pull.sending ? null : actions.fix,
               ),
             ),
             if (actions.fixChoices.isNotEmpty) ...[
@@ -306,7 +340,7 @@ class PrCard extends StatelessWidget {
                 anchor: (context, toggle) => IconBtn(
                   Glyphs.chevron_down,
                   tooltip: 'Other ways to send this',
-                  onTap: toggle,
+                  onTap: pull.sending ? null : toggle,
                 ),
               ),
             ],
@@ -346,34 +380,50 @@ class PrCard extends StatelessWidget {
       ),
     );
 
-    return LayoutBuilder(
-      builder: (context, box) {
-        final row = Wrap(
-          spacing: Space.s8,
-          runSpacing: Space.s8,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: buttons,
-        );
-        if (box.maxWidth < Layout.reading) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              row,
-              const SizedBox(height: Space.s12),
-              source,
-            ],
-          );
-        }
-        return Row(
-          children: [
-            row,
-            const SizedBox(width: Space.s16),
-            Expanded(
-              child: Align(alignment: Alignment.centerRight, child: source),
-            ),
-          ],
-        );
-      },
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // A dispatch the bridge refused keeps the card as it was and says why;
+        // the button above is the retry (§7).
+        if (pull.dispatchError != null) ...[
+          Text(
+            pull.dispatchError!,
+            style: e.small.tint(e.err),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: Space.s8),
+        ],
+        LayoutBuilder(
+          builder: (context, box) {
+            final row = Wrap(
+              spacing: Space.s8,
+              runSpacing: Space.s8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: buttons,
+            );
+            if (box.maxWidth < Layout.reading) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  row,
+                  const SizedBox(height: Space.s12),
+                  source,
+                ],
+              );
+            }
+            return Row(
+              children: [
+                row,
+                const SizedBox(width: Space.s16),
+                Expanded(
+                  child: Align(alignment: Alignment.centerRight, child: source),
+                ),
+              ],
+            );
+          },
+        ),
+      ],
     );
   }
 }

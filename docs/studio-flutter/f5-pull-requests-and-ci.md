@@ -133,8 +133,8 @@ failing check on a given pull request to be fixed.
     "A worker is on it" with Watch and Stop.
 12. **One click.** Fix with a worker posts the dispatch with no further
     input. The caret beside it is a `Menu` with exactly: Investigate only;
-    Fix with a note; Choose the worker; Always fix failures automatically
-    in this project. The last changes the setting in decision 7 and says so.
+    Fix with a note; Always fix failures automatically in this project. The
+    last changes the setting in decision 7 and says so.
 13. **The review head.** A thread with a ready pull request opens with it
     at the top of the conversation: title and head, each check by name,
     reviews, the narrated report when there is one, then Review changes,
@@ -303,3 +303,90 @@ only. Everything is under `web/`, and `TestWebIsStdlibOnly` still holds.
   opens no pull request. When one of its pulls ships, the exit path records it
   with origin automation `review-bot`, which is `pulls.go`'s
   `recordExitPull`.
+
+## Implementation record (F5.2)
+
+Landed by [plan 2](plans/2026-11-17-f5-2-pulls-app-plan.md): the app half.
+Everything is under `app/`, and the boundaries hold —
+`TestTUIStaysOnTheClientSeam`'s `ui/ never imports client/` caught the first
+draft of the card mapping and it was moved into `PullView`.
+
+- **Client and model.** `BridgeClient` gained `pulls`, `pull`, `fixPull`,
+  `stopPullFix`, `mergeAgent` and `mergeFactoryItem`, plus
+  `setProjectAutoFix`, which reads a project's whole settings document and
+  writes it back with `automations.autoFix` changed: the settings route
+  replaces the document whole, so sending one key would drop every other
+  setting. `PullsStore` is the one writer of pull state: the index per host,
+  `pull` deltas from the same fleet stream, a read that cannot undo a delta
+  that landed while it was in flight, and a moved head that replaces the
+  record wholesale. It also follows `FleetStore`, because a record's thread is
+  read from the fleet and a view that says "the agent is running" has to
+  follow it. `PullsModel` groups by state, builds the one-line check summary,
+  dispatches a fix in one click, shows a 409 as the running fix rather than an
+  error, stops a fix, merges, sends back and writes the project's auto-fix
+  setting. `InboxModel` maps `pull` inbox items to asks with Open, Try again
+  and Dismiss.
+- **Card and control.** `PrCard` has its five states — ready, failing, in
+  progress, being fixed and checks unavailable — and takes its check summary
+  from the model, so one sentence has one spelling. A dispatch in flight reads
+  `Sending…` with the primary disabled; a refusal sits above the buttons in
+  `err`. `ui/pulls/fix_control.dart` is the one place a card's actions are
+  built, with exactly three caret items.
+- **The place.** `PullsPlace` groups in the spec's order, omits empty groups,
+  and carries every §7 state. The sidebar row is no longer planned and carries
+  the ready count.
+- **Elsewhere.** A thread opens with the review head (ready) or the card
+  (failing); Overview lists ready and failing under Needs you with the place
+  linked; the Inbox has a Ready filter; the Changes footer says what the change
+  shipped as.
+- **Checks unavailable** is its own card state with the reason in the summary
+  line, a `border` edge and a `muted` mark, and no Fix button: nothing is
+  failing that a worker could take.
+
+### Choices the plan left to the implementation
+
+- **Dismiss.** The bridge has no dismissal route (F5.1), so a pull ask's
+  Dismiss is the app's: the ask is hidden until the bridge writes a new one,
+  which carries a new `at`. The card says nothing it has not done.
+- **Choosing the worker is not offered.** The bridge dispatches a fix on the
+  project's own routing and ignores `PullFixRequest.Routing`, and routing a
+  fix to a chosen worker needs an agent-prompt path the bridge does not have,
+  so the caret does not offer the option at all: three items, every one of
+  which dispatches or changes a setting.
+- **Automatic fixing** is written as a one-way "turn it on" from the caret and
+  confirmed in a sheet that says what happens next; turning it off is
+  Automations'. The settings document is round-tripped whole, so the other
+  automations survive.
+- **Send back** steers a turn in flight and prompts an idle agent: after
+  shipping, the agent that made the pull request has finished its turn, and
+  steering one would redirect nothing. Both carry the same text. The button is
+  disabled with a tooltip when no thread is left to hear it.
+- **Open on forge** is drawn disabled: the app's lanes have no URL opener, and
+  a button that cannot open anything is not drawn as working. A later phase
+  with a browser integration wires it.
+- **The review head's report** appears when the record carries one. Only the
+  detail route fills it and only a factory item has one, so an agent thread
+  shows none until F6's work items read the detail route.
+- **The kit gained `AskKind.pull`** — the ask a failed fix leaves — with its
+  design-system.md entry, a gallery specimen and regenerated Linux goldens
+  (§10).
+
+### Unfinished, and what could not be verified
+
+- **Merge** is the agent's own route when an agent shipped the pull request.
+  A factory item's merge is **not offered**: the factory's `merge_and_complete`
+  names the pull request's reviewed node id, the bridge refuses a blank one
+  (400) and refuses a missing run choice (409), and `contract.PullRecord`
+  carries no node id — so the request the app could build is one the bridge
+  always answers. The earlier build sent exactly that (`'nodeId': ''`), which
+  no test covered and no bridge accepts. Merge is therefore drawn disabled,
+  with a tooltip saying the work item's merge arrives with work items (F6),
+  and `PullsModel.merge` refuses the call rather than posting it. The agent
+  route posts unchanged, and `test/model/pulls_model_test.dart` pins both.
+- **The integration flow** (`app/integration_test/f5_test.dart`) needs a device
+  with a display and a Linux CMake/GTK3 toolchain, which this environment does
+  not have: `flutter test integration_test -d linux` and
+  `flutter build linux --debug` were not run. The same flow — a failing check,
+  one click, the pushed head, the passing check, the card reaching ready — is
+  driven by `test/ui/pulls/fix_dispatch_test.dart`, `pulls_place_test.dart` and
+  the model tests, which run everywhere.

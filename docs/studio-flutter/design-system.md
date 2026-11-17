@@ -219,10 +219,22 @@ for rows separated by `Hairline`s, as `Rows` uses); `Btn` and `Btn.primary`;
 identifiers; `Meter` and `Meter.fault`; `PageBody`'s width, `full` (1180) or
 `list` (860), from §4; `AskCard`'s placement — Inbox (everything), Overview
 (the body only for a decision) or its own thread (no source line);
-`PrCard`'s four states — ready, failing, in progress, being fixed. Added in
+`PrCard`'s five states — ready, failing, in progress, being fixed and checks
+unavailable. Added in
 F4: `RowItem.mono` and `NavRow.mono`, a row whose name is an identifier such
 as a path, and `RowItem.selected`, the row a list is showing, filled with
 `selected` as a `NavRow` is.
+
+Added in F5: `PrCard`'s **checks unavailable** state — the checks cannot be
+read, and the card says why in its own line. It is never drawn as passing and
+never as failing: its border is `border`, its mark `muted`. A failing card
+whose dispatch is in flight reads `Sending…` with the primary disabled (§7: an
+action taken is acknowledged at once), and the bridge's refusal, when there is
+one, sits above its buttons in `err`. A ready card whose merge this build
+cannot make draws Merge disabled under a `Tip` that names what brings it
+(`PrActions.mergeNote`), never as a button that would fail. `AskKind.pull` is
+the ask a fix that could not finish leaves: the pull request and the check,
+what was tried, and Open, Try again and Dismiss.
 
 Supporting pieces, shared by the components and exported with them by
 `kit.dart`. None is drawn on its own, and none has variants:

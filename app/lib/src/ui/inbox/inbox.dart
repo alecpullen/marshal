@@ -1,11 +1,13 @@
 import '../../model/age.dart';
 import '../../model/inbox_model.dart' as model;
 import '../../model/place.dart';
+import '../../model/pulls_model.dart';
 import '../kit/kit.dart';
+import '../pulls/pull_facts.dart';
 
-/// Which asks the Inbox shows: everything, what blocks work, and what is
-/// there to look at (F2 decision 7).
-enum InboxFilter { all, blocking, lookAt }
+/// Which asks the Inbox shows: everything, what blocks work, what is there to
+/// look at, and — from F5 — the pull requests that wait for review.
+enum InboxFilter { all, blocking, lookAt, ready }
 
 /// The Inbox: every ask the fleet reported, oldest first, answered from its
 /// own card.
@@ -18,6 +20,7 @@ class Inbox extends StatefulWidget {
     super.key,
     required this.asks,
     required this.now,
+    this.pulls = const [],
     this.state,
     this.onSelect,
     this.onAnswer,
@@ -25,6 +28,11 @@ class Inbox extends StatefulWidget {
   });
 
   final List<model.Ask> asks;
+
+  /// The pull requests waiting for review (F5 decision 14): the Ready filter
+  /// lists them, because a ready pull request is something to look at rather
+  /// than something blocking work.
+  final List<PullView> pulls;
 
   /// What a relative age is measured against.
   final DateTime now;
@@ -94,10 +102,19 @@ class _InboxState extends State<Inbox> {
 
   bool _blocking(model.Ask ask) => ask.kind != model.AskKind.intake;
 
+  /// The pull requests the Ready filter lists: the ready ones only, whatever
+  /// the host hands over.
+  List<PullView> get _ready => [
+    for (final pull in widget.pulls)
+      if (pull.group == PullGroup.ready) pull,
+  ];
+
   List<model.Ask> get _shown => switch (_filter) {
     InboxFilter.all => widget.asks,
     InboxFilter.blocking => widget.asks.where(_blocking).toList(),
     InboxFilter.lookAt => widget.asks.where((ask) => !_blocking(ask)).toList(),
+    // The Ready filter is not about asks: [build] draws pull requests for it.
+    InboxFilter.ready => const [],
   };
 
   @override
@@ -130,10 +147,13 @@ class _InboxState extends State<Inbox> {
               'To look at',
               count: widget.asks.where((ask) => !_blocking(ask)).length,
             ),
+            TabItem('Ready', count: _ready.length),
           ],
         ),
         const SizedBox(height: Space.s16),
-        if (shown.isEmpty)
+        if (_filter == InboxFilter.ready)
+          ..._readyCards()
+        else if (shown.isEmpty)
           StateMessage.empty(
             message: 'Nothing is waiting on you.',
             action: StateAction(
@@ -145,6 +165,44 @@ class _InboxState extends State<Inbox> {
           for (final ask in shown) _card(ask),
       ],
     );
+  }
+
+  /// The Ready filter's list: one card per pull request that waits for
+  /// review, or the empty state when none does.
+  List<Widget> _readyCards() {
+    final ready = _ready;
+    if (ready.isEmpty) {
+      return [
+        StateMessage.empty(
+          message: 'No pull request is waiting for review.',
+          action: StateAction(
+            'Open pull requests',
+            onTap: widget.onSelect == null
+                ? (widget.onRetry ?? () {})
+                : () => widget.onSelect!(const Place(PlaceKind.pulls)),
+          ),
+        ),
+      ];
+    }
+    return [
+      for (final pull in ready)
+        Padding(
+          padding: const EdgeInsets.only(bottom: Space.s12),
+          child: PrCard(
+            pull: pullFactsOf(pull, now: widget.now),
+            actions: PrActions(openSource: _pullSource(pull)),
+          ),
+        ),
+    ];
+  }
+
+  /// Opens the thread a pull request came from, when the fleet lists it.
+  VoidCallback? _pullSource(PullView pull) {
+    final thread = pull.thread;
+    final select = widget.onSelect;
+    if (thread == null || select == null) return null;
+    return () =>
+        select(Place(PlaceKind.thread, host: thread.host, id: thread.id));
   }
 
   /// One ask as its card, with its own pending or failed state under it.
@@ -293,6 +351,11 @@ class _InboxState extends State<Inbox> {
         case model.AskActionKind.decline:
         case model.AskActionKind.option:
           break;
+        case model.AskActionKind.open:
+        case model.AskActionKind.retry:
+        case model.AskActionKind.dismiss:
+          // A pull request's ask offers these; a question's does not.
+          return;
       }
     }
     _lastAction[ask.id] = action;
@@ -430,6 +493,7 @@ class _InboxState extends State<Inbox> {
     model.AskKind.approval => AskKind.approval,
     model.AskKind.question => AskKind.question,
     model.AskKind.intake => AskKind.intake,
+    model.AskKind.pull => AskKind.pull,
     model.AskKind.reviewDraft => AskKind.review,
   };
 }

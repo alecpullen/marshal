@@ -3,9 +3,11 @@ import '../../model/fleet_store.dart' show HostView;
 import '../../model/inbox_model.dart' as model;
 import '../../model/overview_model.dart';
 import '../../model/place.dart';
+import '../../model/pulls_model.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/watches_model.dart' show TrippedWatch;
 import '../kit/kit.dart';
+import '../pulls/pull_facts.dart';
 
 /// The Overview (F2 decision 8): what needs you, what is running, every
 /// project, and — beside them, or below on a narrow window — the hosts'
@@ -21,6 +23,7 @@ class Overview extends StatelessWidget {
     required this.now,
     this.hosts = const [],
     this.automations = const [],
+    this.pulls = const [],
     this.state,
     this.onSelect,
     this.onAnswer,
@@ -38,6 +41,11 @@ class Overview extends StatelessWidget {
   /// The watches that tripped, newest first: the Automations card, and
   /// nothing when none has (F7 plan 1, Task 3).
   final List<TrippedWatch> automations;
+
+  /// The pull requests that need a person: the ready and the failing ones
+  /// (F5 decision 14). They sit directly under Needs you, and the place is one
+  /// link away.
+  final List<PullView> pulls;
 
   /// The fleet's data state, when it is not ready (§7).
   final StateKind? state;
@@ -84,6 +92,8 @@ class Overview extends StatelessWidget {
               children: [
                 ..._needsYou(context),
                 const SizedBox(height: Space.s24),
+                ..._pullRequests(context),
+                if (pulls.isNotEmpty) const SizedBox(height: Space.s24),
                 ..._running(context),
                 const SizedBox(height: Space.s24),
                 ..._projects(context),
@@ -200,6 +210,43 @@ class Overview extends StatelessWidget {
           const SizedBox(height: Space.s8),
         ],
     ];
+  }
+
+  /// Ready and failing pull requests, directly under Needs you (F5 decision
+  /// 14): the two states where a person has something to do. The place is one
+  /// link away, and a card opens the thread it came from.
+  List<Widget> _pullRequests(BuildContext context) {
+    final shown = [
+      for (final pull in pulls)
+        if (pull.group == PullGroup.ready || pull.group == PullGroup.failing)
+          pull,
+    ];
+    if (shown.isEmpty) return const [];
+    final open = _open(const Place(PlaceKind.pulls));
+    return [
+      Label(
+        'Pull requests',
+        count: shown.length,
+        link: open == null
+            ? null
+            : LabelLink('Open pull requests', onTap: open),
+      ),
+      const SizedBox(height: Space.s12),
+      for (final pull in shown)
+        Padding(
+          padding: const EdgeInsets.only(bottom: Space.s8),
+          child: PrCard(
+            pull: pullFactsOf(pull, now: now),
+            actions: PrActions(openSource: _pullSource(pull)),
+          ),
+        ),
+    ];
+  }
+
+  /// Opens the thread a pull request came from, when the fleet lists it.
+  VoidCallback? _pullSource(PullView pull) {
+    final thread = pull.thread;
+    return thread == null ? null : _thread(thread);
   }
 
   /// Every thread with a turn in flight, most recently active first.
@@ -445,6 +492,7 @@ class Overview extends StatelessWidget {
     model.AskKind.approval => AskKind.approval,
     model.AskKind.question => AskKind.question,
     model.AskKind.intake => AskKind.intake,
+    model.AskKind.pull => AskKind.pull,
     model.AskKind.reviewDraft => AskKind.review,
   };
 }

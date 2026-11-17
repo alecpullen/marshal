@@ -35,6 +35,7 @@ export 'activity_row.dart';
 export 'ask_card.dart';
 export 'box.dart';
 export 'btn.dart';
+export 'chart.dart';
 export 'check_strip.dart';
 export 'composer.dart';
 export 'diff_view.dart';

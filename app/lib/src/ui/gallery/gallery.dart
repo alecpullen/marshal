@@ -94,6 +94,7 @@ class _GalleryState extends State<Gallery> {
         ..._section('TaskGraph', _graphs()),
         ..._section('Meter', _meters()),
         ..._section('Spark', _spark()),
+        ..._section('Chart', _charts()),
         ..._section('CheckStrip', _strips()),
         ..._section('DiffView', _diffViews()),
         ..._section('GateList', _gateLists()),
@@ -419,6 +420,27 @@ class _GalleryState extends State<Gallery> {
     Meter(label: 'studio-box', value: '6 of 8 slots', fraction: 0.75),
     Meter(label: 'Local daemon', value: '1 of 2 slots', fraction: 0.5),
     Meter.fault(label: 'vps-syd', value: 'unreachable 4m', fraction: 0),
+  ];
+
+  /// The one chart: a single series in `fg`, and bars whose height is a
+  /// status, with no legend beyond their own labels.
+  List<Widget> _charts() => const [
+    Chart(
+      unit: 'usd',
+      bars: [
+        ChartBar(label: 'go-service', value: 7.25),
+        ChartBar(label: 'widgets', value: 5.15),
+        ChartBar(label: 'docs', value: 1.4),
+      ],
+    ),
+    Chart(
+      unit: 'checks',
+      bars: [
+        ChartBar(label: 'passed', value: 8, tone: Status.ready),
+        ChartBar(label: 'needs you', value: 2, tone: Status.needsYou),
+        ChartBar(label: 'failed', value: 1, tone: Status.failed),
+      ],
+    ),
   ];
 
   List<Widget> _spark() => const [
@@ -906,6 +928,12 @@ class _GalleryState extends State<Gallery> {
           Field.multiline(
             label: 'Prompt',
             hint: 'Run the gate on {{ branch }}',
+          ),
+          SizedBox(height: Space.s16),
+          Field.multiline(
+            label: 'Source',
+            hint: '[[mounts]]\npath = "/src"',
+            mono: true,
           ),
         ],
       ),

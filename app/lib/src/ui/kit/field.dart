@@ -18,11 +18,16 @@ class Field extends StatefulWidget {
     this.enabled = true,
     this.onChanged,
     this.onSubmitted,
+    this.mono = false,
   }) : _multiline = false;
 
   /// A field for prose — a prompt, a body — that starts three lines tall and
   /// grows with what it holds. The one variant of [Field]: the kit has no
   /// second kind of text input.
+  ///
+  /// Set [mono] for text that is a document rather than prose — the
+  /// environment designer's source — so its lines line up with the layers
+  /// beside it (F7 decision 6).
   const Field.multiline({
     super.key,
     required this.label,
@@ -32,10 +37,15 @@ class Field extends StatefulWidget {
     this.enabled = true,
     this.onChanged,
     this.onSubmitted,
+    this.mono = false,
   }) : _multiline = true;
 
   final String label;
   final TextEditingController? controller;
+
+  /// Set the text in mono: for a document a person edits line by line, never
+  /// for prose.
+  final bool mono;
 
   /// Placeholder text, in `faint`: an example, never an instruction the
   /// user must read.
@@ -107,7 +117,9 @@ class _FieldState extends State<Field> {
               onSubmitted: widget.onSubmitted,
               minLines: widget._multiline ? 3 : null,
               maxLines: widget._multiline ? null : 1,
-              style: widget.enabled ? e.body : e.body.tint(e.muted),
+              style: !widget.enabled
+                  ? (widget.mono ? e.mono.tint(e.muted) : e.body.tint(e.muted))
+                  : (widget.mono ? e.mono : e.body),
               cursorColor: e.accent,
               decoration: InputDecoration.collapsed(
                 hintText: widget.hint,

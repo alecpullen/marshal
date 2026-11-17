@@ -238,6 +238,7 @@ class _ItemAsksState extends State<ItemAsks> {
       case model.AskKind.intake:
       case model.AskKind.pull:
       case model.AskKind.reviewDraft:
+      case model.AskKind.network:
         return;
     }
   }
@@ -254,6 +255,7 @@ class _ItemAsksState extends State<ItemAsks> {
     model.AskKind.intake => AskKind.intake,
     model.AskKind.pull => AskKind.pull,
     model.AskKind.reviewDraft => AskKind.review,
+    model.AskKind.network => AskKind.network,
   };
 }
 

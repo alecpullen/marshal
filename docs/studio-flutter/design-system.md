@@ -136,6 +136,8 @@ Rules:
 - Numbers that change or line up (counts, durations, sizes, money) are mono.
 - Truncate with an ellipsis; never shrink text to fit and never let it
   overflow its container.
+- `mono` text is drawn, never typed, with one exception: `Field.mono` (§5),
+  the input that holds a document — a workspace's source — rather than prose.
 
 ## 4. Space, shape and size
 
@@ -203,7 +205,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `OutputBlock` | Output the agent produced | The only filled block: `codeBg`, mono at every density. A capped block says so in words |
 | `LiveRow` | The row work is happening on | One running dot, the headline, the latest line. The only row that moves |
 | `StateMessage` | Empty, loading, stale, error, planned | The only way these states are shown (§7) |
-| `Field` | A text input | Border only; the label is above it. `Field.multiline` is the same input for prose, taller and growing with what it holds |
+| `Field` | A text input | Border only; the label is above it. `Field.multiline` is the same input for prose, taller and growing with what it holds; its `mono` flag sets the text in `mono` for a document a person edits line by line |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
 | `Sheet` | A dialog or bottom sheet; it dims what is behind it with `scrim` | One per screen at most |
 | `Composer` | The field a thread is driven from | The draft, the mode and model chips, Stop while running, Send or Steer. A read-only session is one line saying why |
@@ -227,7 +229,9 @@ identifiers; `Meter` and `Meter.fault`; `PageBody`'s width, `full` (1180) or
 unavailable. Added in
 F4: `RowItem.mono` and `NavRow.mono`, a row whose name is an identifier such
 as a path, and `RowItem.selected`, the row a list is showing, filled with
-`selected` as a `NavRow` is.
+`selected` as a `NavRow` is. Added in F7: `Field.mono`, the field set in
+`mono` for the environment designer's source — a document a person edits line
+by line, never prose.
 
 Added in F5: `PrCard`'s **checks unavailable** state — the checks cannot be
 read, and the card says why in its own line. It is never drawn as passing and
@@ -365,6 +369,31 @@ that adds to the kit without changing this document, or that works around
 the kit inside a screen, is not merged.
 
 Token values change only here and in `tokens.dart`, together.
+
+### `Chart` (added for F7's Usage section)
+
+What it is: a row of vertical bars, each labelled directly underneath with its
+own name and value, and tipped with the same.
+
+When to use it: the one place a series of numbers is easier to read as a shape
+than as a list — today only Settings' Usage, whose detail the design makes the
+one exception to the list-and-detail rule (F7 decision 8).
+
+What it must not be used for:
+
+- A trend over time inside a row: that is `Spark`.
+- Progress towards a total: that is `Meter` or `Segments`.
+- Two series in one chart: two charts, each with its own labels. There is no
+  legend, so a second series could not be told apart without colour, and
+  colour here means status.
+
+Its colour: a single series is `fg`. A bar whose value *is* a status takes that
+status's colour, and never more than `ok`, `warn` and `err` — never `accent`,
+never a fourth hue. A bar with no status is `fg` in both themes.
+
+Its numbers: every bar carries its own label and value as text, so the shape is
+never the only way to read the chart, and text scaled up wraps under the bar
+rather than being clipped.
 
 ## 11. Enforcement
 

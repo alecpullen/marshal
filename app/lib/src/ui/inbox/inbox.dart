@@ -261,6 +261,7 @@ class _InboxState extends State<Inbox> {
     model.AskKind.question ||
     model.AskKind.intake ||
     model.AskKind.reviewDraft ||
+    model.AskKind.network ||
     model.AskKind.pull => false,
   };
 
@@ -517,6 +518,7 @@ class _InboxState extends State<Inbox> {
     model.AskKind.intake => AskKind.intake,
     model.AskKind.pull => AskKind.pull,
     model.AskKind.reviewDraft => AskKind.review,
+    model.AskKind.network => AskKind.network,
     model.AskKind.approvalDraft => AskKind.approval,
     model.AskKind.decision => AskKind.decision,
     model.AskKind.recovery => AskKind.decision,

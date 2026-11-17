@@ -98,11 +98,19 @@ void main() {
     model.dispose();
   });
 
-  test('stop cancels the turn', () async {
+  test('stop asks to cancel, and the session confirms the stop', () async {
     final model = routes.model(view, running: true);
     await model.stop();
 
+    // Cancelling is a request: until the session reports the turn ended, the
+    // turn is still running and the composer says what it waits for.
     expect(routes.cancels, 1);
+    expect(model.cancellationRequested, isTrue);
+    expect(model.running, isTrue);
+
+    // The session's own report is the confirmation.
+    model.setRunning(false);
+    expect(model.cancellationRequested, isFalse);
     expect(model.running, isFalse);
     model.dispose();
   });

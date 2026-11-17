@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -14,7 +15,12 @@ import (
 type fakeRunner struct {
 	outputs map[string][]byte
 	errs    map[string]error
-	calls   []string
+	// shots is what a capture helper "writes": the bytes land in the file at
+	// the path that follows the "-t png" argument, as screencapture does.
+	shots map[string][]byte
+	// shotPath is the path the last shot went to.
+	shotPath string
+	calls    []string
 }
 
 func (f *fakeRunner) run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -22,11 +28,33 @@ func (f *fakeRunner) run(_ context.Context, name string, args ...string) ([]byte
 	if err, ok := f.errs[name]; ok {
 		return nil, err
 	}
+	if png, ok := f.shots[name]; ok {
+		path := argAfter(args, "png")
+		if path == "" {
+			return nil, fmt.Errorf("command %q has no -t png form: %q", name, args)
+		}
+		f.shotPath = path
+		if err := os.WriteFile(path, png, 0o644); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
 	out, ok := f.outputs[name]
 	if !ok {
 		return nil, fmt.Errorf("unexpected command %q", name)
 	}
 	return out, nil
+}
+
+// argAfter returns the argument that follows want, or "" when want is absent or
+// last.
+func argAfter(args []string, want string) string {
+	for i, a := range args {
+		if a == want && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 func (f *fakeRunner) assertCalls(t *testing.T, want ...string) {

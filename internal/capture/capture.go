@@ -67,6 +67,8 @@ func Detect(env Env, forced string) (Backend, error) {
 		return &wlrootsBackend{kind: "sway", run: defaultRunner, env: env}, nil
 	case "hyprland":
 		return &wlrootsBackend{kind: "hyprland", run: defaultRunner, env: env}, nil
+	case "darwin":
+		return &darwinBackend{run: defaultRunner}, nil
 	case "":
 	default:
 		return nil, fmt.Errorf("%w: unknown backend %q", ErrNoBackend, forced)
@@ -77,5 +79,8 @@ func Detect(env Env, forced string) (Backend, error) {
 	if env.Getenv("HYPRLAND_INSTANCE_SIGNATURE") != "" {
 		return &wlrootsBackend{kind: "hyprland", run: defaultRunner, env: env}, nil
 	}
-	return nil, fmt.Errorf("%w: looked for SWAYSOCK and HYPRLAND_INSTANCE_SIGNATURE", ErrNoBackend)
+	if env.GOOS == "darwin" {
+		return &darwinBackend{run: defaultRunner}, nil
+	}
+	return nil, fmt.Errorf("%w: looked for SWAYSOCK, HYPRLAND_INSTANCE_SIGNATURE and GOOS=darwin; screen capture needs sway, Hyprland or macOS", ErrNoBackend)
 }

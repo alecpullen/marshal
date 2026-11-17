@@ -178,6 +178,16 @@ editor, saving, failed, in conflict, read-only or gone.
    conflict), built from kit primitives. Use words plus an icon/glyph, never
    colour alone. Under a conflict keep the existing both-versions panel and
    the existing two choices unchanged.
+
+   **Staged, and stated as staged:** the Flutter port has no drafts editor
+   screen yet — nothing in `app/lib` constructs a `DraftsModel`, and
+   `DraftConflictBar` was already unwired before this work. So the line is a
+   tested component awaiting the editor slice, not a visible change in the
+   app today. Do not claim otherwise in the PR, the commit message or a
+   docstring. Wiring it is that slice's job; the component is placed beside
+   `DraftConflictBar` in `ui/factory/` as a screen composition rather than in
+   `kit/`, because the kit is for pieces several screens share and this one
+   has no screen yet.
 3. Do not change the autosave window, the versioned-write contract, the
    conflict resolution, or the delete/create behaviour. `saveNow()` must still
    flush pending content; `discard()` must still drop only local work.
@@ -302,3 +312,17 @@ Record the Flutter revision, the test results, and which evidence is fixture
 based (widget/model tests) versus live (a real bridge, a physical phone). The
 fixture tests are the evidence for this change; nothing here claims live
 planner, cross-device or physical-device coverage.
+
+### Evidence recorded for this slice
+
+Flutter 3.50.0, Dart 3.14.0, run from `app/` in the worktree:
+
+- `flutter analyze` — no issues.
+- `flutter test` — 3210 tests pass, including the design-rule, boundary, state,
+  tooltip, overflow, contrast, gallery and route-parity suites.
+- `dart format --output=none --set-exit-if-changed lib test integration_test` —
+  no changes.
+
+All of it is **fixture evidence**: model and widget tests over in-process fake
+routes. There is no live-bridge, no live-planner, no cross-device and no
+physical-phone run for this slice, and none is claimed.

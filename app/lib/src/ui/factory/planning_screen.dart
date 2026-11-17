@@ -191,16 +191,22 @@ class _PlanningScreenState extends State<PlanningScreen> {
 
   /// What the mode chip means: the mode in force, or why the one asked for is
   /// not in force yet.
+  ///
+  /// The record is matched first, so a record that was read but names no mode
+  /// is never described as a record nobody read.
   static String _modeNote(PlanningModel model) => switch ((
+    model.view,
     model.confirmedMode,
     model.requestedMode,
   )) {
-    (_?, _) =>
+    (null, _, _) =>
+      'No planner record has been read, so no mode is stated as in force.',
+    (_, _?, _) =>
       'The bridge confirmed it: this is the mode the session runs '
           'under.',
-    (null, _?) =>
+    (_, null, _?) =>
       'Only asked for: the bridge has not confirmed it, so it is not in force.',
-    _ => 'No planner record has been read, so no mode is stated as in force.',
+    _ => 'The planner’s record names no mode, so none is stated as in force.',
   };
 
   /// What the workspace chip means.
@@ -328,7 +334,7 @@ class _PlanningScreenState extends State<PlanningScreen> {
     // this adds only where it leaves the person.
     final opened = latest == null
         ? ''
-        : 'Handing off opens the factory review with snapshot '
+        : 'Handing off opens the factory review with the capture digest '
               '${_short(latest.sha256)}. ';
     return '$opened'
         'Closing the review brings you back here: this conversation, its '

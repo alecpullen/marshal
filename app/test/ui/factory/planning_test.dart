@@ -1,7 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
+import 'package:marshal_app/src/model/handoff_model.dart';
 import 'package:marshal_app/src/model/new_work_model.dart';
 import 'package:marshal_app/src/model/planning_model.dart';
+import 'package:marshal_app/src/ui/factory/handoff_sheet.dart';
 import 'package:marshal_app/src/ui/factory/planning_screen.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 
@@ -167,14 +169,21 @@ Widget _screenWithReview(PlanningModel model) => EmberApp(
   ),
 );
 
-Future<String?> _review(BuildContext context) => Sheet.show<String>(
-  context,
-  Sheet(
-    title: 'Hand to the factory',
-    actions: [Btn('Cancel', onTap: () => Navigator.of(context).maybePop())],
-    child: const Text('The factory review'),
-  ),
-);
+Future<String?> _review(BuildContext context) async {
+  // The real review, not a stand-in: the round trip this test proves is the
+  // one the screen actually opens.
+  final model = HandoffModel(
+    defaults: const ProjectDefaults(repoID: 'repo-1'),
+    projectRoot: '/home/u/marshal',
+    title: 'Planning',
+    plan: '## Task 1\nRead the item.\n',
+    spec: 'Ship it.',
+    create: (draft) async => throw UnimplementedError(),
+  );
+  final item = await showHandoffSheet(context, model);
+  model.dispose();
+  return item;
+}
 
 void main() {
   testWidgets('prompt posts', (tester) async {
@@ -452,7 +461,7 @@ void main() {
 
     // A captured plan is the one the review opens with, and the return is
     // still the same conversation.
-    expect(find.textContaining('snapshot 9f2c1a55'), findsOneWidget);
+    expect(find.textContaining('capture digest 9f2c1a55'), findsOneWidget);
     expect(
       find.textContaining('Closing the review brings you back here'),
       findsOneWidget,
@@ -471,12 +480,12 @@ void main() {
 
     await tester.tap(find.text('Hand to the factory'));
     await tester.pumpAndSettle();
-    expect(find.text('The factory review'), findsOneWidget);
+    expect(find.text('Create the factory draft'), findsOneWidget);
 
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
 
-    expect(find.text('The factory review'), findsNothing);
+    expect(find.text('Create the factory draft'), findsNothing);
     // Back on the same conversation, with the words still in the field: the
     // review does not take the draft with it.
     expect(find.text('Draft a second task'), findsOneWidget);

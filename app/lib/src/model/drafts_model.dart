@@ -370,8 +370,10 @@ class DraftsModel extends ChangeNotifier {
       _writeFailed = false;
       await load();
     } catch (error) {
+      // A refused delete leaves the bridge's draft — and its last saved text —
+      // exactly as they were, so this is not an unsaved write: the text on
+      // screen is still the bridge's.
       _failure = '$error';
-      _writeFailed = true;
       notifyListeners();
     }
   }
@@ -409,7 +411,11 @@ class DraftsModel extends ChangeNotifier {
       _conflict = DraftConflict.none;
       _theirs = null;
       _failure = null;
-      _unsaved = false;
+      // Clear only what this write acknowledged. Edits made while the write was
+      // in flight set `_pending` again, and those are still only here: saying
+      // "saved" over them would claim another device sees text the bridge never
+      // received.
+      if (identical(_pending, content)) _unsaved = false;
       _writeFailed = false;
     } on BridgeFailure catch (failure) {
       switch (failure.status) {

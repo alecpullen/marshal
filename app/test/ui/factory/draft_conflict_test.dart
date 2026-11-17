@@ -72,11 +72,15 @@ DraftsModel _model({BridgeFailure? saveFailure, String state = 'editing'}) {
 
 /// The line on a constrained surface, in the light theme, with the conflict
 /// panel beneath it when a test wants both.
-Widget _surface(DraftsModel model, {Widget? below}) => EmberApp(
+Widget _surface(
+  DraftsModel model, {
+  Widget? below,
+  double width = 420,
+}) => EmberApp(
   brightness: Brightness.light,
   home: Center(
     child: SizedBox(
-      width: 420,
+      width: width,
       child: Padding(
         padding: const EdgeInsets.all(Space.s16),
         child: Column(
@@ -206,5 +210,37 @@ void main() {
     expect(find.text('This draft was deleted elsewhere'), findsOneWidget);
     expect(find.text('Save as a new draft'), findsOneWidget);
     expect(find.text('Discard this work'), findsOneWidget);
+  });
+
+  // The conflict panel puts two versions side by side, so it is the one place
+  // here that could overflow a phone. Neither size is covered by
+  // overflow_test.dart, because this widget is composed into the editor rather
+  // than registered as a screen.
+  testWidgets('both versions fit a phone and a desktop', (tester) async {
+    final model = _model(saveFailure: BridgeFailure(409, 'conflict'));
+    addTearDown(model.dispose);
+    model.scheduleSave(_content('Typed'));
+    await model.saveNow();
+
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    tester.view.physicalSize = const Size(390, 780);
+    await tester.pumpWidget(
+      _surface(
+        model,
+        below: DraftConflictBar(drafts: model),
+        width: double.infinity,
+      ),
+    );
+    await tester.pump();
+    expect(tester.takeException(), isNull, reason: 'a phone overflows');
+    expect(find.text('Yours'), findsOneWidget);
+    expect(find.text('Theirs'), findsOneWidget);
+
+    tester.view.physicalSize = const Size(1440, 900);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: 'a desktop overflows');
   });
 }

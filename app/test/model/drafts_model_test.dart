@@ -266,6 +266,31 @@ void main() {
       expect(model.persistence, DraftPersistence.saved);
     });
 
+    test('edits typed during a write stay unsaved', () async {
+      final routes = _Routes()..hold = Completer<void>();
+      final model = routes.model(autosave: const Duration(seconds: 30));
+      addTearDown(model.dispose);
+      model.adopt(_draft('d-1', version: 3));
+      model.scheduleSave(_content('First'));
+
+      final write = model.saveNow();
+      await Future<void>.delayed(Duration.zero);
+      expect(model.persistence, DraftPersistence.saving);
+
+      // The person keeps typing while the bridge is taking the first text.
+      model.scheduleSave(_content('Second'));
+
+      routes.hold!.complete();
+      await write;
+
+      // The bridge holds the first text and nothing else. The newer edit is
+      // still only here, so calling the draft "saved" would claim another
+      // device sees words the bridge never received.
+      expect(routes.saves.single.content.title, 'First');
+      expect(model.persistence, DraftPersistence.localEdits);
+      expect(model.persistenceLabel, 'Only in this editor');
+    });
+
     test(
       'a failed save reports itself, keeps the text and retries nothing',
       () async {

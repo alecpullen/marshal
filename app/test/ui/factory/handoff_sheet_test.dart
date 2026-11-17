@@ -241,7 +241,10 @@ void main() {
     final approve = tester.widget<Btn>(_action);
     expect(approve.onTap, isNotNull);
 
-    await tester.runAsync(() => model.approve());
+    // The action the person presses, not the model behind it: the button's own
+    // wiring is what posts the draft.
+    await tester.tap(_action);
+    await tester.pump();
     await tester.pump();
 
     expect(posts, hasLength(1));
@@ -268,14 +271,21 @@ void main() {
     expect(find.textContaining('digest a1b2c3d4'), findsOneWidget);
     expect(find.textContaining('Base commit c0ffee1'), findsOneWidget);
     // Every captured file with its operation, and its diff in the kit's own
-    // block rather than a hand-drawn one.
-    expect(find.textContaining('lib/a.dart — Modified'), findsOneWidget);
-    expect(find.textContaining('lib/new.dart — Created'), findsOneWidget);
-    expect(find.byType(OutputBlock), findsNWidgets(2));
+    // block rather than a hand-drawn one. A path is set in mono, so it is its
+    // own text rather than a combined sentence.
+    expect(find.text('lib/a.dart'), findsOneWidget);
+    expect(find.text('Modified'), findsOneWidget);
+    expect(find.text('lib/new.dart'), findsOneWidget);
+    expect(find.text('Created'), findsOneWidget);
+    // The plan and the specification the capture froze are drawn, alongside the
+    // two file diffs: the text that travels is shown, not only described.
+    expect(find.byType(OutputBlock), findsNWidgets(4));
+    expect(find.textContaining('Frozen plan.'), findsOneWidget);
+    expect(find.textContaining('Frozen specification.'), findsOneWidget);
     expect(find.textContaining('+++ b/lib/a.dart'), findsOneWidget);
     // Every path the capture refused, with the reason.
     expect(find.text('NOT CAPTURED'), findsOneWidget);
-    expect(find.textContaining('../etc/passwd'), findsOneWidget);
+    expect(find.text('../etc/passwd'), findsOneWidget);
     expect(find.textContaining('outside the project'), findsOneWidget);
     // The consequence names the capture and what a change would need.
     expect(find.textContaining('frozen capture snap-1'), findsOneWidget);
@@ -299,7 +309,9 @@ void main() {
     // selection, because the capture froze the documents only.
     expect(model.draft.editSnapshot, isNotNull);
     expect(model.draft.editSnapshot!.files, isEmpty);
-    expect(find.byType(OutputBlock), findsNothing);
+    // The documents are drawn, and no file diff is.
+    expect(find.textContaining('Frozen plan.'), findsOneWidget);
+    expect(find.textContaining('+++ b/'), findsNothing);
   });
 
   testWidgets('an unbound review says the plan text is what is sent', (
@@ -341,5 +353,31 @@ void main() {
       findsOneWidget,
     );
     expect(model.created, isNull);
+  });
+
+  // The sheet grew a tall evidence block. It is not a registered screen, so
+  // overflow_test.dart never pumps it: these two sizes are its only proof that
+  // the capture review fits a phone and a desktop.
+  testWidgets('the capture review fits a phone and a desktop', (tester) async {
+    final model = _handoff(
+      defaults: const ProjectDefaults(repoID: 'repo-1'),
+      snapshot: _snapshot,
+      plannerID: 'planner-7',
+      handoffSnapshot: (plannerID, snapshotID, request) async =>
+          _item('item-frozen', request),
+    );
+    addTearDown(model.dispose);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    tester.view.physicalSize = const Size(390, 780);
+    await tester.pumpWidget(_sheet(model));
+    await tester.pump();
+    expect(tester.takeException(), isNull, reason: 'a phone overflows');
+
+    tester.view.physicalSize = const Size(1440, 900);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: 'a desktop overflows');
   });
 }

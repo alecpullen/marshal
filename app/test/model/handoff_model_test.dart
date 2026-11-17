@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
+import 'package:marshal_app/src/model/drafts_model.dart';
 import 'package:marshal_app/src/model/handoff_model.dart';
 import 'package:marshal_app/src/model/planning_model.dart';
 
@@ -329,6 +330,9 @@ void main() {
     expect(edit.files.map((file) => file.path), ['lib/a.dart', 'lib/new.dart']);
     expect(edit.files.map((file) => file.operation), ['modify', 'create']);
     expect(edit.files.first.baseSHA256, 'b1');
+    expect(edit.files.first.contentSHA256, 'c1');
+    expect(edit.files.first.executable, isFalse);
+    expect(edit.files[1].contentSHA256, 'c2');
     // The item the bridge answered is the one the review reports.
     expect(item?.id, 'item-frozen');
     expect(model.created?.id, 'item-frozen');
@@ -428,4 +432,50 @@ void main() {
       expect(posts, hasLength(1));
     },
   );
+
+  // Closing the review is the last chance to write what the autosave window
+  // still holds. The sheet calls `flush()` as it closes, so this is the test
+  // that an edit made inside the window is not lost to a timer.
+  test('closing the review writes the edit the window still holds', () async {
+    final creates = <WorkingDraftCreateRequest>[];
+    final drafts = DraftsModel(
+      projectRoot: '/home/u/marshal',
+      // Long enough never to fire on its own: the flush is what writes.
+      autosave: const Duration(seconds: 30),
+      create: (request) async {
+        creates.add(request);
+        return WorkingDraft(
+          id: 'd-1',
+          projectRoot: '/home/u/marshal',
+          version: 1,
+          state: 'editing',
+          content: request.content,
+          updatedAt: '2026-11-17T04:00:00Z',
+        );
+      },
+      save: (id, request) async => throw UnimplementedError(),
+      read: (id) async => throw UnimplementedError(),
+      list: (root) async => const [],
+      remove: (id, request) async {},
+    );
+    addTearDown(drafts.dispose);
+    final model = HandoffModel(
+      defaults: const ProjectDefaults(repoID: 'repo-1'),
+      projectRoot: '/home/u/marshal',
+      title: 'Work item thread',
+      plan: '## Task 1\nRead the item.\n',
+      spec: 'Ship the work item thread.',
+      drafts: drafts,
+      create: (draft) async => _item('item-9', draft),
+    );
+    addTearDown(model.dispose);
+
+    model.set(HandoffField.rounds, 5);
+    expect(creates, isEmpty, reason: 'the autosave window has not passed');
+
+    await model.flush();
+
+    expect(creates, hasLength(1));
+    expect(creates.single.content.maxRoundsOverride, '5');
+  });
 }

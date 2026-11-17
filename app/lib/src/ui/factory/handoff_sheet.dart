@@ -167,12 +167,31 @@ class _HandoffFormState extends State<HandoffForm> {
     );
   }
 
-  /// What the capture froze, or the line that says no capture is bound: the
-  /// evidence the person is reviewing, from the snapshot alone (the capture is
-  /// the authority — the sheet edits no evidence and selects no files).
+  /// What the capture froze, or the plan an unbound review will send: the
+  /// evidence the person is reviewing, taken from the capture alone (the sheet
+  /// edits no evidence and selects no files).
   Widget _evidence(BuildContext context, HandoffModel model) {
     final e = Ember.of(context);
     final snapshot = model.reviewedSnapshot;
+    final plan = model.planToSend.trim();
+    final spec = model.specToSend.trim();
+    // The text that travels, shown rather than described: a sentence promising
+    // "the plan text shown here" is false if the plan text is never drawn.
+    final documents = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (plan.isEmpty)
+          Text('No plan text to send.', style: e.small.tint(e.muted))
+        else
+          OutputBlock(text: plan),
+        if (spec.isNotEmpty) ...[
+          const SizedBox(height: Space.s8),
+          Text('Specification', style: e.bodyStrong),
+          const SizedBox(height: Space.s4),
+          OutputBlock(text: spec),
+        ],
+      ],
+    );
     if (!model.boundToSnapshot || snapshot == null) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -180,10 +199,12 @@ class _HandoffFormState extends State<HandoffForm> {
           Label('What will be sent'),
           const SizedBox(height: Space.s4),
           Text(
-            'No capture is bound to this review, so the plan text this review '
-            'shows is what the factory is sent.',
+            'No capture is bound to this review, so this plan text is what the '
+            'factory is sent.',
             style: e.small.tint(e.muted),
           ),
+          const SizedBox(height: Space.s8),
+          documents,
         ],
       );
     }
@@ -203,6 +224,10 @@ class _HandoffFormState extends State<HandoffForm> {
           style: e.monoSmall.tint(e.muted),
         ),
         const SizedBox(height: Space.s8),
+        Label('The plan'),
+        const SizedBox(height: Space.s4),
+        documents,
+        const SizedBox(height: Space.s8),
         if (files.isEmpty)
           Text(
             'No files selected: this capture froze the documents only.',
@@ -215,9 +240,12 @@ class _HandoffFormState extends State<HandoffForm> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  // A path is an identifier, so it is set in mono (§3).
+                  Text(file.path, style: e.monoSmall),
+                  const SizedBox(height: Space.s2),
                   Text(
-                    '${file.path} — ${_operationWords(file.operation)}',
-                    style: e.bodyStrong,
+                    _operationWords(file.operation),
+                    style: e.small.tint(e.muted),
                   ),
                   const SizedBox(height: Space.s4),
                   OutputBlock(
@@ -235,10 +263,14 @@ class _HandoffFormState extends State<HandoffForm> {
           const SizedBox(height: Space.s4),
           for (final rejected in snapshot.rejected)
             Padding(
-              padding: const EdgeInsets.only(bottom: Space.s2),
-              child: Text(
-                '${rejected.path} — ${rejected.reason}',
-                style: e.small.tint(e.muted),
+              padding: const EdgeInsets.only(bottom: Space.s4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(rejected.path, style: e.monoSmall),
+                  const SizedBox(height: Space.s2),
+                  Text(rejected.reason, style: e.small.tint(e.muted)),
+                ],
               ),
             ),
         ],

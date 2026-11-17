@@ -1268,6 +1268,26 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
   }
 }
 
+/// The review a planning thread hands off to: the capture the person just
+/// reviewed, the plan and specification it froze, and the planner it belongs
+/// to.
+///
+/// It is a named function beside the place rather than three arguments written
+/// inline, because this binding is the whole of "the draft is built from the
+/// capture": a screen that passed no snapshot would still open a review, and
+/// only a test that reads these arguments can tell the difference.
+Future<HandoffModel> reviewForPlanner(
+  HandoffBuilder build,
+  model.ThreadRef thread,
+  PlanningModel plan,
+) => build(
+  thread,
+  plan.latest?.plan ?? '',
+  plan.latest?.spec ?? '',
+  plannerID: plan.plannerID,
+  snapshot: plan.latest,
+);
+
 /// One planning thread's place (F6 decision 8): the planner's conversation,
 /// the requests it is parked on, and the plan its last snapshot froze.
 ///
@@ -1306,14 +1326,7 @@ class _PlanningPlaceState extends State<_PlanningPlace> {
   Future<void> _handOff(BuildContext context) async {
     final build = widget.handoffFor;
     if (build == null) return;
-    final latest = widget.plan.latest;
-    final model = await build(
-      widget.thread,
-      latest?.plan ?? '',
-      latest?.spec ?? '',
-      plannerID: widget.plan.plannerID,
-      snapshot: latest,
-    );
+    final model = await reviewForPlanner(build, widget.thread, widget.plan);
     // What the review inherits is read before the sheet opens, so the place
     // may be gone by now; the review is disposed rather than opened on a dead
     // context.

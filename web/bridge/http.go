@@ -70,6 +70,15 @@ type Server struct {
 	// enrolled session, in memory only, so a restart ends every one of them
 	// (marshal_enrollment.go).
 	marshalEnroll *marshalEnrollments
+
+	// token is the bearer token this server checks, and the value a Studio
+	// page receives in exchange for a single-use code. Empty when this server
+	// has no token-checked listener, and the sign-in handover is then absent
+	// (studio_access.go).
+	token string
+	// codes are the live single-use sign-in codes `marshal studio` mints over
+	// the socket (studio_access.go).
+	codes *studioCodes
 }
 
 func NewServer(target any, args ...any) *Server {
@@ -107,7 +116,8 @@ func NewServer(target any, args ...any) *Server {
 	}
 	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux(),
 		factoryAuth:   newFactoryMCPAuthorizer(ws),
-		marshalEnroll: newMarshalEnrollments()}
+		marshalEnroll: newMarshalEnrollments(),
+		codes:         newStudioCodes()}
 	s.routes()
 	// The planner API owns live backend sessions, so it exists only when this
 	// server has a fleet to hold them.
@@ -126,6 +136,7 @@ func NewServer(target any, args ...any) *Server {
 	}
 	s.http = s.mux
 	if token != "" {
+		s.token = token
 		s.http = bearerAuth(token, s.mux)
 		// The network listener also serves the agent attach, behind the same
 		// bearer check and, past it, the transport rule (decision 7).
@@ -157,6 +168,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The sign-in exchange and the identity probe answer before the bearer
+	// check: a page with no token yet is the caller they exist for. Minting a
+	// code is not among them — the network listener answers it 404.
+	if s.studioRoute(w, r, false) {
+		return
+	}
 	s.route(s.http, w, r)
 }
 
@@ -187,6 +204,12 @@ func (s *Server) SocketHandler() http.Handler {
 			// where the owner is the caller, never on the network listener,
 			// which answers it 404 (marshal_enrollment.go).
 			s.enrollMarshal(w, r)
+			return
+		}
+		// Minting a Studio sign-in code is the socket's half of the handover:
+		// the token it leads to never crosses this listener
+		// (studio_access.go).
+		if s.studioRoute(w, r, true) {
 			return
 		}
 		s.route(s.mux, w, r)

@@ -3,13 +3,17 @@ import '@fontsource-variable/geist-mono'
 import './app.css'
 import { mount } from 'svelte'
 import App from './App.svelte'
-import { adoptTokenFromURL } from './lib/api'
+import { adoptCodeFromURL, adoptTokenFromURL } from './lib/api'
 
 /*
-  Before mounting, so the very first request carries the token: `marshal studio`
-  hands the daemon's credential over as `?token=`, and this moves it into
-  sessionStorage and out of the address bar. See adoptTokenFromURL.
+  Before mounting, so the very first request carries the token. `marshal studio`
+  hands over a single-use code in the fragment (`#code=<code>`), which this
+  exchanges for the daemon's token; a `?token=` a person pasted themselves is
+  still adopted. Both leave nothing usable in the address bar. See
+  adoptCodeFromURL and adoptTokenFromURL.
 */
-adoptTokenFromURL()
-
-mount(App, { target: document.getElementById('app')! })
+void (async () => {
+  await adoptCodeFromURL()
+  adoptTokenFromURL()
+  mount(App, { target: document.getElementById('app')! })
+})()

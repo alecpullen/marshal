@@ -7,6 +7,8 @@ import 'src/client/contract.g.dart';
 import 'src/client/host.dart';
 import 'src/client/host_discovery_stub.dart'
     if (dart.library.io) 'src/client/host_discovery_io.dart';
+import 'src/client/studio_code_stub.dart'
+    if (dart.library.js_interop) 'src/client/studio_code_web.dart';
 import 'src/menu/desktop_stub.dart'
     if (dart.library.io) 'src/menu/desktop.dart';
 import 'src/model/access_model.dart';
@@ -77,6 +79,10 @@ import 'src/ui/thread/thread_screen.dart' show threadKeys;
 /// browser the page is the window, and [startTray] is the stub.
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // `marshal studio` opens the page with a single-use code after its `#`.
+  // Redeeming it before the first request is what makes the page start signed
+  // in; a native build has no page, and the stub does nothing.
+  if (kIsWeb) await adoptStudioCodeFromPage();
   final hosts = HostRegistry(discovery: discoverHosts);
   final store = FleetStore(hosts);
   // The work items: the one poller of the factory's list (F6 decision 14).

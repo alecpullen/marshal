@@ -694,6 +694,55 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// parks its answer here rather than dropping it.
 	serveErr := make(chan error, 2)
 
+	// The Studio listener is bound before the socket starts serving, so
+	// GET /api/daemon can report what the bind did. A port that cannot be
+	// bound is a failure the launcher can name, not a page that silently
+	// fails to load.
+	//
+	// --addr off leaves the socket as the only listener: no TCP, no
+	// previews, no token. The scheme and the TCP listener exist only
+	// when one is opened.
+	var srv *http.Server
+	var ln net.Listener
+	scheme := "http"
+	if cfg.tlsCert != "" {
+		scheme = "https"
+	}
+	var studioAddr, studioErr string
+	if cfg.addr != "off" {
+		ln, err = net.Listen("tcp", cfg.addr)
+		if err != nil {
+			if cfg.profile == "local" {
+				// The socket is the local daemon's real interface: the
+				// TUI, `marshal fleet` and every session live there. A
+				// busy Studio port costs the browser tab, not the
+				// daemon, so the socket carries on — but the failure is
+				// logged at error level and recorded for /api/daemon, so
+				// `marshal studio` repeats the real cause instead of
+				// "nothing is serving".
+				studioErr = err.Error()
+				slog.Default().Error("webbridge: studio listener unavailable", "addr", cfg.addr, "err", err)
+				ln = nil
+			} else {
+				// Stop escalates SIGTERM→SIGKILL over stopGrace, so a stubborn
+				// child delays the error return slightly; correct cleanup beats
+				// a faster failure here.
+				shutdownFactory()
+				fleet.Close()
+				return fmt.Errorf("listen %s: %w", cfg.addr, err)
+			}
+		}
+		if ln != nil {
+			studioAddr = ln.Addr().String()
+			srv = &http.Server{
+				Addr:              cfg.addr,
+				Handler:           api,
+				ReadHeaderTimeout: 10 * time.Second,
+			}
+			fmt.Fprintf(stderr, "webbridge: listening on %s://%s (%d project(s))\n", scheme, studioAddr, len(ws.Projects()))
+		}
+	}
+
 	// The local profile listens on a unix socket of the user's own: the
 	// same routes as ServeHTTP without the bearer check, peer-checked
 	// instead, so a client on the same account drives it without a
@@ -701,11 +750,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var socketSrv *http.Server
 	if cfg.profile == "local" {
 		api.SetDaemonInfo(bridge.DaemonInfo{
-			Version:   daemonVersion(),
-			Profile:   "local",
-			PID:       os.Getpid(),
-			StartedAt: startedAt.UnixMilli(),
-			Socket:    cfg.socket,
+			Version:     daemonVersion(),
+			Profile:     "local",
+			PID:         os.Getpid(),
+			StartedAt:   startedAt.UnixMilli(),
+			Socket:      cfg.socket,
+			StudioAddr:  studioAddr,
+			StudioError: studioErr,
 		})
 		if cfg.oauthRefresh {
 			// The refresh helper (P4 D12): `<marshal-bin> daemon refresh`
@@ -751,47 +802,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			serveErr <- err
 		}()
 		fmt.Fprintf(stderr, "webbridge: listening on unix://%s\n", cfg.socket)
-	}
-
-	// --addr off leaves the socket as the only listener: no TCP, no
-	// previews, no token. The scheme and the TCP listener exist only
-	// when one is opened.
-	var srv *http.Server
-	var ln net.Listener
-	scheme := "http"
-	if cfg.tlsCert != "" {
-		scheme = "https"
-	}
-	if cfg.addr != "off" {
-		ln, err = net.Listen("tcp", cfg.addr)
-		if err != nil {
-			if cfg.profile == "local" {
-				// The socket is the local daemon's real interface: the
-				// TUI, `marshal fleet` and every session live there. A
-				// busy Studio port costs the browser tab, not the
-				// daemon, so it is reported and the socket carries on.
-				fmt.Fprintf(stderr, "webbridge: studio listener %s unavailable: %v\n", cfg.addr, err)
-				ln = nil
-			} else {
-				// Stop escalates SIGTERM→SIGKILL over stopGrace, so a stubborn
-				// child delays the error return slightly; correct cleanup beats
-				// a faster failure here.
-				if socketSrv != nil {
-					_ = socketSrv.Close()
-				}
-				shutdownFactory()
-				fleet.Close()
-				return fmt.Errorf("listen %s: %w", cfg.addr, err)
-			}
-		}
-		if ln != nil {
-			srv = &http.Server{
-				Addr:              cfg.addr,
-				Handler:           api,
-				ReadHeaderTimeout: 10 * time.Second,
-			}
-			fmt.Fprintf(stderr, "webbridge: listening on %s://%s (%d project(s))\n", scheme, ln.Addr(), len(ws.Projects()))
-		}
 	}
 
 	// Previews get a listener, and so an origin, of their own: a page the

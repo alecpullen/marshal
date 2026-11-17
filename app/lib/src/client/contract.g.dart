@@ -1771,6 +1771,8 @@ class DaemonInfo {
     required this.pid,
     required this.startedAt,
     required this.socket,
+    this.studioAddr,
+    this.studioError,
     required this.projects,
     required this.pinned,
     required this.children,
@@ -1783,6 +1785,13 @@ class DaemonInfo {
   /// Unix milliseconds
   final int startedAt;
   final String socket;
+  /// StudioAddr is the address the Studio listener actually bound, and
+  /// StudioError is why it bound nothing when it could not. `marshal
+  /// studio` reads both over the socket: the address is the truth (a
+  /// configured port 0 names its own once bound), and the error is what
+  /// makes a busy port a named failure instead of "nothing is serving".
+  final String? studioAddr;
+  final String? studioError;
   /// filled per request
   final List<String> projects;
   /// filled per request
@@ -1799,6 +1808,8 @@ class DaemonInfo {
       pid: (json['pid'] as num).toInt(),
       startedAt: (json['startedAt'] as num).toInt(),
       socket: json['socket'] as String,
+      studioAddr: json['studioAddr'] as String?,
+      studioError: json['studioError'] as String?,
       projects: _list(
         json['projects'],
         (value) => value as String,
@@ -1825,6 +1836,12 @@ class DaemonInfo {
     json['pid'] = pid;
     json['startedAt'] = startedAt;
     json['socket'] = socket;
+    if (studioAddr != null) {
+      json['studioAddr'] = studioAddr;
+    }
+    if (studioError != null) {
+      json['studioError'] = studioError;
+    }
     json['projects'] = projects;
     json['pinned'] = pinned;
     json['children'] = [

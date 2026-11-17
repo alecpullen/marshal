@@ -74,6 +74,7 @@ import 'package:marshal_app/src/model/planning_model.dart';
 import 'package:marshal_app/src/model/run_model.dart';
 import 'package:marshal_app/src/model/recipes_model.dart';
 import 'package:marshal_app/src/model/schedules_model.dart';
+import 'package:marshal_app/src/model/source_state.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/model/thread_view_state.dart';
@@ -306,9 +307,21 @@ model.Ask _overviewAsk(
   scope: scope,
 );
 
+/// The one fresh-but-failed source a stale screen draws: it holds a snapshot
+/// from four minutes ago and says what did not arrive.
+final List<SourceState> _staleSources = [
+  SourceState(
+    kind: SourceKind.fleet,
+    host: 'local',
+    loaded: true,
+    lastRead: shellNow.subtract(const Duration(minutes: 4)),
+    failure: 'offline',
+  ),
+];
+
 /// The Overview's fixture: two asks, one running thread, one project, two
 /// hosts and today's spend.
-OverviewModel _overviewModel() => OverviewModel(
+OverviewModel _overviewModel({bool stale = false}) => OverviewModel(
   needsYou: [
     _overviewAsk(
       'tc-1',
@@ -331,7 +344,7 @@ OverviewModel _overviewModel() => OverviewModel(
     ),
   ],
   needsYouTotal: 2,
-  sources: const [],
+  sources: stale ? _staleSources : const [],
   projects: const [
     ProjectSummary(
       id: '/home/u/marshal',
@@ -397,14 +410,14 @@ Widget _inbox({StateKind? state}) => Inbox(
     ),
   ],
   state: state,
-  sources: const [],
+  sources: state == StateKind.stale ? _staleSources : const [],
   onRetry: () {},
   onSelect: (_) {},
   onAnswer: (_, _, {reply, answers}) {},
 );
 
 Widget _overview({StateKind? state}) => Overview(
-  overview: _overviewModel(),
+  overview: _overviewModel(stale: state == StateKind.stale),
   now: shellNow,
   hosts: shellHosts,
   pulls: [

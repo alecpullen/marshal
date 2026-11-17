@@ -313,6 +313,38 @@ export interface PinState {
 }
 
 /**
+ * FileEntry is one directory entry.
+ */
+export interface FileEntry {
+  name: string;
+  dir: boolean;
+  size: number;
+}
+
+/**
+ * FileList is one directory's entries. Root is the workspace directory the
+ * paths are relative to, and Path is the directory asked for, empty for the
+ * root. Directories come first, then names, both in order.
+ */
+export interface FileList {
+  root: string;
+  path: string;
+  entries: FileEntry[];
+}
+
+/**
+ * FileContent is one regular file's content, capped by the agent. A Binary
+ * file carries no Content, and a Truncated one carries its first megabyte.
+ */
+export interface FileContent {
+  path: string;
+  size: number;
+  binary: boolean;
+  truncated: boolean;
+  content: string;
+}
+
+/**
  * DiffFile is one changed file's stat line.
  */
 export interface DiffFile {
@@ -387,6 +419,12 @@ export interface ExitRequest {
    * Override, when non-nil, pushes despite a failed or skipped gate.
    */
   override?: GateOverride;
+  /**
+   * NoPR pushes the branch without opening a pull request. It is the
+   * app's "open a pull request" choice, off; absent means open one, so a
+   * client that predates the field keeps today's behaviour.
+   */
+  noPr?: boolean;
 }
 
 /**
@@ -456,6 +494,319 @@ export interface InboxItem {
 export interface InboxDelta {
   kind: DeltaKind;
   inbox: Inbox;
+}
+
+/**
+ * StepDiff is one step's part of the session's diff, for the by-step view.
+ * Files is the paths it touched and Diff is their unified diff.
+ */
+export interface StepDiff {
+  stepNode: string;
+  turnNode: string;
+  headline: string;
+  at?: number;
+  files: string[];
+  diff: string;
+}
+
+/**
+ * StepDiffs is GET /api/sessions/{id}/step-diffs' answer: the session's
+ * steps in order.
+ */
+export interface StepDiffs {
+  steps: StepDiff[];
+}
+
+/**
+ * NodeDetail is everything about one node that the projected transcript
+ * caps or leaves out.
+ */
+export interface NodeDetail {
+  calls?: CallDetail[];
+  narration?: string[];
+  /**
+   * Thinking is a beat's thoughts, or a message's reasoning as one entry.
+   */
+  thinking?: ThoughtDetail[];
+  todo?: TodoDetail;
+  relations?: RelationDetail;
+  /**
+   * Step is the step record behind this node: a call's own step, or a
+   * beat's first. It carries who spoke, the model, the "why" line and the
+   * todo the step began under.
+   */
+  step?: StepDetail;
+  /**
+   * Completion is a completion's retained output and its report, neither
+   * capped.
+   */
+  completion?: CompletionDetail;
+  /**
+   * Body is a run event's whole body.
+   */
+  body?: string;
+}
+
+/**
+ * NodeDetailResponse is GET /api/sessions/{id}/nodes/{nodeId}'s answer: the
+ * node's wire form and the detail the projection left out.
+ */
+export interface NodeDetailResponse {
+  node: WireNode;
+  detail: NodeDetail;
+}
+
+/**
+ * CallDetail is one tool call with nothing capped.
+ */
+export interface CallDetail {
+  callId?: string;
+  stepId?: number;
+  toolName: string;
+  args?: string;
+  originalArgs?: string;
+  output?: string;
+  diff?: string;
+  error?: string;
+  exitCode?: number;
+  model?: string;
+  finishReason?: string;
+  rewritten?: boolean;
+  /**
+   * Hooks is the hooks audit trail as the registry encodes it: an array of
+   * records whose failed_open key is not camelCase, which the wire rules
+   * refuse in a typed field, so each travels as raw bytes.
+   */
+  hooks?: unknown[];
+  sandbox?: unknown;
+  symbols?: SymbolDetail[];
+  notice?: NoticeDetail;
+  /**
+   * Execution is the structured command-execution evidence this call
+   * carries: what was launched, who owned it, and how it ended. It is
+   * separate from Notice, which is coaching prose written for the model.
+   */
+  execution?: ExecutionDetail;
+  /**
+   * Summary is the call's own summary, uncut.
+   */
+  summary?: string;
+}
+
+/**
+ * ExecutionDetail is one managed command execution's structured evidence:
+ * what was launched, who owned it, how the launching caller related to it
+ * and how it ended.
+ *
+ * Every field is optional. An absent Exit means no exit code was ever
+ * observed — a start-up failure, a still-running continuation, a lost
+ * record — and is never success. Empty State or Outcome means the record
+ * predates structured evidence or has not settled, which is likewise
+ * unknown rather than zero-valued fact.
+ */
+export interface ExecutionDetail {
+  version?: number;
+  executionId?: string;
+  displayId?: string;
+  conversationId?: string;
+  actor?: string;
+  turnId?: string;
+  stepId?: string;
+  toolCallId?: string;
+  cwd?: string;
+  generation?: number;
+  pid?: number;
+  /**
+   * State is the lifecycle status ("running", "stopping", "completed",
+   * "failed", "killed", "timed_out"); Outcome is the finer cause
+   * ("nonzero_exit", "startup_failure", "stopped", "resource_limit", …).
+   */
+  state?: string;
+  outcome?: string;
+  attachment?: string;
+  /**
+   * Wait is the effective foreground wait the launch used; DetachReason
+   * is why and DetachedAt when a wait handed the execution to the
+   * background.
+   */
+  wait?: string;
+  detachReason?: string;
+  detachedAt?: number;
+  /**
+   * StopCause and StopRequestedAt record an accepted explicit stop
+   * request separately from the outcome it produced.
+   */
+  stopCause?: string;
+  stopRequestedAt?: number;
+  /**
+   * Exit is the observed exit code; absent means none was observed.
+   */
+  exit?: number;
+  truncated?: boolean;
+  startedAt?: number;
+  endedAt?: number;
+}
+
+/**
+ * SymbolDetail is a symbol a call touched.
+ */
+export interface SymbolDetail {
+  file: string;
+  name: string;
+  kind?: string;
+}
+
+/**
+ * NoticeDetail is a tool-UX notice attached to a call.
+ */
+export interface NoticeDetail {
+  kind: string;
+  text: string;
+}
+
+/**
+ * ThoughtDetail is one finished reasoning block.
+ */
+export interface ThoughtDetail {
+  text: string;
+  durationMs?: number;
+}
+
+/**
+ * TodoDetail is the todo a step or task belongs to.
+ */
+export interface TodoDetail {
+  id: string;
+  content: string;
+  status: string;
+  startedAt?: number;
+  completedAt?: number;
+}
+
+/**
+ * RelationDetail lists node keys of related steps.
+ */
+export interface RelationDetail {
+  causedBy?: string[];
+  fixedBy?: string[];
+}
+
+/**
+ * StepDetail is the step record behind a node: who spoke, with which model,
+ * and why.
+ */
+export interface StepDetail {
+  id?: number;
+  owner?: string;
+  model?: string;
+  provider?: string;
+  /**
+   * Why is the line the step was taken for.
+   */
+  why?: string;
+  todoId?: string;
+}
+
+/**
+ * CompletionDetail is a completion's retained output and its report,
+ * neither capped.
+ */
+export interface CompletionDetail {
+  output?: string;
+  report?: string;
+  /**
+   * Truncated is the completion's own flag: the job dropped earlier
+   * output before it was retained.
+   */
+  truncated?: boolean;
+}
+
+/**
+ * LastRequest is GET /api/sessions/{id}/last-request's answer: the newest
+ * model request the session made, or a null Request when it has made none.
+ */
+export interface LastRequest {
+  request: ModelRequest | null;
+}
+
+/**
+ * ModelRequest is one model request as it went out, with what came of it.
+ */
+export interface ModelRequest {
+  attemptId: number;
+  at?: number;
+  provider?: string;
+  model?: string;
+  generation?: string;
+  leafId?: number;
+  messages: RequestMessage[];
+  tools: RequestTool[];
+  options: RequestOptions;
+  outcome: RequestOutcome;
+  truncated?: boolean;
+  omittedBytes?: number;
+  messagesOmitted?: number;
+  toolsOmitted?: number;
+  packTokens?: number;
+  packWindow?: number;
+  packTruncated?: boolean;
+  packSections?: number;
+  packKnown?: boolean;
+}
+
+/**
+ * RequestMessage is one message of the request.
+ */
+export interface RequestMessage {
+  role: string;
+  content: string;
+  toolCalls?: RequestToolCall[];
+  toolCallId?: string;
+  truncated?: boolean;
+  omittedBytes?: number;
+}
+
+/**
+ * RequestToolCall is a tool call attached to a message.
+ */
+export interface RequestToolCall {
+  id: string;
+  name: string;
+  args: string;
+  truncated?: boolean;
+  omittedBytes?: number;
+}
+
+/**
+ * RequestTool is a tool definition offered on the request.
+ */
+export interface RequestTool {
+  name: string;
+  description?: string;
+  parameters?: string;
+  truncated?: boolean;
+  omittedBytes?: number;
+}
+
+/**
+ * RequestOptions records the options that actually went out.
+ */
+export interface RequestOptions {
+  thinking?: string;
+  streaming: boolean;
+  maxTokens?: number;
+  temperature?: number;
+  responseFormat?: string;
+  toolChoice?: string;
+}
+
+/**
+ * RequestOutcome is what became of the attempt.
+ */
+export interface RequestOutcome {
+  status: string;
+  err?: string;
+  at?: number;
 }
 
 /**
@@ -632,6 +983,57 @@ export interface RecipeRun {
  */
 export interface RecipeCopy {
   name: string;
+}
+
+/**
+ * ReviewComment is one line comment on an agent's diff.
+ *
+ * The routes are GET and POST /api/agents/{id}/review/comments, and
+ * POST /api/agents/{id}/review/comments/{cid}/resolve. A comment is
+ * delivered to the agent as steering when a turn is running and as a new
+ * prompt when it is not, so the thread it starts is the agent's reply in the
+ * same conversation.
+ */
+export interface ReviewComment {
+  id: string;
+  agentId: string;
+  path: string;
+  line: number;
+  /**
+   * Side is "old" or "new": which side of the diff the line is on.
+   */
+  side: string;
+  /**
+   * Quote is the diff lines the comment is anchored to, shown to the
+   * agent above the body.
+   */
+  quote: string;
+  body: string;
+  createdAt: string;
+  /**
+   * SentAt is when the bridge delivered the comment; it is zero until it
+   * has.
+   */
+  sentAt: string;
+  /**
+   * ResolvedAt is when the operator resolved the thread, absent while it
+   * is open.
+   */
+  resolvedAt?: string;
+  ownerId: string;
+}
+
+/**
+ * ReviewCommentRequest is a comment's operator-supplied fields: the body of
+ * POST /api/agents/{id}/review/comments. Everything else about a comment is
+ * the bridge's to fill in.
+ */
+export interface ReviewCommentRequest {
+  path: string;
+  line: number;
+  side: string;
+  quote: string;
+  body: string;
 }
 
 /**
@@ -1167,6 +1569,47 @@ export interface BudgetDelta {
 export interface ProjectRemovedDelta {
   kind: DeltaKind;
   project: string;
+}
+
+/**
+ * TerminalOpened is POST …/terminal's answer.
+ */
+export interface TerminalOpened {
+  terminalId: string;
+}
+
+/**
+ * TerminalChunk is one message of the terminal's event stream: output bytes
+ * in Data, base64 as SSE carries them, or the shell's end with its exit code
+ * and, when the shell never really started, why. A chunk carries one or the
+ * other, and the bridge replays retained output from the start, so a client
+ * never resumes a stream it lost.
+ */
+export interface TerminalChunk {
+  data?: string;
+  exit?: number;
+  /**
+   * Error is why the shell failed to start, on the chunk that ends the
+   * stream.
+   */
+  error?: string;
+}
+
+/**
+ * TerminalInput is POST …/input's body: base64 of at most 64 KiB of
+ * keystrokes. A client sends in pieces, in order, one request at a time.
+ */
+export interface TerminalInput {
+  data: string;
+}
+
+/**
+ * TerminalResize is POST …/resize's body, and what opening a terminal asks
+ * for: the shell's size in character cells.
+ */
+export interface TerminalResize {
+  cols: number;
+  rows: number;
 }
 
 /**

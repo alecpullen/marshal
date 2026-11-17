@@ -16,16 +16,20 @@ var fixtureFiles = []string{
 	"agents.json",
 	"answers.json",
 	"budgets.json",
+	"files.json",
 	"finish.json",
 	"inbox.json",
+	"inspect.json",
 	"intake.json",
 	"issues.json",
 	"projects.json",
 	"recipes.json",
+	"review.json",
 	"session.json",
 	"spawn.json",
 	"stack.json",
 	"stream.json",
+	"terminal.json",
 }
 
 // fixtureTypes names the Go type each fixture value decodes into. The test
@@ -36,6 +40,39 @@ var fixtureFiles = []string{
 // neither this map nor a fixture goes unnoticed; see the implementation
 // record in docs/studio-flutter/f1-client.md.
 var fixtureTypes = map[string]reflect.Type{
+	// files.go — the read-only file browser.
+	"FileContent": reflect.TypeOf(FileContent{}),
+	"FileEntry":   reflect.TypeOf(FileEntry{}),
+	"FileList":    reflect.TypeOf(FileList{}),
+	// inspect.go — one node's detail and the newest model request.
+	"CallDetail":         reflect.TypeOf(CallDetail{}),
+	"CompletionDetail":   reflect.TypeOf(CompletionDetail{}),
+	"ExecutionDetail":    reflect.TypeOf(ExecutionDetail{}),
+	"LastRequest":        reflect.TypeOf(LastRequest{}),
+	"ModelRequest":       reflect.TypeOf(ModelRequest{}),
+	"NodeDetail":         reflect.TypeOf(NodeDetail{}),
+	"NodeDetailResponse": reflect.TypeOf(NodeDetailResponse{}),
+	"NoticeDetail":       reflect.TypeOf(NoticeDetail{}),
+	"RelationDetail":     reflect.TypeOf(RelationDetail{}),
+	"RequestMessage":     reflect.TypeOf(RequestMessage{}),
+	"RequestOptions":     reflect.TypeOf(RequestOptions{}),
+	"RequestOutcome":     reflect.TypeOf(RequestOutcome{}),
+	"RequestTool":        reflect.TypeOf(RequestTool{}),
+	"RequestToolCall":    reflect.TypeOf(RequestToolCall{}),
+	"StepDetail":         reflect.TypeOf(StepDetail{}),
+	"StepDiff":           reflect.TypeOf(StepDiff{}),
+	"StepDiffs":          reflect.TypeOf(StepDiffs{}),
+	"SymbolDetail":       reflect.TypeOf(SymbolDetail{}),
+	"ThoughtDetail":      reflect.TypeOf(ThoughtDetail{}),
+	"TodoDetail":         reflect.TypeOf(TodoDetail{}),
+	// review.go — a line comment on a diff and the thread it starts.
+	"ReviewComment":        reflect.TypeOf(ReviewComment{}),
+	"ReviewCommentRequest": reflect.TypeOf(ReviewCommentRequest{}),
+	// terminal.go — a shell in the agent's workspace.
+	"TerminalChunk":       reflect.TypeOf(TerminalChunk{}),
+	"TerminalInput":       reflect.TypeOf(TerminalInput{}),
+	"TerminalOpened":      reflect.TypeOf(TerminalOpened{}),
+	"TerminalResize":      reflect.TypeOf(TerminalResize{}),
 	"AccessState":         reflect.TypeOf(AccessState{}),
 	"AgentState":          reflect.TypeOf(AgentState("")),
 	"AgentStatus":         reflect.TypeOf(AgentStatus{}),

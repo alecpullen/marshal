@@ -72,4 +72,41 @@ void main() {
     expect(find.text('Planned'), findsOneWidget);
     expect(styleOf(tester, 'Signal').color, e.muted);
   });
+
+  testWidgets('a mono row sets a path in mono, and a selected row is filled', (
+    tester,
+  ) async {
+    await pumpKit(
+      tester,
+      rows(const [
+        RowItem(
+          name: 'internal/viewmodel/index.json',
+          description: 'Changed by this thread',
+          value: '+0 −9',
+          mono: true,
+          selected: true,
+        ),
+        RowItem(
+          name: 'internal/repo/symbols_test.go',
+          description: 'Changed by this thread',
+          value: '+3 −11',
+          mono: true,
+        ),
+      ]),
+    );
+    expect(
+      styleOf(tester, 'internal/viewmodel/index.json').fontFamily,
+      Ember.monoFamily,
+    );
+    final fills = [
+      for (final c in tester.widgetList<Container>(
+        find.descendant(
+          of: find.byType(Rows),
+          matching: find.byType(Container),
+        ),
+      ))
+        c.color,
+    ];
+    expect(fills, contains(e.selected));
+  });
 }

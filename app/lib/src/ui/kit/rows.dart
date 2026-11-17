@@ -4,8 +4,21 @@ import '../tokens.dart';
 import 'box.dart';
 import 'hairline.dart';
 import 'press.dart';
+import 'spark.dart';
 import 'state_message.dart';
 import 'vocabulary.dart';
+
+/// A row's one-day spark: the values, and what they are of for assistive
+/// technology (design-system.md §5, `Spark`).
+@immutable
+class RowSpark {
+  const RowSpark(this.values, {required this.label});
+
+  final List<double> values;
+
+  /// What the shape is of, for a reader who cannot see it.
+  final String label;
+}
 
 /// One row of a [Rows] list: a name, what it is, and its current value.
 @immutable
@@ -15,20 +28,39 @@ class RowItem {
     required this.name,
     required this.description,
     this.value,
+    this.spark,
     this.onTap,
+    this.mono = false,
+    this.selected = false,
   }) : planned = false;
 
   /// A capability that does not exist yet, drawn as a disabled row with
   /// [description] saying so (design-system.md §7).
   const RowItem.planned({required this.name, required this.description})
     : value = null,
+      spark = null,
       onTap = null,
+      mono = false,
+      selected = false,
       planned = true;
 
   final String name;
   final String description;
   final String? value;
+
+  /// A day's readings, drawn beside the value: a watch's samples.
+  final RowSpark? spark;
+
   final VoidCallback? onTap;
+
+  /// Set the name in mono: for a row that names a path or another
+  /// identifier (§3), as `Pill.mono` does for a chip.
+  final bool mono;
+
+  /// This row is the one the list is showing: it takes the `selected` fill,
+  /// as a `NavRow` does.
+  final bool selected;
+
   final bool planned;
 }
 
@@ -73,8 +105,9 @@ class _Row extends StatelessWidget {
     return Press(
       onTap: row.onTap,
       ringInside: true,
+      selected: row.selected,
       builder: (context, state) => Container(
-        color: state.hovered ? e.hover : null,
+        color: row.selected ? e.selected : (state.hovered ? e.hover : null),
         padding: const EdgeInsets.symmetric(
           horizontal: Space.s16,
           vertical: Space.s12,
@@ -85,12 +118,19 @@ class _Row extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(row.name, style: e.bodyStrong),
+                  Text(row.name, style: row.mono ? e.mono : e.bodyStrong),
                   const SizedBox(height: Space.s2),
                   Text(row.description, style: e.small.tint(e.muted)),
                 ],
               ),
             ),
+            if (row.spark case final spark?) ...[
+              const SizedBox(width: Space.s12),
+              SizedBox(
+                width: Sizes.touch * 2,
+                child: Spark(spark.values, semanticLabel: spark.label),
+              ),
+            ],
             if (value != null) ...[
               const SizedBox(width: Space.s12),
               // At the right edge, and never wider than the sidebar, so a

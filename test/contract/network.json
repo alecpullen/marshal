@@ -1,0 +1,77 @@
+{
+  "NetHostRow": {
+    "workspace": "go-service",
+    "agentId": "a-1",
+    "host": "proxy.golang.org",
+    "rule": "allowlisted",
+    "requests": 42,
+    "blocked": 0,
+    "bytesUp": 1024,
+    "bytesDown": 65536,
+    "lastSeen": 1763352800000,
+    "decision": "allow"
+  },
+  "NetHosts": {
+    "processMode": true,
+    "rows": [
+      {
+        "host": "registry.npmjs.org",
+        "rule": "blocked",
+        "requests": 7,
+        "blocked": 7,
+        "bytesUp": 0,
+        "bytesDown": 0,
+        "lastSeen": 1763352800000,
+        "decision": "block"
+      }
+    ]
+  },
+  "NetRecord": {
+    "at": 1763352800000,
+    "agentId": "a-1",
+    "host": "proxy.golang.org",
+    "port": 443,
+    "decision": "allow",
+    "bytesUp": 1024,
+    "bytesDown": 65536,
+    "durationMs": 210
+  },
+  "NetAgentRow": {
+    "agentId": "a-1",
+    "workspace": "go-service",
+    "hosts": 2,
+    "requests": 49,
+    "blocked": 7,
+    "bytesUp": 1024,
+    "bytesDown": 65536,
+    "lastSeen": 1763352800000
+  },
+  "NetPending": {
+    "kind": "network_block",
+    "sessionId": "s-1",
+    "agentId": "a-1",
+    "host": "registry.npmjs.org",
+    "workspace": "go-service",
+    "at": 1763352800000
+  },
+  "NetPendingList": {
+    "pending": [
+      {
+        "kind": "network_block",
+        "sessionId": "s-1",
+        "agentId": "a-1",
+        "host": "registry.npmjs.org",
+        "at": 1763352800000
+      }
+    ]
+  },
+  "NetDecisionKind": "allow-agent",
+  "NetDecision": {
+    "agentId": "a-1",
+    "host": "registry.npmjs.org",
+    "decision": "add-to-workspace"
+  },
+  "NetDecisionResult": {
+    "ok": true
+  }
+}

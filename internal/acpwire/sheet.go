@@ -7,21 +7,29 @@ package acpwire
 // session or for one subagent. Its database and git values are the ones the
 // last RefreshSheet read.
 type SessionSheet struct {
-	SubagentID  int64              `json:"subagentId,omitempty"` // whose sheet: 0 for the session's own
-	StartedAt   int64              `json:"startedAt,omitempty"`
-	Context     SheetContext       `json:"context"`           // the session's only
-	Changed     []SheetChangedFile `json:"changed,omitempty"` // the session's only
-	Turns       []SheetTurn        `json:"turns,omitempty"`   // the session's only; most recent first
-	Totals      SheetTotals        `json:"totals"`            // the session's only
-	Fleet       []SheetFleetRow    `json:"fleet,omitempty"`
-	Repo        SheetRepo          `json:"repo"`
-	Tools       []SheetTool        `json:"tools,omitempty"` // most-called first
-	Files       []SheetFile        `json:"files,omitempty"` // most recently touched first
-	Rules       []string           `json:"rules,omitempty"`
-	Skills      []string           `json:"skills,omitempty"`
-	ToolBudget  SheetToolBudget    `json:"toolBudget"`
-	LoadedTools int                `json:"loadedTools,omitempty"`
-	Sandbox     SheetSandbox       `json:"sandbox"`
+	SubagentID  int64                 `json:"subagentId,omitempty"` // whose sheet: 0 for the session's own
+	StartedAt   int64                 `json:"startedAt,omitempty"`
+	Context     SheetContext          `json:"context"`           // the session's only
+	Changed     []SheetChangedFile    `json:"changed,omitempty"` // the session's only
+	Turns       []SheetTurn           `json:"turns,omitempty"`   // the session's only; most recent first
+	Totals      SheetTotals           `json:"totals"`            // the session's only
+	Fleet       []SheetFleetRow       `json:"fleet,omitempty"`
+	Repo        SheetRepo             `json:"repo"`
+	Tools       []SheetTool           `json:"tools,omitempty"` // most-called first
+	Files       []SheetFile           `json:"files,omitempty"` // most recently touched first
+	Rules       []string              `json:"rules,omitempty"`
+	Permissions []SheetPermissionRule `json:"permissions,omitempty"`
+	Skills      []string              `json:"skills,omitempty"`
+	ToolBudget  SheetToolBudget       `json:"toolBudget"`
+	LoadedTools int                   `json:"loadedTools,omitempty"`
+	Sandbox     SheetSandbox          `json:"sandbox"`
+}
+
+// SheetPermissionRule is one session-scoped permission grant.
+type SheetPermissionRule struct {
+	Permission string `json:"permission"`
+	Pattern    string `json:"pattern"`
+	Scope      string `json:"scope"` // "session"
 }
 
 // SheetContext is the context pack's size and its sections' sizes. Every

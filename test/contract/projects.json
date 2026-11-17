@@ -1,0 +1,14 @@
+{
+  "ProjectStatus": {
+    "available": true,
+    "isolation": "available",
+    "mcpProjectId": "p-1",
+    "orphanWorktrees": [
+      "/home/u/src/marshal/.marshal/worktrees/old"
+    ],
+    "repoId": "owner/name",
+    "root": "/home/u/src/marshal",
+    "trust": "pending-review"
+  },
+  "TrustState": "trusted"
+}

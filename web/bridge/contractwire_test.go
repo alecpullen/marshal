@@ -315,6 +315,13 @@ func deltaRecordings() []wireRecording {
 			}
 			return normalizeDelta(lastDelta(t, e.f), root)
 		}},
+		{name: "delta_pull", record: func(t *testing.T) []byte {
+			f := testFleet(t)
+			if err := f.recordPull(pullFixture()); err != nil {
+				t.Fatalf("recordPull: %v", err)
+			}
+			return normalizeDelta(lastDelta(t, f), "")
+		}},
 	}
 }
 

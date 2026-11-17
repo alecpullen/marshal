@@ -55,17 +55,36 @@ daemon), `fleet` (the fleet screen on the local daemon), `history`, `plugin`,
 ### Web control plane
 
 ```bash
-cd web/ui && npm install && npm run build   # writes web/bridge/static/
-go build ./cmd/webbridge                    # embeds the built assets
+cd app && flutter build web --base-href / --output ../web/bridge/static-next
+go build ./cmd/webbridge                    # embeds the Studio
 ```
 
-The SPA is baked in with `//go:embed`, so a change under `web/ui/src` is
-**invisible until `npm run build` reruns and the binary is rebuilt**.
+The Studio is the Flutter app in `app/` (`docs/studio-flutter/`), and `/`
+serves it from F8 on. `web/bridge/static-next/` is its build; in a Go-only
+checkout it holds a placeholder index. The app job and the release build both
+run that command before building `webbridge`, because `//go:embed` bakes it in.
+
+The Svelte Studio is frozen from F2 on: bug fixes only. For the length of the
+trial release it is served beside the Studio under `/classic/`, and `/next/…`
+redirects permanently to the same place at `/`. Its build carries that prefix:
+
+```bash
+cd web/ui && npm install && npm run build -- --base=/classic/
+go build ./cmd/webbridge
+```
+
+`web/bridge/static/` is that build, and the web job checks its committed copy
+against a fresh one. The SPA is baked in with `//go:embed`, so a change under
+`web/ui/src` is **invisible until `npm run build` reruns and the binary is
+rebuilt**.
 
 `web/bridge/contract` holds the fleet loop's wire types. `web/ui/src/lib/contract.ts`
 is generated from it: regenerate with
 `go test ./web/bridge/contract/tsgen -run TestTypeScriptContractIsCurrent -update`.
-`npm run check` type-checks the web UI.
+`npm run check` type-checks the web UI. The same package generates the app's
+Dart module, `app/lib/src/client/contract.g.dart`: regenerate with
+`go test ./web/bridge/contract/dartgen -run TestDartContractIsCurrent -update`.
+Both currency tests fail on a contract change that is not regenerated.
 
 `webbridge --profile local` is the user's local daemon (P4): a unix socket,
 host processes only, and no container machinery. Each project runs its own
@@ -213,6 +232,9 @@ Tools & safety
   internal/tools/native/sudo.go   the one privileged-execution path: password on stdin,
                            never argv or env, and no PTY
   internal/tools/{patch,policy,mcp,desktop}
+  internal/capture/         display detection and the grim/screencapture backends
+                           behind `image.capture`; the image producers are
+                           `image.view`, `image.capture` and `browser.screenshot`
   internal/permissions/     tool permission rules, approval-pattern derivation
   internal/{hooks,plugins}/ user hooks and third-party plugin loading
   internal/sandbox/         restricted, container, and passthrough execution backends

@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // Run kinds accepted by StartRun.
@@ -141,16 +143,8 @@ func (f *Fleet) dispatchRun(ctx context.Context, rt *agentRuntime, agentID, meth
 	}
 }
 
-type runListEntry struct {
-	AgentID string          `json:"agentId"`
-	Name    string          `json:"name,omitempty"`
-	Project string          `json:"project"`
-	Run     json.RawMessage `json:"run"`
-	// At is when the digest arrived, in Unix milliseconds like the run
-	// delta and the usage rows.
-	At    int64  `json:"at"`
-	Error string `json:"error,omitempty"`
-}
+// runListEntry is contract.RunListEntry: one run as GET /api/runs lists it.
+type runListEntry = contract.RunListEntry
 
 // listRuns reports every agent that has produced a run digest, newest
 // first. The digest is the last run_progress the agent sent, so the Runs

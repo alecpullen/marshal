@@ -133,8 +133,8 @@ failing check on a given pull request to be fixed.
     "A worker is on it" with Watch and Stop.
 12. **One click.** Fix with a worker posts the dispatch with no further
     input. The caret beside it is a `Menu` with exactly: Investigate only;
-    Fix with a note; Choose the worker; Always fix failures automatically
-    in this project. The last changes the setting in decision 7 and says so.
+    Fix with a note; Always fix failures automatically in this project. The
+    last changes the setting in decision 7 and says so.
 13. **The review head.** A thread with a ready pull request opens with it
     at the top of the conversation: title and head, each check by name,
     reviews, the narrated report when there is one, then Review changes,
@@ -200,3 +200,203 @@ Suggested pull requests, in order.
   writes refused.
 - The default time and cost limits for a user-requested fix; start from
   `CIFixerSettings`' defaults.
+
+## Implementation record (F5.1)
+
+Landed by [plan 1](plans/2026-11-17-f5-1-pulls-bridge-plan.md): the bridge half
+only. Everything is under `web/`, and `TestWebIsStdlibOnly` still holds.
+
+- **Records.** `contract.PullRecord`, keyed `<repoId>#<number>`, in fleet state
+  at `workspaceVersion` 12. A version-11 file loads with no records, and a save
+  from one writes 12 with no `pulls` key. Written by the exit path (an agent's
+  pull request, and the CI fixer's and review bot's as their automations'),
+  when the factory controller journals a new `FactoryPR`, and backfilled once
+  per source — agents at `StartPoller`, factory items from
+  `SetFactoryController` itself, so a poller that starts before the controller
+  is wired does not spend the factory's backfill on a nil controller. The
+  controller must still be wired before `StartPoller`, because the observer
+  reads it without a lock; `cmd/webbridge` does that. A backfill adds only what
+  is missing.
+- **Checks.** `Forge.ListChecks` for GitHub (check runs) and Gitea/Forgejo
+  (commit statuses, newest report per context), mapped to
+  `passed|failed|running|pending`. A credential that is not a PAT returns
+  `ErrChecksUnavailable`, and the record carries the reason in
+  `checksUnavailable`; it is never shown as passing.
+- **Observation.** `observePulls` re-reads a record every 30 s while a check is
+  running or pending and every 5 min otherwise. A moved head replaces `headSha`
+  and clears the checks before any new ones are stored, so an old head's
+  evidence can never be shown as current. A pull request that is no longer in
+  the repo's open list was closed or merged, and its record is removed. A
+  factory item's record copies the item's `FactoryPR` and its round's
+  `FactoryCI`, and is never polled: the controller already asked the forge.
+- **Index.** `GET /api/pulls` (`{"pulls": [...]}`) and
+  `GET /api/pulls/{id}` — the detail adds each failing check's log tail and a
+  factory item's narrated report. `derivePullState` yields `ready`, `failing`,
+  `in_progress`, `being_fixed` or `checks_unavailable`. Every change is a
+  `pull` delta on the fleet stream (`kind: "pull"`, with the record or the
+  removed id); a poll that finds nothing but a newer observation time changes
+  nothing on the stream.
+- **Fix dispatch.** `POST /api/pulls/{id}/fix` names a failing check and
+  answers at once with the record; the work is asynchronous.
+  `POST /api/pulls/{id}/fix/stop` stops it. A second request is refused 409 with
+  the running fix's id. A factory item's pull request is repaired by the
+  factory's own round, and one more round is granted — reason "requested by the
+  user" — only when the allowance is spent. Any other pull request runs the CI
+  fixer's own recipe against the record's head branch and pushes to that same
+  branch, under the project's `CIFixerSettings` limits or 30 minutes and 2 USD,
+  with `forbiddenChange` unchanged. A dispatch is bound to the head it was asked
+  about: if the head has moved when the worker starts, the fix is cancelled and
+  reported. Every dispatch, stop, granted round and outcome is audited with who
+  asked.
+- **Outcomes.** A pushed fix clears the fix and leaves no ask; the record is in
+  progress until the new head's checks report. Did not reproduce, gave up, a
+  forbidden change, stopped, a moved head and every investigate-only result
+  leave an inbox item of kind `pull` naming the pull request, the check, what
+  was tried, the finding and what the user can do.
+- **Automatic fixing.** `autoFix` on the project's `Automations`, default off.
+  When on, the observer dispatches a fix for the first failing check of that
+  project's non-factory pull requests, once per head. A factory item's pull
+  request is never fixed this way: the factory already repairs inside its
+  allowance.
+
+### Choices the plan left to the implementation
+
+- **The ask's payload.** `contract.PullAsk` (`pull`, `check`, `outcome`,
+  `tried`, `finding`, `action`, `at`) rides `InboxItem.Pull` under the `pull`
+  kind. Asks live in fleet state beside the records, one per pull request: a new
+  dispatch replaces the last one, and removing the record removes its ask. There
+  is no dismissal route in this plan; the app's Inbox is what closes them.
+- **Investigate-only.** It runs the same `fix-ci` recipe, with the prompt told
+  not to change a file, and the bridge refuses the outcome whatever the run did:
+  nothing is pushed, the worker is discarded, and the ask always carries the
+  finding. `web/` has no per-session write-deny seam (the `session/new` policy's
+  `allow` list is a command allow-list, not a tool allow-list), so "refused by
+  policy" is enforced at the outcome rather than in the sandbox.
+- **The note.** It is appended to the recipe's log input, which reaches the same
+  rendered prompt; the `fix-ci` recipe declares the inputs it accepts and
+  refuses unknown ones.
+- **Closed or merged.** `Forge.GetPR` reports no state, so the observer asks the
+  repo's open list once per pass and treats absence as closure. Several records
+  on one repo share that one listing.
+- **The once-per-head marker for automatic fixing** is in memory
+  (`autoState.pullsAutoFix`), not in the record: the persisted format is the
+  plan's. After a restart a head may be tried once more, and the single-fix rule
+  refuses it while a fix runs.
+- **Stopping a factory fix** issues the factory's own `stop` command for the
+  item, because the worker is the factory's implementer; any other fix stops by
+  discarding its worker.
+
+### Files the plan named that this work did not touch
+
+- **`test/contract/pulls.json`** (task 1) does not exist, because nothing
+  consumes it. The shared fixtures under `test/contract/` pair a Go test that
+  decodes a contract document with a Dart test that decodes it — today only
+  `daemon-status.json`, used by `cmd/marshal` and `app/test/status_test.dart`.
+  The app's pull-request model is tasks 6–8 of this phase, not this plan, so the
+  fixture would have no second reader. The "pull" wire itself is pinned in
+  `web/bridge/testdata/contract`, including a `delta_pull` recording beside the
+  other delta kinds.
+- **`web/bridge/fleetevents.go`** (task 4) is untouched: the delta's emission
+  lives with the record it announces, in `pulls.go` (`emitPull`,
+  `emitPullRemoved`), and `fleetevents.go` needed no change for it.
+- **The review bot's file** (task 2) is untouched by design: the review bot
+  opens no pull request. When one of its pulls ships, the exit path records it
+  with origin automation `review-bot`, which is `pulls.go`'s
+  `recordExitPull`.
+
+## Implementation record (F5.2)
+
+Landed by [plan 2](plans/2026-11-17-f5-2-pulls-app-plan.md): the app half.
+Everything is under `app/`, and the boundaries hold —
+`TestTUIStaysOnTheClientSeam`'s `ui/ never imports client/` caught the first
+draft of the card mapping and it was moved into `PullView`.
+
+- **Client and model.** `BridgeClient` gained `pulls`, `pull`, `fixPull`,
+  `stopPullFix`, `mergeAgent` and `mergeFactoryItem`, plus
+  `setProjectAutoFix`, which reads a project's whole settings document and
+  writes it back with `automations.autoFix` changed: the settings route
+  replaces the document whole, so sending one key would drop every other
+  setting. `PullsStore` is the one writer of pull state: the index per host,
+  `pull` deltas from the same fleet stream, a read that cannot undo a delta
+  that landed while it was in flight, and a moved head that replaces the
+  record wholesale. It also follows `FleetStore`, because a record's thread is
+  read from the fleet and a view that says "the agent is running" has to
+  follow it. `PullsModel` groups by state, builds the one-line check summary,
+  dispatches a fix in one click, shows a 409 as the running fix rather than an
+  error, stops a fix, merges, sends back and writes the project's auto-fix
+  setting. `InboxModel` maps `pull` inbox items to asks with Open, Try again
+  and Dismiss.
+- **Card and control.** `PrCard` has its five states — ready, failing, in
+  progress, being fixed and checks unavailable — and takes its check summary
+  from the model, so one sentence has one spelling. A dispatch in flight reads
+  `Sending…` with the primary disabled; a refusal sits above the buttons in
+  `err`. `ui/pulls/fix_control.dart` is the one place a card's actions are
+  built, with exactly three caret items.
+- **The place.** `PullsPlace` groups in the spec's order, omits empty groups,
+  and carries every §7 state. The sidebar row is no longer planned and carries
+  the ready count.
+- **Elsewhere.** A thread opens with the review head (ready) or the card
+  (failing); Overview lists ready and failing under Needs you with the place
+  linked; the Inbox has a Ready filter; the Changes footer says what the change
+  shipped as.
+- **Checks unavailable** is its own card state with the reason in the summary
+  line, a `border` edge and a `muted` mark, and no Fix button: nothing is
+  failing that a worker could take.
+
+### Choices the plan left to the implementation
+
+- **Dismiss.** The bridge has no dismissal route (F5.1), so a pull ask's
+  Dismiss is the app's: the ask is hidden until the bridge writes a new one,
+  which carries a new `at`. The card says nothing it has not done.
+- **Choosing the worker is not offered.** The bridge dispatches a fix on the
+  project's own routing and ignores `PullFixRequest.Routing`, and routing a
+  fix to a chosen worker needs an agent-prompt path the bridge does not have,
+  so the caret does not offer the option at all: three items, every one of
+  which dispatches or changes a setting.
+- **Automatic fixing** is written as a one-way "turn it on" from the caret and
+  confirmed in a sheet that says what happens next; turning it off is
+  Automations'. The settings document is round-tripped whole, so the other
+  automations survive.
+- **Send back** steers a turn in flight and prompts an idle agent: after
+  shipping, the agent that made the pull request has finished its turn, and
+  steering one would redirect nothing. Both carry the same text. The button is
+  disabled with a tooltip when no thread is left to hear it.
+- **Open on forge** is drawn disabled: the app's lanes have no URL opener, and
+  a button that cannot open anything is not drawn as working. A later phase
+  with a browser integration wires it.
+- **The review head's report** appears when the record carries one. Only the
+  detail route fills it and only a factory item has one, so an agent thread
+  shows none until F6's work items read the detail route.
+- **The kit gained `AskKind.pull`** — the ask a failed fix leaves — with its
+  design-system.md entry, a gallery specimen and regenerated Linux goldens
+  (§10).
+
+### Unfinished, and what could not be verified
+
+- **Merge** is the agent's own route when an agent shipped the pull request.
+  A factory item's merge is **not offered on the pull request surfaces**: the
+  factory's `merge_and_complete` names the pull request's reviewed node id, the
+  bridge refuses a blank one (400) and refuses a missing run choice (409), and
+  `contract.PullRecord` carries no node id — so the request those surfaces could
+  build is one the bridge always answers. The earlier build sent exactly that
+  (`'nodeId': ''`), which no test covered and no bridge accepts. Merge is
+  therefore drawn disabled on the card and the review head, with a tooltip
+  saying where the merge lives, and `PullsModel.merge` refuses the call rather
+  than posting it. The agent route posts unchanged, and
+  `test/model/pulls_model_test.dart` pins both.
+- **A work item's merge is performed from its thread** (F6). The item's own
+  record of the reviewed pull request — `FactoryItem.PRs[].NodeID` with its
+  repo, number, reviewed head and base — is the only reviewed identity the app
+  holds, so `FactoryStore.mergeAndComplete` resolves it there and sends it with
+  the run choice the bridge requires while the item's run is active. The thread
+  draws Merge and complete disabled, with the reason, when the item links no
+  open pull request, rather than posting a command the bridge would refuse.
+  `test/ui/factory/item_asks_test.dart` pins the posted node id, the run choice,
+  and the disabled control.
+- **The integration flow** (`app/integration_test/f5_test.dart`) needs a device
+  with a display and a Linux CMake/GTK3 toolchain, which this environment does
+  not have: `flutter test integration_test -d linux` and
+  `flutter build linux --debug` were not run. The same flow — a failing check,
+  one click, the pushed head, the passing check, the card reaching ready — is
+  driven by `test/ui/pulls/fix_dispatch_test.dart`, `pulls_place_test.dart` and
+  the model tests, which run everywhere.

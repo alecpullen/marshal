@@ -134,7 +134,7 @@ func TestPolicySnapshotSharesAccessRevisionAndCurrentRules(t *testing.T) {
 	owner := interactionState(t)
 	owner.AddSessionRule("git status")
 
-	cfg, rules, rev := owner.PolicySnapshot()
+	cfg, rules, _, rev := owner.PolicySnapshot()
 	if rev != owner.InteractionState().Revision {
 		t.Fatalf("snapshot revision = %d, want %d", rev, owner.InteractionState().Revision)
 	}

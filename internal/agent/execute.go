@@ -146,7 +146,7 @@ func (r *Runner) shellInputFor(toolName string, argsMap map[string]interface{}) 
 		if r.State == nil {
 			return policy.ShellInput{}, false
 		}
-		cfg, _, _ := r.State.PolicySnapshot()
+		cfg, _, _, _ := r.State.PolicySnapshot()
 		command = strings.TrimSpace(cfg.Commands.Test)
 		if command == "" {
 			return policy.ShellInput{}, false

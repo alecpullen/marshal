@@ -20,31 +20,10 @@ func newFactoryWorkers(fleet *Fleet) *factoryWorkers { return &factoryWorkers{fl
 // global settings, which is not what was approved.
 var ErrFactoryUnsupported = errors.New("factory worker settings unsupported")
 
-// legacyFactoryWorker is the worker object a journal written before approved
-// subagent settings carried: the same fields, in the same order, without the
-// snapshot a worker now binds.
-type legacyFactoryWorker struct {
-	AgentID       string `json:"agentId"`
-	SessionID     string `json:"sessionId"`
-	Role          string `json:"role"`
-	SpawnEffectID string `json:"spawnEffectId"`
-	Parked        bool   `json:"parked"`
-}
-
-// MarshalJSON keeps a worker that bound nothing byte-identical to the record it
-// always wrote. The journal is replayed by re-marshalling each record and
-// comparing it with the stored bytes, so a record written before a worker bound
-// its snapshot has to write exactly the keys it always did. It is the same rule
-// FactoryApproval.MarshalJSON follows, for the same reason.
-func (w FactoryWorker) MarshalJSON() ([]byte, error) {
-	if w.ApprovalRevision == 0 && w.Subagents == (FactorySubagentSettings{}) {
-		return json.Marshal(legacyFactoryWorker{w.AgentID, w.SessionID, w.Role, w.SpawnEffectID, w.Parked})
-	}
-	// The alias keeps this function off the value's own method set.
-	type plain FactoryWorker
-	return json.Marshal(plain(w))
-}
-
+// legacyFactoryWorker was the worker object a journal written before approved
+// subagent settings carried. It moved into the contract with FactoryWorker,
+// because its marshaller is a method of that type (contract/factory.go).
+//
 // factorySubagentSettingsSupported reports whether the runtime binds and
 // enforces a session's child-settings snapshot. It reads the same control
 // session's session/status that factoryAPI.factorySessionSubagents reads, so
@@ -690,7 +669,7 @@ func (w *factoryWorkers) Continue(ctx context.Context, item FactoryItem, effect 
 	}
 	result.Report = &report
 	result.Worker = &worker
-	result.continuation = d.ContinuationID
+	result.Continuation = d.ContinuationID
 	if report.Outcome == "needs_input" {
 		result.Confirmed = true
 		return result, nil

@@ -3,38 +3,65 @@ package bridge
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"strings"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
-// FactorySubagentOverrides is one role's subagent settings as a draft or a
-// project's factory defaults state them. Every field is a pointer because the
-// resolution chain distinguishes "unset" from "stated": a missing override
-// inherits the next source, and an explicit false or an explicit empty model
-// is a choice that is preserved.
-//
-// A nil Model or a Model pointing at "" both mean normal child routing: only
-// an explicit override is ever written here, so an empty string is a stated
-// choice rather than an absence.
-type FactorySubagentOverrides struct {
-	Enabled     *bool   `json:"enabled,omitempty"`
-	Model       *string `json:"model,omitempty"`
-	Concurrency *int    `json:"concurrency,omitempty"`
-}
-
-// FactorySubagentSettings is one role's resolved subagent settings. It is what
-// the resolution chain produced for a draft, and what an approval revision
-// freezes: a later default change cannot reach an active revision through it.
-//
-// An approval journalled before subagent settings existed carries the zero
-// value, which is why a zero Concurrency means "no snapshot" rather than a
-// cap of zero.
-type FactorySubagentSettings struct {
-	Enabled     bool   `json:"enabled"`
-	Model       string `json:"model,omitempty"`
-	Concurrency int    `json:"concurrency"`
-}
+// The factory item and its parts are contract types: web/bridge/contract
+// declares them and both clients are generated from that declaration (F6
+// decision 1). Each name below is an alias, so bridge code is unchanged and
+// the journal's bytes stay exactly as they were — the declarations preserve
+// field order, tags and the approval marshaller.
+type (
+	// FactorySubagentOverrides is contract.FactorySubagentOverrides.
+	FactorySubagentOverrides = contract.FactorySubagentOverrides
+	// FactorySubagentSettings is contract.FactorySubagentSettings.
+	FactorySubagentSettings = contract.FactorySubagentSettings
+	// FactoryConfig is contract.FactoryConfig.
+	FactoryConfig = contract.FactoryConfig
+	// FactoryCreate is contract.FactoryCreate.
+	FactoryCreate = contract.FactoryCreate
+	// FactoryApproval is contract.FactoryApproval.
+	FactoryApproval = contract.FactoryApproval
+	// FactoryGrant is contract.FactoryGrant.
+	FactoryGrant = contract.FactoryGrant
+	// FactoryWorker is contract.FactoryWorker.
+	FactoryWorker = contract.FactoryWorker
+	// FactoryPR is contract.FactoryPR.
+	FactoryPR = contract.FactoryPR
+	// FactoryCheckKey is contract.FactoryCheckKey.
+	FactoryCheckKey = contract.FactoryCheckKey
+	// FactoryCheck is contract.FactoryCheck.
+	FactoryCheck = contract.FactoryCheck
+	// FactoryCI is contract.FactoryCI.
+	FactoryCI = contract.FactoryCI
+	// FactoryReport is contract.FactoryReport.
+	FactoryReport = contract.FactoryReport
+	// FactoryNarration is contract.FactoryNarration.
+	FactoryNarration = contract.FactoryNarration
+	// FactoryExcerpt is contract.FactoryExcerpt.
+	FactoryExcerpt = contract.FactoryExcerpt
+	// FactoryRound is contract.FactoryRound.
+	FactoryRound = contract.FactoryRound
+	// FactoryDelegatedTurn is contract.FactoryDelegatedTurn.
+	FactoryDelegatedTurn = contract.FactoryDelegatedTurn
+	// FactoryEffect is contract.FactoryEffect.
+	FactoryEffect = contract.FactoryEffect
+	// FactoryOutcome is contract.FactoryOutcome.
+	FactoryOutcome = contract.FactoryOutcome
+	// FactoryDecision is contract.FactoryDecision.
+	FactoryDecision = contract.FactoryDecision
+	// FactoryProvenance is contract.FactoryProvenance.
+	FactoryProvenance = contract.FactoryProvenance
+	// FactoryEvent is contract.FactoryEvent.
+	FactoryEvent = contract.FactoryEvent
+	// FactoryItem is contract.FactoryItem.
+	FactoryItem = contract.FactoryItem
+	// FactoryCommand is contract.FactoryCommand.
+	FactoryCommand = contract.FactoryCommand
+)
 
 // factorySubagentFreeze is the resolved pair an approval revision records. It
 // is computed outside the journal's lock and carried on the command that
@@ -54,251 +81,8 @@ type factorySubagentFreeze struct {
 // NoRequiredCIAcknowledged are absent because their false is a meaningful
 // choice, and the handoff's plain FactoryConfig cannot tell "unset" from
 // "explicitly false".
-type FactoryDefaults struct {
-	TargetBranch         string            `json:"targetBranch,omitempty"`
-	Workspace            string            `json:"workspace,omitempty"`
-	HostID               string            `json:"hostId,omitempty"`
-	ImplementerRouting   json.RawMessage   `json:"implementerRouting,omitempty"`
-	ReviewerRouting      json.RawMessage   `json:"reviewerRouting,omitempty"`
-	ReviewerInstructions string            `json:"reviewerInstructions,omitempty"`
-	ExpectedChecks       []FactoryCheckKey `json:"expectedChecks,omitempty"`
-	MaxRounds            int               `json:"maxRounds,omitempty"`
-	CIPollSeconds        int               `json:"ciPollSeconds,omitempty"`
-	CIWaitSeconds        int               `json:"ciWaitSeconds,omitempty"`
-	// ImplementerSubagents and ReviewerSubagents are the project's subagent
-	// overrides. They are pointers for the same reason the handoff's are: an
-	// absent field inherits the session's reported defaults, and an explicit
-	// false is not an absence.
-	ImplementerSubagents *FactorySubagentOverrides `json:"implementerSubagents,omitempty"`
-	ReviewerSubagents    *FactorySubagentOverrides `json:"reviewerSubagents,omitempty"`
-}
-
-type FactoryConfig struct {
-	RepoID                   string            `json:"repoId"`
-	ProjectRoot              string            `json:"projectRoot"`
-	HostID                   string            `json:"hostId"`
-	TargetBranch             string            `json:"targetBranch"`
-	Workspace                string            `json:"workspace"`
-	Native                   bool              `json:"native"`
-	ImplementerRouting       json.RawMessage   `json:"implementerRouting"`
-	ReviewerRouting          json.RawMessage   `json:"reviewerRouting"`
-	ReviewerInstructions     string            `json:"reviewerInstructions"`
-	ImplementerAuto          bool              `json:"implementerAuto"`
-	ExpectedChecks           []FactoryCheckKey `json:"expectedChecks"`
-	NoRequiredCIAcknowledged bool              `json:"noRequiredCiAcknowledged"`
-	MaxRounds                int               `json:"maxRounds"`
-	CIPollSeconds            int               `json:"ciPollSeconds"`
-	CIWaitSeconds            int               `json:"ciWaitSeconds"`
-	// ImplementerSubagents and ReviewerSubagents hold only the work item's
-	// explicit subagent overrides: nil means inherit. Nothing is copied onto
-	// the draft from the project's defaults, so a draft follows a project
-	// default it never stated while an override it does state stays fixed.
-	// They are omitted when nil, so a journal written before they existed
-	// keeps its bytes.
-	ImplementerSubagents *FactorySubagentOverrides `json:"implementerSubagents,omitempty"`
-	ReviewerSubagents    *FactorySubagentOverrides `json:"reviewerSubagents,omitempty"`
-}
-
-type FactoryCreate struct {
-	RequestID string        `json:"requestId"`
-	Title     string        `json:"title"`
-	Plan      string        `json:"plan"`
-	Spec      string        `json:"spec"`
-	Config    FactoryConfig `json:"config"`
-	// EditSnapshot is the reviewed selection a planner handoff bound to this
-	// draft. It is optional and absent on every draft a Studio surface creates,
-	// so those journals keep their bytes. The field is a pointer because
-	// "no selection" and "an empty selection" are different approvals.
-	EditSnapshot *EditSnapshot `json:"editSnapshot,omitempty"`
-}
-
-type FactoryApproval struct {
-	Revision uint64 `json:"revision"`
-	Plan     string `json:"plan"`
-	Spec     string `json:"spec"`
-	// PlanHash binds the exact plan, spec and selection this revision was
-	// approved with (see factoryApprovalHash). An approval without a snapshot
-	// holds the digest it always has.
-	PlanHash     string        `json:"planHash"`
-	Config       FactoryConfig `json:"config"`
-	EditSnapshot *EditSnapshot `json:"editSnapshot,omitempty"`
-	// ImplementerSubagents and ReviewerSubagents are the subagent settings
-	// this revision froze: runtime defaults, then the project's override, then
-	// the draft's override, resolved when the approval was written. They are
-	// values, not pointers, because an approval states what was approved.
-	// An approval journalled before they existed carries the zero value and
-	// keeps its bytes; nothing re-derives them for it.
-	ImplementerSubagents FactorySubagentSettings `json:"implementerSubagents"`
-	ReviewerSubagents    FactorySubagentSettings `json:"reviewerSubagents"`
-	ApprovedAt           time.Time               `json:"approvedAt"`
-}
-
-// legacyFactoryApproval is the approval object a journal written before
-// subagent settings carried: the same fields, in the same order, without the
-// two settings snapshots.
-type legacyFactoryApproval struct {
-	Revision     uint64        `json:"revision"`
-	Plan         string        `json:"plan"`
-	Spec         string        `json:"spec"`
-	PlanHash     string        `json:"planHash"`
-	Config       FactoryConfig `json:"config"`
-	EditSnapshot *EditSnapshot `json:"editSnapshot,omitempty"`
-	ApprovedAt   time.Time     `json:"approvedAt"`
-}
-
-// MarshalJSON keeps a journal written before subagent settings existed
-// byte-identical. The journal is replayed by re-marshalling each record and
-// comparing it with the stored bytes, so an approval that froze nothing has to
-// write exactly the keys it always did: the two settings snapshots are omitted
-// when both are zero, which is also the value a legacy record decodes to.
-//
-// An approval that froze settings writes them, and only an approval that froze
-// settings can be enforced.
-func (a FactoryApproval) MarshalJSON() ([]byte, error) {
-	if a.ImplementerSubagents == (FactorySubagentSettings{}) && a.ReviewerSubagents == (FactorySubagentSettings{}) {
-		return json.Marshal(legacyFactoryApproval{
-			Revision:     a.Revision,
-			Plan:         a.Plan,
-			Spec:         a.Spec,
-			PlanHash:     a.PlanHash,
-			Config:       a.Config,
-			EditSnapshot: a.EditSnapshot,
-			ApprovedAt:   a.ApprovedAt,
-		})
-	}
-	// The alias keeps this function off the value's own method set.
-	type plain FactoryApproval
-	return json.Marshal(plain(a))
-}
-
-type FactoryGrant struct {
-	ID               string    `json:"id"`
-	Reason           string    `json:"reason"`
-	AdditionalRounds int       `json:"additionalRounds"`
-	At               time.Time `json:"at"`
-}
-
-type FactoryWorker struct {
-	AgentID       string `json:"agentId"`
-	SessionID     string `json:"sessionId"`
-	Role          string `json:"role"`
-	SpawnEffectID string `json:"spawnEffectId"`
-	Parked        bool   `json:"parked"`
-	// ApprovalRevision and Subagents bind the snapshot this worker was started
-	// with: the approval revision it came from and that revision's settings for
-	// this worker's own role. A worker started before they existed carries the
-	// zero value for both, and FactoryWorker.MarshalJSON keeps that worker's
-	// record byte-identical so an older journal still replays.
-	ApprovalRevision uint64                  `json:"approvalRevision,omitempty"`
-	Subagents        FactorySubagentSettings `json:"subagents"`
-}
-
-type FactoryPR struct {
-	Number  int    `json:"number"`
-	URL     string `json:"url"`
-	NodeID  string `json:"nodeId"`
-	HeadRef string `json:"headRef"`
-	BaseRef string `json:"baseRef"`
-	HeadSHA string `json:"headSha"`
-	BaseSHA string `json:"baseSha"`
-	State   string `json:"state"`
-	Draft   bool   `json:"draft"`
-}
-
-type FactoryCheckKey struct {
-	Kind  string `json:"kind"`
-	Name  string `json:"name"`
-	AppID int64  `json:"appId"`
-}
-
-type FactoryCheck struct {
-	Key        FactoryCheckKey `json:"key"`
-	ID         string          `json:"id"`
-	SHA        string          `json:"sha"`
-	Status     string          `json:"status"`
-	Conclusion string          `json:"conclusion"`
-	URL        string          `json:"url"`
-	LogTail    string          `json:"logTail"`
-	ObservedAt time.Time       `json:"observedAt"`
-}
-
-type FactoryCI struct {
-	HeadSHA    string         `json:"headSha"`
-	Checks     []FactoryCheck `json:"checks"`
-	Complete   bool           `json:"complete"`
-	ObservedAt time.Time      `json:"observedAt"`
-}
-
-type FactoryReport struct {
-	OperationID      string            `json:"operationId"`
-	Outcome          string            `json:"outcome"`
-	Summary          string            `json:"summary"`
-	Question         string            `json:"question"`
-	Reason           string            `json:"reason"`
-	BaseSHA          string            `json:"baseSha"`
-	HeadSHA          string            `json:"headSha"`
-	InputsAccessible bool              `json:"inputsAccessible"`
-	Findings         []ReviewFinding   `json:"findings"`
-	Narration        *FactoryNarration `json:"narration,omitempty"`
-}
-
-// FactoryNarration is the engineer's account of the change: the issue and the
-// proposed solution, the reasoning behind the implementation, and the
-// verification that backs it.
-//
-// The sections are the approved list. Constraints are narrated inside the
-// approach and the implementation choice, because they are the reasons those
-// two sections take the shape they do.
-type FactoryNarration struct {
-	Issue             string           `json:"issue"`
-	Approach          string           `json:"approach"`
-	ExistingBehaviour string           `json:"existingBehaviour"`
-	Alternatives      string           `json:"alternatives"`
-	Tradeoffs         string           `json:"tradeoffs"`
-	Choice            string           `json:"choice"`
-	Verification      string           `json:"verification"`
-	Limitations       string           `json:"limitations"`
-	Excerpts          []FactoryExcerpt `json:"excerpts,omitempty"`
-}
-
-// FactoryExcerpt is a selected piece of code that supports the narration. It
-// is a selection, not a diff: the narration avoids narrating every changed
-// line.
-type FactoryExcerpt struct {
-	Path string `json:"path"`
-	Lang string `json:"lang,omitempty"`
-	Code string `json:"code"`
-}
-
-type FactoryRound struct {
-	Number            int            `json:"number"`
-	ApprovalRevision  uint64         `json:"approvalRevision"`
-	ImplementEffectID string         `json:"implementEffectId"`
-	BaseSHA           string         `json:"baseSha"`
-	HeadSHA           string         `json:"headSha"`
-	TreeSHA           string         `json:"treeSha"`
-	CI                *FactoryCI     `json:"ci"`
-	Implementation    *FactoryReport `json:"implementation"`
-	Review            *FactoryReport `json:"review"`
-	StartedAt         time.Time      `json:"startedAt"`
-	FinishedAt        time.Time      `json:"finishedAt"`
-}
-
-// FactoryDelegatedTurn is one worker turn's delegated child work: the children
-// the turn launched, and how far they have been proven. It is journalled beside
-// the effect that dispatched the turn, so the item keeps the effect and the
-// candidate identity it was dispatched with until its children are settled.
-// The waiting state is not an outcome: the report the turn wrote before those
-// children settled is early, and is never the effect's result.
-type FactoryDelegatedTurn struct {
-	EffectID       string  `json:"effectId"`
-	WorkerID       string  `json:"workerId"`
-	SessionID      string  `json:"sessionId"`
-	ParentTurnID   string  `json:"parentTurnId"`
-	ChildIDs       []int64 `json:"childIds"`
-	ContinuationID string  `json:"continuationId,omitempty"`
-	State          string  `json:"state"` // waiting, prepared, dispatched, settled, uncertain
-}
+// FactoryDefaults is contract.FactoryDefaults: the defaults a handoff inherits.
+type FactoryDefaults = contract.FactoryDefaults
 
 // The delegated turn's states. A waiting turn is not an outcome: the report it
 // wrote is early. A continuation is journaled as prepared before anything is
@@ -336,49 +120,6 @@ type FactoryChildSession struct {
 	Children  []FactoryChild `json:"children,omitempty"`
 }
 
-type FactoryEffect struct {
-	// Outcome retains accepted stop reasons and confirmed adapter evidence.
-	Outcome          *FactoryOutcome `json:"outcome"`
-	ID               string          `json:"id"`
-	Kind             string          `json:"kind"`
-	Status           string          `json:"status"`
-	WorkerRole       string          `json:"workerRole"`
-	Round            int             `json:"round"`
-	ApprovalRevision uint64          `json:"approvalRevision"`
-	Worker           *FactoryWorker  `json:"worker"`
-	ExpectedHead     string          `json:"expectedHead"`
-	ExpectedBase     string          `json:"expectedBase"`
-	CreatedAt        time.Time       `json:"createdAt"`
-	// Delegated is the turn's launched child work while it is not proven
-	// settled, and the waiting state Studio shows beside the effect's status.
-	// It is omitted when nil, so a record journalled before delegated turns
-	// existed keeps its bytes.
-	Delegated *FactoryDelegatedTurn `json:"delegated,omitempty"`
-}
-
-type FactoryOutcome struct {
-	EffectID   string         `json:"effectId"`
-	StopReason string         `json:"stopReason"`
-	Error      string         `json:"error"`
-	HeadSHA    string         `json:"headSha"`
-	TreeSHA    string         `json:"treeSha"`
-	BaseSHA    string         `json:"baseSha"`
-	Worker     *FactoryWorker `json:"worker"`
-	PR         *FactoryPR     `json:"pr"`
-	Report     *FactoryReport `json:"report"`
-	Confirmed  bool           `json:"confirmed"`
-	// Delegated is the waiting turn a worker effect hands back instead of a
-	// result: the turn launched children it did not prove settled, so the report
-	// it wrote before they settled is early and is never applied. It is omitted
-	// when nil, so a completed outcome keeps the bytes it always wrote.
-	Delegated *FactoryDelegatedTurn `json:"delegated,omitempty"`
-	// continuation is the iteration this result was produced for. It is
-	// unexported because it never crosses the wire or the journal: the
-	// delegated turn beside the effect is what persists, and a recovered
-	// outcome is proved from the session's own transcript instead.
-	continuation string
-}
-
 type FactoryObservation struct {
 	Workers         []FactoryWorker `json:"workers"`
 	RuntimeKnown    bool            `json:"runtimeKnown"`
@@ -402,15 +143,6 @@ type FactoryObservation struct {
 	ObservedAt time.Time             `json:"observedAt"`
 }
 
-type FactoryDecision struct {
-	ID        string    `json:"id"`
-	Kind      string    `json:"kind"`
-	Question  string    `json:"question"`
-	Reason    string    `json:"reason"`
-	EffectID  string    `json:"effectId"`
-	CreatedAt time.Time `json:"createdAt"`
-}
-
 // Approval authority origin values, recorded in provenance so an entry says
 // where the authority it acted under came from. Standing authority is what the
 // store itself holds — a grant's approvalAuthority, or a built-in project or
@@ -425,47 +157,6 @@ const (
 	factoryAuthorityOriginStanding             = "standing"
 	factoryAuthorityOriginVerifiedUserDirected = "verified_user_directed"
 )
-
-// FactoryProvenance attributes one journaled factory mutation to the MCP
-// client that caused it. It is optional: an entry written before provenance
-// existed still replays, and an ordinary Studio mutation records none.
-//
-// Action is the capability the mutation was admitted under, RequestID is the
-// client's own request identity (the journal's is namespaced), and Authority
-// is the grant's approvalAuthority or the answer mode the client claimed. It
-// records what the server accepted, which for a user-directed action is a
-// client assertion rather than a verified human instruction.
-type FactoryProvenance struct {
-	ClientID   string `json:"clientId"`
-	ProjectID  string `json:"projectId"`
-	Action     string `json:"action"`
-	RequestID  string `json:"requestId"`
-	Authority  string `json:"authority,omitempty"`
-	DecisionID string `json:"decisionId,omitempty"`
-	// The authenticated built-in principal, when the mutation came from a
-	// session association rather than an MCP client. Every field is optional
-	// and appended last, so a record written before session principals existed
-	// — and a client's own provenance — marshals byte for byte as it always
-	// did. AuthorityOrigin says where Authority came from; it is never claimed
-	// by a caller.
-	InstanceID      string `json:"instanceId,omitempty"`
-	SessionID       string `json:"sessionId,omitempty"`
-	WorkerID        string `json:"workerId,omitempty"`
-	Role            string `json:"role,omitempty"`
-	AuthorityOrigin string `json:"authorityOrigin,omitempty"`
-}
-
-type FactoryEvent struct {
-	Sequence uint64    `json:"sequence"`
-	At       time.Time `json:"at"`
-	Kind     string    `json:"kind"`
-	Message  string    `json:"message"`
-	EffectID string    `json:"effectId"`
-	// Provenance is absent from every entry the Studio surfaces write, and
-	// from every record journalled before it existed, so those bytes are
-	// unchanged.
-	Provenance *FactoryProvenance `json:"provenance,omitempty"`
-}
 
 // factoryPrincipal is the server-authenticated MCP client behind a factory
 // mutation. It is an argument threaded by the caller, never a field on a
@@ -565,80 +256,6 @@ func (b MarshalSessionBinding) principal(action string, access MarshalFactoryAcc
 		Authority:       authority,
 		AuthorityOrigin: factoryAuthorityOriginStanding,
 	}
-}
-
-type FactoryItem struct {
-	ID          string            `json:"id"`
-	Title       string            `json:"title"`
-	State       string            `json:"state"`
-	Stage       string            `json:"stage"`
-	RepoID      string            `json:"repoId"`
-	ProjectRoot string            `json:"projectRoot"`
-	HostID      string            `json:"hostId"`
-	Branch      string            `json:"branch"`
-	BaseSHA     string            `json:"baseSha"`
-	Version     uint64            `json:"version"`
-	Draft       FactoryCreate     `json:"draft"`
-	Approvals   []FactoryApproval `json:"approvals"`
-	// Proposals is the append-only history of plan/specification revisions
-	// proposed against this item. It is optional, so an item journalled
-	// before proposals existed replays unchanged.
-	Proposals []FactoryRevisionProposal `json:"proposals,omitempty"`
-	Grants    []FactoryGrant            `json:"grants"`
-	Rounds    []FactoryRound            `json:"rounds"`
-	Workers   []FactoryWorker           `json:"workers"`
-	PRs       []FactoryPR               `json:"prs"`
-	Effects   []FactoryEffect           `json:"effects"`
-	Decision  *FactoryDecision          `json:"decision"`
-	History   []FactoryEvent            `json:"history"`
-	// Completion is the durable business completion status, which is
-	// independent of State: the work counts as done as far as the user is
-	// concerned, whatever the run happens to be doing. It is optional, so an
-	// item journalled before completion existed replays unchanged, and a nil
-	// record (or one whose status is empty) is open.
-	Completion *FactoryCompletion `json:"completion,omitempty"`
-	CreatedAt  time.Time          `json:"createdAt"`
-	ApprovedAt time.Time          `json:"approvedAt"`
-	UpdatedAt  time.Time          `json:"updatedAt"`
-}
-
-type FactoryCommand struct {
-	RequestID                    string          `json:"requestId"`
-	Kind                         string          `json:"kind"`
-	DecisionID                   string          `json:"decisionId"`
-	Answer                       string          `json:"answer"`
-	Reason                       string          `json:"reason"`
-	ExpectedVersion              uint64          `json:"expectedVersion"`
-	AdditionalRounds             int             `json:"additionalRounds"`
-	Replacement                  *FactoryCreate  `json:"replacement"`
-	ImplementerRouting           json.RawMessage `json:"implementerRouting"`
-	ReviewerRouting              json.RawMessage `json:"reviewerRouting"`
-	ConfirmPreviousWorkerStopped bool            `json:"confirmPreviousWorkerStopped"`
-	// Revision is the structured payload of a plan-revision command:
-	// revision_propose, revision_supersede, revision_reject,
-	// revision_assess_request, revision_assess_claim, revision_assess_result,
-	// revision_assess_retry, revision_authorize, revision_delivery_choice and
-	// revision_follow_up_confirm read it, and every other kind leaves it nil,
-	// so a command those kinds do not carry marshals as it always did.
-	Revision *FactoryRevisionCommand `json:"revision,omitempty"`
-	// Completion is the structured payload of the completion commands:
-	// link_pr reads the pull request it names, refresh_pr_evidence carries
-	// nothing of its own, and the merge kinds read the reviewed set, the
-	// strategy, the completion intent and the run choice. Every other kind
-	// leaves it nil, so a command those kinds do not carry marshals as it
-	// always did.
-	Completion *FactoryCompletionCommand `json:"completion,omitempty"`
-	// SettingsVersion is the settings version the review surface displayed:
-	// the project's settings ETag and the session's reported defaults digest,
-	// as one string. An approval that carries it is refused when either side
-	// has changed since review; an approval that omits it — a legacy client,
-	// or a command replayed from an older journal — proceeds as it always did.
-	SettingsVersion string `json:"settingsVersion,omitempty"`
-	// subagents is the resolved subagent pair an approval freezes, computed
-	// outside the journal's lock and never serialised: it rides the same
-	// append as the approval it belongs to, and a journal replays the item it
-	// stored rather than the command.
-	subagents *factorySubagentFreeze
 }
 
 // FactoryPlanHash binds exact plan and spec bytes, including whitespace.

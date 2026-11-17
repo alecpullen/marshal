@@ -19,7 +19,8 @@ type inboxGroups = contract.InboxGroups
 // contract's type: an intake item carries the whole submission.
 type inboxItem = contract.InboxItem
 
-// computeInbox applies F2's rules to a snapshot and the intake list.
+// computeInbox applies F2's rules to a snapshot, the intake list and the pull
+// requests whose fix could not finish.
 //
 // Each agent lands in the first group it qualifies for: Needs you (pending),
 // Running, Ready to ship (idle with changes and no PR), else Earlier. Each
@@ -27,11 +28,12 @@ type inboxItem = contract.InboxItem
 // updated; the sorts are stable, so equal keys keep the snapshot's order.
 //
 // The queue merges the Needs-you agents at their UpdatedAt with the intake
-// submissions at their CreatedAt, oldest first. Agents are appended before
-// submissions, so a stable sort puts an agent first on a tie.
+// submissions at their CreatedAt and the pull asks at their own time, oldest
+// first. Agents are appended before submissions, so a stable sort puts an agent
+// first on a tie.
 //
 // Every list is non-nil: an empty inbox encodes as [] and never null.
-func computeInbox(agents []AgentStatus, pending []PendingSpawn) inboxView {
+func computeInbox(agents []AgentStatus, pending []PendingSpawn, asks []contract.PullAsk) inboxView {
 	buckets := map[inboxGroupKey][]AgentStatus{
 		inboxNeedsYou: nil,
 		inboxRunning:  nil,
@@ -60,7 +62,7 @@ func computeInbox(agents []AgentStatus, pending []PendingSpawn) inboxView {
 			Ready:    make([]string, 0, len(buckets[inboxReady])),
 			Earlier:  make([]string, 0, len(buckets[inboxEarlier])),
 		},
-		Queue: make([]inboxItem, 0, len(buckets[inboxNeedsYou])+len(pending)),
+		Queue: make([]inboxItem, 0, len(buckets[inboxNeedsYou])+len(pending)+len(asks)),
 	}
 
 	// Agents first, so a stable sort keeps them ahead of a submission that
@@ -71,6 +73,13 @@ func computeInbox(agents []AgentStatus, pending []PendingSpawn) inboxView {
 	for _, p := range pending {
 		sub := pendingSubmission(p)
 		view.Queue = append(view.Queue, inboxItem{Kind: contract.InboxItemIntake, Submission: &sub, At: p.CreatedAt})
+	}
+	for _, a := range asks {
+		ask := a
+		view.Queue = append(view.Queue, inboxItem{
+			Kind: contract.InboxItemPull, Pull: &ask,
+			At: time.UnixMilli(ask.At).UTC(),
+		})
 	}
 	sort.SliceStable(view.Queue, func(i, j int) bool { return view.Queue[i].At.Before(view.Queue[j].At) })
 
@@ -218,4 +227,6 @@ func (f *Fleet) inboxRecomputes() int64 {
 }
 
 // Inbox is the fleet's inbox now.
-func (f *Fleet) Inbox() inboxView { return computeInbox(f.Snapshot(), f.ws.Pending()) }
+func (f *Fleet) Inbox() inboxView {
+	return computeInbox(f.Snapshot(), f.ws.Pending(), f.ws.PullAsks())
+}

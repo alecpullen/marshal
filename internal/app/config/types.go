@@ -25,6 +25,7 @@ type Config struct {
 	Tools         ToolsConfig                           `toml:"tools"`
 	Web           WebConfig                             `toml:"web"`
 	Desktop       DesktopConfig                         `toml:"desktop"`
+	Capture       CaptureConfig                         `toml:"capture"`
 	Daemon        DaemonConfig                          `toml:"daemon"`
 	Swarm         SwarmConfig                           `toml:"swarm"`
 	SDD           SDDConfig                             `toml:"sdd"`
@@ -454,6 +455,14 @@ type DesktopConfig struct {
 	URLDenylist      []string      `toml:"url_denylist"`
 	DefaultTimeout   time.Duration `toml:"default_timeout"`
 	ScreenshotFormat string        `toml:"screenshot_format"`
+}
+
+// CaptureConfig is the desktop-capture surface. Off by default: a process that
+// can photograph the screen is opt-in, never assumed.
+type CaptureConfig struct {
+	Enabled bool          `toml:"enabled"`
+	Backend string        `toml:"backend"` // "" = detect; "sway" | "hyprland" | "darwin"
+	Timeout time.Duration `toml:"timeout"`
 }
 
 type ShellToolConfig struct {

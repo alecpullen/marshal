@@ -430,7 +430,7 @@ func (a *factoryAPI) Command(ctx context.Context, id string, cmd FactoryCommand)
 		if err != nil {
 			return FactoryItem{}, err
 		}
-		cmd.subagents = frozen
+		cmd.ImplementerFreeze, cmd.ReviewerFreeze = &frozen.implementer, &frozen.reviewer
 	}
 	if cmd.Kind == "retry" {
 		if cmd.Replacement != nil {
@@ -476,7 +476,7 @@ func (a *factoryAPI) Command(ctx context.Context, id string, cmd FactoryCommand)
 			if err != nil {
 				return FactoryItem{}, err
 			}
-			cmd.subagents = frozen
+			cmd.ImplementerFreeze, cmd.ReviewerFreeze = &frozen.implementer, &frozen.reviewer
 		}
 	}
 	if cmd.Kind == "revision_follow_up_confirm" {

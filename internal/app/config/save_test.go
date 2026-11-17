@@ -1807,6 +1807,39 @@ func TestSaveRemovesAnsweredModelsDevEnrichment(t *testing.T) {
 	}
 }
 
+// Deleting every permission rule must round-trip as an empty rule set. A nil
+// rules key on load means "keep the defaults", and the default set now carries
+// an image.capture ask rule, so the save has to write an explicit rules = [].
+func TestSaveProjectConfigClearedPermissionRulesStayCleared(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+
+	cfg := Default()
+	if len(cfg.Permissions.Rules) == 0 {
+		t.Fatal("Default().Permissions.Rules is empty; this test pins the cleared-rules clause")
+	}
+	cfg.Permissions.Rules = nil
+
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(raw), "[permissions]") {
+		t.Fatalf("cleared rule set not written; a nil rules key restores the defaults:\n%s", raw)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: filepath.Join(dir, "no-home"), WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.Permissions.Rules) != 0 {
+		t.Fatalf("Permissions.Rules = %+v after reload, want an empty set", loaded.Permissions.Rules)
+	}
+}
+
 // A saved config must never carry the deprecated side_panel sizing keys:
 // the app would then warn about a file it wrote itself on every load.
 func TestSaveWritesOnlyHiddenSidePanelKey(t *testing.T) {

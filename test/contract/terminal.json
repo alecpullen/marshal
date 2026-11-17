@@ -1,0 +1,15 @@
+{
+  "TerminalChunk": {
+    "data": "bWFyc2hhbC8+IA=="
+  },
+  "TerminalInput": {
+    "data": "bHMK"
+  },
+  "TerminalOpened": {
+    "terminalId": "t-1"
+  },
+  "TerminalResize": {
+    "cols": 120,
+    "rows": 32
+  }
+}

@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/imagepayload"
+	"marshal/internal/llm/schema"
 	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/registry"
 )
@@ -19,6 +22,8 @@ type toolSet struct {
 	session        *browser.Session
 	sessionMu      sync.Mutex
 	sessionState   *session.State
+	WorkspaceRoot  string
+	ImageStore     *imagepayload.Store
 }
 
 func (ts *toolSet) getSession(ctx context.Context) (*browser.Session, error) {
@@ -56,12 +61,14 @@ func (ts *toolSet) setActive(active bool, toolName string) {
 // withPage runs fn with the current browser page, marking the session
 // active around the call and restoring idle state afterwards. It
 // centralises the getSession/Page prologue shared by every browser tool.
-func (ts *toolSet) withPage(ctx context.Context, toolName string, fn func(page browser.PageHandle) (registry.ToolResult, error)) (registry.ToolResult, error) {
+// opts is the zero value for every tool but screenshot, which needs a
+// viewport applied before it captures.
+func (ts *toolSet) withPage(ctx context.Context, toolName string, opts browser.PageOptions, fn func(page browser.PageHandle) (registry.ToolResult, error)) (registry.ToolResult, error) {
 	sess, err := ts.getSession(ctx)
 	if err != nil {
 		return registry.ToolResult{}, err
 	}
-	page, err := sess.Page(ctx)
+	page, err := sess.Page(ctx, opts)
 	if err != nil {
 		return registry.ToolResult{}, err
 	}
@@ -95,6 +102,8 @@ func RegisterAll(reg *registry.Registry, opts Options) (func(), error) {
 		cfg:            opts.Config,
 		backendFactory: opts.BackendFactory,
 		sessionState:   opts.SessionState,
+		WorkspaceRoot:  opts.WorkspaceRoot,
+		ImageStore:     opts.ImageStore,
 	}
 	tools := []registry.Tool{
 		ts.navigateTool(),
@@ -135,12 +144,18 @@ func (ts *toolSet) navigateTool() registry.Tool {
 		if err := decodeArgs(tool, call.Args, &args); err != nil {
 			return registry.ToolResult{}, err
 		}
-		if err := urlAllowed(args.URL, ts.cfg.URLAllowlist, ts.cfg.URLDenylist); err != nil {
+		if err := urlAllowed(args.URL, ts.cfg.URLAllowlist, ts.cfg.URLDenylist, ts.WorkspaceRoot); err != nil {
 			return registry.ToolResult{}, err
 		}
-		return ts.withPage(ctx, "browser.navigate", func(page browser.PageHandle) (registry.ToolResult, error) {
+		return ts.withPage(ctx, "browser.navigate", browser.PageOptions{}, func(page browser.PageHandle) (registry.ToolResult, error) {
 			ts.setLocation(args.URL, "")
-			if err := page.Navigate(ctx, args.URL); err != nil {
+			sess, err := ts.getSession(ctx)
+			if err != nil {
+				return registry.ToolResult{}, err
+			}
+			// Through the session, not the page: the session records the URL so
+			// a page it recreates for a new viewport comes back to it.
+			if err := sess.Navigate(ctx, args.URL); err != nil {
 				return registry.ToolResult{}, fmt.Errorf("navigate: %w", err)
 			}
 			title, _ := page.Title(ctx)
@@ -169,7 +184,7 @@ func (ts *toolSet) readTool() registry.Tool {
 		if err := decodeArgs(tool, call.Args, &args); err != nil {
 			return registry.ToolResult{}, err
 		}
-		return ts.withPage(ctx, "browser.read", func(page browser.PageHandle) (registry.ToolResult, error) {
+		return ts.withPage(ctx, "browser.read", browser.PageOptions{}, func(page browser.PageHandle) (registry.ToolResult, error) {
 			var text string
 			var err error
 			if args.Selector != "" {
@@ -206,7 +221,7 @@ func (ts *toolSet) clickTool() registry.Tool {
 		if args.Selector == "" {
 			return registry.ToolResult{}, fmt.Errorf("selector is required")
 		}
-		return ts.withPage(ctx, "browser.click", func(page browser.PageHandle) (registry.ToolResult, error) {
+		return ts.withPage(ctx, "browser.click", browser.PageOptions{}, func(page browser.PageHandle) (registry.ToolResult, error) {
 			if err := page.Click(ctx, args.Selector); err != nil {
 				return registry.ToolResult{}, fmt.Errorf("click %s: %w", args.Selector, err)
 			}
@@ -243,7 +258,7 @@ func (ts *toolSet) fillTool() registry.Tool {
 		if args.Value == "" && args.Clear == nil {
 			return registry.ToolResult{}, fmt.Errorf("value is required")
 		}
-		return ts.withPage(ctx, "browser.fill", func(page browser.PageHandle) (registry.ToolResult, error) {
+		return ts.withPage(ctx, "browser.fill", browser.PageOptions{}, func(page browser.PageHandle) (registry.ToolResult, error) {
 			if err := page.Fill(ctx, args.Selector, args.Value); err != nil {
 				return registry.ToolResult{}, fmt.Errorf("fill %s: %w", args.Selector, err)
 			}
@@ -269,7 +284,7 @@ func (ts *toolSet) submitTool() registry.Tool {
 		if err := decodeArgs(tool, call.Args, &args); err != nil {
 			return registry.ToolResult{}, err
 		}
-		return ts.withPage(ctx, "browser.submit", func(page browser.PageHandle) (registry.ToolResult, error) {
+		return ts.withPage(ctx, "browser.submit", browser.PageOptions{}, func(page browser.PageHandle) (registry.ToolResult, error) {
 			if args.Selector != "" {
 				if err := page.Submit(ctx, args.Selector); err != nil {
 					return registry.ToolResult{}, fmt.Errorf("submit %s: %w", args.Selector, err)
@@ -295,28 +310,102 @@ func (ts *toolSet) submitTool() registry.Tool {
 	return tool
 }
 
+type screenshotArgs struct {
+	FullPage bool   `json:"full_page"`
+	Selector string `json:"selector"`
+	Viewport struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	} `json:"viewport"`
+	DeviceScaleFactor float64 `json:"device_scale_factor"`
+	SettleMS          int     `json:"settle_ms"`
+	Format            string  `json:"format"`
+	Quality           int     `json:"quality"`
+	Label             string  `json:"label"`
+}
+
 func (ts *toolSet) screenshotTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "browser.screenshot",
-		Description: "Capture a screenshot of the current page. Returns metadata (dimensions, timestamp). In a future vision milestone, returns image bytes.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"full_page":{"type":"boolean","description":"Capture full scrollable page (default false)"}},"additionalProperties":false}`),
-		Risk:        registry.RiskReadOnly,
+		Description: "Capture a screenshot of the current page and return the image so you can look at it. Optional selector clips to one element; viewport resizes the page first.",
+		Schema: json.RawMessage(`{"type":"object","properties":{` +
+			`"full_page":{"type":"boolean","description":"Capture full scrollable page (default false; ignored when selector is set)"},` +
+			`"selector":{"type":"string","description":"CSS selector to clip the capture to"},` +
+			`"viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1}},"required":["width","height"],"additionalProperties":false},` +
+			`"device_scale_factor":{"type":"number","exclusiveMinimum":0},` +
+			`"settle_ms":{"type":"integer","minimum":0,"maximum":5000},` +
+			`"format":{"type":"string","enum":["png","jpeg"]},` +
+			`"quality":{"type":"integer","minimum":1,"maximum":100},` +
+			`"label":{"type":"string"}` +
+			`},"additionalProperties":false}`),
+		Risk: registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-		var args struct {
-			FullPage bool `json:"full_page"`
-		}
+		var args screenshotArgs
 		if err := decodeArgs(tool, call.Args, &args); err != nil {
 			return registry.ToolResult{}, err
 		}
-		return ts.withPage(ctx, "browser.screenshot", func(page browser.PageHandle) (registry.ToolResult, error) {
-			_, err := page.Screenshot(ctx, browser.ScreenshotOpts{FullPage: args.FullPage, Format: ts.cfg.ScreenshotFormat})
+		format := args.Format
+		if format == "" {
+			format = ts.cfg.ScreenshotFormat
+		}
+		pageOpts := browser.PageOptions{}
+		if args.Viewport.Width > 0 {
+			pageOpts.Viewport = &browser.Viewport{
+				Width:             args.Viewport.Width,
+				Height:            args.Viewport.Height,
+				DeviceScaleFactor: args.DeviceScaleFactor,
+			}
+		}
+		return ts.withPage(ctx, "browser.screenshot", pageOpts, func(page browser.PageHandle) (registry.ToolResult, error) {
+			png, err := page.Screenshot(ctx, browser.ScreenshotOpts{
+				FullPage: args.FullPage,
+				Format:   format,
+				Quality:  args.Quality,
+				Selector: args.Selector,
+				SettleMS: args.SettleMS,
+			})
 			if err != nil {
 				return registry.ToolResult{}, fmt.Errorf("screenshot: %w", err)
 			}
+			// The current page's URL labels the image and travels in the
+			// metadata; an error here must not fail the capture.
+			currentURL, _ := page.URL(ctx)
+
+			if ts.ImageStore == nil {
+				return registry.ToolResult{
+					Summary: fmt.Sprintf("Screenshot captured (full_page=%v, format=%s) (images disabled)", args.FullPage, format),
+					Content: fmt.Sprintf(`{"url":%q,"format":%q,"full_page":%v,"selector":%q}`, currentURL, format, args.FullPage, args.Selector),
+				}, nil
+			}
+
+			label := args.Label
+			if label == "" {
+				if currentURL != "" {
+					label = "screenshot of " + currentURL
+				} else {
+					label = "screenshot"
+				}
+			}
+			ref, err := ts.ImageStore.Put(ctx, bytes.NewReader(png), imagepayload.Options{
+				Format:  format,
+				Quality: args.Quality,
+				Label:   label,
+			})
+			if err != nil {
+				return registry.ToolResult{}, fmt.Errorf("screenshot: %w", err)
+			}
+			// Session.Page does not report whether a viewport was applied in
+			// place or needed a new page, so the summary states the size that
+			// was asked for and claims nothing about the path.
+			summary := fmt.Sprintf("Screenshot %q: %d×%d", label, ref.Width, ref.Height)
+			if pageOpts.Viewport != nil {
+				summary += fmt.Sprintf(" at viewport %d×%d", pageOpts.Viewport.Width, pageOpts.Viewport.Height)
+			}
 			return registry.ToolResult{
-				Summary: fmt.Sprintf("Screenshot captured (full_page=%v, format=%s)", args.FullPage, ts.cfg.ScreenshotFormat),
-				Content: fmt.Sprintf(`{"full_page":%v,"format":%q}`, args.FullPage, ts.cfg.ScreenshotFormat),
+				Summary: summary,
+				Content: fmt.Sprintf(`{"url":%q,"format":%q,"full_page":%v,"selector":%q}`, currentURL, format, args.FullPage, args.Selector),
+				Images:  []schema.ImageRef{ref},
 			}, nil
 		})
 	}

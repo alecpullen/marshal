@@ -41,15 +41,22 @@ is not part of either Studio.
 
 ## Decisions
 
-1. **A trial period first.** Before anything is removed, one release ships
-   with the roles swapped: Flutter at `/`, Svelte at `/classic/`. Removal
-   follows in the next release, unless a defect that blocks work is open
-   against the Flutter Studio.
+1. **The cutover is deferred (revised 2026-11-17).** The trial build's first
+   load is 6.9× the Svelte Studio's raw and 8.3× gzipped, against the 3×
+   ceiling decision 6 sets, and 7.4 MB of it is the CanvasKit engine alone:
+   the gate cannot pass while the Flutter Studio is the one at `/`. So the
+   Svelte Studio keeps `/` and the Flutter Studio stays at `/next/`. Both
+   builds are served by the same bridge; nothing is removed. What *is*
+   adopted from this phase: the old-link translation (decision 2), and the
+   engine being served by the bridge rather than a CDN — the build passes
+   `--no-web-resources-cdn`, without which a private network that cannot
+   reach gstatic never starts the Studio at all.
 2. **Old links keep working.** The Svelte Studio's hash routes — `#chat/…`,
    `#factory/…`, `#projects/…`, `#runs/…`, `#settings/…` and the rest in
    `lib/routes.ts` — are translated to the new places by the Flutter
    Studio's router, from a table with a test per route. A hash it does not
-   know opens Overview with a one-line notice. `/next/…` redirects to `/…`.
+   know opens Overview with a one-line notice. `/next` redirects to `/next/`
+   so the build's base href resolves its assets.
 3. **What is removed.** `web/ui/` entirely; the Svelte build in
    `web/bridge/static`; `tsgen` and `contract.ts`; the CI web job; the
    browser checks that drive Svelte; the Node setup in every workflow; the
@@ -86,8 +93,10 @@ is not part of either Studio.
 Suggested pull requests, in order.
 
 1. **Route translation.** The table, the router change, the tests.
-2. **Swap.** Flutter at `/`, Svelte at `/classic/`, `/next/` redirecting;
-   the measurements in decision 6; release.
+2. **Swap — deferred.** The measurements in decision 6 were taken and the
+   swap was implemented, then reverted by the revised decision 1: Svelte
+   stays at `/`, Flutter at `/next/`, the engine served locally. Swapping is
+   what a later release does once the ceiling is met (see Open questions).
 3. **End-to-end migration.** The table in decision 5 and the re-expressed
    checks.
 4. **Removal.** Everything in decision 3, the build command and CI in
@@ -98,12 +107,107 @@ Suggested pull requests, in order.
 
 - `app/test/model/route_translation_test.dart`: every route in the Svelte
   `routes.ts` at the time of the swap.
-- `web/bridge`: `/` serves the Flutter index; `/classic/` serves Svelte
-  during the trial and is gone after; `/next/` redirects; no API route is
-  shadowed.
+- `web/bridge`: `/` serves the Svelte index; `/next/` serves the Flutter
+  one and falls back to it for a place; `/next` redirects to `/next/`; no
+  API route is shadowed by either Studio.
 - The migrated end-to-end checks.
 - CI fails if a `package.json` or a `.svelte` file exists anywhere in the
   repository after removal.
+
+## Trial measurements
+
+Taken on the trial build with the roles swapped (Flutter at `/`, Svelte at
+`/classic/`), 2026-11-17, on the development host — the numbers that deferred
+the cutover (revised decision 1). With the roles as they now stand, the
+Flutter rows are what `/next/` serves and the Svelte rows are what `/` serves;
+no row changed. First load is each Studio's `index.html` plus every
+byte it fetches before its first screen. **The bridge compresses nothing** —
+there is no `Content-Encoding` on any route in `web/bridge` — so the browser
+receives these bytes raw; the gzip column is what a compressing proxy would
+send, and is the lower bound.
+
+| Measure | Svelte raw (gz) | Flutter raw (gz) |
+|---|---|---|
+| `index.html` | 413 (290) | 2,079 (1,041) |
+| App bundle | 1,584,992 (471,374) | 3,088,278 (911,086) |
+| Styles / bootstrap | 54,591 (11,735) | 14,407 (5,772) |
+| Rendering engine | — | 7,402,483 (2,955,524) |
+| Fonts | 52,528 (52,657) | 1,208,916 (555,856) |
+| **First load** | **1,692,524 (536,056)** | **11,716,163 (4,429,279)** |
+
+**The Flutter app-bundle figure was re-measured at the swap's HEAD
+(`02c3b041`).** An earlier draft of this table recorded 2,940,163 raw
+(870,764 gz) for it; that number came from an earlier app state and is not
+what this branch builds. Two `flutter build web --base-href /` runs at HEAD
+produce `main.dart.js` at 3,088,278 bytes (911,086 gz) both times, and every
+other row is unchanged, so the table above is the trial's Studio rather than
+an approximation of it. The correction makes the over-ceiling case slightly
+stronger, never weaker; the decision below does not change.
+
+`webbridge`, built here with both Studios' real output embedded: 66,372,191
+bytes. With the Svelte tree as it ships and the Flutter placeholder, the same
+build is 22,622,960 bytes — the difference is the 42 MB of build output the
+embed takes in, not the swap. The swap itself moves no bytes: the two trees
+keep their sizes and only their prefixes change. Removal (Task 4) is what
+shrinks the binary, by the 2.3 MB Svelte tree. That binary figure was taken
+with the earlier app build too; only `main.dart.js` has moved since, and it is
+148,115 bytes larger, so a build today would be about that much bigger.
+
+**First load is 6.9× Svelte's raw (8.3× compressed), over the ceiling in
+decision 6 (3×)** — raised here, before removal, as the plan requires.
+
+Two facts about that number decide what it means:
+
+- **7.4 MB of it is the rendering engine, which does not come from the
+  bridge.** The build fetches CanvasKit from `gstatic.com/flutter-canvaskit`
+  unless it is made with `--no-web-resources-cdn`, and neither workflow passes
+  that flag, although `app/web/flutter_bootstrap.js` says they should. So a
+  browser that has CanvasKit cached from any other Flutter site fetches none
+  of it, and the app-served figure is 4,313,680 raw (2.55×) — inside the
+  ceiling. A first visit is what is over.
+- **The same fact breaks the private-network case.** On a network that cannot
+  reach `gstatic.com`, the engine never arrives and the Studio does not start
+  at all. That is the phone-over-a-private-network measurement the plan asks
+  for, and it currently cannot pass.
+
+Time to first usable screen **on a phone was not measured**: this host has no
+browser and no phone (see the environment-blocked list). The byte counts stand
+in for it until one does.
+
+## End-to-end checks: valid again
+
+The swap created a debt this phase could not pay: with the Flutter Studio at
+`/`, the checks that drive the Svelte document there stopped being evidence
+about the Studio a browser actually loads. The revised decision 1 removes the
+debt rather than paying it — the Svelte Studio is back at `/`, so
+`scripts/e2e/checks_spa.py`'s group I and the Playwright specs drive the
+Studio that is served there and are valid as written.
+
+Kept for the release that does take the cutover, because it names what has to
+be re-expressed then:
+
+- **`scripts/e2e/checks_spa.py`, group I ("spa and auth").** Its premise is a
+  document at `/` that names its own same-origin `<script src>` and `.css`
+  paths; `_asset_paths` collects them and the bundle checks grep those files
+  for the client's token handling. The Flutter document names only
+  `<script src="flutter_bootstrap.js">` — relative, so the same-origin filter
+  drops it — and injects `main.dart.js` at run time, so it never lands in the
+  collected set: "the shell is served and names its assets" would report that
+  the document names no script bundle, and the three bundle checks and the
+  content-hashed-asset check would skip (Flutter emits unhashed names). The
+  group's HTTP checks — `/api` 404s, the bearer requirement, `/mcp`,
+  previews — are the bridge's rather than the Studio's, so they stay as they
+  are.
+- **`scripts/e2e/run_browser_checks.sh` and `web/ui/playwright.config.ts`.**
+  They build the Svelte Studio into `web/bridge/static` and run the `*.pw.ts`
+  specs with `baseURL` at the root. If the Flutter Studio held `/`, those
+  specs would address a DOM that is a CanvasKit canvas rather than the
+  elements they query (the shell's routes, deep links, roadmap, and the
+  project and factory settings surfaces), and the fixture the script builds
+  would no longer reach the page under test.
+
+Task 3 of the plan (end-to-end migration) therefore stays unstarted: there is
+nothing to migrate while the Svelte Studio holds `/`.
 
 ## Done when
 
@@ -118,3 +222,44 @@ Suggested pull requests, in order.
 ## Open questions
 
 - How long the trial period should be. Recommended: one release.
+
+## Fixed while the trial was running: the browser Studio reached nothing
+
+Serving the Flutter build at `/next/` was not enough to use it. Opening it
+showed the Studio's background and no fleet: five defects, none of them in the
+build that F8 changed, all of them on the path a page takes to its bridge. They
+were found by driving a headless browser at the served page and reading what it
+rendered, since nothing in the app's own tests crossed them (each is a
+platform-conditional seam or a request shape a fake accepted).
+
+- **Discovery found no host.** `host_discovery_stub.dart` returned `const []`
+  with a comment saying the browser reaches the bridge that served the page
+  "which F2 wires up". Nothing wired it, so a browser had no host, no fleet and
+  no rows. The stub now answers the page's own origin as one `HostKind.server`
+  host, and nothing for a page no bridge served.
+- **The token was read from the wrong key.** `TokenStoreWeb` reads
+  `marshal:bridge-token`; the Svelte Studio at `/` stores the same bridge's
+  token under `marshal:token` (`web/ui/src/lib/api.ts`). A browser already
+  signed in at `/` therefore sent no bearer token at `/next/` and every
+  `/api/` route answered 401. The Svelte key is now read as the fallback.
+- **The fleet stream asked for the wrong route.** `fleetEvents()` requested
+  `/api/events`; the bridge reads that as a session's stream and refuses it
+  without a `sessionId` (400). The stream is the query-selected
+  `?stream=fleet` view.
+- **An open stream was silent, so an idle host never read as live.** The fleet
+  stream replays nothing to a fresh client and heartbeats every 25s, so a
+  healthy connection sent nothing at all for 25s; the client counts a line as
+  contact, so it reported `unreachable`. `ServeSSEKey` now writes one
+  `: connected` comment line before its first flush.
+- **The staleness window was shorter than the heartbeat.** `staleAfter`
+  defaulted to 10s against a 25s beat, so even after the first heartbeat a live
+  idle stream was declared stale between beats. The default is now 35s
+  (`EventStream.defaultStaleAfter`), and the tests that advance a fake clock
+  over a shorter window name it themselves.
+
+Verified by serving the built bundle from a bridge and loading it in headless
+Chromium with the Svelte Studio's token in storage: every `/api/` route 200s,
+the accessibility tree carries the shell (places, the `marshal` project, the
+Overview's counts), the host reads `live`, and there are no console errors.
+Not covered: a real phone on a private network, and the token-prompt path when
+neither key holds one (the host then reads `unauthorized`, honestly).

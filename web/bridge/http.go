@@ -215,8 +215,16 @@ func (s *Server) route(api http.Handler, w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
+	if isNextPath(r.URL.Path) {
+		// The Flutter Studio, at its prefix: the cutover is deferred, so the
+		// Svelte Studio keeps the root (F8 decision 1, revised 2026-11-17).
+		flutterHandler().ServeHTTP(w, r)
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {
-		staticHandler().ServeHTTP(w, r)
+		// Everything else that is not the API is the Svelte Studio, at the
+		// root.
+		svelteHandler().ServeHTTP(w, r)
 		return
 	}
 	api.ServeHTTP(w, r)
@@ -324,6 +332,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/repos", s.listRepos)
 	s.mux.HandleFunc("POST /api/repos", s.registerRepo)
 	s.mux.HandleFunc("DELETE /api/repos/{id}", s.removeRepo)
+	// The pull requests the bridge opened, and the one index of their checks.
+	s.mux.HandleFunc("GET /api/pulls", s.listPulls)
+	s.mux.HandleFunc("GET /api/pulls/{id}", s.getPull)
+	s.mux.HandleFunc("POST /api/pulls/{id}/fix", s.fixPull)
+	s.mux.HandleFunc("POST /api/pulls/{id}/fix/stop", s.stopPullFix)
 	s.mux.HandleFunc("GET /api/network", s.networkView)
 	s.mux.HandleFunc("GET /api/network/pending", s.networkPending)
 	s.mux.HandleFunc("POST /api/network/decisions", s.networkDecision)
@@ -366,10 +379,16 @@ func writeErr(w http.ResponseWriter, err error) {
 	var budget ErrBudget
 	var setup ErrSetupFailed
 	var merge ErrWorkspaceMerge
+	var running pullFixRunning
 	switch {
 	case errors.Is(err, ErrFactoryConflict):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrUnknownRecipe), errors.Is(err, ErrUnknownSchedule):
+	case errors.As(err, &running):
+		// The refusal names the fix that is already running.
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "fixId": running.ID})
+	case errors.Is(err, ErrPullFixNotFailing), errors.Is(err, ErrInvalidPullFixMode):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrUnknownRecipe), errors.Is(err, ErrUnknownSchedule), errors.Is(err, ErrUnknownPull):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrInvalidRecipe), errors.Is(err, ErrRecipeBuiltin), errors.Is(err, errInvalidSchedule):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -489,15 +508,18 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.projectsWithFactoryIDs())
 }
 
-// projectsWithFactoryIDs is the project list with each entry's stable factory
-// project ID attached. The ID is what a grant is keyed by and what an MCP
-// client may name; every other field is exactly what the fleet reported.
+// projectsWithFactoryIDs is the project list with each entry's derived ids
+// attached: its stable factory project ID (what a grant is keyed by and what
+// an MCP client may name) and the registered repo its work comes from (what
+// `GET /api/repos/{id}/issues` is keyed by). Every other field is exactly
+// what the fleet reported.
 func (s *Server) projectsWithFactoryIDs() []contract.ProjectStatus {
 	statuses := s.fleet.ProjectStatus()
 	for i := range statuses {
 		if id, ok := s.fleet.ws.ProjectID(statuses[i].Root); ok {
 			statuses[i].MCPProjectID = id
 		}
+		statuses[i].RepoID = s.fleet.projectRepoID(statuses[i].Root)
 	}
 	return statuses
 }
@@ -755,6 +777,7 @@ func (s *Server) agentExit(w http.ResponseWriter, r *http.Request) {
 	res, err := s.fleet.Exit(r.Context(), r.PathValue("id"), ExitOptions{
 		CommitMessage: body.CommitMessage,
 		Override:      body.Override,
+		NoPR:          body.NoPR,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -998,9 +1021,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "turn already in flight"})
 		return
 	}
-	var body struct {
-		Text string `json:"text"`
-	}
+	var body contract.PromptRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -1032,9 +1053,7 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 
 // steer redirects the in-flight turn.
 func (s *Server) steer(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Text string `json:"text"`
-	}
+	var body contract.SteerRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -1242,9 +1261,7 @@ func subagentRefusalCode(message string) string {
 // forwarded as an atomic patch and the full committed state is returned.
 // New clients use the access routes and never need a dummy mode.
 func (s *Server) setMode(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Mode string `json:"mode"`
-	}
+	var body contract.ModeRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}

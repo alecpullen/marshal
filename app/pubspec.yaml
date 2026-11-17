@@ -15,9 +15,23 @@ dependencies:
   material_ui: ^1.11.0
   cupertino_ui: ^1.1.6
   cupertino_icons: ^2.0.0
+  # Narration is Markdown. The package parses it and nothing else: the kit
+  # renders the parsed nodes with its own text roles, so no third-party
+  # widget sets a style (f3 plan, decisions).
+  markdown: ^7.3.0
+  # The browser APIs the web transport speaks (client/*_web.dart): fetch,
+  # storage. Flutter bundles it for the web build; naming it keeps the
+  # dependency honest rather than relying on a transitive one.
+  web: ^1.1.1
+  re_highlight: ^0.0.3
+  xterm: 4.0.0
 
 dev_dependencies:
   flutter_test:
+    sdk: flutter
+  # F2's end-to-end flow (integration_test/f2_test.dart): the same flow as
+  # test/ui/f2_flow_test.dart, driven on a device where one exists.
+  integration_test:
     sdk: flutter
   flutter_lints: ^6.0.0
 
@@ -27,6 +41,7 @@ flutter:
     - assets/
     # Shipped with the fonts it licenses, as the OFL requires.
     - assets/fonts/OFL.txt
+    - assets/fonts/OFL-NotoSansSymbols2.txt
   # Geist and Geist Mono, from the official release v1.9.2
   # (github.com/vercel/geist-font, geist-font-v1.9.2.zip), static TTFs at
   # the weights the text roles in lib/src/ui/tokens.dart use. Bundled so no
@@ -43,4 +58,13 @@ flutter:
     - family: Geist Mono
       fonts:
         - asset: assets/fonts/GeistMono-Regular.ttf
+          weight: 400
+    # The symbol fallback, from notofonts/symbols NotoSansSymbols2-v2.008
+    # (NotoSansSymbols2-v2.008.zip, hinted TTF). It is a fallback family in
+    # tokens.dart, never a role's first: it supplies ⌘ ⌥ ⏎ ✓ ✗ ▸ ▾ ⋯, which
+    # Geist has no glyph for. Licence in
+    # assets/fonts/OFL-NotoSansSymbols2.txt.
+    - family: Noto Sans Symbols 2
+      fonts:
+        - asset: assets/fonts/NotoSansSymbols2-Regular.ttf
           weight: 400

@@ -8,9 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // The Gitea family (Gitea and Forgejo, which forked from it and keeps
@@ -330,6 +333,61 @@ func (g *giteaForge) ListFailedChecks(ctx context.Context, repo Repo, ref string
 		out = append(out, CheckInfo{ID: s.ID, Name: s.Context, Conclusion: s.Status, URL: s.TargetURL, Ref: ref})
 	}
 	return out, nil
+}
+
+// ListChecks returns every commit status on ref, newest report per context.
+// A Gitea context can report several times, and only its newest status counts.
+func (g *giteaForge) ListChecks(ctx context.Context, repo Repo, ref string, cred Credential) ([]contract.PullCheck, error) {
+	if err := checksAvailable(cred); err != nil {
+		return nil, err
+	}
+	owner, name, err := parseOwnerRepo(repo.URL)
+	if err != nil {
+		return nil, err
+	}
+	req, err := g.newRequest(repo, "GET", "/repos/"+owner+"/"+name+"/commits/"+url.PathEscape(ref)+"/statuses", nil, cred)
+	if err != nil {
+		return nil, err
+	}
+	var resp []struct {
+		ID        int64  `json:"id"`
+		Status    string `json:"status"`
+		Context   string `json:"context"`
+		TargetURL string `json:"target_url"`
+	}
+	if err := doJSON(ctx, g.client, req, &resp); err != nil {
+		return nil, err
+	}
+	// A context can report several times; only its newest status counts.
+	latest := map[string]int{}
+	for i, s := range resp {
+		if j, ok := latest[s.Context]; !ok || s.ID > resp[j].ID {
+			latest[s.Context] = i
+		}
+	}
+	out := make([]contract.PullCheck, 0, len(resp))
+	for i, s := range resp {
+		if latest[s.Context] != i {
+			continue
+		}
+		out = append(out, contract.PullCheck{Name: s.Context, State: giteaCheckState(s.Status), URL: s.TargetURL})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// giteaCheckState maps a commit status to a check state. A warning does not
+// block a merge, so it is not a failure; anything the contract does not name
+// is still pending as far as a reader can tell.
+func giteaCheckState(status string) contract.CheckState {
+	switch status {
+	case "success", "warning":
+		return contract.CheckPassed
+	case "failure", "error":
+		return contract.CheckFailed
+	default:
+		return contract.CheckPending
+	}
 }
 
 // CheckLog returns the status description and its link: a Gitea commit

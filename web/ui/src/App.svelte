@@ -611,6 +611,13 @@
 <DecisionOutcomeView outcome={decisionOutcome} onClose={() => (decisionOutcome = null)} />
 <Palette open={paletteOpen} agents={$fleet.agents} onClose={() => (paletteOpen = false)} onNavigate={navigate} />
 
+<!--
+  The Flutter Studio, served beside this one at /next/ (F2). It is out of the
+  flow on purpose: this Svelte Studio is frozen to bug fixes, so the link must
+  not disturb any layout a fix has to touch.
+-->
+<a class="fixed bottom-2 right-3 z-50 text-xs text-info underline" href="/next/" target="_blank" rel="noreferrer">Studio (preview)</a>
+
 <style>
   /*
     Body background, colour, margin and font live in app.css, which owns the

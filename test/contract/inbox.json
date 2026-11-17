@@ -1,0 +1,55 @@
+{
+  "Inbox": {
+    "groups": {
+      "earlier": [
+        "a-0"
+      ],
+      "needsYou": [
+        "a-1"
+      ],
+      "ready": [],
+      "running": [
+        "a-2"
+      ]
+    },
+    "queue": [
+      {
+        "agentId": "a-1",
+        "at": "2026-11-17T04:30:00Z",
+        "kind": "escalation"
+      }
+    ]
+  },
+  "InboxDelta": {
+    "inbox": {
+      "groups": {
+        "earlier": [],
+        "needsYou": [
+          "a-1"
+        ],
+        "ready": [],
+        "running": []
+      },
+      "queue": []
+    },
+    "kind": "inbox"
+  },
+  "InboxGroups": {
+    "earlier": [
+      "a-0"
+    ],
+    "needsYou": [
+      "a-1"
+    ],
+    "ready": [],
+    "running": [
+      "a-2"
+    ]
+  },
+  "InboxItem": {
+    "agentId": "a-1",
+    "at": "2026-11-17T04:30:00Z",
+    "kind": "escalation"
+  },
+  "InboxItemKind": "intake"
+}

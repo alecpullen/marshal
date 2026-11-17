@@ -1,0 +1,237 @@
+{
+  "snapshot": {
+    "sessionId": "s-1",
+    "rev": 1,
+    "roots": [
+      "turn:1"
+    ],
+    "nodes": [
+      {
+        "id": "turn:1",
+        "kind": "turn",
+        "children": [
+          "step:1",
+          "tool:1:call_0",
+          "tool:1:call_1"
+        ]
+      },
+      {
+        "id": "step:1",
+        "kind": "step",
+        "parent": "turn:1",
+        "step": {
+          "headline": "Reading the parser.",
+          "stepIds": [
+            1
+          ],
+          "owner": "assistant",
+          "roleWord": "assistant",
+          "role": "assistant",
+          "model": "qwen3-coder",
+          "provider": "local",
+          "startedAt": 1700000000000,
+          "endedAt": 1700000009000,
+          "narration": [
+            "Reading the parser."
+          ]
+        }
+      },
+      {
+        "id": "tool:1:call_0",
+        "kind": "tool",
+        "parent": "turn:1",
+        "tool": {
+          "name": "file.read",
+          "display": "Read file",
+          "verb": "read",
+          "calls": [
+            {
+              "callId": "call_0",
+              "output": "package parser\n",
+              "approval": "allow",
+              "durationMs": 40,
+              "at": 1700000002000
+            }
+          ]
+        }
+      },
+      {
+        "id": "tool:1:call_1",
+        "kind": "tool",
+        "parent": "turn:1",
+        "tool": {
+          "name": "shell.run",
+          "display": "Run command",
+          "verb": "shell",
+          "running": {
+            "target": "go test",
+            "output": "PASS\n",
+            "startedAt": 1700000004000,
+            "subject": "go test",
+            "callId": "call_1",
+            "args": "go test"
+          }
+        }
+      }
+    ]
+  },
+  "patches": [
+    {
+      "kind": "stack_patch",
+      "rev": 2,
+      "baseRev": 1,
+      "roots": [
+        "turn:1"
+      ],
+      "upsert": [
+        {
+          "id": "tool:1:call_1",
+          "kind": "tool",
+          "parent": "turn:1",
+          "tool": {
+            "name": "shell.run",
+            "display": "Run command",
+            "verb": "shell",
+            "calls": [
+              {
+                "callId": "call_1",
+                "output": "ok\n",
+                "exitCode": 0,
+                "approval": "allow",
+                "durationMs": 1200,
+                "at": 1700000004000,
+                "subject": "run"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "kind": "stack_patch",
+      "rev": 3,
+      "baseRev": 2,
+      "roots": [
+        "turn:1"
+      ],
+      "upsert": [
+        {
+          "id": "turn:1",
+          "kind": "turn",
+          "children": [
+            "step:1",
+            "tool:1:call_0",
+            "tool:1:call_1",
+            "receipt:turn:1"
+          ]
+        },
+        {
+          "id": "receipt:turn:1",
+          "kind": "receipt",
+          "parent": "turn:1",
+          "receipt": {
+            "durationMs": 95000,
+            "tasks": 2,
+            "steps": 4,
+            "tools": 3,
+            "files": 2,
+            "usage": "12.4k in, 1.1k out"
+          }
+        }
+      ]
+    }
+  ],
+  "final": {
+    "sessionId": "s-1",
+    "rev": 3,
+    "roots": [
+      "turn:1"
+    ],
+    "nodes": [
+      {
+        "id": "turn:1",
+        "kind": "turn",
+        "children": [
+          "step:1",
+          "tool:1:call_0",
+          "tool:1:call_1",
+          "receipt:turn:1"
+        ]
+      },
+      {
+        "id": "step:1",
+        "kind": "step",
+        "parent": "turn:1",
+        "step": {
+          "headline": "Reading the parser.",
+          "stepIds": [
+            1
+          ],
+          "owner": "assistant",
+          "roleWord": "assistant",
+          "role": "assistant",
+          "model": "qwen3-coder",
+          "provider": "local",
+          "startedAt": 1700000000000,
+          "endedAt": 1700000009000,
+          "narration": [
+            "Reading the parser."
+          ]
+        }
+      },
+      {
+        "id": "tool:1:call_0",
+        "kind": "tool",
+        "parent": "turn:1",
+        "tool": {
+          "name": "file.read",
+          "display": "Read file",
+          "verb": "read",
+          "calls": [
+            {
+              "callId": "call_0",
+              "output": "package parser\n",
+              "approval": "allow",
+              "durationMs": 40,
+              "at": 1700000002000
+            }
+          ]
+        }
+      },
+      {
+        "id": "tool:1:call_1",
+        "kind": "tool",
+        "parent": "turn:1",
+        "tool": {
+          "name": "shell.run",
+          "display": "Run command",
+          "verb": "shell",
+          "calls": [
+            {
+              "callId": "call_1",
+              "output": "ok\n",
+              "exitCode": 0,
+              "approval": "allow",
+              "durationMs": 1200,
+              "at": 1700000004000,
+              "subject": "run"
+            }
+          ]
+        }
+      },
+      {
+        "id": "receipt:turn:1",
+        "kind": "receipt",
+        "parent": "turn:1",
+        "receipt": {
+          "durationMs": 95000,
+          "tasks": 2,
+          "steps": 4,
+          "tools": 3,
+          "files": 2,
+          "usage": "12.4k in, 1.1k out"
+        }
+      }
+    ]
+  }
+}

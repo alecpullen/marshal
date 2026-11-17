@@ -213,12 +213,25 @@ func activityOf(st *session.State) acpwire.SessionSheet {
 	events := st.AuditLog()
 	budget := st.ToolBudget()
 	sandbox := st.SandboxInfo()
+	perms := st.SessionPermissionRules()
+	var permissionRules []acpwire.SheetPermissionRule
+	if len(perms) > 0 {
+		permissionRules = make([]acpwire.SheetPermissionRule, 0, len(perms))
+		for _, g := range perms {
+			permissionRules = append(permissionRules, acpwire.SheetPermissionRule{
+				Permission: g.Permission,
+				Pattern:    g.Pattern,
+				Scope:      "session",
+			})
+		}
+	}
 	return acpwire.SessionSheet{
-		StartedAt: acpwire.Millis(st.StartedAt),
-		Tools:     viewmodel.SheetToolsOf(events),
-		Files:     viewmodel.SheetFilesOf(events),
-		Rules:     nilIfEmpty(st.SessionRules()),
-		Skills:    nilIfEmpty(st.ActiveSkills()),
+		StartedAt:   acpwire.Millis(st.StartedAt),
+		Tools:       viewmodel.SheetToolsOf(events),
+		Files:       viewmodel.SheetFilesOf(events),
+		Rules:       nilIfEmpty(st.SessionRules()),
+		Permissions: permissionRules,
+		Skills:      nilIfEmpty(st.ActiveSkills()),
 		ToolBudget: acpwire.SheetToolBudget{
 			Used: budget.Used,
 			Max:  budget.Max,

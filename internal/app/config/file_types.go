@@ -182,6 +182,12 @@ type fileDesktop struct {
 	ScreenshotFormat *string  `toml:"screenshot_format"`
 }
 
+type fileCapture struct {
+	Enabled *bool   `toml:"enabled"`
+	Backend *string `toml:"backend"`
+	Timeout *string `toml:"timeout"`
+}
+
 type fileSwarmBudget struct {
 	MaxFixRounds   *int           `toml:"max_fix_rounds"`
 	MaxTotalTokens *int           `toml:"max_total_tokens"`
@@ -378,6 +384,7 @@ type configFile struct {
 	Tools       *fileTools       `toml:"tools"`
 	Web         *fileWeb         `toml:"web"`
 	Desktop     *fileDesktop     `toml:"desktop"`
+	Capture     *fileCapture     `toml:"capture"`
 	Daemon      *fileDaemon      `toml:"daemon"`
 	Swarm       *fileSwarm       `toml:"swarm"`
 	SDD         *fileSDD         `toml:"sdd"`

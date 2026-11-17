@@ -103,6 +103,14 @@ Two families, bundled with the app: **Geist** for the interface and **Geist
 Mono** for code, paths, identifiers, counts and durations. No other family,
 and no font fetched at run time.
 
+Bundled beside them, and never a role's first family, is **Noto Sans Symbols
+2** as a fallback (`Ember.symbols`). Geist has no glyph for ⌘ ⌥ ⏎ ✓ ✗ ▸ ▾ ⋯,
+and the transcript and the key map need them; every role falls back to it
+rather than drawing tofu. It is from notofonts/symbols
+`NotoSansSymbols2-v2.008`, under the OFL, shipped with its licence like the
+other two. A role's `fontFamilyFallback` names it; nothing sets it as a
+`fontFamily`.
+
 Text is set with a named role from `tokens.dart`. No widget sets a size, a
 weight or a family directly.
 
@@ -128,6 +136,8 @@ Rules:
 - Numbers that change or line up (counts, durations, sizes, money) are mono.
 - Truncate with an ellipsis; never shrink text to fit and never let it
   overflow its container.
+- `mono` text is drawn, never typed, with one exception: `Field.mono` (§5),
+  the input that holds a document — a workspace's source — rather than prose.
 
 ## 4. Space, shape and size
 
@@ -173,18 +183,41 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Label` | An uppercase section label | Optional count and one trailing link |
 | `Tabs` | Underlined text tabs | Views of one object. Never used for navigation between objects |
 | `Segments` | Progress as steps | Done is `ok`, current is the status colour, pending is `border` |
+| `StageStrip` | A work item's four stages, the one it is at marked | The stages as a `Segments` bar and as words; a stage the item left is `muted` and one ahead is `faint`. Never a fifth stage: an item that is ending says so in one word beside it |
+| `Lanes` | A run's tasks by role | One row per task, one column per lane — Implement, Verify, Review, Commit. Every cell is a status dot and its word, never colour alone; a cell with an action opens that role's conversation and one without is a fact |
+| `TaskGraph` | A plan's tasks as a dependency graph | Tasks laid out in dependency layers, left to right, with straight `border` edges and no free dragging. A plan that declares no dependency is drawn as one chain, in order, because that is the work it describes |
+| `ActivityRow` | One entry of a thread's activity | Who acted, in words, and what they did, with the event's own kind small beneath it and its age at the right. A timeline, not a transcript |
 | `Meter` | A labelled bar | Capacity and quota. Bar is `muted` unless it reports a fault |
 | `Spark` | A small line | One series, `fg`, no axes |
 | `CheckStrip` | One block per CI check | Order is the forge's order; tooltip names each check |
-| `Rows` | A list of name, description, value | Every settings-style list |
+| `DiffView` | A unified diff | One row per line, in `mono`; a removed line is filled `diffRemoved` and an added one `diffAdded`; the gutter shows the line's number and, on a removed or added line, takes a comment. Unified only: there is no split view |
+| `GateList` | The gate's checks | One row per check: the state's icon in the state's colour, the check's name, its detail in mono at the right. The order is the gate's own |
+| `Rows` | A list of name, description, value, and optionally a day's `Spark` | Every settings-style list |
+| `NavRow` | A row of the sidebar | An icon, a label, an optional count; a project's row has a disclosure chevron instead of an icon. Only threads carry a status, in a `ThreadRow` |
 | `PageBody` | Title, subtitle, actions, content | Every page that is not a thread |
 | `AskCard` | Something waiting on the user | The only way an ask is shown |
 | `PrCard` | A pull request with its CI | The only way a pull request is shown in a list |
 | `ThreadRow` | A thread in a list | Dot, title, kind icon |
+| `TurnPrompt` | What the user said | Right-aligned, bordered, no fill. A row of the transcript, never a chat bubble |
+| `StepHeader` | A step's ordinal, headline and duration | The running dot while it is worked on. Its disclosure folds the step's rows; the duration is mono |
+| `ToolRow` | One tool call | Verb and target in mono, the result at the right. Indented to the step's text; `err` colours only a failed result |
+| `Narration` | The agent's prose | Markdown, parsed and drawn with the text roles. No third-party widget sets a size, weight or colour |
+| `OutputBlock` | Output the agent produced | The only filled block: `codeBg`, mono at every density. A capped block says so in words |
+| `LiveRow` | The row work is happening on | One running dot, the headline, the latest line. The only row that moves |
 | `StateMessage` | Empty, loading, stale, error, planned | The only way these states are shown (§7) |
-| `Field` | A text input | Border only; the label is above it |
+| `Field` | A text input | Border only; the label is above it. `Field.multiline` is the same input for prose, taller and growing with what it holds; its `mono` flag sets the text in `mono` for a document a person edits line by line |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
 | `Sheet` | A dialog or bottom sheet; it dims what is behind it with `scrim` | One per screen at most |
+| `Composer` | The field a thread is driven from | The draft, the mode and model chips, Stop while running, Send or Steer. A read-only session is one line saying why |
+
+Added in F2: `NavRow`, the sidebar's row (an icon or a disclosure chevron, a
+label, an optional count; the selected row is filled and its icon is
+`accent`). A thread is never a `NavRow`: it is a `ThreadRow`, which carries
+its status.
+
+Added in F4: `DiffView` and `GateList`, the inspector's two read-only views of
+a change. Both are reused by the work item's inspector (F6), so neither knows
+what an agent or a session is: they take lines and checks.
 
 Variants as built in F0, beyond the table: `Box.flush` (no inner padding,
 for rows separated by `Hairline`s, as `Rows` uses); `Btn` and `Btn.primary`;
@@ -192,7 +225,44 @@ for rows separated by `Hairline`s, as `Rows` uses); `Btn` and `Btn.primary`;
 identifiers; `Meter` and `Meter.fault`; `PageBody`'s width, `full` (1180) or
 `list` (860), from §4; `AskCard`'s placement — Inbox (everything), Overview
 (the body only for a decision) or its own thread (no source line);
-`PrCard`'s four states — ready, failing, in progress, being fixed.
+`PrCard`'s five states — ready, failing, in progress, being fixed and checks
+unavailable. Added in
+F4: `RowItem.mono` and `NavRow.mono`, a row whose name is an identifier such
+as a path, and `RowItem.selected`, the row a list is showing, filled with
+`selected` as a `NavRow` is. Added in F7: `Field.mono`, the field set in
+`mono` for the environment designer's source — a document a person edits line
+by line, never prose.
+
+Added in F5: `PrCard`'s **checks unavailable** state — the checks cannot be
+read, and the card says why in its own line. It is never drawn as passing and
+never as failing: its border is `border`, its mark `muted`. A failing card
+whose dispatch is in flight reads `Sending…` with the primary disabled (§7: an
+action taken is acknowledged at once), and the bridge's refusal, when there is
+one, sits above its buttons in `err`. A ready card whose merge this build
+cannot make draws Merge disabled under a `Tip` that names what brings it
+(`PrActions.mergeNote`), never as a button that would fail. `AskKind.pull` is
+the ask a fix that could not finish leaves: the pull request and the check,
+what was tried, and Open, Try again and Dismiss.
+
+Added in F6: `StageStrip` and `ActivityRow`, the work item's thread. The strip
+is a fact, not a control, and it has four stages and no fifth: an item that is
+stopping, stopped or closed says so in one word beside it. The activity row is
+the item's history, one entry per thing that happened, attributed to the
+planner, the implementer, the reviewer or the user in words. A work item's
+four asks — a draft awaiting approval, a decision, a recovery and a completion
+assessment — are drawn with the kit's existing `AskCard` kinds: the card's
+title and body say what is being decided, and a new kind for each would be a
+kind name that says nothing the title does not.
+
+Added in F6 for the plan run (§10): `Lanes` draws a run's tasks by role, one
+row per task and one column per lane, each cell a status dot and its word. It is
+a grid of facts, not a control: a cell that opens a role's conversation is
+clickable, and one that does not is read only. `TaskGraph` draws the same tasks
+as a dependency graph — dependency layers left to right, straight edges in
+`border`, no dragging — and draws a plan that declares no dependency as a single
+chain, because that is the work the plan describes. The run's third view, the
+timeline, is not a component of its own: it is `Segments`' bar per role over the
+run's own span, so its colours are the ones `Segments` already states.
 
 Supporting pieces, shared by the components and exported with them by
 `kit.dart`. None is drawn on its own, and none has variants:
@@ -299,6 +369,31 @@ that adds to the kit without changing this document, or that works around
 the kit inside a screen, is not merged.
 
 Token values change only here and in `tokens.dart`, together.
+
+### `Chart` (added for F7's Usage section)
+
+What it is: a row of vertical bars, each labelled directly underneath with its
+own name and value, and tipped with the same.
+
+When to use it: the one place a series of numbers is easier to read as a shape
+than as a list — today only Settings' Usage, whose detail the design makes the
+one exception to the list-and-detail rule (F7 decision 8).
+
+What it must not be used for:
+
+- A trend over time inside a row: that is `Spark`.
+- Progress towards a total: that is `Meter` or `Segments`.
+- Two series in one chart: two charts, each with its own labels. There is no
+  legend, so a second series could not be told apart without colour, and
+  colour here means status.
+
+Its colour: a single series is `fg`. A bar whose value *is* a status takes that
+status's colour, and never more than `ok`, `warn` and `err` — never `accent`,
+never a fourth hue. A bar with no status is `fg` in both themes.
+
+Its numbers: every bar carries its own label and value as text, so the shape is
+never the only way to read the chart, and text scaled up wraps under the bar
+rather than being clipped.
 
 ## 11. Enforcement
 

@@ -42,6 +42,16 @@ func PatternForApproval(tc *session.PendingToolCall) string {
 		}
 		return dir + "/**"
 	}
+	if tc.Name == "image.capture" {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(tc.Args), &m); err != nil {
+			return "active_window"
+		}
+		if target, ok := m["target"].(string); ok && target != "" {
+			return target
+		}
+		return "active_window"
+	}
 	return "*"
 }
 

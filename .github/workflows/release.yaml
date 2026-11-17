@@ -38,6 +38,12 @@ jobs:
           fetch-depth: 0
       - name: Trust the workspace checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # The Studio's build is embedded by `go:embed`: it must be in place
+      # before GoReleaser builds webbridge.
+      - uses: actions/download-artifact@v4
+        with:
+          name: studio-web
+          path: web/bridge/static-next
       - name: Decide optional publishers
         id: optional
         env:
@@ -62,6 +68,28 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+
+  # The Studio's Flutter web build, which `go:embed` bakes into webbridge in
+  # the release job below. It is its own job because the goreleaser container
+  # has no Flutter, and the Studio is built from app/.
+  studio-web:
+    name: Studio web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.50.0'
+          channel: stable
+      - name: Build the Studio for /next/
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter build web --base-href /next/ --no-web-resources-cdn --output ../web/bridge/static-next
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studio-web
+          path: web/bridge/static-next
 
   # The app bundle carries the two binaries the release job just built, so it
   # cannot start until that release exists. Both jobs read the drafted release

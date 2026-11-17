@@ -1,0 +1,64 @@
+{
+  "CommitDraft": {
+    "message": "app: fix the login bug"
+  },
+  "DiffFile": {
+    "added": 12,
+    "path": "app/lib/main.dart",
+    "removed": 3
+  },
+  "DiffResult": {
+    "diff": "@@ -1 +1 @@\n-old\n+new",
+    "files": [
+      {
+        "added": 12,
+        "path": "app/lib/main.dart",
+        "removed": 3
+      }
+    ]
+  },
+  "ExitRequest": {
+    "commitMessage": "app: fix the login bug",
+    "override": {
+      "at": "2026-11-17T04:20:00Z",
+      "by": "u-1",
+      "reason": "the flaky test is unrelated"
+    }
+  },
+  "ExitResult": {
+    "branch": "fix/login",
+    "destination": "merge",
+    "prUrl": "https://example.com/marshal/pull/7",
+    "verify": {
+      "ok": true,
+      "skipped": false
+    }
+  },
+  "GateRecord": {
+    "at": "2026-11-17T04:21:00Z",
+    "result": {
+      "failedCommand": "go test ./...",
+      "ok": false,
+      "output": "FAIL marshal/internal/app",
+      "skipped": false
+    }
+  },
+  "GateResult": {
+    "failedCommand": "go test ./...",
+    "ok": false,
+    "output": "FAIL marshal/internal/app",
+    "skipped": false
+  },
+  "MergeRequest": {
+    "commitMessage": "app: fix the login bug"
+  },
+  "MergeResult": {
+    "branch": "fix/login",
+    "conflicts": [
+      "app/lib/main.dart"
+    ],
+    "merged": false,
+    "reason": "conflict",
+    "target": "main"
+  }
+}

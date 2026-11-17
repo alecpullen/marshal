@@ -2175,3 +2175,56 @@ func TestNarrationConfigDefaultsOnAndOverrides(t *testing.T) {
 		t.Fatalf("saved config lost the overrides:\n%s", data)
 	}
 }
+
+func TestCaptureDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.Capture.Enabled {
+		t.Fatalf("capture must default off: %+v", cfg.Capture)
+	}
+	if cfg.Capture.Backend != "" {
+		t.Fatalf("Capture.Backend = %q, want empty (detect)", cfg.Capture.Backend)
+	}
+	if cfg.Capture.Timeout != 10*time.Second {
+		t.Fatalf("Capture.Timeout = %v, want 10s", cfg.Capture.Timeout)
+	}
+}
+
+func TestCaptureMerge(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", "[capture]\nenabled = true\nbackend = \"hyprland\"\ntimeout = \"2s\"\n")
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := CaptureConfig{Enabled: true, Backend: "hyprland", Timeout: 2 * time.Second}
+	if cfg.Capture != want {
+		t.Fatalf("Capture = %+v, want %+v", cfg.Capture, want)
+	}
+
+	// An empty timeout leaves the default in place; an invalid one is an error.
+	empty := ""
+	base := Default()
+	if err := merge(&base, configFile{Capture: &fileCapture{Timeout: &empty}}); err != nil {
+		t.Fatalf("merge with an empty timeout: %v", err)
+	}
+	if base.Capture.Timeout != 10*time.Second {
+		t.Fatalf("an empty timeout must keep the default 10s, got %v", base.Capture.Timeout)
+	}
+	bad := "soon"
+	if err := merge(&base, configFile{Capture: &fileCapture{Timeout: &bad}}); err == nil {
+		t.Fatal("an invalid capture.timeout must be an error")
+	}
+}
+
+func TestDefaultPermissionsPromptForImageCapture(t *testing.T) {
+	// image.capture is a read-only tool, so its risk class alone cannot prompt
+	// it; the default rule is what makes "switched on" different from
+	// "unattended". It is the first non-nil default rule set, so this assertion
+	// records that decision.
+	want := []PermissionRule{{Permission: "image.capture", Pattern: "*", Action: "ask"}}
+	if got := Default().Permissions.Rules; !reflect.DeepEqual(got, want) {
+		t.Fatalf("default permission rules = %#v, want %#v", got, want)
+	}
+}

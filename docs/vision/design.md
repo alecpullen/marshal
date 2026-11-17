@@ -48,7 +48,9 @@ only encoding.
   own portability problems.
 - **No capture and no render.** `image.capture` (screenshot) and
   `image.render` (draw code/HTML/SVG to an image) are genuinely separate
-  tools with separate dependencies; they plug into this plumbing later.
+  tools with separate dependencies; they plug into this plumbing later. The
+  capture side is designed separately in
+  [`capture-and-render-design.md`](capture-and-render-design.md).
 - **No image generation**, no video, no audio, no dedicated OCR tool.
 - **No image-token pricing.** Cost estimates continue to ignore image tokens;
   they are counted for the context budget only.

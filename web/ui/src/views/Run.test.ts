@@ -46,7 +46,7 @@ const nodes: WireNode[] = [
   { id: 'step:4', kind: 'step', parent: 'turn:1', children: ['tool:1'], step: { headline: 'Run the tests', startedAt: 8000, endedAt: 8500 } },
   { id: 'tool:1', kind: 'tool', parent: 'step:4', tool: { name: 'shell.run', display: 'Run command', calls: [{ target: 'go test ./...' }] } },
 ]
-const snapshot: StackSnapshot = { rev: 1, roots: ['turn:1'], nodes }
+const snapshot: StackSnapshot = { sessionId: 's1', rev: 1, roots: ['turn:1'], nodes }
 
 const props = (over: Record<string, unknown> = {}) => ({
   agentId: 'a1',

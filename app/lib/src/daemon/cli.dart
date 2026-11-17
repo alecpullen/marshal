@@ -128,10 +128,6 @@ class DaemonCli {
       // A log write must never take the tray down with it.
     }
   }
-
-  /// quit ends the app. It lives here with the rest of the process I/O so no
-  /// other file under `lib/` needs `dart:io`.
-  void quit() => exit(0);
 }
 
 /// DaemonException is a marshal invocation the app could not use, with the

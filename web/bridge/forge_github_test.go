@@ -2,14 +2,38 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
+
+// forgeFixtureServer serves one recorded forge response for every request, and
+// remembers the path it was asked for.
+func forgeFixtureServer(t *testing.T, name string) (*httptest.Server, *string) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("testdata", "forge", name))
+	if err != nil {
+		t.Fatalf("read recorded forge response %s: %v", name, err)
+	}
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &gotPath
+}
 
 func TestParseOwnerRepoHandlesBothURLForms(t *testing.T) {
 	cases := map[string][2]string{
@@ -336,5 +360,50 @@ func TestGitHubCheckLogFallsBackToOutputText(t *testing.T) {
 		Repo{URL: "https://github.com/you/r.git", APIBase: srv.URL}, CheckInfo{ID: 2}, Credential{literal: "t"})
 	if err != nil || log != "the detail" {
 		t.Fatalf("log = %q, err = %v", log, err)
+	}
+}
+
+func TestGitHubListChecksMapsEveryState(t *testing.T) {
+	srv, gotPath := forgeFixtureServer(t, "github-checks.json")
+	f := newGitHubForge(srv.Client())
+	repo := Repo{URL: "https://github.com/you/r.git", APIBase: srv.URL}
+
+	checks, err := f.ListChecks(context.Background(), repo, "abc123", Credential{Kind: "pat", literal: "t"})
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	// The endpoint is the one ListFailedChecks reads, without the filter.
+	if *gotPath != "/repos/you/r/commits/abc123/check-runs" {
+		t.Fatalf("path = %q", *gotPath)
+	}
+	want := []contract.PullCheck{
+		{Name: "build", State: contract.CheckPassed, URL: "https://github.com/you/r/runs/411"},
+		{Name: "docs", State: contract.CheckPassed, URL: "https://github.com/you/r/runs/415"},
+		{Name: "lint", State: contract.CheckFailed, URL: "https://github.com/you/r/runs/412"},
+		{Name: "release", State: contract.CheckFailed, URL: "https://github.com/you/r/runs/416"},
+		{Name: "test / integration", State: contract.CheckRunning, URL: "https://github.com/you/r/runs/413"},
+		{Name: "test / unit", State: contract.CheckPending, URL: "https://github.com/you/r/runs/414"},
+	}
+	if !reflect.DeepEqual(checks, want) {
+		t.Fatalf("checks = %+v\nwant: %+v", checks, want)
+	}
+}
+
+func TestGitHubListChecksWithSSHCredentialIsUnavailable(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	f := newGitHubForge(srv.Client())
+	repo := Repo{URL: "https://github.com/you/r.git", APIBase: srv.URL}
+	for _, cred := range []Credential{{Kind: "ssh"}, {Kind: "none"}, {}} {
+		if _, err := f.ListChecks(context.Background(), repo, "abc", cred); !errors.Is(err, ErrChecksUnavailable) {
+			t.Fatalf("ListChecks with a %q credential = %v, want ErrChecksUnavailable", cred.Kind, err)
+		}
+	}
+	if called {
+		t.Fatal("the forge API was called with a credential that cannot call it")
 	}
 }

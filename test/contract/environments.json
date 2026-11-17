@@ -1,0 +1,192 @@
+{
+  "EnvWorkspace": {
+    "name": "go-service",
+    "base": "ubuntu:24.04",
+    "toolchains": ["go@1.24", "node@22"]
+  },
+  "EnvPackages": {
+    "apt": ["jq"],
+    "go": ["golang.org/x/tools/gopls@latest"]
+  },
+  "EnvMount": {
+    "volume": "gomodcache",
+    "target": "/go/pkg/mod"
+  },
+  "EnvFile": {
+    "target": "/home/agent/.gitconfig",
+    "readonly": true
+  },
+  "EnvInject": {
+    "ref": "vault:forge/github-token",
+    "header": "Authorization",
+    "format": "Bearer {value}"
+  },
+  "EnvNetwork": {
+    "mode": "allowlist",
+    "egress": ["proxy.golang.org", "*.github.com"]
+  },
+  "EnvResources": {
+    "cpu": 2,
+    "memory": "4g",
+    "disk": "20g",
+    "timeout": "30m"
+  },
+  "EnvPolicy": {
+    "mode": "restricted",
+    "auto": true,
+    "allow": ["file.read"]
+  },
+  "EnvSetup": {
+    "run": "go mod download"
+  },
+  "EnvPreview": {
+    "ports": [8080]
+  },
+  "EnvDoc": {
+    "workspace": {
+      "name": "go-service",
+      "base": "ubuntu:24.04"
+    },
+    "packages": {
+      "go": ["golang.org/x/tools/gopls@latest"]
+    },
+    "network": {
+      "mode": "allowlist",
+      "egress": ["proxy.golang.org"]
+    },
+    "resources": {
+      "cpu": 2
+    },
+    "policy": {
+      "mode": "restricted"
+    },
+    "setup": {
+      "run": "go mod download"
+    }
+  },
+  "EnvSection": {
+    "layer": 1,
+    "key": "workspace",
+    "startLine": 1,
+    "endLine": 4
+  },
+  "EnvDiagnostic": {
+    "line": 7,
+    "message": "unknown key: toolchain",
+    "severity": "warning"
+  },
+  "EnvVersion": {
+    "n": 3,
+    "at": "2026-11-17T03:00:00Z",
+    "by": "owner-1",
+    "sha256": "9f1ad4759f1ad475",
+    "imageTag": "marshal-ws/go-service:3",
+    "buildStatus": "ok",
+    "sizeBytes": 734003200,
+    "buildMs": 42000
+  },
+  "EnvMeta": {
+    "name": "go-service",
+    "ownerId": "owner-1",
+    "createdAt": "2026-11-16T09:00:00Z",
+    "published": 3,
+    "pool": 2,
+    "versions": [
+      {
+        "n": 3,
+        "at": "2026-11-17T03:00:00Z",
+        "by": "owner-1",
+        "sha256": "9f1ad4759f1ad475",
+        "buildStatus": "ok"
+      }
+    ]
+  },
+  "EnvListItem": {
+    "source": "studio",
+    "name": "go-service",
+    "published": 3,
+    "pool": 2,
+    "usage": 4,
+    "draftChanges": true,
+    "versions": [
+      {
+        "n": 3,
+        "at": "2026-11-17T03:00:00Z",
+        "by": "owner-1",
+        "sha256": "9f1ad4759f1ad475",
+        "buildStatus": "ok"
+      }
+    ]
+  },
+  "EnvPool": {
+    "size": 2,
+    "idle": 1,
+    "starting": 0
+  },
+  "EnvStarts": {
+    "coldMs": 24000,
+    "warmMs": 1800
+  },
+  "EnvBuilds": {
+    "versions": [
+      {
+        "n": 3,
+        "at": "2026-11-17T03:00:00Z",
+        "by": "owner-1",
+        "sha256": "9f1ad4759f1ad475",
+        "buildStatus": "ok"
+      }
+    ],
+    "pool": {
+      "size": 2,
+      "idle": 1,
+      "starting": 0
+    },
+    "starts": {
+      "coldMs": 24000,
+      "warmMs": 1800
+    }
+  },
+  "EnvLoaded": {
+    "source": "[workspace]\nname = \"go-service\"\nbase = \"ubuntu:24.04\"\n",
+    "version": 0,
+    "doc": {
+      "workspace": {
+        "name": "go-service",
+        "base": "ubuntu:24.04"
+      },
+      "packages": {},
+      "network": {},
+      "resources": {},
+      "policy": {},
+      "setup": {}
+    },
+    "sections": [
+      {
+        "layer": 1,
+        "key": "workspace",
+        "startLine": 1,
+        "endLine": 3
+      }
+    ],
+    "diagnostics": [],
+    "meta": {
+      "name": "go-service",
+      "ownerId": "owner-1",
+      "createdAt": "2026-11-16T09:00:00Z",
+      "published": 0,
+      "pool": 0,
+      "versions": []
+    }
+  },
+  "EnvCreate": {
+    "name": "go-service",
+    "from": "devcontainer:acme/widgets/.devcontainer/devcontainer.json"
+  },
+  "EnvDraft": {
+    "source": "[workspace]\nname = \"go-service\"\n"
+  },
+  "EnvBuildStart": {
+    "version": 4
+  }
+}

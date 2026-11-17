@@ -304,6 +304,35 @@ func TestSessionAnswerGrantsCaptureForSession(t *testing.T) {
 	}
 }
 
+// TestSessionAnswerGrantsProductionShapedCapture pins the call production
+// builds: requestApproval fills Command with the tool's own name when the tool
+// supplies none, so a grant routed on an empty Command would file the tool name
+// as a shell rule and cover nothing.
+func TestSessionAnswerGrantsProductionShapedCapture(t *testing.T) {
+	state := newState(t, "s1")
+	_, sess := New(Deps{State: state})
+	key, ch := registerApproval(t, state, &session.PendingToolCall{
+		ID:      "call-1",
+		Name:    "image.capture",
+		Command: "image.capture",
+		Args:    `{"target":"screen"}`,
+	})
+
+	if err := sess.AnswerApproval(context.Background(), key.ID, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalSession}); err != nil {
+		t.Fatalf("AnswerApproval: %v", err)
+	}
+	if got := approvalDecision(t, ch); !got.Approved {
+		t.Errorf("delivered decision = %+v, want an approval", got)
+	}
+	want := session.PermissionGrant{Permission: "image.capture", Pattern: "screen"}
+	if got := state.SessionPermissionRules(); len(got) != 1 || got[0] != want {
+		t.Errorf("SessionPermissionRules() = %+v, want [%+v]", got, want)
+	}
+	if got := state.SessionRules(); len(got) != 0 {
+		t.Errorf("SessionRules() = %v, want none: a non-shell call is no command rule", got)
+	}
+}
+
 // TestAlwaysAnswerFallbackGrantsSessionPermission pins the always answer whose
 // save fails on a command-less tool: the fallback is a session permission
 // grant, not an empty session command rule.

@@ -124,10 +124,14 @@ func (s *Session) sessionRule(call *session.PendingToolCall) func() error {
 }
 
 // grantForSession records the answered call as a session rule: a command rule
-// for a shell call, and a permission grant for a command-less tool, which has
-// no command to match on.
+// for a shell call, and a permission grant for every other tool.
 func (s *Session) grantForSession(call *session.PendingToolCall) {
-	if call.Command == "" {
+	// A shell call is answered by its command. Every other tool is answered by
+	// a permission grant: requestApproval fills Command with the tool's own
+	// name when the tool supplies none, so an empty Command is not a reliable
+	// signal, and a command rule recorded for a non-shell tool could never
+	// match anything.
+	if permissions.PermissionForTool(call.Name) != "shell" || call.Command == "" {
 		s.state.AddSessionPermissionRule(session.PermissionGrant{
 			Permission: permissions.PermissionForTool(call.Name),
 			Pattern:    permissions.PatternForApproval(call),

@@ -76,7 +76,10 @@ func (pe *PolicyEngine) SetSessionRules(rules []string) {
 func (pe *PolicyEngine) SetSessionPermissions(grants []session.PermissionGrant) {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
-	pe.sessionPerms = grants
+	// Copy, as Clone does: a caller that keeps mutating its own slice must not
+	// be able to change the engine's grants behind an evaluation.
+	pe.sessionPerms = make([]session.PermissionGrant, len(grants))
+	copy(pe.sessionPerms, grants)
 }
 
 // SetRules replaces the engine's F4 permission rules. Safe for concurrent use.
@@ -367,7 +370,7 @@ func subjectsForTool(toolName string, args map[string]interface{}, normCmd strin
 }
 
 func evaluateSubjects(rules []permissions.Rule, grants []session.PermissionGrant, permissionName string, subjects []string) (Decision, bool) {
-	var matched, allow, confirm bool
+	var matched, confirm bool
 	for _, subject := range subjects {
 		action, found := permissions.Evaluate(rules, permissionName, subject)
 		granted := grantAllows(grants, permissionName, subject)
@@ -375,25 +378,24 @@ func evaluateSubjects(rules []permissions.Rule, grants []session.PermissionGrant
 		case found && action == permissions.ActionDeny:
 			return DecisionDeny, true
 		case found && action == permissions.ActionAllow:
-			matched, allow = true, true
+			matched = true
 		case found && action == permissions.ActionAsk && granted:
-			matched, allow = true, true
+			matched = true
 		case found && action == permissions.ActionAsk:
 			matched, confirm = true, true
 		case granted:
-			matched, allow = true, true
+			matched = true
 		}
 	}
 	if !matched {
 		return "", false
 	}
-	if confirm && !allow {
+	// Most restrictive wins: deny > ask > allow, so a subject that still needs
+	// a prompt is not outvoted by a sibling that does not.
+	if confirm {
 		return DecisionConfirm, true
 	}
-	if allow {
-		return DecisionAllow, true
-	}
-	return DecisionConfirm, true
+	return DecisionAllow, true
 }
 
 // grantAllows reports whether a session grant covers this permission and

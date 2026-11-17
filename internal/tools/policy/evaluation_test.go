@@ -405,6 +405,56 @@ func TestNoGrantKeepsConfirm(t *testing.T) {
 	}
 }
 
+// TestMultiSubjectMostRestrictiveWins pins the multi-subject decision: one
+// patch touching an allowed path and an asking path must still prompt, in
+// either subject order. file.write_patch is the only multi-subject producer.
+func TestMultiSubjectMostRestrictiveWins(t *testing.T) {
+	rules := []permissions.Rule{
+		{Permission: "file.edit", Pattern: "docs/**", Action: permissions.ActionAllow},
+		{Permission: "file.edit", Pattern: "src/**", Action: permissions.ActionAsk},
+	}
+	for _, subjects := range [][]string{
+		{"docs/guide.md", "src/main.go"},
+		{"src/main.go", "docs/guide.md"},
+	} {
+		if got, matched := evaluateSubjects(rules, nil, "file.edit", subjects); !matched || got != DecisionConfirm {
+			t.Fatalf("subjects %v = (%q, %v), want (confirm, true)", subjects, got, matched)
+		}
+	}
+}
+
+// TestAskWithGrantDoesNotOutvoteUngrantedSubject pins that a grant covers only
+// its own subject: the granted target's allow must not lift a sibling that
+// still asks.
+func TestAskWithGrantDoesNotOutvoteUngrantedSubject(t *testing.T) {
+	grants := []session.PermissionGrant{{Permission: "image.capture", Pattern: "active_window"}}
+	for _, subjects := range [][]string{
+		{"active_window", "screen"},
+		{"screen", "active_window"},
+	} {
+		if got, matched := evaluateSubjects(captureAskRules(), grants, "image.capture", subjects); !matched || got != DecisionConfirm {
+			t.Fatalf("subjects %v = (%q, %v), want (confirm, true)", subjects, got, matched)
+		}
+	}
+}
+
+// TestGrantDoesNotCoverAnotherPermission pins PermissionMatches' one-
+// directional bridges: a capture grant lifts no shell or file.write ask, so an
+// unrelated session grant cannot stand in for the tool being evaluated.
+func TestGrantDoesNotCoverAnotherPermission(t *testing.T) {
+	grants := []session.PermissionGrant{{Permission: "image.capture", Pattern: "*"}}
+
+	shellRules := []permissions.Rule{{Permission: "shell", Pattern: "go build ./...", Action: permissions.ActionAsk}}
+	if got, matched := evaluateSubjects(shellRules, grants, "shell", []string{"go build ./..."}); !matched || got != DecisionConfirm {
+		t.Fatalf("shell ask under a capture grant = (%q, %v), want (confirm, true)", got, matched)
+	}
+
+	writeRules := []permissions.Rule{{Permission: "file.write", Pattern: "src/**", Action: permissions.ActionAsk}}
+	if got, matched := evaluateSubjects(writeRules, grants, "file.write", []string{"src/main.go"}); !matched || got != DecisionConfirm {
+		t.Fatalf("file.write ask under a capture grant = (%q, %v), want (confirm, true)", got, matched)
+	}
+}
+
 // TestDefaultCaptureRuleConfirmsBothTargets records that the shipped default
 // prompts for every capture target until a session grant lifts it.
 func TestDefaultCaptureRuleConfirmsBothTargets(t *testing.T) {

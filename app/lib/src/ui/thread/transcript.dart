@@ -437,6 +437,9 @@ class _Row extends StatelessWidget {
           completion.label,
           completion.outcome,
           if (completion.summary != null) completion.summary!,
+          // A failed completion says why: otherwise it reads exactly like one
+          // that finished (spec: reports and errors are distinct).
+          if ((completion.error ?? '').isNotEmpty) completion.error!,
         ].join(' · ');
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -456,8 +459,15 @@ class _Row extends StatelessWidget {
       case 'runEvent':
         final event = node.runEvent;
         if (event == null) return const SizedBox.shrink();
-        final text = [
+        // The kind leads the row: delegated work must not read as the agent
+        // narrating its own steps. Title, body (full density only) and detail
+        // keep their order beneath it.
+        final head = [
+          if (event.kind.trim().isNotEmpty) event.kind,
           if (event.title != null) event.title!,
+        ].join(' · ');
+        final text = [
+          head,
           if (full && event.body != null) event.body!,
           if (event.detail != null) event.detail!,
         ].join('\n');

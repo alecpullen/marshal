@@ -48,6 +48,11 @@ class ThreadHeader extends StatelessWidget {
     final e = Ember.of(context);
     final branch = this.branch;
     final environment = this.environment;
+    // One line, elided to the window: the tooltip is how the rest of a long
+    // path stays readable (§8, §11).
+    final identity =
+        '${thread.project}  ›  $_kindWord  ·  '
+        '${[?branch, ?environment, thread.host].join('  ·  ')}';
     return Padding(
       padding: const EdgeInsets.fromLTRB(
         Layout.pageSide,
@@ -62,12 +67,14 @@ class ThreadHeader extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  '${thread.project}  ›  $_kindWord  ·  '
-                  '${[?branch, ?environment, thread.host].join('  ·  ')}',
-                  style: e.monoSmall.tint(e.muted),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                Tip(
+                  message: identity,
+                  child: Text(
+                    identity,
+                    style: e.monoSmall.tint(e.muted),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
                 const SizedBox(height: Space.s6),
                 Row(
@@ -75,11 +82,14 @@ class ThreadHeader extends StatelessWidget {
                     Dot(_status(thread.status)),
                     const SizedBox(width: Space.s8),
                     Flexible(
-                      child: Text(
-                        thread.title,
-                        style: e.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      child: Tip(
+                        message: thread.title,
+                        child: Text(
+                          thread.title,
+                          style: e.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ),
                     const SizedBox(width: Space.s12),

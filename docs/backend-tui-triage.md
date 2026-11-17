@@ -3,13 +3,42 @@
 ## Purpose
 
 This document sequences the findings in the
-[backend and TUI codebase audit](backend-tui-audit.md). It is a delivery and
-batching recommendation, not an implementation plan or a claim that any fix has
-already landed.
+[backend and TUI codebase audit](backend-tui-audit.md). It was written as a
+delivery and batching recommendation while every finding was still open. All
+fourteen have since been actioned and merged: the
+[completion record](#completion-record) names the pull request that closed each
+batch, and every finding in the audit document carries its resolution.
 
 The web bridge remains out of scope. The ordering deliberately works with the
 ongoing daemon conversion and TUI/agent separation rather than treating those
 in-flight designs as defects.
+
+## Completion record
+
+Every batch below landed, in the recommended order and at these pull requests.
+
+| Batch | Findings | Pull request | Merged |
+| --- | --- | --- | --- |
+| 1 | AUD-01, AUD-04 | #116 `aud-01: shell policy must fail closed` | 2026-11-16 |
+| 2A | AUD-02 | #117 `aud-02: atomic native file writes with rollback evidence` | 2026-11-16 |
+| 2B | AUD-03 | #118 `aud-03: contain pipeline file and patch writes to the worktree` | 2026-11-16 |
+| 3 | AUD-05 | #119 `aud-05: bound hook execution to the whole process tree` | 2026-11-16 |
+| 4 | AUD-06, AUD-07 | #121 `aud-06/07: schedule by dependency and recover stale runs` | 2026-11-16 |
+| 5 | AUD-10 | #125 `aud-10: keep daemon-backed TUI actions off the update loop` | 2026-11-16 |
+| 6 | AUD-08 | #122 `aud-08: treat premature stream EOF as interrupted, not success` | 2026-11-16 |
+| 7A, 7B | AUD-09, AUD-11 | #120 `aud-09/11: persist the empty rewind root and stop purging unreadable index entries` | 2026-11-16 |
+| 8A, 8B | AUD-12, AUD-13, AUD-14 | #128 `aud-12/13/14: honest command feedback, safe settings deletion, truthful help` | 2026-11-16 |
+
+Three notes on how the delivery differed from the recommendation:
+
+- Batches 7A/7B and 8A/8B each landed as one pull request, which this document
+  allows ("they may be separate pull requests even if tracked as one batch").
+  They are separate commits inside it.
+- Batch 6 resolved its decision gate in favour of the recommended default: an
+  explicit protocol terminal marker or finish reason completes a stream, and a
+  bare EOF is surfaced as interrupted rather than as a successful turn.
+- The parallelisation notes were not used. The batches were delivered in order,
+  so the two ordering constraints (2B before 4, 5 before 8) held trivially.
 
 ## Prioritization rules
 
@@ -395,15 +424,18 @@ a shared web contract, that becomes a separate scope decision.
 
 ## Tracking checklist
 
-- [ ] Batch 1 — AUD-01, AUD-04: shell policy fail-closed
-- [ ] Batch 2A — AUD-02: atomic native file commits
-- [ ] Batch 2B — AUD-03: pipeline path containment
-- [ ] Batch 3 — AUD-05: hook process-tree cancellation
-- [ ] Batch 4 — AUD-06, AUD-07: pipeline scheduling and recovery
-- [ ] Batch 5 — AUD-10: nonblocking daemon-backed TUI actions
-- [ ] Batch 6 — AUD-08: streaming completion integrity
-- [ ] Batch 7A — AUD-09: rewind persistence
-- [ ] Batch 7B — AUD-11: index purge behavior
-- [ ] Batch 8A — AUD-12, AUD-14: command feedback and accurate help
-- [ ] Batch 8B — AUD-13: settings deletion safety
-- [ ] Final full-project validation completed
+- [x] Batch 1 — AUD-01, AUD-04: shell policy fail-closed — #116
+- [x] Batch 2A — AUD-02: atomic native file commits — #117
+- [x] Batch 2B — AUD-03: pipeline path containment — #118
+- [x] Batch 3 — AUD-05: hook process-tree cancellation — #119
+- [x] Batch 4 — AUD-06, AUD-07: pipeline scheduling and recovery — #121
+- [x] Batch 5 — AUD-10: nonblocking daemon-backed TUI actions — #125
+- [x] Batch 6 — AUD-08: streaming completion integrity — #122
+- [x] Batch 7A — AUD-09: rewind persistence — #120
+- [x] Batch 7B — AUD-11: index purge behavior — #120
+- [x] Batch 8A — AUD-12, AUD-14: command feedback and accurate help — #128
+- [x] Batch 8B — AUD-13: settings deletion safety — #128
+- [x] Final full-project validation — per-batch CI (full Go suite and scripted
+      usability) on every batch pull request, plus a clean `go vet ./...`,
+      `gofmt -l .` and binary build on `main`; no single manual full-project run
+      was made at close

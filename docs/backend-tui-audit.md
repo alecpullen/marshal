@@ -5,8 +5,13 @@
 This document records the findings from a read-only audit of Marshal's backend,
 runtime, tools, pipeline, persistence, providers, indexing, daemon/ACP seam, and
 TUI. The audit itself made no code changes. The companion
-[triage and batching plan](backend-tui-triage.md) turns these findings into a
-recommended delivery order.
+[triage and batching plan](backend-tui-triage.md) turned these findings into the
+delivery order the fixes followed.
+
+All fourteen findings have since been actioned and merged. The
+[resolution table](#resolution) below names the pull request for each, and the
+triage document carries the per-batch
+[completion record](backend-tui-triage.md#completion-record).
 
 The web bridge and `web/**` were explicitly excluded. The daemon conversion and
 the separation of the TUI from the agent process are still underway; behavior
@@ -52,6 +57,39 @@ Severity reflects potential impact, not ease of repair:
 The recommended repair order is: shell-policy bypasses, file and pipeline write
 safety, hook cancellation, pipeline scheduling and recovery, TUI responsiveness,
 streaming completion integrity, persistence/index correctness, then UX polish.
+
+## Resolution
+
+Every finding is fixed on `main`. Each row names the pull request that closed it.
+The sections below keep the original analysis unchanged, including the code paths
+as they stood when the audit was made, so the reasoning can still be followed.
+
+| ID | Fixed by | Merged |
+| --- | --- | --- |
+| AUD-01 | #116 `aud-01: shell policy must fail closed` | 2026-11-16 |
+| AUD-02 | #117 `aud-02: atomic native file writes with rollback evidence` | 2026-11-16 |
+| AUD-03 | #118 `aud-03: contain pipeline file and patch writes to the worktree` | 2026-11-16 |
+| AUD-04 | #116 `aud-01: shell policy must fail closed` | 2026-11-16 |
+| AUD-05 | #119 `aud-05: bound hook execution to the whole process tree` | 2026-11-16 |
+| AUD-06 | #121 `aud-06/07: schedule by dependency and recover stale runs` | 2026-11-16 |
+| AUD-07 | #121 `aud-06/07: schedule by dependency and recover stale runs` | 2026-11-16 |
+| AUD-08 | #122 `aud-08: treat premature stream EOF as interrupted, not success` | 2026-11-16 |
+| AUD-09 | #120 `aud-09/11: persist the empty rewind root and stop purging unreadable index entries` | 2026-11-16 |
+| AUD-10 | #125 `aud-10: keep daemon-backed TUI actions off the update loop` | 2026-11-16 |
+| AUD-11 | #120 `aud-09/11: persist the empty rewind root and stop purging unreadable index entries` | 2026-11-16 |
+| AUD-12 | #128 `aud-12/13/14: honest command feedback, safe settings deletion, truthful help` | 2026-11-16 |
+| AUD-13 | #128 `aud-12/13/14: honest command feedback, safe settings deletion, truthful help` | 2026-11-16 |
+| AUD-14 | #128 `aud-12/13/14: honest command feedback, safe settings deletion, truthful help` | 2026-11-16 |
+
+The package gates this document's sibling names now carry the regression tests
+the fixes landed with: `internal/tools/policy/{shell_parse,shell_classify,evaluation}_test.go`,
+`internal/tools/native/file_atomic_test.go`, `internal/pipeline/containment.go`
+with `controller_test.go` and `runstore_test.go`, `internal/hooks/cancellation_unix_test.go`
+over `procgroup_unix.go`, `internal/app/session/rewind_persist_test.go`,
+`internal/index/indexer_test.go`, `internal/app/tui/asynccalls_test.go` and
+`busy_command_test.go`, `internal/app/tui/listpanel/fieldlist_test.go`, and
+`internal/app/tui/help/mouse_capture_hint_test.go` with
+`internal/commands/help_cheatsheet_test.go`.
 
 ## Detailed findings
 

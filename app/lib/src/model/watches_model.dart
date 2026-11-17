@@ -7,7 +7,7 @@ import 'section_model.dart';
 // A watch reaches its screens through the model, so `ui/` reads `model/` and
 // never `client/` (test/boundary_test.dart).
 export '../client/contract.g.dart'
-    show OnTrip, RerouteRule, WatchInfo, WatchSample;
+    show LastReroute, OnTrip, RerouteRule, WatchInfo, WatchSample;
 
 /// A watch that tripped, as the Overview's Automations card lists it: what it
 /// watches, what it did, and when (F7 decision 4, plan Task 3).
@@ -96,9 +96,10 @@ class WatchesModel extends SectionModel<WatchInfo> {
   /// POST /api/reroutes/{id}/undo: puts back the role binding a trip
   /// changed.
   ///
-  /// The bridge's watch row does not report which reroute record its last
-  /// trip made (web/bridge/contract/watches.go), so no screen can offer this
-  /// yet: it is here for the row that carries the id.
+  /// The id comes from the watch row's `lastReroute`
+  /// (web/bridge/contract/watches.go), which the bridge fills in while it
+  /// still holds the record; a trip whose record is gone carries none, and
+  /// the screen says so instead of offering the button.
   Future<void> undoReroute(String rerouteID) =>
       _requireBridge().undoReroute(rerouteID);
 

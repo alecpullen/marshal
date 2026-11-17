@@ -1,4 +1,8 @@
 {
+  "LastReroute": {
+    "id": "rr-1",
+    "at": 1763352600000
+  },
   "OnTrip": {
     "notify": true,
     "resume": false,
@@ -41,7 +45,11 @@
       }
     },
     "notify": true,
-    "resume": false
+    "resume": false,
+    "lastReroute": {
+      "id": "rr-1",
+      "at": 1763352600000
+    }
   },
   "WatchSample": {
     "at": 1763352600000,

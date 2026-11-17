@@ -103,6 +103,7 @@ class PlannerSnapshot {
   const PlannerSnapshot({
     required this.id,
     required this.sha256,
+    required this.baseCommit,
     required this.plan,
     required this.spec,
     this.files = const [],
@@ -114,6 +115,11 @@ class PlannerSnapshot {
 
   /// The digest of the capture: the identity a handoff is held to.
   final String sha256;
+
+  /// The commit the capture was taken against. A handoff names it, so the
+  /// files it froze are the files of that revision rather than of whatever the
+  /// repository holds when the draft is created.
+  final String baseCommit;
 
   /// The plan text, verbatim.
   final String plan;
@@ -137,6 +143,7 @@ class PlannerSnapshot {
   factory PlannerSnapshot.of(PlannerSnapshotReply reply) => PlannerSnapshot(
     id: reply.id,
     sha256: reply.sha256,
+    baseCommit: reply.baseCommit,
     plan: _artifact(reply.artifacts, 'plan'),
     spec: _artifact(reply.artifacts, 'spec'),
     files: reply.files,

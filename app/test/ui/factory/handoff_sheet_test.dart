@@ -1,8 +1,78 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/model/handoff_model.dart';
+import 'package:marshal_app/src/model/planning_model.dart';
 import 'package:marshal_app/src/ui/factory/handoff_sheet.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
+
+/// The factory item a route answers with, built from the draft it was handed.
+FactoryItem _item(String id, FactoryCreate draft) => FactoryItem.fromJson({
+  'id': id,
+  'title': draft.title,
+  'state': 'draft',
+  'stage': 'plan',
+  'repoId': draft.config.repoID,
+  'projectRoot': draft.config.projectRoot,
+  'hostId': draft.config.hostID,
+  'branch': 'factory/$id',
+  'baseSha': 'base-1',
+  'version': 1,
+  'draft': {
+    'requestId': draft.requestID,
+    'title': draft.title,
+    'plan': draft.plan,
+    'spec': draft.spec,
+    'config': draft.config.toJson(),
+  },
+  'approvals': <Object?>[],
+  'grants': <Object?>[],
+  'rounds': <Object?>[],
+  'workers': <Object?>[],
+  'prs': <Object?>[],
+  'effects': <Object?>[],
+  'history': <Object?>[],
+  'createdAt': '2026-11-17T04:00:00Z',
+  'approvedAt': '',
+  'updatedAt': '2026-11-17T04:00:00Z',
+});
+
+/// The capture a planning thread froze: two files, one refused path.
+const _snapshot = PlannerSnapshot(
+  id: 'snap-1',
+  sha256: 'a1b2c3d4e5f6',
+  baseCommit: 'c0ffee1',
+  plan: '## Task 1\nFrozen plan.\n',
+  spec: 'Frozen specification.',
+  files: [
+    PlannerSnapshotFile(
+      path: 'lib/a.dart',
+      operation: 'modify',
+      baseSHA256: 'b1',
+      contentSHA256: 'c1',
+      executable: false,
+      diff: '--- a/lib/a.dart\n+++ b/lib/a.dart\n',
+    ),
+    PlannerSnapshotFile(
+      path: 'lib/new.dart',
+      operation: 'create',
+      contentSHA256: 'c2',
+      executable: false,
+      diff: '--- /dev/null\n+++ b/lib/new.dart\n',
+    ),
+  ],
+  rejected: [
+    PlannerRejection(path: '../etc/passwd', reason: 'outside the project'),
+  ],
+);
+
+/// A capture that froze the documents only: nothing was selected.
+const _documentsOnly = PlannerSnapshot(
+  id: 'snap-2',
+  sha256: 'ffee0099',
+  baseCommit: 'd00d1e',
+  plan: '## Task 1\nFrozen plan.\n',
+  spec: 'Frozen specification.',
+);
 
 /// A handoff for a project whose defaults name no repository: the sheet opens
 /// blocked, which is what a person fixes first.
@@ -10,6 +80,15 @@ HandoffModel _handoff({
   List<FactoryCreate>? posts,
   ProjectDefaults defaults = const ProjectDefaults(maxRounds: 3),
   String plan = '## Task 1\nRead the item.\n## Task 2\nApprove it.\n',
+  Future<FactoryItem> Function(FactoryCreate draft)? create,
+  PlannerSnapshot? snapshot,
+  String? plannerID,
+  Future<FactoryItem> Function(
+    String plannerID,
+    String snapshotID,
+    FactoryCreate request,
+  )?
+  handoffSnapshot,
 }) => HandoffModel(
   defaults: defaults,
   projectRoot: '/home/u/marshal',
@@ -17,37 +96,12 @@ HandoffModel _handoff({
   plan: plan,
   spec: 'Ship the work item thread.',
   repositories: const ['repo-1', 'repo-2'],
+  reviewedSnapshot: snapshot,
+  plannerID: plannerID,
+  handoffSnapshot: handoffSnapshot,
   create: (draft) async {
     posts?.add(draft);
-    return FactoryItem.fromJson({
-      'id': 'item-9',
-      'title': draft.title,
-      'state': 'draft',
-      'stage': 'plan',
-      'repoId': draft.config.repoID,
-      'projectRoot': draft.config.projectRoot,
-      'hostId': draft.config.hostID,
-      'branch': 'factory/item-9',
-      'baseSha': 'base-1',
-      'version': 1,
-      'draft': {
-        'requestId': draft.requestID,
-        'title': draft.title,
-        'plan': draft.plan,
-        'spec': draft.spec,
-        'config': draft.config.toJson(),
-      },
-      'approvals': <Object?>[],
-      'grants': <Object?>[],
-      'rounds': <Object?>[],
-      'workers': <Object?>[],
-      'prs': <Object?>[],
-      'effects': <Object?>[],
-      'history': <Object?>[],
-      'createdAt': '2026-11-17T04:00:00Z',
-      'approvedAt': '',
-      'updatedAt': '2026-11-17T04:00:00Z',
-    });
+    return create == null ? _item('item-9', draft) : create(draft);
   },
 );
 
@@ -55,6 +109,19 @@ Widget _sheet(HandoffModel model) => EmberApp(
   brightness: Brightness.light,
   home: Builder(builder: (context) => handoffSheet(context, model)),
 );
+
+/// The sheet's one primary action.
+Finder get _action => find.widgetWithText(Btn, 'Create the factory draft');
+
+/// Types [value] into the field named [field].
+Future<void> _enter(WidgetTester tester, String field, String value) async {
+  final target = find.widgetWithText(Field, field);
+  await tester.enterText(
+    find.descendant(of: target, matching: find.byType(EditableText)),
+    value,
+  );
+  await tester.pump();
+}
 
 void main() {
   testWidgets('every field is drawn in order, marked inherited', (
@@ -89,8 +156,31 @@ void main() {
     // Nothing has been overridden, so no Reset is offered.
     expect(find.text('Inherited'), findsWidgets);
     expect(find.text('Reset'), findsNothing);
-    // The consequence states what approving authorises.
+    // The consequence states what the action does, and the repository it
+    // lands in.
     expect(find.textContaining('repo-1'), findsWidgets);
+  });
+
+  testWidgets('the action names the create and says work has not started', (
+    tester,
+  ) async {
+    final model = _handoff(defaults: const ProjectDefaults(repoID: 'repo-1'));
+    addTearDown(model.dispose);
+    await tester.pumpWidget(_sheet(model));
+    await tester.pump();
+
+    // Creating a factory draft is not starting work, and the label says so.
+    expect(_action, findsOneWidget);
+    expect(find.text('Approve and start'), findsNothing);
+    // "Label" is the kit's uppercase section label (§3).
+    expect(find.text('WHAT CREATING THE DRAFT DOES'), findsOneWidget);
+    expect(find.textContaining('This creates a factory draft'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'Work starts when the item is approved in the factory',
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('approve is blocked with a reason', (tester) async {
@@ -99,11 +189,14 @@ void main() {
     await tester.pumpWidget(_sheet(model));
     await tester.pump();
 
-    final approve = tester.widget<Btn>(
-      find.widgetWithText(Btn, 'Approve and start'),
-    );
+    final approve = tester.widget<Btn>(_action);
     expect(approve.onTap, isNull);
     expect(find.textContaining('repository'), findsWidgets);
+    // The tooltip is the same blocker, so the reason is on the control too.
+    final tip = tester.widget<Tip>(
+      find.ancestor(of: _action, matching: find.byType(Tip)),
+    );
+    expect(tip.message, 'Choose the repository the work is on.');
   });
 
   testWidgets('an override is marked and a reset returns to inherited', (
@@ -117,12 +210,7 @@ void main() {
     await tester.pump();
 
     // The round allowance is typed into, which marks it overridden.
-    final rounds = find.widgetWithText(Field, HandoffField.rounds);
-    await tester.enterText(
-      find.descendant(of: rounds, matching: find.byType(EditableText)),
-      '7',
-    );
-    await tester.pump();
+    await _enter(tester, HandoffField.rounds, '7');
 
     expect(model.sourceOf(HandoffField.rounds), FieldSource.overridden);
     expect(find.text('Overridden'), findsOneWidget);
@@ -148,16 +236,9 @@ void main() {
     await tester.pump();
 
     // The repository is the one thing the project did not state.
-    final repo = find.widgetWithText(Field, HandoffField.repository);
-    await tester.enterText(
-      find.descendant(of: repo, matching: find.byType(EditableText)),
-      'repo-1',
-    );
-    await tester.pump();
+    await _enter(tester, HandoffField.repository, 'repo-1');
 
-    final approve = tester.widget<Btn>(
-      find.widgetWithText(Btn, 'Approve and start'),
-    );
+    final approve = tester.widget<Btn>(_action);
     expect(approve.onTap, isNotNull);
 
     await tester.runAsync(() => model.approve());
@@ -165,5 +246,100 @@ void main() {
 
     expect(posts, hasLength(1));
     expect(model.created?.id, 'item-9');
+  });
+
+  testWidgets('the frozen capture is the evidence the sheet shows', (
+    tester,
+  ) async {
+    final model = _handoff(
+      defaults: const ProjectDefaults(repoID: 'repo-1'),
+      snapshot: _snapshot,
+      plannerID: 'planner-7',
+      handoffSnapshot: (plannerID, snapshotID, request) async =>
+          _item('item-frozen', request),
+    );
+    addTearDown(model.dispose);
+    await tester.pumpWidget(_sheet(model));
+    await tester.pump();
+
+    // The capture's own identity.
+    expect(find.text('THE FROZEN CAPTURE'), findsOneWidget);
+    expect(find.textContaining('Snapshot snap-1'), findsOneWidget);
+    expect(find.textContaining('digest a1b2c3d4'), findsOneWidget);
+    expect(find.textContaining('Base commit c0ffee1'), findsOneWidget);
+    // Every captured file with its operation, and its diff in the kit's own
+    // block rather than a hand-drawn one.
+    expect(find.textContaining('lib/a.dart — Modified'), findsOneWidget);
+    expect(find.textContaining('lib/new.dart — Created'), findsOneWidget);
+    expect(find.byType(OutputBlock), findsNWidgets(2));
+    expect(find.textContaining('+++ b/lib/a.dart'), findsOneWidget);
+    // Every path the capture refused, with the reason.
+    expect(find.text('NOT CAPTURED'), findsOneWidget);
+    expect(find.textContaining('../etc/passwd'), findsOneWidget);
+    expect(find.textContaining('outside the project'), findsOneWidget);
+    // The consequence names the capture and what a change would need.
+    expect(find.textContaining('frozen capture snap-1'), findsOneWidget);
+    expect(find.textContaining('fresh capture'), findsWidgets);
+  });
+
+  testWidgets('a documents-only capture selects no file', (tester) async {
+    final model = _handoff(
+      defaults: const ProjectDefaults(repoID: 'repo-1'),
+      snapshot: _documentsOnly,
+      plannerID: 'planner-7',
+      handoffSnapshot: (plannerID, snapshotID, request) async =>
+          _item('item-frozen', request),
+    );
+    addTearDown(model.dispose);
+    await tester.pumpWidget(_sheet(model));
+    await tester.pump();
+
+    expect(find.textContaining('No files selected'), findsOneWidget);
+    // Nothing is selected on the person's behalf: the draft binds an empty
+    // selection, because the capture froze the documents only.
+    expect(model.draft.editSnapshot, isNotNull);
+    expect(model.draft.editSnapshot!.files, isEmpty);
+    expect(find.byType(OutputBlock), findsNothing);
+  });
+
+  testWidgets('an unbound review says the plan text is what is sent', (
+    tester,
+  ) async {
+    final model = _handoff(defaults: const ProjectDefaults(repoID: 'repo-1'));
+    addTearDown(model.dispose);
+    await tester.pumpWidget(_sheet(model));
+    await tester.pump();
+
+    expect(find.text('WHAT WILL BE SENT'), findsOneWidget);
+    expect(
+      find.textContaining('No capture is bound to this review'),
+      findsOneWidget,
+    );
+    expect(find.text('THE FROZEN CAPTURE'), findsNothing);
+  });
+
+  testWidgets('a failed create leaves the sheet open with the failure', (
+    tester,
+  ) async {
+    final model = _handoff(
+      defaults: const ProjectDefaults(repoID: 'repo-1'),
+      create: (draft) async =>
+          throw StateError('the bridge refused the create'),
+    );
+    addTearDown(model.dispose);
+    await tester.pumpWidget(_sheet(model));
+    await tester.pump();
+
+    await tester.tap(_action);
+    await tester.pump();
+    await tester.pump();
+
+    // The sheet is still there, saying what failed: nothing retries by itself.
+    expect(_action, findsOneWidget);
+    expect(
+      find.textContaining('the bridge refused the create'),
+      findsOneWidget,
+    );
+    expect(model.created, isNull);
   });
 }

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/contract.g.dart';
 import 'drafts_model.dart';
+import 'planning_model.dart';
 
 // The create route and the defaults are passed in, so their fields stay
 // private: Dart has no private named parameter.
@@ -180,7 +181,16 @@ class HandoffModel extends ChangeNotifier {
     String? hostID,
     String? settingsVersion,
     Future<String> Function(String projectRoot)? readSettingsVersion,
+    this.reviewedSnapshot,
+    this.plannerID,
+    Future<FactoryItem> Function(
+      String plannerID,
+      String snapshotID,
+      FactoryCreate request,
+    )?
+    handoffSnapshot,
   }) : _create = create,
+       _handoffSnapshot = handoffSnapshot,
        repositories = List.unmodifiable(repositories),
        drafts = drafts,
        hostID = hostID ?? defaults.hostID,
@@ -207,6 +217,29 @@ class HandoffModel extends ChangeNotifier {
 
   final Future<FactoryItem> Function(FactoryCreate draft) _create;
 
+  /// The capture this review is bound to, when the review came from a planning
+  /// thread's frozen snapshot. Null leaves the review unbound: the new-work
+  /// dialog has no capture, and the plan text the sheet shows is what it sends.
+  final PlannerSnapshot? reviewedSnapshot;
+
+  /// The planner the capture came from, which the snapshot handoff route names.
+  final String? plannerID;
+
+  /// The capture-bound route: the bridge rewrites the draft's plan and spec
+  /// from the snapshot's frozen artifacts and verifies every captured file's
+  /// hash before it stores anything. Null leaves [approve] on the create route.
+  final Future<FactoryItem> Function(
+    String plannerID,
+    String snapshotID,
+    FactoryCreate request,
+  )?
+  _handoffSnapshot;
+
+  /// Whether this review binds the draft it submits to a frozen capture: the
+  /// snapshot, the planner it belongs to and the handoff route all present.
+  bool get boundToSnapshot =>
+      reviewedSnapshot != null && plannerID != null && _handoffSnapshot != null;
+
   /// The repositories the bridge has registered, as ids: the choices the
   /// sheet's repository menu offers. A project states no repository of its
   /// own yet, so the person picks one and the choice is the override.
@@ -219,7 +252,18 @@ class HandoffModel extends ChangeNotifier {
 
   String? _failure;
   FactoryItem? _created;
-  int _requests = 0;
+
+  /// The request id this review posts, made once and kept for the review's
+  /// lifetime: a deliberate retry after an uncertain failure replays the same
+  /// request, so the bridge answers the item it already made instead of
+  /// creating a second one. A new review is a new model and names a new
+  /// request.
+  String? _requestID;
+
+  /// One number per review, so two reviews opened in the same microsecond
+  /// still name different requests.
+  static int _reviews = 0;
+  final int _review = _reviews++;
 
   /// The settings version this review is bound to, and the one in force when
   /// an approval last checked. [settingsConflict] is worded from the two.
@@ -358,10 +402,11 @@ class HandoffModel extends ChangeNotifier {
     noRequiredCIAcknowledged: _checks.isEmpty,
   );
 
-  /// What stops approval, in plain words. Empty means Approve may be pressed.
+  /// What stops approval, in plain words. Empty means the action may be
+  /// pressed.
   List<String> get blockers => List.unmodifiable([
     if (_repoID.isEmpty) 'Choose the repository the work is on.',
-    if (plan.trim().isEmpty) 'There is no plan text to hand over.',
+    if (planToSend.trim().isEmpty) 'There is no plan text to hand over.',
     if (_rounds < 1) 'The round allowance must be at least one.',
     if (title.trim().isEmpty) 'Give the work a name.',
     ?settingsConflict,
@@ -370,22 +415,70 @@ class HandoffModel extends ChangeNotifier {
   /// Whether every field the bridge needs is stated.
   bool get canApprove => blockers.isEmpty;
 
-  /// What approving authorises, in plain words (F6 decision 8).
+  /// The plan text this review sends. With a capture bound it is the frozen
+  /// plan the bridge froze, never the sheet's editable copy: the capture is
+  /// the evidence the person reviewed.
+  String get planToSend => boundToSnapshot ? reviewedSnapshot!.plan : plan;
+
+  /// The specification text this review sends: the capture's frozen spec when
+  /// one is bound, else the sheet's own.
+  String get specToSend => boundToSnapshot ? reviewedSnapshot!.spec : spec;
+
+  /// The selection the draft binds to its capture, when one is bound: the base
+  /// commit the capture was taken at, every file it froze with the operation
+  /// and the hashes it recorded, and the capture's digest.
+  ///
+  /// It is null for an unbound review — the new-work dialog reviewed no
+  /// capture — because "no selection" and "an empty selection" are different
+  /// approvals, and only the first one is true there.
+  EditSnapshot? get editSnapshot {
+    final snapshot = reviewedSnapshot;
+    if (!boundToSnapshot || snapshot == null) return null;
+    return EditSnapshot(
+      baseCommit: snapshot.baseCommit,
+      files: [
+        for (final file in snapshot.files)
+          SelectedFile(
+            path: file.path,
+            operation: file.operation,
+            baseSHA256: file.baseSHA256,
+            contentSHA256: file.contentSHA256,
+            executable: file.executable,
+          ),
+      ],
+      sha256: snapshot.sha256,
+    );
+  }
+
+  /// What the one action does, in plain words (F6 decision 8).
+  ///
+  /// Creating a factory item is not starting work: the bridge stores a draft,
+  /// and the item runs when it is approved in the factory. The words say so
+  /// rather than promising a started job.
   String get consequence {
     final rounds = _rounds;
     final authority = valueOf(HandoffField.authority) as String;
-    return 'An implementer works on $_repoWords and the reviewer reads the '
-        'change. It repairs up to $rounds '
-        '${rounds == 1 ? 'round' : 'rounds'} and stops at a pull request. '
-        'The planner decides $authority alone.';
+    final snapshot = reviewedSnapshot;
+    final draft = boundToSnapshot && snapshot != null
+        ? 'This creates a factory draft from the frozen capture '
+              '${_short(snapshot.id)} — its plan, its specification and the '
+              'files it verified, not the text edited here. Changing the '
+              'evidence means taking a fresh capture.'
+        : 'This creates a factory draft from the plan text shown here. '
+              'Changing the plan means editing it and reviewing it again.';
+    return '$draft Work starts when the item is approved in the factory; '
+        'nothing runs before that. It then works on $_repoWords, repairs up to '
+        '$rounds ${rounds == 1 ? 'round' : 'rounds'} and stops at a pull '
+        'request, and the reviewer reads the change. The planner decides '
+        '$authority alone.';
   }
 
-  /// The draft the sheet's fields describe. Approving posts exactly this.
+  /// The draft the sheet's fields describe. The action posts exactly this.
   FactoryCreate get draft => FactoryCreate(
     requestID: requestID(),
     title: title.trim(),
-    plan: plan,
-    spec: spec,
+    plan: planToSend,
+    spec: specToSend,
     config: FactoryConfig(
       repoID: _repoID,
       projectRoot: projectRoot,
@@ -406,17 +499,24 @@ class HandoffModel extends ChangeNotifier {
       ciPollSeconds: 30,
       ciWaitSeconds: 900,
     ),
+    editSnapshot: editSnapshot,
   );
 
-  /// A fresh request id, so a replayed approval names the same request.
-  String requestID() =>
+  /// This review's request id, made once and kept: two approvals in one review
+  /// name the same request, so the second one replays the first rather than
+  /// creating a second item. A new review names a new one.
+  String requestID() => _requestID ??=
       'app-handoff-$projectRoot-${DateTime.now().microsecondsSinceEpoch}-'
-      '${_requests++}';
+      '$_review';
 
-  /// Posts the draft and keeps the item it made. It refuses while a blocker
-  /// stands, so a screen cannot post what it is showing as blocked, and it
-  /// reads the settings version once more first: an approval that would
-  /// freeze settings nobody read is refused, not posted.
+  /// Posts the draft and keeps the item it made, through the capture's handoff
+  /// route when a snapshot is bound and the create route otherwise.
+  ///
+  /// It refuses while a blocker stands, so a screen cannot post what it is
+  /// showing as blocked, and it reads the settings version once more first: an
+  /// approval that would freeze settings nobody read is refused, not posted. A
+  /// failure leaves [failure] set and posts nothing more: a retry is the
+  /// person's decision, and its stable request id makes it a replay.
   Future<FactoryItem?> approve() async {
     if (!canApprove) {
       _failure = blockers.first;
@@ -430,8 +530,14 @@ class HandoffModel extends ChangeNotifier {
     }
     _failure = null;
     notifyListeners();
+    final request = draft;
+    final snapshot = reviewedSnapshot;
+    final planner = plannerID;
+    final handoff = _handoffSnapshot;
     try {
-      _created = await _create(draft);
+      _created = boundToSnapshot && snapshot != null && planner != null
+          ? await handoff!(planner, snapshot.id, request)
+          : await _create(request);
     } catch (error) {
       _failure = '$error';
       notifyListeners();
@@ -440,6 +546,10 @@ class HandoffModel extends ChangeNotifier {
     notifyListeners();
     return _created;
   }
+
+  /// An id or a digest, short enough to read on one line.
+  static String _short(String value) =>
+      value.length <= 8 ? value : value.substring(0, 8);
 
   // The effective values, each read once so a getter cannot disagree with
   // the draft it builds.

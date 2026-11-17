@@ -43,6 +43,19 @@ import '../thread/thread_screen.dart';
 import 'placeholder.dart';
 import 'sidebar.dart';
 
+/// Builds the handoff review for a plan (F6 decision 8), bound to the frozen
+/// capture the review was opened from when the caller has one.
+///
+/// It is asynchronous because what the review inherits is the project's own
+/// settings, read when the person hands the plan off (F6 decision 12).
+typedef HandoffBuilder = Future<HandoffModel> Function(
+  model.ThreadRef thread,
+  String plan,
+  String spec, {
+  String? plannerID,
+  PlannerSnapshot? snapshot,
+});
+
 /// The Studio's frame (design-system.md §4): the sidebar, and the place's
 /// content beside it. Below 760 the navigation becomes a panel over the
 /// content, opened from the app bar the narrow layout needs.
@@ -394,12 +407,7 @@ class Studio extends StatefulWidget {
   ///
   /// It is asynchronous because what the review inherits is the project's own
   /// settings, read when the person hands the plan off (F6 decision 12).
-  final Future<HandoffModel> Function(
-    model.ThreadRef thread,
-    String plan,
-    String spec,
-  )?
-  handoffFor;
+  final HandoffBuilder? handoffFor;
 
   /// Builds a plan run's model for one agent (F6 decision 11). Null leaves a
   /// plan run's place unbuilt rather than drawing an empty run.
@@ -877,12 +885,7 @@ class _ThreadPlace extends StatefulWidget {
   final void Function(StartedPlanner planner)? onPlannerStarted;
 
   /// The handoff review's model, and where an approved item opens.
-  final Future<HandoffModel> Function(
-    model.ThreadRef thread,
-    String plan,
-    String spec,
-  )?
-  handoffFor;
+  final HandoffBuilder? handoffFor;
   final void Function(String itemID)? onOpenItem;
   final List<inbox.Ask> asks;
   final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
@@ -1282,12 +1285,7 @@ class _PlanningPlace extends StatefulWidget {
 
   final model.ThreadRef thread;
   final PlanningModel plan;
-  final Future<HandoffModel> Function(
-    model.ThreadRef thread,
-    String plan,
-    String spec,
-  )?
-  handoffFor;
+  final HandoffBuilder? handoffFor;
   final DateTime? now;
   final void Function(String itemID)? onOpenItem;
 
@@ -1302,7 +1300,9 @@ class _PlanningPlaceState extends State<_PlanningPlace> {
     super.dispose();
   }
 
-  /// Opens the handoff review for the plan the last snapshot froze.
+  /// Opens the handoff review for the plan the last snapshot froze, bound to
+  /// that capture: what the sheet shows as evidence and what the draft is
+  /// built from are the bytes the bridge froze, not a copy this screen holds.
   Future<void> _handOff(BuildContext context) async {
     final build = widget.handoffFor;
     if (build == null) return;
@@ -1311,6 +1311,8 @@ class _PlanningPlaceState extends State<_PlanningPlace> {
       widget.thread,
       latest?.plan ?? '',
       latest?.spec ?? '',
+      plannerID: widget.plan.plannerID,
+      snapshot: latest,
     );
     // What the review inherits is read before the sheet opens, so the place
     // may be gone by now; the review is disposed rather than opened on a dead

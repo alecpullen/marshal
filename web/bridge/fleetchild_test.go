@@ -1,9 +1,14 @@
 package bridge
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,6 +41,144 @@ func waitLogged(t *testing.T, l *EventLog, sessionID string) {
 			t.Fatalf("session %s was never logged", sessionID)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// subscribeSession opens GET /api/events?sessionId= on srv and returns a reader
+// positioned at the stream, once the session has its subscriber, so a test that
+// notifies next cannot lose the event to the connect handshake.
+func subscribeSession(t *testing.T, srv *Server, l *EventLog, sessionID string) *bufio.Reader {
+	t.Helper()
+	hs := httptest.NewServer(srv)
+	t.Cleanup(hs.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		hs.URL+"/api/events?sessionId="+url.QueryEscape(sessionID), nil)
+	if err != nil {
+		t.Fatalf("build the stream request: %v", err)
+	}
+	resp, err := hs.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET the session stream: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET the session stream = %d, want 200", resp.StatusCode)
+	}
+	rd := bufio.NewReader(resp.Body)
+	eventually(t, "the stream's subscriber", func() bool { return l.Subscribers(sessionID) == 1 })
+	return rd
+}
+
+// followedRunHarness is newAttachHarness whose fake reports a followed run for
+// a session as soon as it is asked to follow it, as a real child does. It is the
+// fake TestATerminalTurnMarksTheSessionBusy installs, shared with the tests
+// below that need a terminal's turn to be live (P7 D4).
+func followedRunHarness(t *testing.T) *attachHarness {
+	t.Helper()
+	h := newAttachHarness(t)
+	h.fleet.newProjectChild = func(root, socket string) (*Child, error) {
+		fake := newFakeProjectChild(socket)
+		fake.fakeAgent.mu.Lock()
+		fake.fakeAgent.handler = func(method string, params json.RawMessage) (any, *rpcError, bool) {
+			if method != "session/follow" {
+				return nil, nil, false
+			}
+			var p struct {
+				SessionID string `json:"sessionId"`
+			}
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, nil, false
+			}
+			fake.notify("session/update", map[string]any{
+				"sessionId": p.SessionID,
+				"update":    map[string]any{"kind": "followed_run", "state": "started", "runId": "run-1"},
+			})
+			return map[string]any{}, nil, false
+		}
+		fake.fakeAgent.mu.Unlock()
+		h.mu.Lock()
+		h.fakes[root] = fake
+		h.mu.Unlock()
+		return &Child{Transport: fake}, nil
+	}
+	return h
+}
+
+// TestATerminalTurnStreams: a session/update the child sends for a session the
+// terminal attached reaches a subscriber of /api/events?sessionId=, because the
+// stream resolves the session through the one rule and reads its project
+// child's log (P7 D2, D4).
+func TestATerminalTurnStreams(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+
+	res := h.attach(http.MethodPost, root, "", true)
+	if res.status != http.StatusSwitchingProtocols {
+		t.Fatalf("attach = %d, want 101: %s", res.status, res.refusal(t))
+	}
+	sessionID := res.header.Get(sessionHeader)
+	fake := h.fake(root)
+	if fake == nil {
+		t.Fatal("no project child was built for the root")
+	}
+	pc, ok := projectEntry(h.fleet, root)
+	if !ok {
+		t.Fatal("the project child is not in the fleet's map")
+	}
+
+	rd := subscribeSession(t, h.server, pc.log, sessionID)
+	fake.notify("session/update", map[string]any{
+		"sessionId": sessionID,
+		"update":    map[string]any{"kind": "agent_message", "text": "typed in the terminal"},
+	})
+
+	ev := readSSEEvent(t, rd)
+	if !strings.Contains(ev.data, "typed in the terminal") {
+		t.Fatalf("streamed event = %s, want the terminal's agent_message", ev.data)
+	}
+}
+
+// TestAPromptDuringATerminalTurnIs409: the Studio's prompt for a session the
+// terminal is running a turn on is refused 409 while the followed run is live,
+// and accepted once it ends — both answers read the busy flag the followed run
+// sets (P7 D4).
+func TestAPromptDuringATerminalTurnIs409(t *testing.T) {
+	root := t.TempDir()
+	h := followedRunHarness(t)
+	ctx := ctlContext(t)
+
+	res := h.attach(http.MethodPost, root, "", true)
+	if res.status != http.StatusSwitchingProtocols {
+		t.Fatalf("attach = %d, want 101: %s", res.status, res.refusal(t))
+	}
+	sessionID := res.header.Get(sessionHeader)
+	pc, err := h.fleet.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	eventually(t, "the followed run to mark the session busy", func() bool {
+		return sessionBusy(pc.reg, sessionID)
+	})
+
+	srv := NewServer(h.fleet, "")
+	prompt := "/api/sessions/" + sessionID + "/prompt"
+	body := map[string]string{"text": "hello from the studio"}
+	if rec := doReq(t, srv, http.MethodPost, prompt, body, nil); rec.Code != http.StatusConflict {
+		t.Fatalf("prompt during the terminal's turn = %d, want 409 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	fake := h.fake(root)
+	fake.notify("session/update", map[string]any{
+		"sessionId": sessionID,
+		"update":    map[string]any{"kind": "followed_run", "state": "ended", "runId": "run-1", "outcome": "done"},
+	})
+	eventually(t, "the run's end to clear busy", func() bool {
+		return !sessionBusy(pc.reg, sessionID)
+	})
+	if rec := doReq(t, srv, http.MethodPost, prompt, body, nil); rec.Code != http.StatusAccepted {
+		t.Fatalf("prompt after the terminal's turn = %d, want 202 (body %s)", rec.Code, rec.Body.String())
 	}
 }
 

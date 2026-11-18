@@ -1631,37 +1631,10 @@ func sessionBusy(reg *Registry, id string) bool {
 // it attached reaches the bridge as a followed run, which sets Busy until it
 // ends — the state the Studio's index and a prompt's refusal read (P7 D4). The
 // fake reports a run only once it has been asked to follow the session, as a
-// real child does.
+// real child does (followedRunHarness).
 func TestATerminalTurnMarksTheSessionBusy(t *testing.T) {
 	root := t.TempDir()
-	h := newAttachHarness(t)
-	h.fleet.newProjectChild = func(root, socket string) (*Child, error) {
-		fake := newFakeProjectChild(socket)
-		fake.fakeAgent.mu.Lock()
-		fake.fakeAgent.handler = func(method string, params json.RawMessage) (any, *rpcError, bool) {
-			if method != "session/follow" {
-				return nil, nil, false
-			}
-			var p struct {
-				SessionID string `json:"sessionId"`
-			}
-			if err := json.Unmarshal(params, &p); err != nil {
-				return nil, nil, false
-			}
-			// The update carries the id the follow named: a followed run is
-			// reported for the session being followed, never for another.
-			fake.notify("session/update", map[string]any{
-				"sessionId": p.SessionID,
-				"update":    map[string]any{"kind": "followed_run", "state": "started", "runId": "run-1"},
-			})
-			return map[string]any{}, nil, false
-		}
-		fake.fakeAgent.mu.Unlock()
-		h.mu.Lock()
-		h.fakes[root] = fake
-		h.mu.Unlock()
-		return &Child{Transport: fake}, nil
-	}
+	h := followedRunHarness(t)
 	ctx := ctlContext(t)
 
 	res := h.attach(http.MethodPost, root, "", true)

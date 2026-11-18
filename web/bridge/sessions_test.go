@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // Listing sessions for a project with no live agent answers on the control
@@ -48,6 +51,228 @@ func TestListingLeavesTheControlChildsHooksAlone(t *testing.T) {
 	}
 	if got := reflect.ValueOf(child.OnRequest).Pointer(); got != want {
 		t.Fatalf("listing sessions replaced the control child's OnRequest: got %p, want %p", child.OnRequest, sentinel)
+	}
+}
+
+// assertChildCall waits until the fake child recorded a call of method naming
+// sessionID, so a route that dispatches on a goroutine is asserted without a
+// sleep.
+func assertChildCall(t *testing.T, fake *fakeProjectChild, method, sessionID string) {
+	t.Helper()
+	eventually(t, method+" on the project child for "+sessionID, func() bool {
+		for _, raw := range fake.calls(method) {
+			if paramsOf(t, raw)["sessionId"] == sessionID {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestEveryPerSessionRouteReachesAProjectSession: a client session living on a
+// project child answers every per-session route there — stack, access, prompt,
+// cancel and the event stream — because they all resolve through the one rule
+// (P7 D2).
+func TestEveryPerSessionRouteReachesAProjectSession(t *testing.T) {
+	f, fakeFor := projectFleetWith(t, nil)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	pc, err := f.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	sessionID, err := pc.reg.New(ctx, AgentPath(root), "")
+	if err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+	fake := fakeFor(pc.root)
+	if fake == nil {
+		t.Fatal("no fake was built for the root")
+	}
+	srv := NewServer(f, "")
+
+	// A read of the session's stack and of its access state each travel as one
+	// child request naming the session.
+	for _, tc := range []struct{ path, method string }{
+		{path: "/api/sessions/" + sessionID + "/stack", method: "session/stack"},
+		{path: "/api/sessions/" + sessionID + "/access", method: "session/access_state"},
+	} {
+		if rec := doReq(t, srv, http.MethodGet, tc.path, nil, nil); rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200 (body %s)", tc.path, rec.Code, rec.Body.String())
+		}
+		assertChildCall(t, fake, tc.method, sessionID)
+	}
+
+	// A prompt is accepted at once and reaches the child on its own goroutine.
+	if rec := doReq(t, srv, http.MethodPost, "/api/sessions/"+sessionID+"/prompt",
+		contract.PromptRequest{Text: "run the tests"}, nil); rec.Code != http.StatusAccepted {
+		t.Fatalf("prompt = %d, want 202 (body %s)", rec.Code, rec.Body.String())
+	}
+	assertChildCall(t, fake, "session/prompt", sessionID)
+
+	// Cancel is a notification, and it too names the session on the child.
+	if rec := doReq(t, srv, http.MethodPost, "/api/sessions/"+sessionID+"/cancel", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("cancel = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	assertChildCall(t, fake, "session/cancel", sessionID)
+
+	// The event stream subscribes to the project child's own log.
+	subscribeSession(t, srv, pc.log, sessionID)
+}
+
+// TestLoadOpensAClosedSession: load on a session only its project's listing
+// names reopens it on that project's child, answers the log's tail, and leaves
+// the child tracking it — session/load is never sent, because the session is
+// already open on its child (P7 D3, decision 5).
+func TestLoadOpensAClosedSession(t *testing.T) {
+	root := t.TempDir()
+	f, fakeFor, ctl := controlFleet(t, func(cwd string) (any, *rpcError) {
+		if cwd != root {
+			return listing(), nil
+		}
+		return listing(map[string]any{"sessionId": "closed-1", "title": "old"}), nil
+	})
+	if err := f.ws.AddProject(root); err != nil {
+		t.Fatalf("AddProject: %v", err)
+	}
+	srv := NewServer(f, "")
+
+	rec := doReq(t, srv, http.MethodPost, "/api/sessions/closed-1/load", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("load = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		SessionID string          `json:"sessionId"`
+		Events    json.RawMessage `json:"events"`
+	}
+	decodeBody(t, rec, &got)
+	if got.SessionID != "closed-1" {
+		t.Fatalf("load answered sessionId %q, want closed-1", got.SessionID)
+	}
+	if string(got.Events) != "[]" {
+		t.Fatalf("load answered events %s, want an empty array", got.Events)
+	}
+
+	pc, ok := projectEntry(f, root)
+	if !ok {
+		t.Fatal("load did not resolve the session's project child")
+	}
+	if !pc.reg.tracksClient("closed-1") {
+		t.Fatal("the reopened session is not tracked as the child's client session")
+	}
+	fake := fakeFor(root)
+	if fake == nil {
+		t.Fatal("no fake was built for the session's root")
+	}
+	if loads := fake.calls("session/load"); len(loads) != 0 {
+		t.Fatalf("the project child was asked to session/load an open session: %v", loads)
+	}
+	if resumes := fake.calls("session/resume"); len(resumes) != 1 {
+		t.Fatalf("session/resume on the project child = %v, want one", resumes)
+	}
+	for _, raw := range ctl.calls("session/load") {
+		if strings.Contains(raw, "closed-1") {
+			t.Fatalf("the control child was asked to session/load the closed session: %s", raw)
+		}
+	}
+}
+
+// TestLoadOfAnOwnedSessionIs409: load of a session the bridge owns answers 409
+// with the owner's refusal, never a reopen and never a 404 (P7 D5).
+func TestLoadOfAnOwnedSessionIs409(t *testing.T) {
+	root := t.TempDir()
+	f, _, _ := controlFleet(t, nil)
+	if err := f.ws.PutAgent(Agent{ID: "a-paused", Project: root, Name: "paused one",
+		SessionID: "s-paused", OwnerID: DefaultOwnerID, Origin: OriginUI}); err != nil {
+		t.Fatalf("PutAgent: %v", err)
+	}
+	srv := NewServer(f, "")
+
+	rec := doReq(t, srv, http.MethodPost, "/api/sessions/s-paused/load", nil, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("load of an owned session = %d, want 409 (body %s)", rec.Code, rec.Body.String())
+	}
+	var got map[string]string
+	decodeBody(t, rec, &got)
+	if !strings.Contains(got["error"], "agent paused one") {
+		t.Fatalf("error = %q, want it to name the owner", got["error"])
+	}
+	if _, started := projectEntry(f, root); started {
+		t.Fatal("a refused load started a project child")
+	}
+}
+
+// TestLoadOfAnAgentSessionIsUnchanged: an agent's load keeps today's body — the
+// agent's own view of cwd, then session/load on its child (decision 5).
+func TestLoadOfAnAgentSessionIsUnchanged(t *testing.T) {
+	f, fakeFor := hostOnlyProjectFleet(t)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	id, err := f.Spawn(ctx, root, SpawnOptions{Name: "one"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	a, ok := f.ws.Agent(id)
+	if !ok || a.SessionID == "" {
+		t.Fatalf("agent %s has no recorded session", id)
+	}
+	fake := fakeFor(root)
+	if fake == nil {
+		t.Fatal("no project child was built for the root")
+	}
+	srv := NewServer(f, "")
+
+	rec := doReq(t, srv, http.MethodPost, "/api/sessions/"+a.SessionID+"/load",
+		map[string]string{"cwd": root}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("load of an agent's session = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		SessionID string            `json:"sessionId"`
+		Events    []json.RawMessage `json:"events"`
+	}
+	decodeBody(t, rec, &got)
+	if got.SessionID != a.SessionID {
+		t.Fatalf("load answered sessionId %q, want %s", got.SessionID, a.SessionID)
+	}
+	if got.Events == nil {
+		t.Fatal("load answered no events array")
+	}
+	loads := fake.calls("session/load")
+	if len(loads) != 1 {
+		t.Fatalf("session/load on the agent's child = %v, want exactly one", loads)
+	}
+	if id, _ := paramsOf(t, loads[0])["sessionId"].(string); id != a.SessionID {
+		t.Fatalf("session/load named %q, want %s", id, a.SessionID)
+	}
+}
+
+// TestAnImageReachesAProjectSession: an upload addressed to a client session
+// reaches the project child that holds it, through the same one rule every
+// per-session route uses (P7 D2).
+func TestAnImageReachesAProjectSession(t *testing.T) {
+	f, fakeFor := projectFleetWith(t, storeImages)
+	root := t.TempDir()
+	sessionID := uploadSession(t, f, root)
+	fake := fakeFor(root)
+	if fake == nil {
+		t.Fatal("no fake was built for the root")
+	}
+
+	srv := NewServer(f, "")
+	rec := doReq(t, srv, http.MethodPost, imageURL(root, sessionID),
+		contract.ImageUpload{Data: base64.StdEncoding.EncodeToString([]byte("raw bytes"))}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	calls := fake.calls(imageMethod)
+	if len(calls) != 1 {
+		t.Fatalf("%s on the project child = %v, want one", imageMethod, calls)
+	}
+	if got, _ := paramsOf(t, calls[0])["sessionId"].(string); got != sessionID {
+		t.Fatalf("%s named %q, want %s", imageMethod, got, sessionID)
 	}
 }
 

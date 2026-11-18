@@ -1147,12 +1147,16 @@ func (f *Fleet) RuntimeForSession(id string) (*agentRuntime, error) {
 	}
 	return rt, nil
 }
+
+// LogForSession is the log a session's events are read from: the one rule
+// resolves it, so a terminal's client session streams from its project child
+// and an agent's from its own runtime (P7 D2).
 func (f *Fleet) LogForSession(id string) (*EventLog, error) {
-	rt, err := f.RuntimeForSession(id)
+	rs, err := f.ResolveSession(id)
 	if err != nil {
 		return nil, err
 	}
-	return rt.log, nil
+	return rs.Log, nil
 }
 func (f *Fleet) ResolvePermission(id string, d Decision) error {
 	f.mu.Lock()

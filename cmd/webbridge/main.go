@@ -1057,25 +1057,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// A joining bridge dials out to its relay and serves the connections the
-	// relay reverses onto it (D12, D13). The joiner itself was built and set
-	// before the listeners started; here it only runs, on sigCtx, so a
-	// shutdown stops it with the listeners and run waits for it before it
-	// returns.
-	if joiner != nil {
-		joined := make(chan struct{})
-		go func() {
-			defer close(joined)
-			_ = joiner.Run(sigCtx)
-		}()
-		// stop is idempotent, so cancelling here as well as in the defer
-		// above is what lets run wait for the joiner on every path out.
-		defer func() {
-			stop()
-			<-joined
-		}()
-	}
-
 	// The one shutdown sequence every path below runs once: HTTP first, then
 	// the factory and the children. It is idempotent so a signal, a failed
 	// listener and a restart can each ask for it without checking.
@@ -1099,6 +1080,25 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		shutdownFactory()
 		fleet.Close()
 	})
+
+	// A joining bridge dials out to its relay and serves the connections the
+	// relay reverses onto it (D12, D13). The joiner itself was built and set
+	// before the listeners started; here it only runs, on sigCtx, so a
+	// shutdown stops it with the listeners and run waits for it before it
+	// returns.
+	if joiner != nil {
+		joined := make(chan struct{})
+		go func() {
+			defer close(joined)
+			_ = joiner.Run(sigCtx)
+		}()
+		// stop is idempotent, so cancelling here as well as in the defer
+		// above is what lets run wait for the joiner on every path out.
+		defer func() {
+			stop()
+			<-joined
+		}()
+	}
 
 	select {
 	case err := <-serveErr:

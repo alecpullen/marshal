@@ -498,7 +498,82 @@ Baseline at `bdd20ddc`, recorded by P7: `go test ./web/...` passes, and
 
 ### Plan 1
 
-Not started.
+Landed, in four commits on `p8-1-places` (`p8-1-places: task N — …`):
+
+- **Task 1.** `placeHost` (`app/lib/src/model/place_host.dart`),
+  `HostPlaceBuilder`, and the host-resolving `_hostPlace()` in
+  `app/lib/src/ui/shell/shell.dart`; the switcher above each of the three
+  places; one guarded scope setter (`_setHost`, which goes through `_leave`)
+  for the sidebar and the top line.
+- **Task 2.** `PerHost<T>` (`app/lib/src/model/per_host.dart`); `_Sections`
+  keeps one model set per host, finds that host's client by name, and each set
+  disposes its own models.
+- **Task 3.** `SignalsStore` (`app/lib/src/model/signals_store.dart`);
+  `TrippedWatch.host` and the top-level derivation that `WatchesModel.tripped`
+  and the store share; the Overview's Automations card, whose rows name the
+  host when the fleet lists more than one; `InboxModel.onAnswered`; blocks and
+  held drafts from every host in the Inbox.
+- **Task 4.** `onWrote` on `BotsModel` and `WatchesModel`, wired in `main.dart`
+  to re-read the host that was written.
+
+**Decisions the executor made.** Each fills a gap the plan left; none changes a
+contract it states.
+
+1. The three builders moved from `Studio` to `Shell`, where the plan's
+   Contracts section puts them; `Studio` keeps its own fields and constructor
+   and forwards them. That is what lets the shell resolve the host with
+   `_host` and wrap the place in the switcher.
+2. The switcher is drawn only for a place this shell has a builder for. A place
+   with no builder — an embedded host, or a test that supplies its own content
+   — is drawn by the content builder as before, without a switcher that could
+   change nothing.
+3. `signals` is optional (`SignalsStore?`) on `Studio` and `Shell`, as `pulls`
+   and `factory` are, so a caller that builds the shell without one still
+   compiles and draws; an absent store leaves the Automations card empty.
+4. `SignalsStore` keeps each host's last watch list, and a route that fails
+   skips its hand-over: a failed `networkPending` never hands an empty list
+   over, so the Inbox keeps the asks it had. The plan asked for that rule on
+   the watches read; applying it to the other two routes is what makes "one
+   route failing does not lose the others" hold.
+5. `tripped` merges the raw rows before they become `TrippedWatch`s, because a
+   row carries no timestamp to sort a merged list by.
+6. The Library's project picker lists that host's projects only; it had listed
+   every host's, and D2 says a section merges nothing across hosts.
+
+**Mutation checks.** Every task's named test failed on the mutation the plan
+names, and passed again once the line was restored:
+
+| Task | Mutation | Test that failed |
+|---|---|---|
+| 1 | `placeHost` returns the first host whatever its reach | `all hosts reads the first live host` |
+| 2 | `of` builds a new value on every call | `a value is built once per host` |
+| 3 | blocks handed over under the first host's name for every host | `a second host's blocked request becomes an inbox ask` |
+| 4 | `onWrote` called before the post's await | `a refused post reports nothing` |
+
+**A regression the full run caught.** `leaving a dirty place through the Inbox
+asks first` (`app/test/ui/sections_test.dart`) failed: a per-host place with no
+builder drew its own promise in place of the content builder, so a place that
+supplies its content was never mounted and the guard never watched its edit.
+`_hostPlace()` now answers null when no builder is wired and falls back to the
+content builder when the builder answers nothing — decision 2 above.
+
+**Verification.** `flutter analyze` is clean; `flutter test` has 3765 passing
+and 0 failing (3737 before this plan); `dart format --output=none
+--set-exit-if-changed lib test` reports 347 files unchanged. No kit piece was
+added and the gallery is untouched: `test/gallery_test.dart` passed as part of
+the run, with its macOS-pinned goldens not regenerated.
+
+**The run by hand was not performed.** It needs a desktop with two hosts — the
+local daemon, and `scripts/dev-studio.sh`'s server-profile Studio named in
+`fleet.toml` with a token stored by `marshal fleet login` — and a headless run
+cannot drive it. What it would have shown is covered by tests instead: the
+resolved host per scope (`place_host_test.dart`, `shell_test.dart`), the models
+kept per host (`per_host_test.dart`), a second host's blocks, drafts and trips
+reaching the Inbox and the card (`signals_store_test.dart`,
+`overview_test.dart`, `inbox_model_test.dart`), and a write re-reading its host
+(`bots_test.dart`, `watches_test.dart`). Switching hosts over an unsaved edit
+and tripping a watch on the second host remain for the first person with that
+setup to confirm.
 
 ### Plan 2
 

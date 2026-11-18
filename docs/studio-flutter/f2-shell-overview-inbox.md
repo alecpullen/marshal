@@ -214,7 +214,9 @@ test (no CMake/GTK3 development headers, no display).
   host), and a thread keeps its host so opening it stays exact.
 - **The host switcher narrows the sidebar's tree only.** The Overview and the
   Inbox stay fleet-wide: they are projections of the whole store, and the
-  contract's `buildNavModel` takes no host.
+  contract's `buildNavModel` takes no host. P8 D1 has since widened it to
+  Automations, Library and Settings, which read one bridge each and so read
+  the host the switcher names.
 - **The narrow layout's navigation is a full-height panel** behind the app
   bar's button rather than a floating drawer: the kit has no scrim container
   outside `Sheet`, and extending the kit for a drawer is F0-sized work. The

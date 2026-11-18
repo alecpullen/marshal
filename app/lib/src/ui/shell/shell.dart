@@ -309,10 +309,12 @@ class _ShellState extends State<Shell> {
   };
 
   /// The place when it is one the shell builds per host: the switcher above
-  /// it, naming the host it read, and the place itself — the builder's, or the
-  /// promise when there is no builder for that host or it answers nothing.
+  /// it, naming the host it read, and the place itself.
   ///
-  /// Every other place answers null, and [_body] draws it as it did.
+  /// Every other place answers null, and [_body] draws it as it did. A place
+  /// this shell has no builder for answers null too: a switcher above a place
+  /// that reads nothing would change nothing, and the place it draws — the
+  /// promise, or whatever the content builder draws — is drawn without it.
   Widget? _hostPlace() {
     final kind = widget.place.kind;
     if (!_perHost.contains(kind)) return null;
@@ -322,13 +324,15 @@ class _ShellState extends State<Shell> {
       PlaceKind.settings => widget.settingsFor,
       _ => null,
     };
+    if (build == null) return null;
     // No host is known only while the fleet lists none, and then there is
     // nothing to switch between: the place is drawn as a null build is.
     final host = placeHost(widget.hosts, _host);
     if (host == null) return plannedPlace(widget.place, widget.nav);
+    // A builder that answers nothing for this host leaves the place to the
+    // content builder, which is what drew it before the scope reached it.
     final place =
-        build?.call(host, sectionIndex(widget.place), widget.state) ??
-        plannedPlace(widget.place, widget.nav);
+        build(host, sectionIndex(widget.place), widget.state) ?? _place();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [

@@ -405,6 +405,7 @@ class _GalleryState extends State<Gallery> {
       who: 'The implementer',
       text: 'started round 1',
       age: '8m',
+      ageTip: '2026-11-17 11:52 UTC',
       detail: 'implement_started',
     ),
     ActivityRow(who: 'You', text: 'revision 1 was approved', age: '12m'),

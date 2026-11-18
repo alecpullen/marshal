@@ -2,12 +2,15 @@ import '../../model/pulls_model.dart';
 import '../kit/kit.dart';
 import '../pulls/pull_facts.dart';
 
-/// The work item's Pull requests tab (F6 decision 6): the cards of the pull
-/// requests the factory recorded for it, in F5's own card.
+/// The work item's Pull requests tab (F6 decision 6): a card for every pull
+/// request the factory recorded for it, in F5's own card and in the item's own
+/// order. All of them are shown, not only the one under review: none is
+/// dropped, filtered or reordered, because an item can reach several.
 ///
 /// The card is the only way a pull request is shown (§5), so the tab draws
-/// what the pulls model holds rather than describing the item's own copy: a
-/// card says what its checks say now, which the item's snapshot cannot.
+/// what the pulls model holds rather than describing the item's own copy: each
+/// card reads its own checks and says what they say now, which the item's
+/// snapshot cannot.
 class PullsTab extends StatelessWidget {
   const PullsTab({
     super.key,

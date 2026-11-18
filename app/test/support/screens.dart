@@ -920,6 +920,62 @@ Widget _hostsSignIn() {
   );
 }
 
+/// A relayed host whose relay is live, and one behind a relay the bridge
+/// refused: the first says where it is reached, and the second says to sign in
+/// to the relay first and offers no Sign in of its own (spec D23).
+Widget _hostsRelayed() {
+  final hub = HostView(
+    name: 'hub',
+    kind: HostKind.server,
+    reach: HostReach.live,
+    lastContact: shellNow,
+  );
+  final laptop = HostView(
+    name: 'laptop',
+    kind: HostKind.server,
+    reach: HostReach.live,
+    lastContact: shellNow,
+    via: 'hub',
+  );
+  final refusedHub = HostView(
+    name: 'hub',
+    kind: HostKind.server,
+    reach: HostReach.unauthorized,
+    lastContact: shellNow.subtract(const Duration(minutes: 4)),
+  );
+  final behind = HostView(
+    name: 'build',
+    kind: HostKind.server,
+    reach: HostReach.unauthorized,
+    lastContact: shellNow.subtract(const Duration(minutes: 4)),
+    via: 'hub',
+  );
+  return PageBody(
+    title: 'Hosts',
+    subtitle: 'A relayed host, and one behind a refused relay',
+    width: PageWidth.list,
+    children: [
+      HostDetail(
+        model: HostsModel.fixture([
+          hub,
+          laptop,
+        ], profiles: const _FixtureFleetProfiles()),
+        host: laptop,
+        now: shellNow,
+      ),
+      const SizedBox(height: Space.s32),
+      HostDetail(
+        model: HostsModel.fixture([
+          refusedHub,
+          behind,
+        ], profiles: const _FixtureFleetProfiles()),
+        host: behind,
+        now: shellNow,
+      ),
+    ],
+  );
+}
+
 /// The Settings place, with the sections this build has and the rest planned.
 /// [section] is the index in the design's order: 0 Hosts … 9 General.
 Widget _settings({int section = 0, StateKind? state}) {
@@ -1376,6 +1432,14 @@ final screens = <ScreenCase>[
   ScreenCase(
     name: 'settings · hosts · sign in',
     ready: () => _hostsSignIn(),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 0, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · hosts · relayed',
+    ready: () => _hostsRelayed(),
     states: {
       for (final kind in requiredStates)
         kind: () => _settings(section: 0, state: kind),

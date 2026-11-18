@@ -42,6 +42,37 @@ void main() {
     host = registry.hosts.single;
   });
 
+  test('a host keeps the relay it was found through', () async {
+    // A spec that names a relay is reached through that host: the registry
+    // keeps the name, so a screen can say where the host is reached (D23).
+    final relayed = HostRegistry(
+      discovery: () async => [
+        HostSpec(
+          name: 'laptop',
+          kind: HostKind.server,
+          client: BridgeClient(transport),
+          via: 'hub',
+        ),
+      ],
+      fleetFor: (client) => EventStream(
+        transport,
+        '/api/events',
+        now: clock.now,
+        wait: clock.wait,
+        jitter: 0,
+      ),
+    );
+    addTearDown(relayed.dispose);
+    await relayed.discover();
+
+    expect(relayed.hosts.single.via, 'hub');
+    expect(
+      host.via,
+      isNull,
+      reason: 'a host discovery found directly is reached on its own',
+    );
+  });
+
   test('a stopped daemon becomes stale then unreachable', () async {
     await pumpEventQueue();
     expect(host.reach, HostReach.connecting);

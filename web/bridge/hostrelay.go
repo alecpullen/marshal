@@ -9,11 +9,15 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // The relay's wire names (P8 D11–D16). They are shared with the joiner, which
@@ -82,15 +86,21 @@ func NewHostRelay(secrets map[string]string) (*HostRelay, error) {
 		}
 		h := &relayHost{relay: r, name: name, secret: secret, fresh: make(chan struct{}, 1)}
 		h.transport = h.newTransport()
+		h.proxy = h.newProxy()
 		r.hosts[name] = h
 	}
 	return r, nil
 }
 
 // SetHostRelay makes s a relay: the join route on the network listener, and
-// the forward and hosts routes behind the bearer check.
+// the forward and hosts routes behind the bearer check. Both new routes are
+// /api/ routes, so the bearer check the mux is wrapped in covers them as it
+// covers every other (D15, D16); a bridge that relays nothing registers
+// neither, so it answers each as it answers any path it does not serve.
 func (s *Server) SetHostRelay(r *HostRelay) {
 	s.relay = r
+	s.mux.HandleFunc("GET "+relayHostsPath, s.relayHosts)
+	s.mux.Handle(relayForwardPrefix, http.HandlerFunc(s.relayForward))
 }
 
 // hostFor answers the entry for name, or nil when the table does not name it.
@@ -107,6 +117,10 @@ type relayHost struct {
 	// transport is the HTTP/1.1 client that sends this host's requests down
 	// its joined connections (decision 6).
 	transport *http.Transport
+	// proxy is the forward that sends a caller's request down those
+	// connections. It is built once, with the transport, and never per
+	// request (D15).
+	proxy *httputil.ReverseProxy
 
 	mu sync.Mutex
 	// instance is the id of the process that currently holds this name, and
@@ -117,6 +131,9 @@ type relayHost struct {
 	lastContact time.Time
 	// queue holds joined connections no request has taken yet.
 	queue []net.Conn
+	// open counts the joined connections that are still open, which is what
+	// the hosts route reports as connected (D16).
+	open int
 	// fresh is signalled when a connection joins the queue, so a dial waiting
 	// for one wakes without polling.
 	fresh chan struct{}
@@ -194,6 +211,12 @@ func (h *relayHost) join(instance string, conn net.Conn) {
 		took = true
 	}
 	h.lastContact = time.Now()
+	if rc, ok := conn.(*relayConn); ok {
+		// The name counts the connection while it is open, which is what the
+		// hosts route reports as connected (D16).
+		rc.host = h
+	}
+	h.open++
 	h.queue = append(h.queue, conn)
 	h.mu.Unlock()
 
@@ -215,6 +238,13 @@ func (h *relayHost) signal() {
 	default:
 	}
 }
+
+// errHostNotConnected is a dial's report that the name had no joined
+// connection within the relay's wait. It is the forward's 503, and it carries
+// D14's words.
+type errHostNotConnected struct{ name string }
+
+func (e errHostNotConnected) Error() string { return e.name + " is not connected" }
 
 // take hands the transport the next joined connection, waiting up to the
 // relay's wait for one to arrive. A connection the joiner closed while it
@@ -240,7 +270,7 @@ func (h *relayHost) take(ctx context.Context) (net.Conn, error) {
 		select {
 		case <-h.fresh:
 		case <-timer.C:
-			return nil, fmt.Errorf("%s is not connected", h.name)
+			return nil, errHostNotConnected{name: h.name}
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -272,6 +302,13 @@ func (h *relayHost) newTransport() *http.Transport {
 type relayConn struct {
 	net.Conn
 	r *bufio.Reader
+	// host, when set, is the name this connection was joined for: it counts
+	// the connection as open until it closes, which is what the hosts route
+	// reports as connected (D16).
+	host *relayHost
+	// once closes over that count, so a connection both the transport and the
+	// join route close leaves it once.
+	once sync.Once
 }
 
 // newRelayConn wraps a hijacked connection and the reader the hijack left.
@@ -282,6 +319,182 @@ func newRelayConn(conn net.Conn, r *bufio.Reader) *relayConn {
 // Read reads the buffered bytes first, then the socket.
 func (c *relayConn) Read(p []byte) (int, error) {
 	return c.r.Read(p)
+}
+
+// Close closes the connection and drops it from the name's count of open
+// connections. A connection the host closed reads as closed here too: the
+// transport closes what it reads EOF on, and the queue closes what it skips.
+func (c *relayConn) Close() error {
+	if c.host != nil {
+		c.once.Do(c.host.left)
+	}
+	return c.Conn.Close()
+}
+
+// left drops one closed connection from the name's count of open connections.
+func (h *relayHost) left() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.open > 0 {
+		h.open--
+	}
+}
+
+// relayInvalidHost suffixes the URL host a forward is addressed to. Nothing
+// resolves it: the transport's dial takes a joined connection and ignores the
+// address it was given (decision 6).
+const relayInvalidHost = ".relay.invalid"
+
+// hopPath is the path a forward puts on the hop: the decoded path the host
+// routes on, and the escaped form, so a caller's own escaping reaches the host
+// as it was written.
+type hopPath struct {
+	path string
+	raw  string
+}
+
+// hopPathKey carries a forward's resolved path from its route to the proxy's
+// Rewrite.
+type hopPathKey struct{}
+
+// relayForward answers a forward: the caller's request goes down the name's
+// joined connections and the host decides what to do with it (D15).
+func (s *Server) relayForward(w http.ResponseWriter, r *http.Request) {
+	name, rest, ok := splitForward(r.URL)
+	if !ok {
+		// Not a path this route forwards: a remainder outside the host's API,
+		// or another relay's route, which would chain relays. It is not a
+		// route at all, and reads as one.
+		http.NotFound(w, r)
+		return
+	}
+	host := s.relay.hostFor(name)
+	if host == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no relayed host " + name})
+		return
+	}
+	if r.Header.Get(hostTokenHeader) == "" {
+		// The relay forwards nothing without the host's own token. Its own
+		// token opens no daemon and a join secret only lets one offer itself,
+		// so this 401 is the relay's, and carries no X-Marshal-Relayed (D15).
+		unauthorized(w)
+		return
+	}
+	host.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), hopPathKey{}, rest)))
+}
+
+// splitForward reads a forward path: the name it addresses, unescaped, and the
+// path to send the host.
+func splitForward(u *url.URL) (string, hopPath, bool) {
+	escaped := u.EscapedPath()
+	if !strings.HasPrefix(escaped, relayForwardPrefix) {
+		return "", hopPath{}, false
+	}
+	escapedName, escapedPath, ok := strings.Cut(escaped[len(relayForwardPrefix):], "/")
+	if !ok {
+		return "", hopPath{}, false
+	}
+	name, err := url.PathUnescape(escapedName)
+	if err != nil {
+		return "", hopPath{}, false
+	}
+	path, err := url.PathUnescape(escapedPath)
+	if err != nil {
+		return "", hopPath{}, false
+	}
+	// A relay forwards the host's API and nothing else, and never another
+	// relay's routes: relays do not chain (D15). The prefixes are written
+	// here rather than taken from the route constants because they are
+	// relative to the host, which is exactly what this path no longer holds.
+	if !strings.HasPrefix(path, "api/") ||
+		strings.HasPrefix(path, "api/hosts/") ||
+		strings.HasPrefix(path, "api/relay/") {
+		return "", hopPath{}, false
+	}
+	return name, hopPath{path: path, raw: escapedPath}, true
+}
+
+// newProxy builds the name's forward once: every request it carries goes down
+// the name's joined connections (decision 6).
+func (h *relayHost) newProxy() *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
+		Transport:      h.transport,
+		Rewrite:        h.rewrite,
+		ModifyResponse: h.relayed,
+		ErrorHandler:   h.forwardFailed,
+		// An event stream is flushed as it is written, so a caller sees each
+		// event when the host writes it rather than when a buffer fills (D15).
+		FlushInterval: -1,
+	}
+}
+
+// rewrite puts the forward's path on the hop and gives the request the host's
+// own credentials (D15). The URL's host names the relay, not a socket: the
+// dial takes a joined connection and ignores the address (decision 6).
+func (h *relayHost) rewrite(pr *httputil.ProxyRequest) {
+	rest, _ := pr.In.Context().Value(hopPathKey{}).(hopPath)
+	token := pr.In.Header.Get(hostTokenHeader)
+	out := pr.Out
+	out.URL = &url.URL{
+		Scheme: "http",
+		Host:   h.name + relayInvalidHost,
+		// The forward's remainder is the host's path: /api/hosts/alpha/api/
+		// agents reaches the host as /api/agents (D15).
+		Path:     "/" + rest.path,
+		RawPath:  "/" + rest.raw,
+		RawQuery: pr.In.URL.RawQuery,
+	}
+	out.Host = ""
+	// The host decides on its own token, not the caller's: the relay's bearer
+	// value never crosses the hop.
+	out.Header.Set("Authorization", "Bearer "+token)
+	// The host token is the caller's credential and the cookie is the page's;
+	// neither belongs to the host. No X-Forwarded-* is added (D15).
+	out.Header.Del(hostTokenHeader)
+	out.Header.Del("Cookie")
+}
+
+// relayed marks a forwarded response with the host that answered it, so a
+// caller can tell the host's 401 from the relay's, and records the contact
+// (D15, D16).
+func (h *relayHost) relayed(res *http.Response) error {
+	res.Header.Set(relayedHeader, h.name)
+	h.mu.Lock()
+	h.lastContact = time.Now()
+	h.mu.Unlock()
+	return nil
+}
+
+// forwardFailed answers a forwarded request the proxy could not complete. A
+// dial that found no joined connection within the relay's wait is D14's 503;
+// anything else is the relay's own gateway failure (decision 7).
+func (h *relayHost) forwardFailed(w http.ResponseWriter, r *http.Request, err error) {
+	var notConnected errHostNotConnected
+	if errors.As(err, &notConnected) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": notConnected.Error()})
+		return
+	}
+	writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+}
+
+// relayHosts answers GET /api/relay/hosts: every name the relay names, in name
+// order, joined or not (D16).
+func (s *Server) relayHosts(w http.ResponseWriter, r *http.Request) {
+	out := contract.RelayHosts{Hosts: make([]contract.RelayHost, 0, len(s.relay.names))}
+	for _, name := range s.relay.names {
+		h := s.relay.hostFor(name)
+		h.mu.Lock()
+		entry := contract.RelayHost{Name: name, Connected: h.open > 0}
+		if !h.since.IsZero() {
+			entry.Since = h.since.UnixMilli()
+		}
+		if !h.lastContact.IsZero() {
+			entry.LastContact = h.lastContact.UnixMilli()
+		}
+		h.mu.Unlock()
+		out.Hosts = append(out.Hosts, entry)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // relayConnOpen reports whether a joined connection is still open, which is

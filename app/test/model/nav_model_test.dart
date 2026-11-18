@@ -92,6 +92,18 @@ void main() {
     );
   });
 
+  test('a project is named by its last part and never blank', () {
+    expect(projectName('/home/u/alpha'), 'alpha');
+    // Trailing slashes do not leave an empty name behind.
+    expect(projectName('/home/u/alpha/'), 'alpha');
+    expect(projectName('/home/u/alpha//'), 'alpha');
+    // A root with no directory of its own is the filesystem's root, so the
+    // row is never blank: not for `/`, and not for an empty one.
+    expect(projectName('/'), '/');
+    expect(projectName(''), '/');
+    expect(projectName('//'), '/');
+  });
+
   test('earlier counts idle agents older than a day', () async {
     final fixture = await ModelFixture.start([
       FixtureHost(

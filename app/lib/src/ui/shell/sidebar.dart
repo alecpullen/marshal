@@ -5,12 +5,14 @@ import '../../model/nav_model.dart';
 import '../../model/place.dart';
 import '../../model/thread_ref.dart' as model;
 import '../kit/kit.dart';
+import '../settings/settings_place.dart';
 import 'host_switcher.dart';
 
 /// The Studio's navigation (design-system.md §2's layout and the mock's
 /// sidebar): the host switcher, the search field, the three fixed places
 /// above the tree, the projects with their threads, and the three at its
-/// foot.
+/// foot. In Settings the tree and those rows are replaced by the ten sections
+/// under a Back row (F7 decision 7).
 ///
 /// It draws the model it is given and never fetches (F2 decision 3): the same
 /// [NavModel] makes the same sidebar in a test as on screen.
@@ -25,6 +27,7 @@ class Sidebar extends StatefulWidget {
     this.onHost,
     this.onConnectRepo,
     this.onNew,
+    this.onLeaveSettings,
     this.now,
     this.inPanel = false,
     this.searchFocus,
@@ -48,6 +51,10 @@ class Sidebar extends StatefulWidget {
   /// The place-level New (F9 B3): the plus beside the search field. Null leaves
   /// it out — there is no project to start work in.
   final VoidCallback? onNew;
+
+  /// Leaves Settings for the place it was opened from: the Back row above the
+  /// sections while Settings is open (F7 decision 7).
+  final VoidCallback? onLeaveSettings;
 
   /// What a host's age is measured against.
   final DateTime? now;
@@ -154,6 +161,8 @@ class _SidebarState extends State<Sidebar> {
         ),
         if (found != null)
           Expanded(child: _results(found))
+        else if (widget.place.kind == PlaceKind.settings)
+          Expanded(child: _sections())
         else ...[
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: Space.s8),
@@ -231,6 +240,33 @@ class _SidebarState extends State<Sidebar> {
           const _GroupLabel('Projects'),
           for (final project in found.projects) _projectRow(project),
         ],
+      ],
+    );
+  }
+
+  /// The settings sidebar (F7 decision 7): the way back, the place's name,
+  /// then the ten sections in the design's order. A section is a place, so its
+  /// row opens one through [_open] as every other row does — the shell's guard
+  /// is asked with it, and the address follows.
+  Widget _sections() {
+    final open = sectionIndex(widget.place);
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(Space.s8, 0, Space.s8, Space.s8),
+      children: [
+        NavRow(
+          label: 'Back',
+          icon: Glyphs.chevron_left,
+          onTap: widget.onLeaveSettings ?? () {},
+        ),
+        const _GroupLabel('Settings'),
+        for (final (index, kind) in SettingsSectionKind.values.indexed)
+          NavRow(
+            label: kind.label,
+            selected: index == open,
+            onTap: () => _open(
+              Place(PlaceKind.settings, section: settingsSections[index]),
+            ),
+          ),
       ],
     );
   }

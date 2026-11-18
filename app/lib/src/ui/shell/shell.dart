@@ -139,6 +139,7 @@ class Shell extends StatefulWidget {
     this.signals,
     this.onConnectRepo,
     this.onNew,
+    this.onLeaveSettings,
     this.searchFocus,
   });
 
@@ -202,6 +203,12 @@ class Shell extends StatefulWidget {
   /// leaves both out — there is no project to start work in.
   final VoidCallback? onNew;
 
+  /// Where Settings' Back row goes: the place Settings was opened from, named
+  /// by the screen that knows it (F2: a section is a place, and the whole of
+  /// Settings is one too). Null leaves the row without a destination of its
+  /// own.
+  final VoidCallback? onLeaveSettings;
+
   /// The node the sidebar's search field draws its keyboard from, so `⌘K` can
   /// put the keyboard there from anywhere on a wide window. Null leaves the
   /// field its own node.
@@ -259,6 +266,11 @@ class _ShellState extends State<Shell> {
     onSelect: (place) => _leave(() => widget.onSelect(place)),
     onConnectRepo: widget.onConnectRepo,
     onNew: widget.onNew,
+    // Settings' Back row is a way out of a place like any other, so it asks
+    // the one guard through [_leave] as the rows do (design-system.md §9).
+    onLeaveSettings: widget.onLeaveSettings == null
+        ? null
+        : () => _leave(widget.onLeaveSettings!),
     now: widget.now,
     inPanel: inPanel,
     searchFocus: widget.searchFocus,
@@ -733,6 +745,10 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
   bool _read = false;
   String? _failure;
 
+  /// The place Settings was entered from, so its Back row returns there
+  /// (F2: Settings is a place, and Back leaves it the way it was entered).
+  Place? _beforeSettings;
+
   /// The newest audit events the last read answered, newest first: the
   /// Overview's activity feed. Empty when no read has succeeded.
   List<AuditEvent> _audit = const [];
@@ -902,6 +918,7 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
           // the keyboard from a composer and a button that asked the key path
           // would do nothing while one held it.
           onNew: _firstProject() == null ? null : _newWork,
+          onLeaveSettings: _leaveSettings,
           searchFocus: _searchFocus,
         );
         // The shell's keys (f9-parity decision 6): one Shortcuts above the
@@ -966,10 +983,22 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
       // The notice was about the link that opened the screen, not about the
       // place the person has chosen since.
       _notice = null;
+      // Entering Settings from elsewhere is remembered, so its Back row can
+      // return there: a section is a place, and moving between them stays
+      // inside Settings, where the way in has already been recorded.
+      if (next.kind == PlaceKind.settings &&
+          _place.kind != PlaceKind.settings) {
+        _beforeSettings = _place;
+      }
       _place = next;
     });
     _writeAddress(next);
   }
+
+  /// Settings' Back row: the place Settings was opened from, or the Overview
+  /// when nothing was — a link that names Settings has no place before it to
+  /// return to (F8 decision 2).
+  void _leaveSettings() => _go(_beforeSettings ?? const Place.overview());
 
   /// Writes [place] into the page's address as a new history entry, so Back
   /// returns to the place before it (F8 decision 2). A push, not a replace:

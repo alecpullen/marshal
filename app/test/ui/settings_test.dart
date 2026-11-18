@@ -133,27 +133,6 @@ void main() {
     await tester.pumpWidget(EmberApp(brightness: brightness, home: screen));
   }
 
-  testWidgets('sections in the specified order', (tester) async {
-    await pump(tester, place());
-
-    final labels = [
-      for (final row in tester.widgetList<NavRow>(find.byType(NavRow)))
-        row.label,
-    ];
-    expect(labels, [
-      'Hosts',
-      'Environments',
-      'Connections',
-      'Models and routing',
-      'Secrets',
-      'Network',
-      'Usage and audit',
-      'Notifications',
-      'Access',
-      'General',
-    ]);
-  });
-
   testWidgets('an unreachable host shows when it was last seen', (
     tester,
   ) async {
@@ -434,7 +413,8 @@ void main() {
 
     await pump(tester, place(), brightness: Brightness.dark);
 
-    final heading = tester.widget<Text>(find.text('Settings'));
+    // The open section's own title is the place's heading.
+    final heading = tester.widget<Text>(find.text('Hosts'));
     expect(heading.style?.color, Ember.dark.fg);
     expect(heading.style?.color, isNot(Ember.light.fg));
   });

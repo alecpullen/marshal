@@ -35,8 +35,10 @@ extension SettingsSectionName on SettingsSectionKind {
 /// Builds one section's page, given the state the shell knows.
 typedef SettingsSectionBuild = Widget Function(StateKind? state);
 
-/// Settings (F7 decision 7): one place with ten sections, the sections down
-/// the left and the open one beside them — stacked above it under 760.
+/// Settings (F7 decision 7): one place with ten sections, and the open one
+/// drawn here. The ten are the sidebar's rows while Settings is open (F2), so
+/// this place draws no list of its own: a section is a place, named by the
+/// address and by the sidebar, and this is what the place shows.
 ///
 /// A section this step does not build is drawn planned, with one line
 /// saying what it will hold (decision 9); the order of the ten is fixed
@@ -45,7 +47,7 @@ typedef SettingsSectionBuild = Widget Function(StateKind? state);
 /// The appearance a person chose is the whole window's, not this place's: the
 /// window is under the brightness General sets, so choosing Dark recolours
 /// every screen at once, this one with them.
-class SettingsPlace extends StatefulWidget {
+class SettingsPlace extends StatelessWidget {
   const SettingsPlace({
     super.key,
     required this.preferences,
@@ -68,75 +70,23 @@ class SettingsPlace extends StatefulWidget {
   /// The state the shell knows, given to whichever section is open.
   final StateKind? state;
 
-  @override
-  State<SettingsPlace> createState() => _SettingsPlaceState();
-}
-
-class _SettingsPlaceState extends State<SettingsPlace> {
-  late int _open = widget.index < 0
-      ? 0
-      : (widget.index >= SettingsSectionKind.values.length
-            ? SettingsSectionKind.values.length - 1
-            : widget.index);
-
-  @override
-  Widget build(BuildContext context) {
-    final narrow = MediaQuery.sizeOf(context).width < Layout.narrow;
-    final content = KeyedSubtree(key: ValueKey(_open), child: _section());
-    if (narrow) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Flexible(flex: 2, child: _list()),
-          const Hairline(),
-          Expanded(flex: 3, child: content),
-        ],
-      );
-    }
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        SizedBox(width: Layout.sidebar, child: _list()),
-        const Hairline.vertical(),
-        Expanded(child: content),
-      ],
-    );
+  /// The section this build opens: the one the place names, kept inside the
+  /// ten, so a link naming a section this build does not know still opens one.
+  SettingsSectionKind get _open {
+    final values = SettingsSectionKind.values;
+    if (index <= 0) return values.first;
+    if (index >= values.length) return values.last;
+    return values[index];
   }
 
-  /// The ten sections, in order, with the open one filled.
-  Widget _list() {
-    final e = Ember.of(context);
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(vertical: Space.s12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(
-              Space.s16,
-              Space.s4,
-              Space.s16,
-              Space.s8,
-            ),
-            child: Text('Settings', style: e.heading),
-          ),
-          for (final (index, kind) in SettingsSectionKind.values.indexed)
-            NavRow(
-              label: kind.label,
-              selected: index == _open,
-              onTap: () => setState(() => _open = index),
-            ),
-        ],
-      ),
-    );
-  }
+  @override
+  Widget build(BuildContext context) => _section();
 
   /// The open section's page, or the planned state for one this build does
   /// not have.
   Widget _section() {
-    final kind = SettingsSectionKind.values[_open];
-    final build = widget.sections[kind];
-    if (build == null) return plannedSettingsSection(kind);
-    return build(widget.state);
+    final build = sections[_open];
+    if (build == null) return plannedSettingsSection(_open);
+    return build(state);
   }
 }

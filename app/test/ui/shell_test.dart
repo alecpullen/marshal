@@ -3,8 +3,11 @@ import 'dart:async';
 import 'package:flutter/services.dart' show LogicalKeyboardKey, TextInputAction;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
-import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/client/host.dart'
+    show HostKind, HostReach, HostRegistry;
+import 'package:marshal_app/src/model/fleet_store.dart'
+    show FleetStore, HostView;
+import 'package:marshal_app/src/model/general_model.dart';
 import 'package:marshal_app/src/model/hosts_model.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as inbox;
 import 'package:marshal_app/src/model/new_work_model.dart';
@@ -20,6 +23,7 @@ import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/sections/unsaved_guard.dart';
+import 'package:marshal_app/src/ui/settings/settings_place.dart';
 import 'package:marshal_app/src/ui/shell/host_switcher.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
@@ -148,6 +152,8 @@ void main() {
     StateKind? state,
     VoidCallback? onNew,
     VoidCallback? onConnectRepo,
+    UnsavedGuard? unsaved,
+    HostPlaceBuilder? settingsFor,
   }) {
     final opened = <Place>[];
     final nav = shellNavFor(place);
@@ -162,6 +168,8 @@ void main() {
         onSelect: opened.add,
         onNew: onNew,
         onConnectRepo: onConnectRepo,
+        unsaved: unsaved,
+        settingsFor: settingsFor,
         content: (_) => plannedPlace(place, nav),
       ),
       opened,
@@ -329,6 +337,162 @@ void main() {
     expect(recorded.last, 'local');
     expect(find.text('Automations at local'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('in Settings the sidebar lists its sections in order', (
+    tester,
+  ) async {
+    final (shell, _) = shellAt(const Place(PlaceKind.settings));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    // Settings' sidebar is its ten sections in the design's order (F7
+    // decision 7), under the row that leaves the place.
+    final labels = [
+      for (final row in tester.widgetList<NavRow>(
+        find.descendant(
+          of: find.byType(Sidebar),
+          matching: find.byType(NavRow),
+        ),
+      ))
+        row.label,
+    ];
+    expect(labels.first, 'Back');
+    expect(labels.skip(1), [
+      'Hosts',
+      'Environments',
+      'Connections',
+      'Models and routing',
+      'Secrets',
+      'Network',
+      'Usage and audit',
+      'Notifications',
+      'Access',
+      'General',
+    ]);
+  });
+
+  testWidgets('a section opens through the guard', (tester) async {
+    // A section holding an edit: opening another would lose what was typed, so
+    // a section row asks the one guard every way out of a place asks.
+    final edits = HostsModel.fixture(shellHosts)
+      ..edit(shellHosts.first)
+      ..change(shellHosts.first);
+    final guard = UnsavedGuard()..watch(edits);
+    final (shell, opened) = shellAt(
+      const Place(PlaceKind.settings),
+      unsaved: guard,
+    );
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    await tester.tap(find.text('Secrets'));
+    await tester.pump();
+
+    expect(find.text('Leave without saving?'), findsOneWidget);
+    expect(opened, isEmpty, reason: 'nothing opens until the person says so');
+
+    await tester.tap(find.text('Discard the edit'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(opened, [const Place(PlaceKind.settings, section: 'secrets')]);
+  });
+
+  testWidgets('Settings draws no list of its own', (tester) async {
+    // The sidebar is Settings' list, so the page beside it draws the open
+    // section alone: one column of section rows, never two (F2).
+    final (shell, _) = shellAt(
+      const Place(PlaceKind.settings, section: 'secrets'),
+      settingsFor: (host, section, state) => SettingsPlace(
+        preferences: GeneralPreferences(),
+        index: section,
+        sections: {
+          SettingsSectionKind.hosts: (state) => const Text('Hosts page'),
+          SettingsSectionKind.secrets: (state) => const Text('Secrets page'),
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+    await tester.pump();
+
+    expect(find.text('Secrets page'), findsOneWidget);
+    expect(find.text('Hosts page'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(SettingsPlace),
+        matching: find.byType(NavRow),
+      ),
+      findsNothing,
+      reason: 'the sections are the sidebar, not the page',
+    );
+    // And the sidebar fills the section that is open.
+    expect(
+      tester
+          .widgetList<NavRow>(
+            find.descendant(
+              of: find.byType(Sidebar),
+              matching: find.byType(NavRow),
+            ),
+          )
+          .where((row) => row.selected)
+          .map((row) => row.label),
+      ['Secrets'],
+    );
+  });
+
+  testWidgets('Back returns to the place before Settings', (tester) async {
+    // Settings is a place like any other, so its Back row leaves it for the
+    // place the person came from (F2), here the Overview the Studio opened at.
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final store = FleetStore(HostRegistry(discovery: () async => []));
+    addTearDown(store.dispose);
+    final asks = InboxModel(
+      store,
+      client: (host) => throw StateError('no host answers'),
+    );
+    addTearDown(asks.dispose);
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(store: store, inbox: asks),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(Sidebar),
+        matching: find.text('Settings'),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('Back'), findsOneWidget);
+
+    await tester.tap(find.text('Back'));
+    await tester.pump();
+
+    expect(find.text('Back'), findsNothing);
+    expect(
+      tester
+          .widgetList<NavRow>(
+            find.descendant(
+              of: find.byType(Sidebar),
+              matching: find.byType(NavRow),
+            ),
+          )
+          .where((row) => row.selected)
+          .map((row) => row.label),
+      ['Overview'],
+    );
   });
 
   testWidgets('selecting a row changes the place', (tester) async {

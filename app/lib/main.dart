@@ -348,6 +348,9 @@ class _Sections {
           _Settings(_clientFor(host)!, store: store, preferences: preferences),
       dispose: (models) => models.dispose(),
     );
+    // A host whose profile was removed is forgotten from all three (spec D9).
+    hosts.addListener(_hostsChanged);
+    _hostsChanged();
   }
 
   final HostRegistry hosts;
@@ -361,6 +364,25 @@ class _Sections {
   late final PerHost<_Automations> _automations;
   late final PerHost<_Library> _library;
   late final PerHost<_Settings> _settings;
+
+  /// The hosts the three caches were last built for: the ones the registry
+  /// listed when it last changed.
+  final _known = <String>{};
+
+  /// The registry changed: a host it no longer lists is forgotten from all
+  /// three caches, so its models are disposed and a host of that name, added
+  /// again, is built afresh (spec D9).
+  void _hostsChanged() {
+    final listed = {for (final host in hosts.hosts) host.name};
+    for (final name in _known.difference(listed)) {
+      _automations.forget(name);
+      _library.forget(name);
+      _settings.forget(name);
+    }
+    _known
+      ..clear()
+      ..addAll(listed);
+  }
 
   /// The client that reaches [host], or null when this fleet no longer lists
   /// it: a host can go away between the shell's build and this call.

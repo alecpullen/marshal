@@ -478,11 +478,29 @@ class FactoryStore extends ChangeNotifier {
     return null;
   }
 
+  /// The registry changed: every host it lists has an item list, and a host it
+  /// has forgotten takes its list with it (spec D9).
   void _hostsChanged() {
     if (_disposed) return;
+    final listed = {for (final owner in _hosts.hosts) owner.name};
+    var dropped = false;
+    for (final name in _items.keys.toList(growable: false)) {
+      if (listed.contains(name)) continue;
+      _items.remove(name);
+      // What described that list describes nothing now: a host that is added
+      // again is read afresh rather than opening on the list this one left.
+      // Dropping the generation also discards a read still in flight.
+      _loaded.remove(name);
+      _lastRead.remove(name);
+      _failure.remove(name);
+      _generations.remove(name);
+      _conflicts.removeWhere((key, _) => key.startsWith('$name|'));
+      dropped = true;
+    }
     for (final owner in _hosts.hosts) {
       _items.putIfAbsent(owner.name, () => const []);
     }
+    if (dropped) notifyListeners();
   }
 
   @override

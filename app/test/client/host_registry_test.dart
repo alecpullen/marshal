@@ -113,6 +113,61 @@ void main() {
       reason: 'a refused token is never retried',
     );
   });
+
+  test('forget stops and drops a host', () async {
+    var notified = 0;
+    registry.addListener(() => notified++);
+    // A name this fleet does not list is nothing to forget.
+    registry.forget('nope');
+    await pumpEventQueue();
+    expect(registry.hosts, hasLength(1));
+    expect(notified, 0);
+
+    // The connection dies, so the stream is waiting to retry when the host is
+    // forgotten.
+    await transport.last.close();
+    await pumpEventQueue();
+    final requests = transport.requests.length;
+
+    registry.forget('local');
+    await pumpEventQueue();
+
+    expect(registry.hosts, isEmpty);
+    expect(notified, 1, reason: 'whatever lists the hosts is told');
+    // Nothing is retried for a host the app has forgotten, however far the
+    // clock runs on.
+    clock.advance(const Duration(minutes: 5));
+    await pumpEventQueue();
+    expect(
+      transport.requests,
+      hasLength(requests),
+      reason: 'a forgotten host is not retried',
+    );
+  });
+
+  test("retry restarts a host's stream", () async {
+    // A refused token is terminal: the stream stops and is not retried
+    // (decision 6).
+    await pumpEventQueue();
+    transport.last.addError(Unauthorized());
+    await pumpEventQueue();
+    expect(host.reach, HostReach.unauthorized);
+    expect(transport.requests, hasLength(1));
+
+    // The token changed, so the host is asked to try once more.
+    registry.retry('local');
+    await pumpEventQueue();
+    expect(
+      transport.requests,
+      hasLength(2),
+      reason: 'the stream starts again rather than waiting for a new token',
+    );
+
+    // The new connection is followed as the old one was.
+    send(transport.last, ': hb\n\n');
+    await pumpEventQueue();
+    expect(host.reach, HostReach.live);
+  });
 }
 
 /// Feeds one server-sent-event frame the way a transport delivers it: one

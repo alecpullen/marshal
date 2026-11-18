@@ -1,8 +1,13 @@
 import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:marshal_app/src/client/contract.g.dart';
+import 'package:marshal_app/src/model/selection.dart';
+import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_view_state.dart';
+import 'package:marshal_app/src/ui/thread/selection_layer.dart';
 
 import 'support.dart';
 
@@ -283,6 +288,75 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(_clipboard, contains('Step number 1 mapped the fixtures'));
+
+    store.dispose();
+    view.dispose();
+  });
+
+  testWidgets('a highlight after a dropped blank line lands on its line', (
+    tester,
+  ) async {
+    // The store keeps the notice's blank line; the row does not draw it, so
+    // its second line sits two characters further along in the store than a
+    // run of paragraph lengths would put it.
+    final store = StackStore.seeded(
+      StackSnapshot(
+        sessionID: 's-1',
+        rev: 1,
+        roots: const ['msg:1'],
+        nodes: const [
+          WireNode(
+            id: 'msg:1',
+            kind: 'message',
+            message: WireMessage(role: 'system', content: 'a\n\nb'),
+          ),
+        ],
+      ),
+    );
+    final view = ThreadViewState();
+    await pumpThread(tester, store: store, view: view);
+    await tester.tap(find.text('Details'));
+    await tester.pump();
+
+    final layer = tester.state<SelectionLayerState>(
+      find.byType(SelectionLayer),
+    );
+    // The second line's offsets in the store text: what dragging across it
+    // selects.
+    layer.selection.begin(const TextAnchor('msg:1', 3));
+    layer.selection.extend(const TextAnchor('msg:1', 4));
+    await tester.pump();
+
+    // The row's own painter is the one keyed on the row the layer registered.
+    final row = find.byWidgetPredicate(
+      (widget) => widget is CustomPaint && widget.key == layer.keys['msg:1'],
+    );
+    final canvas = TestRecordingCanvas();
+    tester.widget<CustomPaint>(row).painter!.paint(canvas, Size.zero);
+    final drawn = [
+      for (final call in canvas.invocations)
+        if (call.invocation.memberName == #drawRect)
+          call.invocation.positionalArguments.first as Rect,
+    ];
+
+    // One box, on the second line's glyph: not on the first line, and not on
+    // the Details control that follows it.
+    final paragraph = tester.renderObject<RenderParagraph>(find.text('b'));
+    final glyph = paragraph
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 0, extentOffset: 1),
+        )
+        .single
+        .toRect();
+    final glyphAt = glyph.shift(paragraph.localToGlobal(Offset.zero));
+    final origin = tester
+        .renderObject<RenderBox>(row)
+        .localToGlobal(Offset.zero);
+    expect(drawn, hasLength(1));
+    expect(
+      drawn.single.shift(origin),
+      rectMoreOrLessEquals(glyphAt, epsilon: 0.5),
+    );
 
     store.dispose();
     view.dispose();

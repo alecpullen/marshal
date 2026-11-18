@@ -27,8 +27,10 @@ class _NoticeState extends State<Notice> {
   @override
   Widget build(BuildContext context) {
     final e = Ember.of(context);
+    // CRLF and a lone CR end a line as LF does, so a message that carries
+    // them keeps no carriage return in a drawn line or in the copied text.
     final lines = [
-      for (final line in widget.text.split('\n'))
+      for (final line in widget.text.split(RegExp(r'\r\n|\r|\n')))
         if (line.trim().isNotEmpty) line,
     ];
     if (lines.isEmpty) return const SizedBox.shrink();

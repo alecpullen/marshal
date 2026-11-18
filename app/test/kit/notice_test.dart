@@ -45,6 +45,40 @@ void main() {
     expect(find.text('Hide details'), findsOneWidget);
   });
 
+  testWidgets('a message written with CRLF is drawn without its carriage '
+      'returns', (tester) async {
+    await pumpKit(
+      tester,
+      const SizedBox(
+        width: 400,
+        child: Notice(key: ValueKey('crlf'), text: 'a\r\nb\r\nc'),
+      ),
+    );
+    await tester.tap(find.text('Details'));
+    await tester.pump();
+
+    for (final line in ['a', 'b', 'c']) {
+      expect(find.text(line), findsOneWidget);
+    }
+    expect(find.textContaining('\r'), findsNothing);
+
+    // A lone CR ends a line as CRLF does.
+    await pumpKit(
+      tester,
+      const SizedBox(
+        width: 400,
+        child: Notice(key: ValueKey('cr'), text: 'a\rb\rc'),
+      ),
+    );
+    await tester.tap(find.text('Details'));
+    await tester.pump();
+
+    for (final line in ['a', 'b', 'c']) {
+      expect(find.text(line), findsOneWidget);
+    }
+    expect(find.textContaining('\r'), findsNothing);
+  });
+
   testWidgets('Hide details folds it again', (tester) async {
     await pumpKit(
       tester,

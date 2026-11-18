@@ -58,6 +58,56 @@ void main() {
     expect(composer.right - send.right, lessThanOrEqualTo(Space.s8));
   });
 
+  testWidgets('on a narrow composer the actions keep the end', (tester) async {
+    final controller = TextEditingController();
+    addTearDown(controller.dispose);
+    Future<void> pump(double width) => pumpKit(
+      tester,
+      SizedBox(
+        width: width,
+        child: Composer(
+          controller: controller,
+          hint: 'Reply to the agent…',
+          mode: 'Act',
+          model: 'qwen3-coder',
+          onSend: () {},
+        ),
+      ),
+    );
+
+    // A phone's width. Send holds the composer's end and the mode chip leads
+    // it, as at 700: 390 still fits both groups on one row, because the chips
+    // are given the row's spare width rather than sized to their content.
+    await pump(390);
+    final composer = tester.getRect(find.byType(Composer));
+    final mode = tester.getRect(
+      find.ancestor(of: find.text('Act'), matching: find.byType(Pill)),
+    );
+    final send = tester.getRect(
+      find.ancestor(of: find.text('Send'), matching: find.byType(Btn)),
+    );
+    expect(composer.right - send.right, lessThanOrEqualTo(Space.s8));
+    expect(mode.left - composer.left, lessThanOrEqualTo(Space.s12));
+    // One row, not two: the actions sit beside the chips, not below them.
+    expect(send.top, lessThan(mode.bottom));
+
+    // Narrower still, the chips take a second run inside their half of the
+    // row. The actions stay at the end — the defect was their landing at the
+    // left when the group they shared a run with no longer fitted.
+    await pump(320);
+    final narrow = tester.getRect(find.byType(Composer));
+    final narrowMode = tester.getRect(
+      find.ancestor(of: find.text('Act'), matching: find.byType(Pill)),
+    );
+    final mic = tester.getRect(find.byType(IconBtn).last);
+    final narrowSend = tester.getRect(
+      find.ancestor(of: find.text('Send'), matching: find.byType(Btn)),
+    );
+    expect(mic.top, greaterThan(narrowMode.top), reason: 'the chips wrap');
+    expect(narrow.right - narrowSend.right, lessThanOrEqualTo(Space.s8));
+    expect(narrowSend.left, greaterThan(mic.right));
+  });
+
   testWidgets('a running turn steers and offers Stop', (tester) async {
     var stops = 0;
     final controller = TextEditingController();

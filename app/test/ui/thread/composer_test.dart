@@ -12,6 +12,8 @@ ComposerModel _model(
   ThreadViewState view, {
   bool running = false,
   String accessMode = 'act',
+  bool readOnly = false,
+  String? readOnlyReason,
   void Function()? onCancel,
   Future<void> Function(String text)? prompt,
 }) => ComposerModel(
@@ -23,6 +25,8 @@ ComposerModel _model(
       AccessState(mode: accessMode, auto: false, system: false, revision: 1),
   view: view,
   running: running,
+  readOnly: readOnly,
+  readOnlyReason: readOnlyReason,
   model: 'qwen3-coder',
 );
 
@@ -99,11 +103,15 @@ void main() {
   testWidgets('a read-only session is one line saying why', (tester) async {
     final store = fixtureStore();
     final view = ThreadViewState();
-    final composer = _model(view);
-    await composer.refreshAccess();
-    // The access tuple the composer reads decides it; ask mode is read-only.
-    final readOnly = _model(view, accessMode: 'ask');
-    await readOnly.refreshAccess();
+    // Read-only is the session's own grant, not its mode: ask mode can still be
+    // prompted, so the model is told it is read-only here.
+    final readOnly = _model(
+      view,
+      readOnly: true,
+      readOnlyReason:
+          'This session is read-only: it can be read but not '
+          'driven.',
+    );
     await pumpThread(
       tester,
       store: store,
@@ -111,13 +119,12 @@ void main() {
       composer: ThreadComposer(model: readOnly, view: view),
     );
 
-    expect(find.textContaining('ask mode'), findsOneWidget);
+    expect(find.textContaining('read-only'), findsOneWidget);
     expect(find.byType(EditableText), findsNothing);
     expect(find.text('Send'), findsNothing);
 
     store.dispose();
     view.dispose();
-    composer.dispose();
     readOnly.dispose();
   });
 

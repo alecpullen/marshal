@@ -172,19 +172,19 @@ class ComposerModel extends ChangeNotifier {
     }
   }
 
-  /// Reads the session's committed access tuple, which decides whether the
-  /// composer is read-only.
+  /// Reads the session's committed access tuple, which the mode chip names.
   ///
-  /// A session whose mode is `ask` has granted no editing, so it is read-only
-  /// here; the reason names the mode rather than a failure.
+  /// The mode never makes the composer read-only: a session in plan or default
+  /// mode can still be prompted, and the bridge asks for approval where it
+  /// needs one, so this only reports the mode.
   Future<void> refreshAccess() async {
     try {
       final state = await _access();
-      _readOnly = state.mode != 'act';
-      _readOnlyReason = _readOnly
-          ? 'This session is in ${state.mode} mode: it can be read but not driven.'
-          : null;
-      _permissionMode = state.mode == 'act' ? 'Act' : 'Ask';
+      _permissionMode = switch (state.mode) {
+        'ask' => 'Ask',
+        'act' => state.auto ? 'Act · Auto' : 'Act',
+        _ => _permissionMode,
+      };
     } catch (error) {
       _failure = _words(error);
     }

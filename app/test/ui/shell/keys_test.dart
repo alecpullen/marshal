@@ -249,4 +249,58 @@ void main() {
     expect(find.widgetWithText(PageBody, 'Inbox'), findsNothing);
     expect(find.byType(ThreadComposer), findsOneWidget);
   });
+
+  testWidgets('opening a thread reads its access', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final fixture = await fixtureWithProject(tester);
+    final inboxModel = inbox.InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+    );
+    addTearDown(inboxModel.dispose);
+    // The session committed auto, which only a read of the access route
+    // reports: the chip names it.
+    fixture.bridges['local']!.reply(
+      'GET',
+      '/api/sessions/a-1/access',
+      const FakeReply(
+        200,
+        body:
+            '{"mode":"act","auto":true,"system_access":false,'
+            '"access_revision":1}',
+      ),
+    );
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inboxModel,
+          initialPlace: const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
+          threadStore: (thread) => StackStore.seeded(_snapshot()),
+          composerFor: (thread, view) => ComposerModel.forSession(
+            fixture.clientFor(thread.host),
+            thread.id,
+            view: view,
+          ),
+        ),
+      ),
+    );
+    await settleIo(tester);
+
+    final reads = [
+      for (final request in fixture.requests('local'))
+        if (request.method == 'GET' &&
+            request.uri == '/api/sessions/a-1/access')
+          request.uri,
+    ];
+    expect(reads, hasLength(1), reason: 'the composer reads access once');
+    // The chip names what the read reported.
+    await settleIo(tester);
+    expect(find.text('Act · Auto'), findsOneWidget);
+  });
 }

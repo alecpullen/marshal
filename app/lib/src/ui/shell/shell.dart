@@ -1470,6 +1470,10 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
     // A thread opened while its agent is mid-turn offers Steer and Stop from
     // the first frame, from the fleet's own report of the agent.
     _composer?.setRunning(_turnRunning);
+    // The composer's chip names the session's own access, which only a read
+    // reports: the first frame draws the composer's default until it lands.
+    final composer = _composer;
+    if (composer != null) unawaited(composer.refreshAccess());
   }
 
   @override
@@ -1480,6 +1484,10 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
     // running, or parked on a person, keeps Steer and Stop.
     if (old.thread.status != widget.thread.status) {
       _composer?.setRunning(_turnRunning);
+      // A turn that ends is when a mode change commits, so the chip reads the
+      // session's access again.
+      final composer = _composer;
+      if (composer != null) unawaited(composer.refreshAccess());
     }
   }
 

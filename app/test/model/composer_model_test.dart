@@ -10,6 +10,7 @@ class _Routes {
   final modes = <String>[];
   int cancels = 0;
   String accessMode = 'act';
+  bool accessAuto = false;
   bool fail = false;
   bool failCancel = false;
 
@@ -34,8 +35,12 @@ class _Routes {
     accessMode = mode;
   }
 
-  Future<AccessState> access() async =>
-      AccessState(mode: accessMode, auto: false, system: false, revision: 1);
+  Future<AccessState> access() async => AccessState(
+    mode: accessMode,
+    auto: accessAuto,
+    system: false,
+    revision: 1,
+  );
 
   ComposerModel model(ThreadViewState view, {bool running = false}) =>
       ComposerModel(
@@ -159,16 +164,28 @@ void main() {
     model.dispose();
   });
 
-  test('a session in ask mode is read-only, with its reason', () async {
+  test('a session in ask mode can still be prompted', () async {
     routes.accessMode = 'ask';
     final model = routes.model(view);
     await model.refreshAccess();
 
-    expect(model.readOnly, isTrue);
-    expect(model.readOnlyReason, contains('ask'));
-    // A read-only composer sends nothing.
+    // Mode never makes the composer read-only: ask mode can still be prompted,
+    // and the bridge asks for approval where it needs one.
+    expect(model.permissionMode, 'Ask');
+    expect(model.readOnly, isFalse);
     await model.send('hello');
-    expect(routes.prompts, isEmpty);
+    expect(routes.prompts, ['hello']);
+    model.dispose();
+  });
+
+  test('the chip names act with auto', () async {
+    routes
+      ..accessMode = 'act'
+      ..accessAuto = true;
+    final model = routes.model(view);
+    await model.refreshAccess();
+
+    expect(model.permissionMode, 'Act · Auto');
     model.dispose();
   });
 

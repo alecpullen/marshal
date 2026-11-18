@@ -119,6 +119,7 @@ Future<void> main() async {
     hosts: hosts,
     store: store,
     preferences: preferences,
+    signals: signals,
   );
   runApp(
     EmberApp(
@@ -318,6 +319,7 @@ class _Sections {
     required this.hosts,
     required this.store,
     required this.preferences,
+    required this.signals,
   }) {
     _automations = PerHost<_Automations>(
       (host) => _Automations(
@@ -325,6 +327,9 @@ class _Sections {
         project: _projectFor(host),
         host: host,
         now: store.now,
+        // A write in a section is a change the host's signals read: the
+        // Overview's card and the inbox say so again (spec D4).
+        onWrote: () => signals.refresh(host),
       ),
       dispose: (models) => models.dispose(),
     );
@@ -348,6 +353,10 @@ class _Sections {
   final HostRegistry hosts;
   final FleetStore store;
   final GeneralPreferences preferences;
+
+  /// Every host's signals, re-read whenever an Automations section writes:
+  /// the Overview's card and the inbox's asks are that read's (spec D4).
+  final SignalsStore signals;
 
   late final PerHost<_Automations> _automations;
   late final PerHost<_Library> _library;
@@ -472,10 +481,11 @@ class _Automations {
     required String project,
     required String host,
     required DateTime now,
+    void Function()? onWrote,
   }) : project = project,
-       bots = BotsModel(client, project: project, now: now),
+       bots = BotsModel(client, project: project, now: now, onWrote: onWrote),
        schedules = SchedulesModel(client),
-       watches = WatchesModel(client, host: host, now: now),
+       watches = WatchesModel(client, host: host, now: now, onWrote: onWrote),
        recipes = RecipesModel(client) {
     for (final model in <SectionModel<Object>>[
       bots,

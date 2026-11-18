@@ -106,8 +106,12 @@ class WatchChoices {
 /// A watch is started by an agent or by the bridge, not edited here, so this
 /// section has no save; what it adds is the undo of a reroute a trip made.
 class WatchesModel extends SectionModel<WatchInfo> {
-  WatchesModel(this._bridge, {required this.now, required this.host})
-    : _fixture = null;
+  WatchesModel(
+    this._bridge, {
+    required this.now,
+    required this.host,
+    this.onWrote,
+  }) : _fixture = null;
 
   /// A section with rows and no bridge, for the gallery and the screens the
   /// enforcement tests pump.
@@ -115,6 +119,7 @@ class WatchesModel extends SectionModel<WatchInfo> {
     List<WatchInfo> rows, {
     required this.now,
     required this.host,
+    this.onWrote,
   }) : _bridge = null,
        _fixture = rows;
 
@@ -126,6 +131,10 @@ class WatchesModel extends SectionModel<WatchInfo> {
 
   /// What a trip's age is measured against.
   final DateTime now;
+
+  /// How a write tells the host's signals to be read again (spec D4): called
+  /// once after a watch is started, and never for a start the bridge refused.
+  final void Function()? onWrote;
 
   @override
   Future<List<WatchInfo>> fetch() async =>
@@ -174,6 +183,7 @@ class WatchesModel extends SectionModel<WatchInfo> {
   Future<WatchStarted> create(WatchCreate request) async {
     final started = await _requireBridge().createWatch(request);
     await load();
+    onWrote?.call();
     return started;
   }
 

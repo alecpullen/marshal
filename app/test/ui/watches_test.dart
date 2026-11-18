@@ -260,6 +260,39 @@ void main() {
     );
   });
 
+  test('starting a watch reports the write', () async {
+    final transport = _Scripted({
+      'GET /api/watches': const Response(status: 200, body: '[]'),
+      'POST /api/watches': Response(
+        status: 200,
+        body: jsonEncode({'id': 'w-3', 'name': 'the build'}),
+      ),
+    });
+    var writes = 0;
+    final model = WatchesModel(
+      BridgeClient(transport),
+      now: now,
+      host: 'local',
+      onWrote: () => writes++,
+    );
+    addTearDown(model.dispose);
+
+    final started = await model.create(
+      const WatchCreate(
+        spec: WatchSpec(
+          name: 'the build',
+          kind: 'command',
+          command: 'make test',
+          mode: 'repeat',
+          intervalMs: 60000,
+        ),
+      ),
+    );
+
+    expect(started.id, 'w-3');
+    expect(writes, 1);
+  });
+
   testWidgets('a tripped watch appears in the Overview card', (tester) async {
     final model = WatchesModel(
       BridgeClient(

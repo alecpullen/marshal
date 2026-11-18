@@ -775,9 +775,15 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
     _reread();
   }
 
-  /// Opens the place the page's own address names, and replaces a hash written
-  /// for the Svelte Studio with this build's path for that place (F8 decision
-  /// 2), so a reload and Back land on it.
+  /// Opens the place the page's own address names, and writes that place back
+  /// as this build's path for it (F8 decision 2), so a reload and Back land on
+  /// it.
+  ///
+  /// The entry the page opened on is always replaced: a hash written for the
+  /// Svelte Studio, and a bare `/` that names the overview only by being the
+  /// root, are both addresses this screen would not be given on the way back —
+  /// `/` is the root route, which the surrounding app answers itself — so the
+  /// address must name the place the way this build writes it.
   ///
   /// A screen that was handed a place — a test, the tray — is left alone: only
   /// a page that named no place is followed.
@@ -785,16 +791,14 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
     final page = widget.startPage;
     if (page == null) return;
     _place = page.place;
-    // The address names this place already — by its path, or by a hash this
-    // build replaced with that path — so it is not written a second time.
+    // The address names this place once it is written below, so the first
+    // navigation after it is a push rather than a second write of the same.
     _written = page.place;
     _notice = page.notice;
-    if (page.fromHash) {
-      SystemNavigator.routeInformationUpdated(
-        uri: Uri.parse(formatPlace(page.place)),
-        replace: true,
-      );
-    }
+    SystemNavigator.routeInformationUpdated(
+      uri: Uri.parse(formatPlace(page.place)),
+      replace: true,
+    );
   }
 
   @override
@@ -972,7 +976,14 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
   Future<bool> didPushRouteInformation(
     RouteInformation routeInformation,
   ) async {
-    final place = startPlace(path: routeInformation.uri.path).place;
+    // The whole address is read, not just its path: a place carries its
+    // inspector keys in the query and a link written for the old Studio in the
+    // fragment, and both are how the entry names what it opens.
+    final uri = routeInformation.uri;
+    final place = startPlace(
+      path: uri.hasQuery ? '${uri.path}?${uri.query}' : uri.path,
+      hash: uri.fragment.isEmpty ? '' : '#${uri.fragment}',
+    ).place;
     if (place != _place && !await _mayLeave()) {
       _writeAddress(_place, replace: true);
       return true;
@@ -1591,8 +1602,10 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
     // running, or parked on a person, keeps Steer and Stop.
     if (old.thread.status != widget.thread.status) {
       _composer?.setRunning(_turnRunning);
-      // A turn that ends is when a mode change commits, so the chip reads the
-      // session's access again.
+      // The chip is read again at a turn boundary: the mode a session commits
+      // is announced as it happens, but the Studio's one place to re-read it
+      // without a subscription is here, so a chip can be stale until the turn
+      // ends (best-effort, per the plan's non-goal on switching mode).
       final composer = _composer;
       if (composer != null) unawaited(composer.refreshAccess());
     }

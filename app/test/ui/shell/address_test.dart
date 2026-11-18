@@ -6,6 +6,7 @@ import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/route_translation.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
+import 'package:marshal_app/src/ui/overview/overview.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
 
@@ -153,10 +154,52 @@ void main() {
     await tester.pump();
 
     // The app around the Studio is asked for a named route first, and has none
-    // for a Studio path: the binding reports that, and the screen still opens
-    // the place the address names.
+    // for a Studio path: the binding reports that (in release as well — the
+    // app's own unknown-route path throws there too) and the screen still
+    // opens the place the address names.
     expect(tester.takeException(), isA<FlutterError>());
     expect(find.byType(ThreadScreen), findsOneWidget);
+    expect(
+      calls.where((call) => call.method == 'routeInformationUpdated'),
+      isEmpty,
+      reason: 'the address already names the place Back arrived at',
+    );
+  });
+
+  testWidgets('Back to the Overview opens it, not a second screen', (
+    tester,
+  ) async {
+    final calls = recordNavigation(tester);
+    final fixture = await fixtureWithThread(tester);
+    await pumpStudio(
+      tester,
+      fixture,
+      startPage: const StartPlace(Place.overview()),
+    );
+    // The Overview is on screen, and leaving it takes it off.
+    expect(find.byType(Overview), findsOneWidget);
+    await tester.tap(find.text('Inbox'));
+    await tester.pump();
+    calls.clear();
+    expect(find.byType(Overview), findsNothing);
+
+    // The Overview names itself `/overview`, not the root: the app around the
+    // Studio answers a root `/` itself by pushing its home route, which would
+    // stack a second Studio and leave this one unable to follow the address.
+    await tester.binding.handlePushRoute('/overview');
+    await tester.pump();
+
+    expect(tester.takeException(), isA<FlutterError>());
+    expect(
+      find.byType(Studio),
+      findsOneWidget,
+      reason: 'the screen follows the address rather than being replaced',
+    );
+    expect(
+      find.byType(Overview),
+      findsOneWidget,
+      reason: 'the Overview the address names is what is drawn',
+    );
     expect(
       calls.where((call) => call.method == 'routeInformationUpdated'),
       isEmpty,

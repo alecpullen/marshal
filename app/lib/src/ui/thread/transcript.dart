@@ -58,11 +58,13 @@ List<TranscriptRow> flattenRows(StackStore store, ThreadViewState view) {
 /// them.
 ///
 /// A step is numbered among steps, never among the rows drawn before it, so
-/// the prompt above it does not make the first one read 2. The store has no
-/// parent accessor, so the parent is found by walking the same tree
-/// [flattenRows] walks. A node it cannot place — one the tree does not hold,
-/// or one that is not a step — is 0 rather than an error: a row draws on
-/// whatever tree it is handed.
+/// the prompt above it does not make the first one read 2. The parent is found
+/// by walking the same tree [flattenRows] walks: the store exposes the roots,
+/// a node by id and its children, and no parent link, so the walk is what
+/// keeps this true of the tree the rows were drawn from rather than of a
+/// `parent` field that could disagree with it. A node it cannot place — one
+/// the tree does not hold, or one that is not a step — is 0 rather than an
+/// error: a row draws on whatever tree it is handed.
 int stepOrdinal(StackStore store, String nodeId) {
   if (store.node(nodeId)?.kind != 'step') return 0;
   // A step at the top of the tree is placed among the roots.
@@ -377,6 +379,11 @@ class _PinnedAsk extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(left: Sizes.row, bottom: Space.s12),
       child: AnswerableAsk(
+        // The card's own state — a reply field, what was typed, the last
+        // action — belongs to this ask, not to this position: an ask answered
+        // and dropped must not hand its open field to the one that takes its
+        // place (F9 decision 9, the same key the Inbox and the Overview use).
+        key: ValueKey('${ask.host}|${ask.id}'),
         ask: ask,
         placement: AskPlacement.thread,
         now: now ?? DateTime.now(),

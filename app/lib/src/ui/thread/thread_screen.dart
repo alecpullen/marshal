@@ -256,7 +256,12 @@ class _ThreadScreenState extends State<ThreadScreen> {
     if ((meta || control) && key == LogicalKeyboardKey.keyN) {
       // The key path, not the button path: the shell guards this one against
       // a composer that holds the keyboard.
-      (widget.onNewWorkFromKeys ?? widget.onNewWork)?.call();
+      final newWork = widget.onNewWorkFromKeys ?? widget.onNewWork;
+      // A screen built with no dialog to open — a worker transcript is one —
+      // leaves `⌘N` to the shell, whose own guard still opens it. Swallowing
+      // the key here would make it dead rather than handled elsewhere.
+      if (newWork == null) return KeyEventResult.ignored;
+      newWork();
       return KeyEventResult.handled;
     }
     if ((meta || control) && key == LogicalKeyboardKey.keyC) {

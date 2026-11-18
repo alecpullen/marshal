@@ -336,6 +336,12 @@ class _AnswerableAskState extends State<AnswerableAsk> {
       _submit(ask);
       return;
     }
+    if (action.kind == model.AskActionKind.reply) {
+      // A reply carries words, and the field still holds them: posting the
+      // action alone would be an empty answer, which the model drops.
+      widget.onAnswer?.call(ask, action, reply: _reply.text);
+      return;
+    }
     widget.onAnswer?.call(ask, action);
   }
 

@@ -441,10 +441,13 @@ class Overview extends StatelessWidget {
     final value =
         '\$${spend.spentUSD.toStringAsFixed(2)} of '
         '\$${spend.capUSD.toStringAsFixed(2)}';
+    final fault = spend.blocked || spend.fraction >= 1;
     final tooltip = spend.blocked
         ? 'The daily cap is holding work back'
+        : spend.fraction >= 1
+        ? 'The daily cap is used up'
         : 'Today’s spend against the daily cap';
-    return spend.blocked || spend.fraction >= 1
+    return fault
         ? Meter.fault(
             label: 'Today',
             value: value,

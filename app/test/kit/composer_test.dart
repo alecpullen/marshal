@@ -29,6 +29,35 @@ void main() {
     expect(find.text('Stop'), findsNothing);
   });
 
+  testWidgets('the chips lead and the actions trail', (tester) async {
+    final controller = TextEditingController();
+    addTearDown(controller.dispose);
+    await pumpKit(
+      tester,
+      SizedBox(
+        width: 700,
+        child: Composer(
+          controller: controller,
+          hint: 'Reply to the agent…',
+          mode: 'Act',
+          model: 'qwen3-coder',
+          onSend: () {},
+        ),
+      ),
+    );
+
+    // The row spans the composer: the chips start at its left edge and the
+    // action ends at its right, rather than the whole row floating in the
+    // middle of a centring column.
+    final composer = tester.getRect(find.byType(Composer));
+    final mode = tester.getRect(
+      find.ancestor(of: find.text('Act'), matching: find.byType(Pill)),
+    );
+    final send = tester.getRect(find.byType(Btn));
+    expect(mode.left - composer.left, lessThanOrEqualTo(Space.s12));
+    expect(composer.right - send.right, lessThanOrEqualTo(Space.s8));
+  });
+
   testWidgets('a running turn steers and offers Stop', (tester) async {
     var stops = 0;
     final controller = TextEditingController();

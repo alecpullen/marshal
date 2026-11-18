@@ -131,6 +131,7 @@ class Composer extends StatelessWidget {
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Material(
               type: MaterialType.transparency,
@@ -148,53 +149,73 @@ class Composer extends StatelessWidget {
               ),
             ),
             const SizedBox(height: Space.s8),
+            // Two groups, one row: the chips lead and the actions trail. The
+            // outer wrap spends what is left of the row between them, so on a
+            // narrow composer the actions take a run of their own rather than
+            // squeezing the chips.
             Wrap(
-              spacing: Space.s8,
+              alignment: WrapAlignment.spaceBetween,
               runSpacing: Space.s6,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                _chip(
-                  context,
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: Layout.sidebar),
-                    child: Pill.icon(
-                      mode,
-                      icon: Glyphs.shield,
-                      tooltip: 'Permission mode',
-                    ),
-                  ),
-                  onMode,
-                ),
-                if (model != null)
-                  _chip(
-                    context,
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(
-                        maxWidth: Layout.sidebar,
+                Wrap(
+                  spacing: Space.s8,
+                  runSpacing: Space.s6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    _chip(
+                      context,
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(
+                          maxWidth: Layout.sidebar,
+                        ),
+                        child: Pill.icon(
+                          mode,
+                          icon: Glyphs.shield,
+                          tooltip: 'Permission mode',
+                        ),
                       ),
-                      child: Pill.icon(
-                        model,
-                        icon: Glyphs.sparkles,
-                        tooltip: 'Model',
-                        mono: true,
-                      ),
+                      onMode,
                     ),
-                    onModel,
-                  ),
-                const IconBtn(
-                  Glyphs.paperclip,
-                  tooltip: 'Attach: not in this phase',
+                    if (model != null)
+                      _chip(
+                        context,
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(
+                            maxWidth: Layout.sidebar,
+                          ),
+                          child: Pill.icon(
+                            model,
+                            icon: Glyphs.sparkles,
+                            tooltip: 'Model',
+                            mono: true,
+                          ),
+                        ),
+                        onModel,
+                      ),
+                    const IconBtn(
+                      Glyphs.paperclip,
+                      tooltip: 'Attach: not in this phase',
+                    ),
+                    const IconBtn(
+                      Glyphs.mic,
+                      tooltip: 'Dictate: not in this phase',
+                    ),
+                  ],
                 ),
-                const IconBtn(
-                  Glyphs.mic,
-                  tooltip: 'Dictate: not in this phase',
-                ),
-                if (running && onStop != null)
-                  Btn('Stop', icon: Glyphs.stop, onTap: onStop),
-                Btn.primary(
-                  running ? 'Steer' : 'Send',
-                  icon: Glyphs.arrow_up,
-                  onTap: onSend,
+                Wrap(
+                  spacing: Space.s8,
+                  runSpacing: Space.s6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    if (running && onStop != null)
+                      Btn('Stop', icon: Glyphs.stop, onTap: onStop),
+                    Btn.primary(
+                      running ? 'Steer' : 'Send',
+                      icon: Glyphs.arrow_up,
+                      onTap: onSend,
+                    ),
+                  ],
                 ),
               ],
             ),

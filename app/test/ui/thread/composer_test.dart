@@ -4,6 +4,7 @@ import 'package:marshal_app/src/model/composer_model.dart';
 import 'package:marshal_app/src/model/thread_view_state.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/thread/thread_composer.dart';
+import 'package:marshal_app/src/ui/thread/transcript.dart';
 
 import 'support.dart';
 
@@ -42,6 +43,32 @@ void main() {
     expect(find.text('Send'), findsOneWidget);
     expect(find.text('Stop'), findsNothing);
     expect(find.text('qwen3-coder'), findsOneWidget);
+
+    store.dispose();
+    view.dispose();
+    composer.dispose();
+  });
+
+  testWidgets('the composer is as wide as the reading column', (tester) async {
+    final store = fixtureStore();
+    final view = ThreadViewState();
+    final composer = _model(view);
+    await pumpThread(
+      tester,
+      store: store,
+      view: view,
+      composer: ThreadComposer(model: composer, view: view),
+    );
+
+    // A wide window: the composer is the transcript's width, centred under it,
+    // rather than spanning the page edge to edge.
+    tester.view.physicalSize = const Size(1440, 900);
+    await tester.pumpAndSettle();
+
+    final field = tester.getRect(find.byType(Composer));
+    final transcript = tester.getRect(find.byType(Transcript));
+    expect(field.width, Layout.reading);
+    expect(field.center.dx, moreOrLessEquals(transcript.center.dx));
 
     store.dispose();
     view.dispose();

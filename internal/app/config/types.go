@@ -444,6 +444,19 @@ type DaemonConfig struct {
 	// separate container fleet. Empty or "off" serves none. Default
 	// 127.0.0.1:7788.
 	StudioAddr string `toml:"studio_addr"`
+	// JoinURL is the bridge this daemon joins as a relay (P8 D12): its
+	// agents show up on that bridge's fleet screen, and its requests come
+	// back here. Empty joins none. The secret it joins with is stored by
+	// `marshal daemon join-token`, never here.
+	JoinURL string `toml:"join_url"`
+	// JoinName is the name this daemon joins the relay under, so the
+	// fleet's reader can tell it from the relay's own agents. A join_url
+	// needs one.
+	JoinName string `toml:"join_name"`
+	// JoinCAFile is a PEM bundle the daemon trusts the relay's certificate
+	// from, for a relay this machine's store does not know. Empty uses the
+	// system's store.
+	JoinCAFile string `toml:"join_ca_file"`
 }
 
 type DesktopConfig struct {

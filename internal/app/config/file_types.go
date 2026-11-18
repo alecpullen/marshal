@@ -169,6 +169,9 @@ type fileWeb struct {
 type fileDaemon struct {
 	IdleSessionTimeout *string `toml:"idle_session_timeout"`
 	StudioAddr         *string `toml:"studio_addr"`
+	JoinURL            *string `toml:"join_url"`
+	JoinName           *string `toml:"join_name"`
+	JoinCAFile         *string `toml:"join_ca_file"`
 }
 
 type fileDesktop struct {

@@ -52,10 +52,10 @@ value is never shown after it is written.
 ## Non-goals
 
 - New capabilities. A thing the bridge does not do is a disabled row.
-- Host onboarding and the richer connection flows from the factory. P8 plan 2 makes adding, removing and
-  signing in real in a native build.
+- Host onboarding and the richer connection flows from the factory
   designs. Hosts lists what `marshal fleet servers` and the local daemon
-  report; adding one is a planned row.
+  report; in a native build P8 plan 2 made adding, removing and signing in
+  real, and a browser's add row stays planned (D22).
 - Multiple users.
 
 ## Decisions

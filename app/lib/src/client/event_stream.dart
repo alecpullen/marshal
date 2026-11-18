@@ -119,20 +119,33 @@ class EventStream {
 
   bool _running = false;
   late Duration _backoff;
+
+  /// Counts watchdog deadlines: the newest one is the only one that fires.
   int _watchGeneration = 0;
+
+  /// Counts runs of [_run]. It is separate from [_watchGeneration] because a
+  /// line arriving supersedes the watchdog on every event, and a reader must
+  /// not mistake that for its run being superseded.
+  int _runGeneration = 0;
 
   /// Connects, and keeps the connection: after a drop it retries with backoff
   /// until [stop], or until the bridge refuses the credentials.
   void start() {
     if (_running) return;
     _running = true;
+    // A new run owns the stream from here. `retry` is stop-then-start, and the
+    // stop cannot cancel a reader parked on its connection, so the generation
+    // is what tells that reader to let go: without it the old loop sees
+    // `_running` true again and goes on delivering alongside the new one.
+    _runGeneration++;
     _state.value = StreamState.connecting;
-    unawaited(_run());
+    unawaited(_run(_runGeneration));
   }
 
   /// Stops the stream for good; a stopped stream does not retry.
   void stop() {
     _running = false;
+    _runGeneration++;
     _watchGeneration++;
     if (_state.value != StreamState.stopped) {
       _state.value = StreamState.stopped;
@@ -140,16 +153,16 @@ class EventStream {
   }
 
   /// The loop: connect, read until the connection ends, back off, repeat.
-  Future<void> _run() async {
-    while (_running) {
+  Future<void> _run(int generation) async {
+    while (_running && generation == _runGeneration) {
       _state.value = StreamState.connecting;
       try {
-        await _consume();
+        await _consume(generation);
       } on Unauthorized {
         // Decision 6: the same token cannot start working, so this is
         // terminal rather than a retry on a timer.
         _running = false;
-        _watchGeneration++;
+        _runGeneration++;
         _state.value = StreamState.stopped;
         return;
       } catch (_) {
@@ -163,13 +176,13 @@ class EventStream {
   }
 
   /// Reads one connection's lines until it ends.
-  Future<void> _consume() async {
+  Future<void> _consume(int generation) async {
     final request = Request(
       path: path,
       query: {...query, if (_lastEventId > 0) 'lastEventId': '$_lastEventId'},
     );
     await for (final line in _transport.lines(request)) {
-      if (!_running) return;
+      if (!_running || generation != _runGeneration) return;
       _touch();
       _parse(line);
     }

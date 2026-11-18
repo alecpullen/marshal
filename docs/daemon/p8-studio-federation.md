@@ -379,7 +379,7 @@ tree and every place treat it as any other host.
 | A place under All hosts, no host live | The first host is read; its unreachable state names it with its last contact (§7) |
 | A signals read fails | That host's last answer is kept; a host never answered contributes nothing |
 | `fleet add`: the name is taken, the URL is bad, the file is not private | Refused with the reason (`checkURL`'s and `Load`'s words); the form shows it and keeps the fields |
-| `fleet login` fails after `fleet add` succeeded | The host is added without a token. The form says "Added NAME, but its token was not stored: …", and the host reads "token refused" until it is signed in |
+| `fleet login` fails after `fleet add` succeeded | The host is added without a token and the form closes (plan 2's decision 5). The host's detail shows the CLI's words beside Sign in, and the host reads "token refused" until it is signed in |
 | `fleet remove` on a server defined inline or by dotted keys | Refused, naming the file to edit by hand |
 | The chosen new-work host stops answering before Start | The spawn fails with the bridge's words and the draft is kept, as today |
 | A join names an unknown host, or the wrong secret | 401; the joiner logs it once per change and retries every 30 s |
@@ -657,6 +657,11 @@ Task 6 added `NewWorkRoutes.forProject` so `forProject` and `main.dart` build a
 route set through one path, and `forHosts` falls back to the first route when
 the host it is given holds none. The one-host note is now "The only host that
 answers with a project", replacing the F6-era "F7" note two tests asserted.
+
+Task 6's middle tier — "then the shell's scope host" — is not plumbed:
+`newWorkFor` receives no scope, so it opens on the first live host, which is
+what All hosts reads. A scope naming a later host still opens on the first live
+one; the comment in `main.dart` says so rather than claiming the tier.
 
 Task 2's `runFleet` flag loop refused every unknown flag before dispatch, so
 `add`'s `--ca-file` and `--no-notify` could never reach it; that loop now

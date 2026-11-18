@@ -85,6 +85,10 @@ class _AutomationsPlaceState extends State<AutomationsPlace> {
 
   @override
   Widget build(BuildContext context) {
+    // Schedules (1) and Watches (2) each draw their own New in the page
+    // header, so the place's one New (F9 B4) belongs only to the tabs that
+    // have no create of their own: Bots and Recipes.
+    final hasOwnNew = _tab == 1 || _tab == 2;
     final tabs = AutomationsTabs(
       items: [
         for (var i = 0; i < _labels.length; i++)
@@ -92,30 +96,32 @@ class _AutomationsPlaceState extends State<AutomationsPlace> {
       ],
       index: _tab,
       onChanged: _select,
-      // The place's one New (F9 B4): the kinds a person can start here. Bots
-      // is set per project and has no create of its own, so it is not offered;
-      // a recipe is made by copying a built-in, which the Recipes tab holds.
-      trailing: Menu(
-        choices: [
-          MenuChoice(
-            'Schedule',
-            'A cron entry that runs a recipe',
-            onSelect: () => widget.onNew?.call(1, context),
-          ),
-          MenuChoice(
-            'Watch',
-            'Watch a command, a job or a file',
-            onSelect: () => widget.onNew?.call(2, context),
-          ),
-          MenuChoice(
-            'Recipe',
-            'Open the recipes to copy one',
-            onSelect: () => _select(3),
-          ),
-        ],
-        anchor: (context, toggle) =>
-            Btn('New automation', icon: Glyphs.plus, onTap: toggle),
-      ),
+      // The place's one New (F9 B4), on the tabs with no create of their
+      // own: Bots is set per project and a recipe is made by copying a
+      // built-in, which the Recipes tab holds, so neither tab has a New.
+      trailing: hasOwnNew
+          ? null
+          : Menu(
+              choices: [
+                MenuChoice(
+                  'Schedule',
+                  'A cron entry that runs a recipe',
+                  onSelect: () => widget.onNew?.call(1, context),
+                ),
+                MenuChoice(
+                  'Watch',
+                  'Watch a command, a job or a file',
+                  onSelect: () => widget.onNew?.call(2, context),
+                ),
+                MenuChoice(
+                  'Recipe',
+                  'Open the recipes to copy one',
+                  onSelect: () => _select(3),
+                ),
+              ],
+              anchor: (context, toggle) =>
+                  Btn('New automation', icon: Glyphs.plus, onTap: toggle),
+            ),
     );
     final content = switch (_tab) {
       0 => widget.bots(tabs, widget.state),

@@ -243,7 +243,9 @@ void main() {
     required SchedulesModel schedules,
     required WatchesModel watches,
     required RecipesModel recipes,
+    int tab = 0,
   }) => AutomationsPlace(
+    tab: tab,
     bots: (tabs, state) => BotsTab(model: bots, tabs: tabs, state: state),
     schedules: (tabs, state) =>
         SchedulesTab(model: schedules, tabs: tabs, state: state),
@@ -308,6 +310,43 @@ void main() {
       isTrue,
       reason: 'a new schedule starts blank',
     );
+  });
+
+  testWidgets('Schedules has one New', (tester) async {
+    final now = DateTime.utc(2026, 11, 17, 4);
+    final bots = BotsModel.fixture(
+      const [],
+      project: '/home/u/marshal',
+      now: now,
+    );
+    final schedules = SchedulesModel.fixture(const <Schedule>[]);
+    final watches = WatchesModel.fixture(const [], now: now, host: 'local');
+    final recipes = RecipesModel.fixture(const []);
+    for (final model in <SectionModel<Object>>[
+      bots,
+      schedules,
+      watches,
+      recipes,
+    ]) {
+      addTearDown(model.dispose);
+      await model.load();
+    }
+
+    await pump(
+      tester,
+      place(
+        bots: bots,
+        schedules: schedules,
+        watches: watches,
+        recipes: recipes,
+        tab: 1,
+      ),
+    );
+
+    // Schedules draws its own New in the page header, so the place's one New
+    // is not drawn beside it: the tab offers exactly one way to create.
+    expect(find.text('New automation'), findsNothing);
+    expect(find.text('New schedule'), findsOneWidget);
   });
 
   testWidgets('the menu offers only the kinds that can be made', (

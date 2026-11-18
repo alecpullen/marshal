@@ -31,6 +31,7 @@ import 'src/model/network_model.dart';
 import 'src/model/notifications_model.dart';
 import 'src/model/new_work_model.dart';
 import 'src/model/per_host.dart';
+import 'src/model/place_host.dart' show placeHost;
 import 'src/model/planning_model.dart';
 import 'src/model/project_model.dart';
 import 'src/model/pulls_model.dart';
@@ -151,21 +152,36 @@ Future<void> main() async {
             thread.id,
             view: view,
           ),
-          newWorkFor: (thread) => NewWorkModel.forProject(
-            store
-                .projects(host: thread.host)
-                .firstWhere(
-                  (project) => project.root == thread.project,
-                  orElse: () => ProjectStatus(
-                    root: thread.project,
-                    available: true,
-                    trust: TrustState.trustNA,
-                    isolation: 'available',
-                  ),
-                ),
-            hosts.hosts.firstWhere((host) => host.name == thread.host).client,
-            host: thread.host,
-          ),
+          // The new-work dialog starts on the thread's own host and may start
+          // on any other that answers with a project (spec D10, P8 plan 2
+          // decision 6).
+          newWorkFor: (thread) {
+            final routes = _newWorkRoutes(hosts, store);
+            if (routes.isEmpty) {
+              // Nothing answers with a project: the dialog still opens on the
+              // thread's own host, which is what F6 built.
+              return NewWorkModel.forProject(
+                _newWorkProject(store, thread.host, thread.project),
+                hosts.hosts
+                    .firstWhere((host) => host.name == thread.host)
+                    .client,
+                host: thread.host,
+              );
+            }
+            // The thread's host opens it, then the shell's scope host, then the
+            // first host that answers with a project.
+            final scope = placeHost(store.hosts, null);
+            final open = routes.containsKey(thread.host)
+                ? thread.host
+                : (scope != null && routes.containsKey(scope)
+                      ? scope
+                      : routes.keys.first);
+            return NewWorkModel.forHosts(
+              host: open,
+              routes: routes,
+              project: _newWorkProject(store, open, thread.project),
+            );
+          },
           // A planning thread reads its planner's journal on the client that
           // reaches its host, and captures the plan for review (F6 decision 8).
           planningFor: (host, plannerID) {
@@ -300,6 +316,44 @@ StartPlace startPlaceFromPage(Uri page) {
   return startPlace(
     path: path,
     hash: page.hasFragment ? '#${page.fragment}' : '',
+  );
+}
+
+/// The new-work routes of every host the dialog may start on: the ones that are
+/// live and list at least one project, in discovery order (P8 plan 2 decision
+/// 6). Each is built from that host's client and its first project, as a
+/// single-host dialog always has been.
+Map<String, NewWorkRoutes> _newWorkRoutes(
+  HostRegistry hosts,
+  FleetStore store,
+) {
+  final routes = <String, NewWorkRoutes>{};
+  for (final owner in hosts.hosts) {
+    final live = store.hosts.any(
+      (host) => host.name == owner.name && host.live,
+    );
+    if (!live) continue;
+    final projects = store.projects(host: owner.name);
+    if (projects.isEmpty) continue;
+    routes[owner.name] = NewWorkRoutes.forProject(projects.first, owner.client);
+  }
+  return routes;
+}
+
+/// The project a new-work dialog opens on, on [host]: the thread's own project
+/// when that host lists it, else the first project the host lists, and — on a
+/// host that lists none — the thread's project, which is what F6 opened on.
+ProjectStatus _newWorkProject(FleetStore store, String host, String root) {
+  final projects = store.projects(host: host);
+  for (final project in projects) {
+    if (project.root == root) return project;
+  }
+  if (projects.isNotEmpty) return projects.first;
+  return ProjectStatus(
+    root: root,
+    available: true,
+    trust: TrustState.trustNA,
+    isolation: 'available',
   );
 }
 

@@ -868,16 +868,20 @@ class _StudioState extends State<Studio> {
           buildStore: build,
           composerFor: widget.composerFor,
           newWorkFor: widget.newWorkFor,
-          onThreadStarted: (id) =>
-              navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
+          onThreadStarted: (host, id) =>
+              navigation.go(Place(PlaceKind.thread, host: host, id: id)),
           handoffFor: widget.handoffFor,
           onOpenItem: (id) =>
               navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
-          onPlannerStarted: (planner) {
-            _rememberPlanner(thread.host, thread.project, planner);
-            navigation.go(
-              Place(PlaceKind.thread, host: thread.host, id: planner.id),
+          onPlannerStarted: (host, planner) {
+            _rememberPlanner(
+              host,
+              planner.projectRoot.isEmpty
+                  ? thread.project
+                  : planner.projectRoot,
+              planner,
             );
+            navigation.go(Place(PlaceKind.thread, host: host, id: planner.id));
           },
           asks: [
             for (final ask in widget.inbox.asks)
@@ -1025,10 +1029,14 @@ class _ThreadPlace extends StatefulWidget {
   /// Builds the new-work dialog's model for a thread's project. Null leaves
   /// `⌘N` without a dialog.
   final NewWorkModel Function(model.ThreadRef thread)? newWorkFor;
-  final void Function(String agentId)? onThreadStarted;
 
-  /// Opens the planning thread a "Plan first" started (F6 decision 8).
-  final void Function(StartedPlanner planner)? onPlannerStarted;
+  /// Opens a thread the dialog started: it names the host the thread was
+  /// started on, so a work started on another host opens there (spec D10).
+  final void Function(String host, String agentId)? onThreadStarted;
+
+  /// Opens the planning thread a "Plan first" started (F6 decision 8), on the
+  /// host it was started on.
+  final void Function(String host, StartedPlanner planner)? onPlannerStarted;
 
   /// The handoff review's model, and where an approved item opens.
   final HandoffBuilder? handoffFor;
@@ -1099,11 +1107,11 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
         onCancel: () => Navigator.maybePop(context),
         onStarted: (agentId) {
           Navigator.maybePop(context);
-          widget.onThreadStarted?.call(agentId);
+          widget.onThreadStarted?.call(model.host, agentId);
         },
         onPlanned: (planner) {
           Navigator.maybePop(context);
-          widget.onPlannerStarted?.call(planner);
+          widget.onPlannerStarted?.call(model.host, planner);
         },
         onWorkItem: (prompt) {
           Navigator.maybePop(context);

@@ -126,6 +126,15 @@ Future<void> main() async {
           pulls: pulls,
           factory: factory,
           read: hosts.discover,
+          // The Overview's activity feed: the newest audit events the first
+          // host that answers reports. A read that fails leaves the card
+          // empty without failing the page.
+          readAudit: () => hosts.hosts.first.client.audit(limit: 20),
+          // The spend rail's trend and split, and the projects table's
+          // column: the same usage ledger, read by project, by day and by
+          // role.
+          readUsage: ({String by = 'project'}) =>
+              hosts.hosts.first.client.usage(by: by),
           // The place the page's own address names: an old hash route from the
           // Svelte Studio, or this build's own path (F8 decision 2). A
           // desktop has no page, so its window opens the Overview.
@@ -305,6 +314,17 @@ Future<void> main() async {
                   if (run.project == root) run,
               ],
               discover: (repoID) => client.discoverRepo(repoID),
+              // The Automations tab lists what this project actually has: its
+              // own schedules, and the watches its agents started. The fleet
+              // already knows which project an agent belongs to.
+              readSchedules: client.schedules,
+              readWatches: client.watches,
+              projectOfAgent: (agentID) {
+                for (final agent in store.agents()) {
+                  if (agent.id == agentID) return agent.project;
+                }
+                return null;
+              },
             );
           },
         ),

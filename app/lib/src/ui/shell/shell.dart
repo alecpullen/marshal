@@ -13,7 +13,8 @@ import '../../model/inbox_model.dart';
 import '../../model/inbox_model.dart' as inbox;
 import '../../model/inspector_state.dart';
 import '../../model/nav_model.dart';
-import '../../model/overview_model.dart' show buildOverview;
+import '../../model/overview_model.dart'
+    show AuditEvent, UsageReport, buildOverview;
 import '../../model/place.dart';
 import '../../model/planning_model.dart';
 import '../../model/project_model.dart';
@@ -449,6 +450,8 @@ class Studio extends StatefulWidget {
     this.pulls,
     this.factory,
     this.read,
+    this.readAudit,
+    this.readUsage,
     this.threadStore,
     this.composerFor,
     this.newWorkFor,
@@ -485,6 +488,16 @@ class Studio extends StatefulWidget {
   /// Reads the fleet: discovery when the app starts, and again when a person
   /// asks.
   final Future<void> Function()? read;
+
+  /// Reads the newest audit events from the first host that answers, for the
+  /// Overview's activity feed. Null leaves the feed empty rather than
+  /// promising one.
+  final Future<List<AuditEvent>> Function()? readAudit;
+
+  /// Reads the usage report the Overview's spend rail draws, grouped by [by]:
+  /// the day series for its spark and the role series for its split. Null
+  /// leaves the rail with today's spend alone.
+  final Future<UsageReport> Function({String by})? readUsage;
 
   /// Builds the store a thread place reads its session into. Null draws a
   /// thread place as planned: a test or an embedded host that supplies none
@@ -584,6 +597,19 @@ class _StudioState extends State<Studio> {
   bool _read = false;
   String? _failure;
 
+  /// The newest audit events the last read answered, newest first: the
+  /// Overview's activity feed. Empty when no read has succeeded.
+  List<AuditEvent> _audit = const [];
+
+  /// The spend's day series and role split, as the last read answered them;
+  /// null when no read has succeeded.
+  UsageReport? _spendByDay;
+  UsageReport? _spendByRole;
+
+  /// The usage ledger read by project: what the projects table joins for its
+  /// spend column. Null when no read has succeeded.
+  UsageReport? _spendByProject;
+
   /// The one guard every place leaving this screen consults: the shell asks
   /// it, and a place that edits watches the models it holds (F7 decision 3).
   final _unsaved = UnsavedGuard();
@@ -641,6 +667,30 @@ class _StudioState extends State<Studio> {
         await read();
       } catch (error) {
         _failure = describeFailure(error);
+      }
+    }
+    final readAudit = widget.readAudit;
+    if (readAudit != null) {
+      try {
+        _audit = await readAudit();
+      } catch (_) {
+        // The feed is a nicety: a bridge that will not answer leaves the card
+        // empty rather than failing the page.
+        _audit = const [];
+      }
+    }
+    final readUsage = widget.readUsage;
+    if (readUsage != null) {
+      try {
+        _spendByProject = await readUsage(by: 'project');
+        _spendByDay = await readUsage(by: 'day');
+        _spendByRole = await readUsage(by: 'role');
+      } catch (_) {
+        // The rail keeps today's spend; the table's column, the trend and the
+        // split say nothing rather than something untrue.
+        _spendByProject = null;
+        _spendByDay = null;
+        _spendByRole = null;
       }
     }
     if (!mounted) return;
@@ -753,7 +803,15 @@ class _StudioState extends State<Studio> {
   Widget _content(Place place, NavModel nav, PlaceNavigation navigation) {
     if (place.kind == PlaceKind.overview) {
       return Overview(
-        overview: buildOverview(widget.store, widget.inbox),
+        overview: buildOverview(
+          widget.store,
+          widget.inbox,
+          audit: _audit,
+          pulls: widget.pulls?.views ?? const [],
+          usageByProject: _spendByProject,
+          usageByDay: _spendByDay,
+          usageByRole: _spendByRole,
+        ),
         now: widget.store.now,
         hosts: widget.store.hosts,
         pulls: widget.pulls?.views ?? const [],
@@ -847,8 +905,12 @@ class _StudioState extends State<Studio> {
         onOpenAgent: (agent) =>
             navigation.go(Place(PlaceKind.thread, host: host, id: agent.id)),
         onOpenRun: (run) => _openRun(navigation, host, run),
-        onOpenAutomations: () =>
-            navigation.go(const Place(PlaceKind.automations)),
+        // The tab a row names, or the place's first tab when it names none.
+        onOpenAutomations: (tab) => navigation.go(
+          tab == null
+              ? const Place(PlaceKind.automations)
+              : Place(PlaceKind.automations, section: automationsSections[tab]),
+        ),
         onNewWork: widget.newWorkFor == null
             ? null
             : () => unawaited(_openNewWork(navigation, host, root)),
@@ -1771,7 +1833,7 @@ class _ProjectPlace extends StatefulWidget {
   final void Function(WorkItemView item)? onOpenItem;
   final void Function(model.ThreadRef agent)? onOpenAgent;
   final void Function(ProjectRun run)? onOpenRun;
-  final VoidCallback? onOpenAutomations;
+  final void Function(int? tab)? onOpenAutomations;
 
   /// Opens the Studio's new-work dialog for this project: the page's "New".
   final VoidCallback? onNewWork;

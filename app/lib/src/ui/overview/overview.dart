@@ -114,7 +114,8 @@ class Overview extends StatelessWidget {
                 ..._needsYou(context),
                 const SizedBox(height: Space.s24),
                 ..._pullRequests(context),
-                if (pulls.isNotEmpty) const SizedBox(height: Space.s24),
+                if (pulls.isNotEmpty || overview.moreInProgress > 0)
+                  const SizedBox(height: Space.s24),
                 ..._running(context),
                 const SizedBox(height: Space.s24),
                 ..._projects(context),
@@ -312,24 +313,35 @@ class Overview extends StatelessWidget {
         if (pull.group == PullGroup.ready || pull.group == PullGroup.failing)
           pull,
     ];
-    if (shown.isEmpty) return const [];
     final open = _open(const Place(PlaceKind.pulls));
+    final more = overview.moreInProgress;
+    if (shown.isEmpty && more == 0) return const [];
     return [
-      Label(
-        'Pull requests',
-        count: shown.length,
-        link: open == null
-            ? null
-            : LabelLink('Open pull requests', onTap: open),
-      ),
-      const SizedBox(height: Space.s12),
-      for (final pull in shown)
-        Padding(
-          padding: const EdgeInsets.only(bottom: Space.s8),
-          child: PrCard(
-            pull: pullFactsOf(pull, now: now),
-            actions: PrActions(openSource: _pullSource(pull)),
+      if (shown.isNotEmpty) ...[
+        Label(
+          'Pull requests',
+          count: shown.length,
+          link: open == null
+              ? null
+              : LabelLink('Open pull requests', onTap: open),
+        ),
+        const SizedBox(height: Space.s12),
+        for (final pull in shown)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Space.s8),
+            child: PrCard(
+              pull: pullFactsOf(pull, now: now),
+              actions: PrActions(openSource: _pullSource(pull)),
+            ),
           ),
+      ],
+      // What the two cards leave out, in the mock's words: it is still work in
+      // flight, so it is one line beneath them and never a card of its own
+      // (F9 decision 7).
+      if (more > 0)
+        Text(
+          '$more more in progress with checks passing or running',
+          style: Ember.of(context).small.tint(Ember.of(context).muted),
         ),
     ];
   }
@@ -385,10 +397,11 @@ class Overview extends StatelessWidget {
                           ),
                         ],
                       ),
-                      if (thread.headline.isNotEmpty) ...[
+                      if (thread.headline.isNotEmpty ||
+                          thread.stepsDone != null) ...[
                         const SizedBox(height: Space.s4),
                         Text(
-                          thread.headline,
+                          _detail(thread),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: Ember.of(context).small
@@ -418,8 +431,8 @@ class Overview extends StatelessWidget {
           for (final project in projects)
             RowItem(
               name: project.name,
-              description: _counts(project),
-              value: '${project.threads}',
+              description: _projectDetail(project),
+              value: _projectWorth(project),
               onTap: onSelect == null
                   ? null
                   : () => onSelect!(Place(PlaceKind.project, id: project.id)),
@@ -428,9 +441,39 @@ class Overview extends StatelessWidget {
     ];
   }
 
+  /// A project row's description: its thread total, then the counts it breaks
+  /// into. The total is what the row's value used to carry; the value now
+  /// belongs to what the bridge answered about the project (F9 decision 7).
+  static String _projectDetail(ProjectSummary project) {
+    final counts = _counts(project);
+    if (project.threads == 0) return counts;
+    final threads = project.threads == 1
+        ? '1 thread'
+        : '${project.threads} threads';
+    return '$threads · $counts';
+  }
+
+  /// A project row's value: its pull requests' state, then what it spent over
+  /// the usage window. Only the parts that are not zero are named, and a row
+  /// with nothing to name draws an em dash rather than an empty slot.
+  static String _projectWorth(ProjectSummary project) {
+    final ci = [
+      if (project.ciReady > 0) '${project.ciReady} ready',
+      if (project.ciFailing > 0) '${project.ciFailing} failing',
+    ].join(' · ');
+    final spend = project.spendUSD > 0
+        ? '\$${project.spendUSD.toStringAsFixed(2)} this week'
+        : '';
+    return [
+      if (ci.isNotEmpty) ci else if (spend.isEmpty) '—',
+      if (spend.isNotEmpty) spend,
+    ].join(' · ');
+  }
+
   /// The side rail: what each host is carrying, and the day's spend.
   Widget _rail(BuildContext context) {
     final spend = overview.spend;
+    final split = _roleSplit();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -461,9 +504,104 @@ class Overview extends StatelessWidget {
                 ? 'The daily cap is holding work back'
                 : 'Today’s spend against the daily cap',
           ),
+          // The days behind today, as the mock's rail draws them: a shape,
+          // not a table (the spark says nothing about values).
+          if (overview.spendDays.isNotEmpty) ...[
+            const SizedBox(height: Space.s8),
+            Spark([
+              for (final point in overview.spendDays) point.costUSD,
+            ], semanticLabel: 'Daily spend'),
+          ],
+          if (split != null) ...[
+            const SizedBox(height: Space.s8),
+            Text(
+              split,
+              style: Ember.of(context).small.tint(Ember.of(context).muted),
+            ),
+          ],
         ],
+        const SizedBox(height: Space.s24),
+        const Label('Activity'),
+        const SizedBox(height: Space.s12),
+        if (overview.activity.isEmpty)
+          // The rail card is not a page state: an empty feed says so in one
+          // quiet line rather than offering a second action beside the
+          // page's own (design-system.md §7 keeps one action per state).
+          Text(
+            'Nothing has happened yet.',
+            style: Ember.of(context).small.tint(Ember.of(context).muted),
+          )
+        else
+          Rows([
+            for (final event in overview.activity)
+              RowItem(
+                name: _eventWords(event.event),
+                description: _eventDetail(event),
+                value: _eventAge(event.ts),
+              ),
+          ]),
       ],
     );
+  }
+
+  /// An audit event's kind, worded for a person: `agent.spawn` reads
+  /// "Agent spawn". An event whose kind is one bare word keeps it.
+  static String _eventWords(String event) {
+    final words = [
+      for (final word in event.split(RegExp(r'[._\-\s]+')))
+        if (word.isNotEmpty) word,
+    ];
+    if (words.isEmpty) return event;
+    final first = words.first;
+    return [
+      '${first[0].toUpperCase()}${first.substring(1)}',
+      ...words.skip(1),
+    ].join(' ');
+  }
+
+  /// What the event says beyond its kind: the operator's reason first, then
+  /// the event's own detail, and nothing when it has neither.
+  static String _eventDetail(AuditEvent event) {
+    final reason = event.reason;
+    if (reason != null && reason.isNotEmpty) return reason;
+    return event.detail ?? '';
+  }
+
+  /// How long ago the event happened, in the sidebar's words.
+  String _eventAge(String ts) {
+    final at = DateTime.tryParse(ts);
+    return at == null ? '' : relativeAge(at, now);
+  }
+
+  /// A running tile's one detail line: which step the turn is on, and what
+  /// the agent is doing. A step is a number and never a fraction: a turn's
+  /// steps are discovered as the model narrates, so there is no total to name
+  /// (F9 decision 3).
+  static String _detail(model.ThreadRef thread) {
+    final step = thread.stepsDone;
+    return [
+      if (step != null) 'step $step',
+      if (thread.headline.isNotEmpty) thread.headline,
+    ].join(' · ');
+  }
+
+  /// The window's spend by role, largest first, as shares of the whole: at
+  /// most three roles, and none too small to name a percentage of its own.
+  /// The first word is capitalised so the line reads as a sentence.
+  String? _roleSplit() {
+    final roles = overview.spendByRole;
+    final total = roles.fold<double>(0, (sum, role) => sum + role.costUSD);
+    if (total <= 0) return null;
+    final named = <String>[];
+    for (final role in roles) {
+      final share = role.costUSD / total * 100;
+      if (share < 1) continue;
+      named.add('${role.key} ${share.round()}%');
+      if (named.length == 3) break;
+    }
+    if (named.isEmpty) return null;
+    final line = named.join(' · ');
+    return '${line[0].toUpperCase()}${line.substring(1)}';
   }
 
   Widget _stateMessage(StateKind state) {

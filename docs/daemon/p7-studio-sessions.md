@@ -859,3 +859,43 @@ item that a headless host *can* check is checked.
 The plan's `Done when` list is met by these tests except for the acceptance
 run, which could not be performed on this host and is recorded above as
 unobserved rather than claimed.
+
+**Post-review fixes.** Two branch reviews of this plan found two defects and one
+over-wide rule. Each is fixed on its own with a test that fails when the fix is
+reverted; nothing else on the branch changed.
+
+1. **A stale full index read cannot put back an older answer.** The snapshot's
+   `sessionIndex` read and a `sessions` delta's rooted re-read are two writers of
+   one list, and only the agents list had the counter that orders them: a
+   snapshot asked for before a delta could land after it and revert the root —
+   or a rooted read in flight when a gap started a snapshot could rewind that
+   one group — with no further read to heal it on a quiet host. `_HostState`
+   gains `sessionsReads`, bumped when each read is issued; the snapshot applies
+   its groups only while no later read was asked for, and a rooted read drops a
+   stale answer the way `_readAgents` does.
+   `a slow snapshot read does not put back a newer rooted answer` fails without
+   it: `Expected: ['s-2', 't-1']`, `Actual: ['s-1', 't-1']`.
+2. **A gone session says so once.** `_gone` now returns when the store is
+   already `gone`, as every other transition notifies only on a change: a gone
+   store keeps following its stream, and each gap's 404 was notifying an
+   identical state. `a second 404 on a gone session says nothing new` fails
+   without it (`Expected: <1>`, `Actual: <2>`).
+3. **The bridge's words stay where decision 7 put them.** The first cut kept
+   `describeFailure` for every failed fetch of every store, so an agent's error
+   screen showed bridge copy instead of its own sentence, and a transport
+   exception's raw `toString()` could stand where the design system asks for
+   plain words. `_failure` is now set only by a store that has an `opener` — a
+   session's — and only from a `BridgeFailure`; `_open`'s catch keeps the same
+   rule. `a 404 for an agent is still an error` now asserts `failure` is null,
+   and `a transport outage keeps the plain sentence` fails without the fix
+   (`Expected: null`, `Actual: 'Exception: connection refused'`).
+4. **The rooted re-read is pinned exactly.** `a sessions delta re-reads its root
+   only` asserted `containsAll(['s-2', 't-1'])`, which a rooted read that *added*
+   its answer beside the held group would also pass. It now asserts the exact
+   list, as its neighbouring tests do.
+
+Left alone: the six near-identical session-row builders the tests each keep
+(`fleet_store_test`, `thread_ref_test`, `nav_model_test`, `inbox_model_test`,
+`project_page_test`, `shell_test`). A shared fixture would touch six test files
+for no behaviour, and the plan named no shared one.
+

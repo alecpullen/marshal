@@ -41,6 +41,7 @@ class FactoryStore extends ChangeNotifier {
   final _items = <String, List<FactoryItem>>{};
   final _failure = <String, String>{};
   final _loaded = <String>{};
+  final _lastRead = <String, DateTime>{};
   final _conflicts = <String, String>{};
   final _generations = <String, int>{};
   Timer? _timer;
@@ -96,6 +97,12 @@ class FactoryStore extends ChangeNotifier {
   /// Why [host]'s last read failed, in the bridge's words, or null.
   String? failure(String host) => _failure[host];
 
+  /// When [host] last answered, or null when it never has.
+  ///
+  /// Only a read that worked moves it: a failure keeps the time of the last
+  /// one that did, because that is what makes "3m old" true.
+  DateTime? lastReadAt(String host) => _lastRead[host];
+
   /// Whether any item is still working: the store polls faster while one is.
   bool get hasActiveItems => items().any(isActiveItem);
 
@@ -136,6 +143,7 @@ class FactoryStore extends ChangeNotifier {
           if (_disposed || _generations[name] != generation) continue;
           _items[name] = List.unmodifiable(items);
           _loaded.add(name);
+          _lastRead[name] = _now();
           _failure.remove(name);
         } catch (error) {
           if (_disposed || _generations[name] != generation) continue;
@@ -392,6 +400,7 @@ class FactoryStore extends ChangeNotifier {
         : [for (var i = 0; i < held.length; i++) i == at ? item : held[i]];
     _items[host] = List.unmodifiable(next);
     _loaded.add(host);
+    _lastRead[host] = _now();
     _failure.remove(host);
   }
 

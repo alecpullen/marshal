@@ -1,4 +1,5 @@
 import '../client/contract.g.dart';
+import 'attention.dart';
 import 'inbox_model.dart';
 import 'merge_target.dart';
 import 'thread_ref.dart';
@@ -266,6 +267,9 @@ List<Ask> asksOf(String host, FactoryItem item) {
           AskAction('Propose a change', kind: AskActionKind.reply),
         ],
         since: created,
+        source: AskSource.factory,
+        project: item.projectRoot,
+        scope: AskScope.projectWide,
       ),
     );
   }
@@ -286,6 +290,9 @@ List<Ask> asksOf(String host, FactoryItem item) {
           AskAction('Answer', primary: true, kind: AskActionKind.reply),
         ],
         since: DateTime.tryParse(decision.createdAt) ?? since,
+        source: AskSource.factory,
+        project: item.projectRoot,
+        scope: AskScope.projectWide,
       ),
     );
   }
@@ -304,6 +311,9 @@ List<Ask> asksOf(String host, FactoryItem item) {
           AskAction('Start fresh', kind: AskActionKind.reply),
         ],
         since: since,
+        source: AskSource.factory,
+        project: item.projectRoot,
+        scope: AskScope.projectWide,
       ),
     );
   }
@@ -325,6 +335,9 @@ List<Ask> asksOf(String host, FactoryItem item) {
           AskAction('Reopen', kind: AskActionKind.reply),
         ],
         since: since,
+        source: AskSource.factory,
+        project: item.projectRoot,
+        scope: AskScope.projectWide,
       ),
     );
   }

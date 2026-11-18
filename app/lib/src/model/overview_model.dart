@@ -4,6 +4,7 @@ import '../client/host.dart';
 import 'fleet_store.dart';
 import 'inbox_model.dart';
 import 'nav_model.dart' show projectName;
+import 'source_state.dart';
 import 'thread_ref.dart';
 
 /// How many asks the Overview shows before it hands over to the Inbox.
@@ -99,6 +100,8 @@ class OverviewModel {
   const OverviewModel({
     required this.needsYou,
     required this.running,
+    required this.needsYouTotal,
+    required this.sources,
     required this.projects,
     required this.capacity,
     required this.spend,
@@ -109,6 +112,13 @@ class OverviewModel {
 
   /// Every thread with a turn in flight, most recently active first.
   final List<ThreadRef> running;
+
+  /// Every ask, including the ones past [needsYou]'s cap, so a count and a
+  /// label agree with what exists rather than with what is drawn.
+  final int needsYouTotal;
+
+  /// Each source's freshness, by host then source.
+  final List<SourceState> sources;
 
   /// Every project, in name order.
   final List<ProjectSummary> projects;
@@ -167,6 +177,8 @@ OverviewModel buildOverview(FleetStore store, InboxModel inbox) {
 
   return OverviewModel(
     needsYou: List.unmodifiable(inbox.asks.take(overviewAsks)),
+    needsYouTotal: inbox.asks.length,
+    sources: sourceStates(store, factory: inbox.factory),
     running: List.unmodifiable(running),
     projects: List.unmodifiable(summaries),
     capacity: List.unmodifiable(capacity),

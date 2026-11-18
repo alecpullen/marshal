@@ -2,6 +2,7 @@ import '../../model/age.dart';
 import '../../model/inbox_model.dart' as model;
 import '../../model/place.dart';
 import '../../model/pulls_model.dart';
+import '../../model/source_state.dart';
 import '../kit/kit.dart';
 import '../pulls/pull_facts.dart';
 
@@ -22,6 +23,7 @@ class Inbox extends StatefulWidget {
     required this.now,
     this.pulls = const [],
     this.state,
+    this.sources = const [],
     this.onSelect,
     this.onAnswer,
     this.onRetry,
@@ -39,6 +41,11 @@ class Inbox extends StatefulWidget {
 
   /// The fleet's data state, when it is not ready (§7).
   final StateKind? state;
+
+  /// Each feed's freshness, by host then source: one line per source that is
+  /// not answering, so a dead feed sits beside a healthy one instead of
+  /// replacing it.
+  final List<SourceState> sources;
 
   final void Function(Place place)? onSelect;
 
@@ -100,8 +107,6 @@ class _InboxState extends State<Inbox> {
     super.dispose();
   }
 
-  bool _blocking(model.Ask ask) => ask.kind != model.AskKind.intake;
-
   /// The pull requests the Ready filter lists: the ready ones only, whatever
   /// the host hands over.
   List<PullView> get _ready => [
@@ -111,8 +116,8 @@ class _InboxState extends State<Inbox> {
 
   List<model.Ask> get _shown => switch (_filter) {
     InboxFilter.all => widget.asks,
-    InboxFilter.blocking => widget.asks.where(_blocking).toList(),
-    InboxFilter.lookAt => widget.asks.where((ask) => !_blocking(ask)).toList(),
+    InboxFilter.blocking => widget.asks.where((ask) => ask.blocking).toList(),
+    InboxFilter.lookAt => widget.asks.where((ask) => !ask.blocking).toList(),
     // The Ready filter is not about asks: [build] draws pull requests for it.
     InboxFilter.ready => const [],
   };
@@ -120,20 +125,21 @@ class _InboxState extends State<Inbox> {
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
-    if (state != null && state != StateKind.stale) {
+    // A state that would replace the page yields to any source that answered:
+    // a dead feed must not hide the asks a healthy one reported.
+    final anyLoaded = widget.sources.any((source) => source.loaded);
+    if (state != null && state != StateKind.stale && !anyLoaded) {
       return PageBody(title: 'Inbox', children: [_stateMessage(state)]);
     }
     final shown = _shown;
+    final freshness = _freshness();
     return PageBody(
       title: 'Inbox',
       subtitle: _subtitle(),
       width: PageWidth.list,
       children: [
-        if (state == StateKind.stale) ...[
-          StateMessage.stale(
-            age: 'now',
-            detail: 'The fleet has not answered; this is what it last said.',
-          ),
+        if (freshness.isNotEmpty) ...[
+          ...freshness,
           const SizedBox(height: Space.s16),
         ],
         Tabs(
@@ -142,10 +148,13 @@ class _InboxState extends State<Inbox> {
               setState(() => _filter = InboxFilter.values[index]),
           tabs: [
             TabItem('All', count: widget.asks.length),
-            TabItem('Blocking', count: widget.asks.where(_blocking).length),
+            TabItem(
+              'Blocking',
+              count: widget.asks.where((ask) => ask.blocking).length,
+            ),
             TabItem(
               'To look at',
-              count: widget.asks.where((ask) => !_blocking(ask)).length,
+              count: widget.asks.where((ask) => !ask.blocking).length,
             ),
             TabItem('Ready', count: _ready.length),
           ],
@@ -154,17 +163,92 @@ class _InboxState extends State<Inbox> {
         if (_filter == InboxFilter.ready)
           ..._readyCards()
         else if (shown.isEmpty)
-          StateMessage.empty(
-            message: 'Nothing is waiting on you.',
-            action: StateAction(
-              'Read the fleet again',
-              onTap: widget.onRetry ?? () {},
-            ),
-          )
+          _emptyState()
         else
           for (final ask in shown) _card(ask),
       ],
     );
+  }
+
+  /// What an empty list says: when a filter is what emptied it, it names that
+  /// filter and offers the way back to every ask.
+  Widget _emptyState() {
+    final all = StateAction(
+      'Show every ask',
+      onTap: () => setState(() => _filter = InboxFilter.all),
+    );
+    return switch (_filter) {
+      InboxFilter.blocking => StateMessage.empty(
+        message: 'Nothing is blocking work.',
+        action: all,
+      ),
+      InboxFilter.lookAt => StateMessage.empty(
+        message: 'Nothing is waiting to be looked at.',
+        action: all,
+      ),
+      InboxFilter.all || InboxFilter.ready => StateMessage.empty(
+        message: 'Nothing is waiting on you.',
+        action: StateAction(
+          'Read the fleet again',
+          onTap: widget.onRetry ?? () {},
+        ),
+      ),
+    };
+  }
+
+  /// One row per source that is not well: what is held, how old it is, and
+  /// what did not arrive (§8). A healthy source says nothing here, and one
+  /// still making its first attempt says nothing either.
+  List<Widget> _freshness() {
+    final retry = StateAction('Read again', onTap: widget.onRetry ?? () {});
+    final rows = [
+      for (final source in widget.sources)
+        if (source.stale || source.unavailable)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Space.s12),
+            child: _freshnessRow(source, retry),
+          ),
+    ];
+    // A screen the shell calls stale whose sources all count as healthy (a
+    // stream that stopped without a failed read) still marks the age: §7
+    // never presents old data as current.
+    if (rows.isEmpty && widget.state == StateKind.stale) {
+      return [
+        StateMessage.stale(
+          age: _oldestSeen() ?? 'now',
+          detail: 'The fleet has not answered; this is what it last said.',
+        ),
+      ];
+    }
+    return rows;
+  }
+
+  /// The age of the oldest snapshot any source holds, in the design system's
+  /// words, or null when nothing has been read yet.
+  String? _oldestSeen() {
+    DateTime? oldest;
+    for (final source in widget.sources) {
+      final read = source.lastRead;
+      if (read == null) continue;
+      if (oldest == null || read.isBefore(oldest)) oldest = read;
+    }
+    return oldest == null ? null : relativeAge(oldest, widget.now);
+  }
+
+  /// One source's row, in that source's own words.
+  ///
+  /// A stale source holds a snapshot, so its age is the age of the read that
+  /// made it; a source that never answered holds nothing, so it says so
+  /// rather than carrying an age that would be a guess.
+  Widget _freshnessRow(SourceState source, StateAction retry) {
+    final lastRead = source.lastRead;
+    if (source.stale && lastRead != null) {
+      return StateMessage.stale(
+        age: relativeAge(lastRead, widget.now),
+        detail: source.words(widget.now),
+      );
+    }
+    return StateMessage.error(message: source.words(widget.now), retry: retry);
   }
 
   /// The Ready filter's list: one card per pull request that waits for
@@ -221,7 +305,7 @@ class _InboxState extends State<Inbox> {
             body: ask.body.isEmpty ? null : ask.body,
             waiting: sending ? 'sending…' : relativeAge(ask.since, widget.now),
             waitingSince: ask.since.toLocal().toString(),
-            source: _source(ask),
+            source: ask.provenance,
             onOpenSource: _thread(ask),
             placement: AskPlacement.inbox,
             // A request that asks several questions commits them together,
@@ -230,7 +314,7 @@ class _InboxState extends State<Inbox> {
             // item's own thread — they carry its version and its reviewed
             // identity — so the list shows them without offering a control
             // that would do nothing; the source line opens the thread.
-            actions: many || _threadOnly(ask.kind)
+            actions: many || ask.answeredInThread
                 ? const []
                 : [
                     for (final action in ask.actions)
@@ -244,26 +328,6 @@ class _InboxState extends State<Inbox> {
       ),
     );
   }
-
-  /// Whether an ask is answered only in the item's own thread (F6 decision 5).
-  ///
-  /// A work item's draft, decision, recovery and completion all name the item's
-  /// version and its reviewed identity, so the model declines to answer them
-  /// from the list ([InboxModel.answer] returns early). The card draws no action
-  /// row for them rather than buttons that would do nothing; its source line
-  /// opens the thread they are answered in.
-  static bool _threadOnly(model.AskKind kind) => switch (kind) {
-    model.AskKind.approvalDraft ||
-    model.AskKind.decision ||
-    model.AskKind.recovery ||
-    model.AskKind.completion => true,
-    model.AskKind.approval ||
-    model.AskKind.question ||
-    model.AskKind.intake ||
-    model.AskKind.reviewDraft ||
-    model.AskKind.network ||
-    model.AskKind.pull => false,
-  };
 
   /// The questions of a multi-question ask, one answer each, and the actions
   /// that post them all.
@@ -457,15 +521,6 @@ class _InboxState extends State<Inbox> {
     widget.onAnswer?.call(ask, action);
   }
 
-  /// Where the ask came from, as the card's source line: its project and its
-  /// thread.
-  String? _source(model.Ask ask) {
-    final thread = ask.thread;
-    if (thread == null) return null;
-    final project = thread.project.split('/').last;
-    return '$project › ${thread.title}';
-  }
-
   VoidCallback? _thread(model.Ask ask) {
     final thread = ask.thread;
     final select = widget.onSelect;
@@ -478,7 +533,7 @@ class _InboxState extends State<Inbox> {
   String _subtitle() {
     final waiting = widget.asks.length;
     if (waiting == 0) return 'Nothing is waiting on you';
-    final blocking = widget.asks.where(_blocking).length;
+    final blocking = widget.asks.where((ask) => ask.blocking).length;
     final noun = waiting == 1 ? 'ask' : 'asks';
     if (blocking == 0) return '$waiting $noun to look at';
     return '$waiting $noun · $blocking blocking work';
@@ -501,10 +556,14 @@ class _InboxState extends State<Inbox> {
       ),
       StateKind.unavailable => StateMessage.unavailable(
         host: 'The daemon',
-        lastSeen: '4m',
+        // No read has made a snapshot, so there is no age to give, and the
+        // kit says "Not seen yet" rather than inventing one.
+        lastSeen: _oldestSeen(),
         action: retry,
       ),
-      StateKind.stale => StateMessage.stale(age: '4m'),
+      // Unreachable: a stale screen keeps its content and draws each source's
+      // own row (`_freshness`), never a whole-page message.
+      StateKind.stale => const SizedBox.shrink(),
       StateKind.planned => const StateMessage.planned(
         name: 'Inbox',
         note: 'Not built yet',

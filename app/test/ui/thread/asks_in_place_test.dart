@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
+import 'package:marshal_app/src/model/attention.dart' as model;
 import 'package:marshal_app/src/model/composer_model.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/stack_store.dart';
@@ -31,6 +32,8 @@ model.Ask _ask({
     const model.AskAction('Deny'),
   ],
   since: _asked,
+  source: model.AskSource.fleet,
+  scope: model.AskScope.everyone,
   step: step,
 );
 

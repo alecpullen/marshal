@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
+import 'package:marshal_app/src/client/host.dart';
 import 'package:marshal_app/src/model/factory_store.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
 import 'package:marshal_app/src/model/place.dart';
@@ -174,5 +175,86 @@ void main() {
 
     factory.clearConflict('local', 'item-1');
     expect(factory.conflictOf('local', 'item-1'), isNull);
+  });
+
+  test('a successful read records when it happened', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        factoryItems: [factoryItem(id: 'item-1')],
+      ),
+    ]);
+    final factory = FactoryStore(fixture.registry, now: fixture.clock.now);
+    addTearDown(factory.dispose);
+
+    expect(factory.lastReadAt('local'), isNull);
+
+    await factory.refresh('local');
+    expect(factory.lastReadAt('local'), fixture.clock.now());
+
+    // The store's clock, not the wall clock: the time it records is the one
+    // the fixture moved.
+    fixture.clock.advance(const Duration(minutes: 2));
+    await factory.refresh('local');
+    expect(
+      factory.lastReadAt('local'),
+      DateTime.utc(2026, 11, 17, 4, 2),
+      reason: 'the injected clock is what a read time comes from',
+    );
+    expect(factory.lastReadAt('local'), fixture.clock.now());
+  });
+
+  test('a failed read keeps the time of the last one that worked', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        factoryItems: [factoryItem(id: 'item-1')],
+      ),
+    ]);
+    final factory = FactoryStore(fixture.registry, now: fixture.clock.now);
+    addTearDown(factory.dispose);
+    await factory.refresh('local');
+    final read = factory.lastReadAt('local');
+    expect(read, isNotNull);
+    expect(factory.byId('local', 'item-1'), isNotNull);
+
+    fixture.clock.advance(const Duration(minutes: 2));
+    fixture.bridges['local']!.reply(
+      'GET',
+      '/api/factory/items',
+      const FakeReply(
+        500,
+        headers: {'content-type': 'application/json'},
+        body: '{"error":"offline"}',
+      ),
+    );
+    await factory.refresh('local');
+
+    // The age stays the last read that worked: that is what makes "2m old"
+    // true, and a failed read is not a read of an emptier list.
+    expect(factory.lastReadAt('local'), read);
+    expect(factory.failure('local'), 'offline');
+    expect(factory.byId('local', 'item-1'), isNotNull);
+  });
+
+  test('a host that has not answered has no read time', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        factoryItems: [factoryItem(id: 'item-1')],
+      ),
+      const FixtureHost(name: 'studio', kind: HostKind.server),
+    ]);
+    final factory = FactoryStore(fixture.registry, now: fixture.clock.now);
+    addTearDown(factory.dispose);
+
+    await factory.refresh('local');
+
+    expect(factory.lastReadAt('local'), isNotNull);
+    expect(factory.lastReadAt('studio'), isNull);
+    expect(factory.loaded('studio'), isFalse);
   });
 }

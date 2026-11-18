@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/model/composer_model.dart';
+import 'package:marshal_app/src/model/attention.dart' as ask;
 import 'package:marshal_app/src/model/inbox_model.dart' as ask;
 import 'package:marshal_app/src/model/thread_view_state.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
@@ -64,6 +65,8 @@ void main() {
         ask.AskAction('Deny'),
       ],
       since: DateTime.utc(2026, 11, 17, 4, 10),
+      source: ask.AskSource.fleet,
+      scope: ask.AskScope.everyone,
       step: '1',
     );
 

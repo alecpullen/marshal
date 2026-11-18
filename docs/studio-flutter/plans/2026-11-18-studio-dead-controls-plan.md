@@ -223,6 +223,9 @@ Density is what a thread opens at.
    - `shell_test.dart`: `'a thread opens at the chosen density'` — a
      `Studio` with `density: Density.full` opens a thread whose view state
      is `full`.
+   - `settings_test.dart` `'appearance changes the theme'` (`:405`) looks for
+     Settings' own `EmberTheme`, which step 2 removes: it now asserts only
+     that saving Dark sets `preferences.appearance` to `Appearance.dark`.
 
 **Verify.** `cd app && flutter test test/ui/settings_test.dart test/ui/shell_test.dart test/ui/thread test/contrast_test.dart`
 passes.

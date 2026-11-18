@@ -48,5 +48,6 @@ F0 was executed directly from its spec and has no plan.
 | 16 | [Studio controls that do nothing](2026-11-18-studio-dead-controls-plan.md) | 15 |
 | 17 | [Studio conversation readability](2026-11-18-studio-conversation-readability-plan.md) | 15, 16 |
 | 18 | [Studio places polish](2026-11-18-studio-places-polish-plan.md) | 15, 16 |
+| 19 | [Studio navigation: search, Settings, kept preferences](2026-11-18-studio-navigation-plan.md) | 15, 16, 18 |
 
 The Svelte Studio is frozen, bug fixes only, from the start of plan 2.

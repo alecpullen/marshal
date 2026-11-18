@@ -10,8 +10,13 @@ spec.
 - **Runs after**: the [visual fixes](2026-11-18-studio-visual-fixes-plan.md)
   plan (both edit `inbox_model.dart`, `nav_row.dart`'s users and the gallery
   goldens) and the [dead controls](2026-11-18-studio-dead-controls-plan.md)
-  plan (both edit `settings_place.dart` and the ask cards). Task 9 replaces
-  the `Earlier · N` text the visual fixes plan tints `muted`.
+  plan (both edit the ask cards, and task 9 edits its `AnswerableAsk`). Task
+  8 replaces the `Earlier · N` text the visual fixes plan tints `muted`.
+- **Decisions** (2026-11-18): a question's options are equals; Models and
+  routing is one page in labelled groups; Planning states once that the
+  planner has not reported. Settings' section list moves into the sidebar in
+  [plan 19](2026-11-18-studio-navigation-plan.md), so it is not padded
+  here.
 - **Executed as**: one commit per task, `studio-places: task N — <title>`.
 - **Verification runs on Linux**, where the gallery goldens are pinned.
 
@@ -38,7 +43,8 @@ spec.
 4. **Settings' section list has no gutter.** Its `NavRow`s sit directly in
    the column (`app/lib/src/ui/settings/settings_place.dart:134-139`), so the
    labels start 2 from the panel's edge and the selected fill touches it,
-   unlike the sidebar's 8 gutter beside it.
+   unlike the sidebar's 8 gutter beside it. *Covered by plan 19, which moves
+   these rows into the sidebar.*
 5. **A planned state splits from its pill in a tall space.**
    `StateMessage.planned` is a `Row` that centres its pill against an
    `Expanded` column (`app/lib/src/ui/kit/state_message.dart:188-210`); given
@@ -76,19 +82,33 @@ spec.
     (`sidebar.dart:174`), and a project whose only threads on that host are
     earlier disappears (`sidebar.dart:166`). An earlier thread opened from
     elsewhere is never shown as the open row.
+13. **A question's first option looks recommended.** The model marks a
+    question's first option primary (`app/lib/src/model/inbox_model.dart:1056`),
+    and `AskCard` draws its first action primary whatever the caller meant
+    (`app/lib/src/ui/kit/ask_card.dart`, `_action(i == 0, …)`). The agent's
+    `question` tool has no recommendation, so the coral first option claims
+    one the agent never made.
+14. **Models and routing is one flat list of four kinds of thing.** Roles,
+    presets, provider keys and spending rows share one `Rows`
+    (`app/lib/src/ui/sections/section_page.dart:198-200`) with no label
+    between them, and a role with no preset shows a blank value
+    (`app/lib/src/model/models_model.dart:82-88`, `:261`), though it runs the
+    active preset (`:265-268`).
+15. **Planning says "unknown" four times before the planner reports.** Until
+    its record is read, the strip shows `Planner state unknown`, `Mode
+    unknown` and `Workspace unknown` (`app/lib/src/ui/factory/planning_screen.dart:165-190`,
+    `app/lib/src/model/planning_model.dart:314-335`), and the composer's mode
+    chip says `Mode unknown` again (`planning_screen.dart:149`).
 
 ## Non-goals
 
-- The Models and routing section's flat list of roles, presets, keys and
-  caps; regrouping it is a design question.
-- Settings' second column of navigation beside the sidebar.
-- The planning screen's `… unknown` chips, which state what has not been
-  read on purpose (design-system §7).
+- Settings' section list (finding 4): plan 19 moves it into the sidebar.
+- A recommendation flag on the `question` tool.
 
 ## Contracts
 
 ```dart
-// app/lib/src/model/nav_model.dart — NavProject, after task 9
+// app/lib/src/model/nav_model.dart — NavProject, after task 8
 class NavProject {
   const NavProject({
     required this.id,
@@ -111,6 +131,31 @@ class NavProject {
 
   final bool active;
 }
+```
+
+```dart
+// app/lib/src/ui/kit/ask_card.dart — after task 9
+@immutable
+class AskAction {
+  const AskAction(this.label, {required this.onTap, this.note, this.primary = false});
+  final String label;
+  final VoidCallback? onTap;
+  final String? note;
+
+  /// The one action drawn primary. At most one action of a card is, and it
+  /// is the first; a card may have none.
+  final bool primary;
+}
+
+// app/lib/src/ui/sections/section_page.dart — after task 10
+//   final String Function(T item)? group;
+//   The label a run of consecutive rows sits under; null draws one list.
+
+// app/lib/src/ui/kit/composer.dart — after task 11
+//   final String? mode;   // default 'Ask'; null draws no mode chip
+
+// app/lib/src/model/planning_model.dart — after task 11
+//   bool get reported;    // whether the planner's record has been read
 ```
 
 Every other task changes one file's behaviour behind its existing API.
@@ -185,23 +230,7 @@ create of its own.
 **Verify.** `cd app && flutter test test/ui/automations_test.dart test/overflow_test.dart`
 passes.
 
-## Task 4: Settings' list has the sidebar's gutter
-
-**Goal.** Settings' section rows sit 8 in from the panel's edges.
-
-**Files.** `app/lib/src/ui/settings/settings_place.dart`, `app/test/ui/settings_test.dart`
-
-**Steps.**
-1. Wrap the section rows (`settings_place.dart:134-139`) in horizontal
-   padding of `Space.s8`, the sidebar's gutter (`app/lib/src/ui/shell/sidebar.dart`,
-   its fixed rows' padding).
-2. Test `'the section list has a gutter'`: the selected row's fill starts
-   `Space.s8` from the list's left edge.
-
-**Verify.** `cd app && flutter test test/ui/settings_test.dart test/overflow_test.dart`
-passes.
-
-## Task 5: A planned state keeps its pill beside its words
+## Task 4: A planned state keeps its pill beside its words
 
 **Goal.** `StateMessage.planned` draws its words and its pill on one line at
 the top, whatever the height it is given.
@@ -218,7 +247,7 @@ the top, whatever the height it is given.
 **Verify.** `cd app && flutter test test/kit/state_message_test.dart test/gallery_test.dart`
 passes on Linux; the gallery's planned specimen is unchanged.
 
-## Task 6: The factory's strips and lanes line up
+## Task 5: The factory's strips and lanes line up
 
 **Goal.** Stage words sit under their stages, lanes have an inset, and one
 round is one round.
@@ -245,7 +274,7 @@ round is one round.
 **Verify.** `cd app && flutter test test/kit test/ui/factory test/gallery_test.dart test/overflow_test.dart`
 passes on Linux.
 
-## Task 7: A work item reads in order
+## Task 6: A work item reads in order
 
 **Goal.** A decision's answer field follows its question, and the plan is
 drawn as Markdown.
@@ -263,7 +292,7 @@ drawn as Markdown.
 
 **Verify.** `cd app && flutter test test/ui/factory` passes.
 
-## Task 8: The planner's question is the card's title
+## Task 7: The planner's question is the card's title
 
 **Goal.** A planning question card's title is the question; its body is
 empty.
@@ -282,7 +311,7 @@ empty.
 **Verify.** `cd app && flutter test test/model/planning_model_test.dart test/ui/factory/planning_test.dart`
 passes.
 
-## Task 9: Earlier threads open from the sidebar
+## Task 8: Earlier threads open from the sidebar
 
 **Goal.** `Earlier · N` is a disclosure row: it shows the project's earlier
 threads beneath it, each opening its thread, and it is open whenever one of
@@ -334,6 +363,104 @@ them is the open thread.
 **Verify.** `cd app && flutter test test/model/nav_model_test.dart test/ui/shell_test.dart test/tooltips_test.dart test/overflow_test.dart test/states_test.dart`
 passes.
 
+## Task 9: A question's options are equals
+
+**Goal.** An ask card draws primary only the action its caller marks
+primary, and a question's options are never marked.
+
+**Files.** `docs/studio-flutter/design-system.md`, `app/lib/src/ui/kit/ask_card.dart`,
+`app/lib/src/model/inbox_model.dart`, `app/lib/src/ui/inbox/answerable_ask.dart`,
+`app/lib/src/ui/factory/item_asks.dart`, `app/lib/src/ui/factory/planning_screen.dart`,
+`app/lib/src/ui/factory/run_screen.dart`, `app/lib/src/ui/gallery/gallery.dart`,
+`app/test/kit/ask_card_test.dart`, `app/test/model/inbox_model_test.dart`,
+`app/test/goldens/` (regenerated)
+
+**Steps.**
+1. design-system.md, the `AskCard` row (`:198`): add "Primary is the action
+   the caller marks, at most one and first; a question's options are
+   equals, so none of them is".
+2. Kit `AskAction` gains `primary` (Contracts). `AskCard` draws `Btn.primary`
+   for an action whose `primary` is true and `Btn` otherwise
+   (`ask_card.dart:162` stops passing `i == 0`), and asserts that at most one
+   action is primary and that a primary one is first. Rewrite the doc
+   comments at `:31` and on `AskCard` that say the first is primary.
+3. Model: `_questionActions` (`inbox_model.dart:1056`) marks no option
+   primary. Update `AskAction`'s doc comment (`:93-94`).
+4. Callers pass the mark: `AnswerableAsk` (plan 16) passes
+   `primary: action.primary` for a model action, and `primary: true` on its
+   own `Open inbox` and `Open in the factory`; `item_asks.dart:218` passes
+   `primary: action.primary`; `planning_screen.dart:354` (`Allow`) and `:364`
+   (`Answer`) and `run_screen.dart:153` (`Answer`) pass `primary: true`. In
+   the gallery, the first action of each `AskCard` specimen is marked
+   primary, except one question specimen whose options all stay plain.
+5. Regenerate the goldens on Linux.
+6. Tests: `ask_card_test.dart` `'the first action is the one primary'`
+   (`:55`) becomes `'the marked action is the one primary'`; add `'a card
+   with no marked action has no primary'`. `inbox_model_test.dart`: `'a
+   question's options are equals'` — no option of a single question is
+   primary.
+
+**Verify.** `cd app && flutter test test/kit test/model test/ui test/gallery_test.dart test/tooltips_test.dart`
+passes on Linux.
+
+## Task 10: Models and routing in labelled groups
+
+**Goal.** The page lists Roles, Presets, Keys and Spending under their own
+labels, and a role with no preset says it runs the active one.
+
+**Files.** `app/lib/src/ui/sections/section_page.dart`,
+`app/lib/src/ui/settings/models_section.dart`, `app/lib/src/model/models_model.dart`,
+`app/test/ui/sections_test.dart`, `app/test/ui/settings_models_test.dart`
+
+**Steps.**
+1. `SectionPage` gains `group` (Contracts). `_rows` (`section_page.dart:198`)
+   draws, when `group` is set, one `Rows` per run of consecutive items with
+   the same group, each under a `Label` of the group's name: `Space.s8`
+   between a label and its rows, `Space.s20` between one group's rows and the
+   next label. Unset, it draws one `Rows`, as now. Both the stale branch
+   (`:182`) and the ready branch (`:195`) use it.
+2. `ModelsSection` passes `group`: `Roles` for a role, `Presets` for a
+   preset, `Keys` for a key, `Spending` for a cap amount or a cap behaviour.
+   `_rows` in `models_model.dart:245` already lists them in that order.
+3. `ModelRow.shownValue` (`models_model.dart:82`): a role whose value is
+   empty reads `Active preset`. The row's note (`:265-268`) still names
+   which.
+4. Tests: `sections_test.dart` `'grouped rows sit under their labels'`;
+   `settings_models_test.dart` `'the page is grouped as roles, presets, keys
+   and spending'` and `'a role with no preset reads Active preset'`.
+
+**Verify.** `cd app && flutter test test/ui/sections_test.dart test/ui/settings_models_test.dart test/states_test.dart test/overflow_test.dart`
+passes.
+
+## Task 11: Planning says once that the planner has not reported
+
+**Goal.** Before the planner's record is read, the strip is one muted line
+and the composer has no mode chip; afterwards both show the record's facts.
+
+**Files.** `docs/studio-flutter/design-system.md`, `app/lib/src/ui/kit/composer.dart`,
+`app/lib/src/model/planning_model.dart`, `app/lib/src/ui/factory/planning_screen.dart`,
+`app/test/kit/composer_test.dart`, `app/test/ui/factory/planning_test.dart`
+
+**Steps.**
+1. design-system.md, the `Composer` row: "the mode chip is left out while
+   the mode is not known".
+2. Kit `Composer.mode` becomes nullable with the same `'Ask'` default; null
+   draws no mode chip, as a null `model` draws no model chip
+   (`composer.dart` editing branch).
+3. `PlanningModel` gains `reported` (Contracts): true once a record has been
+   read (the model's `_view` is set).
+4. `_contextStrip` (`planning_screen.dart:165`): while not `reported`, it is
+   one `Text` in `small` tinted `muted`, `The planner has not reported yet`,
+   instead of the chips. The composer (`:149`) passes `mode:
+   model.reported ? model.modeWords : null`.
+5. Tests: `composer_test.dart` `'no mode chip when the mode is unknown'`;
+   `planning_test.dart` `'before the record, the strip is one line'` (no
+   `Mode unknown` anywhere on the screen) — the existing `'the strip states
+   the confirmed connection, mode and workspace'` (`:315`) still passes.
+
+**Verify.** `cd app && flutter test test/kit/composer_test.dart test/ui/factory test/overflow_test.dart`
+passes.
+
 ## Final verification
 
 1. `cd app && dart format --set-exit-if-changed lib test && flutter analyze`.
@@ -344,5 +471,9 @@ passes.
 - No Go or contract change.
 - Task 1 changes text other tests find by; step 2 lists every one found by
   `grep -rn "Everyone'" app/test` at `958e2ec9`.
-- Tasks 5 and 6 change kit components without changing their API, so
-  design-system.md needs no edit; task 6's golden regeneration covers both.
+- Tasks 4 and 5 change kit components without changing their API, so
+  design-system.md needs no edit; task 5's golden regeneration covers both.
+- Tasks 9 and 11 change kit APIs (`AskAction.primary`, a nullable
+  `Composer.mode`), so each edits design-system.md; task 9 regenerates the
+  goldens again.
+- Task 9 edits `answerable_ask.dart`, which the dead controls plan creates.

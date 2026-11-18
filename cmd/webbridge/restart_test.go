@@ -194,7 +194,7 @@ func TestTheDaemonReexecutesInPlace(t *testing.T) {
 		"--state-dir", filepath.Join(dir, "state"),
 		"--workspace", filepath.Join(dir, "fleet.json"),
 		"--marshal-bin", "/usr/bin/false", "--oauth-refresh=false")
-	cmd.Env = append(subprocessEnv(os.Environ(), filepath.Join(dir, "data")), testAsBinaryEnv+"=1")
+	cmd.Env = append(subprocessEnv(t, os.Environ(), dir), testAsBinaryEnv+"=1")
 	var logs bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &logs, &logs
 	if err := cmd.Start(); err != nil {
@@ -247,16 +247,44 @@ func copySelf(t *testing.T, path string) {
 }
 
 // subprocessEnv is this process's environment without any WEBBRIDGE_* setting
-// and without a data dir, so the subprocess takes only what the test gives it.
-func subprocessEnv(environ []string, dataDir string) []string {
-	out := make([]string, 0, len(environ)+1)
+// and with every home and config variable pointed into dir: the re-executed
+// daemon belongs to this test, so it must neither read the developer's
+// ~/.config/marshal nor write into their data directory.
+func subprocessEnv(t *testing.T, environ []string, dir string) []string {
+	t.Helper()
+	pinned := []struct{ key, value string }{
+		{"HOME", filepath.Join(dir, "home")},
+		{"XDG_CONFIG_HOME", filepath.Join(dir, "config")},
+		{"XDG_DATA_HOME", filepath.Join(dir, "data")},
+		{"MARSHAL_CONFIG_DIR", filepath.Join(dir, "marshal-config")},
+		{"MARSHAL_DATA_DIR", filepath.Join(dir, "marshal-data")},
+	}
+	for _, pin := range pinned {
+		if err := os.MkdirAll(pin.value, 0o700); err != nil {
+			t.Fatalf("create the subprocess's %s: %v", pin.key, err)
+		}
+	}
+	out := make([]string, 0, len(environ)+len(pinned))
 	for _, kv := range environ {
-		if strings.HasPrefix(kv, "WEBBRIDGE_") || strings.HasPrefix(kv, "MARSHAL_DATA_DIR=") {
+		if strings.HasPrefix(kv, "WEBBRIDGE_") {
 			continue
 		}
-		out = append(out, kv)
+		key, _, _ := strings.Cut(kv, "=")
+		keep := true
+		for _, pin := range pinned {
+			if key == pin.key {
+				keep = false
+				break
+			}
+		}
+		if keep {
+			out = append(out, kv)
+		}
 	}
-	return append(out, "MARSHAL_DATA_DIR="+dataDir)
+	for _, pin := range pinned {
+		out = append(out, pin.key+"="+pin.value)
+	}
+	return out
 }
 
 // stopDaemon ends the subprocess: SIGTERM, a bounded wait, then a kill, so the

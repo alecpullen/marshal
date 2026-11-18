@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"marshal/web/bridge/contract"
@@ -99,6 +100,15 @@ func (f *Fleet) setOwnRestart(state *DaemonRestart) {
 // webbridge restarts the daemon once every child is walked and nothing holds it
 // (decisions 3 and 4). The caller holds sweepMu.
 func (f *Fleet) sweepOwnRestart(ctx context.Context, now time.Time) {
+	// A fleet that is closing has no daemon left to restart: an in-flight
+	// sweep would otherwise announce a restart and push a decision into a run
+	// that has already returned. f.done may be nil, and a select with a nil
+	// case and a default still takes the default.
+	select {
+	case <-f.done:
+		return
+	default:
+	}
 	if f.ownPath == "" || f.selfFired {
 		return
 	}
@@ -110,8 +120,12 @@ func (f *Fleet) sweepOwnRestart(ctx context.Context, now time.Time) {
 		return
 	}
 	if sameBinary(f.ownInfo, info) {
-		// The daemon is running the build on disk.
-		f.setOwnRestart(nil)
+		// The daemon is running the build on disk. An unasked restart is about
+		// that build, so it is over; a requested one is not, and it stays
+		// reported until it fires or its client goes away (decision 4).
+		if current := f.ownRestart(); current == nil || len(current.Reasons) == 0 || current.Reasons[0] != selfRestartRequested {
+			f.setOwnRestart(nil)
+		}
 		return
 	}
 	if sameBinary(f.ownRefused, info) {
@@ -123,13 +137,13 @@ func (f *Fleet) sweepOwnRestart(ctx context.Context, now time.Time) {
 	holds := f.daemonHolds(ctx, now, true)
 	state := &DaemonRestart{Reasons: []string{selfRestartNewBuild}}
 	if len(holds) > 0 {
-		state.WaitingFor = holds[0]
+		state.WaitingFor = strings.Join(holds, ", ")
 	}
 	f.setOwnRestart(state)
 	if len(holds) > 0 {
 		return
 	}
-	f.fireSelfRestart(ctx, selfRestartNewBuild)
+	f.fireSelfRestart(ctx, selfRestartNewBuild, true)
 }
 
 // daemonHolds lists what keeps the daemon from restarting at now: every
@@ -188,8 +202,12 @@ func (f *Fleet) daemonHolds(ctx context.Context, now time.Time, quiet bool) []st
 }
 
 // fireSelfRestart checks the own binary, announces and sends; it answers the
-// last progress line. The caller holds sweepMu.
-func (f *Fleet) fireSelfRestart(ctx context.Context, reason string) DaemonRestartProgress {
+// last progress line. With recheck, what holds the restart is asked again once
+// the build check has passed: the check can take seconds, and a turn that
+// starts in that window is ended by the restart, which decision 2 promises never
+// to do for a restart nobody asked for — --now passes false because it asks for
+// exactly that. The caller holds sweepMu.
+func (f *Fleet) fireSelfRestart(ctx context.Context, reason string, recheck bool) DaemonRestartProgress {
 	if f.selfFired {
 		// The decision is already made: the same version is answered, and
 		// nothing is announced or sent a second time.
@@ -206,9 +224,13 @@ func (f *Fleet) fireSelfRestart(ctx context.Context, reason string) DaemonRestar
 		if info, statErr := os.Stat(f.ownPath); statErr == nil {
 			f.ownRefused = info
 		}
+		// The reason is the one this fire was asked for: what is refused is
+		// this attempt, and a requested restart that fails must not report the
+		// build sweep's reason instead. Only what the daemon is waiting for
+		// carries over from what the status already said.
 		state := &DaemonRestart{Reasons: []string{reason}, Refused: line}
 		if current := f.ownRestart(); current != nil {
-			state.Reasons, state.WaitingFor = current.Reasons, current.WaitingFor
+			state.WaitingFor = current.WaitingFor
 		}
 		f.setOwnRestart(state)
 		slog.Default().Warn("webbridge: the new webbridge build could not start",
@@ -216,7 +238,23 @@ func (f *Fleet) fireSelfRestart(ctx context.Context, reason string) DaemonRestar
 		return DaemonRestartProgress{Error: "the new webbridge build could not start (" + line + ")"}
 	}
 
+	if recheck {
+		// Asked fresh, after the check: the answer daemonHolds gave before it
+		// is up to buildCheckTimeout old by now, and a restart does not end a
+		// turn it never waited for. A new build keeps the quiet gate it was
+		// swept with; a requested restart never waits on one (decision 4).
+		holds := f.daemonHolds(ctx, time.Now(), reason == selfRestartNewBuild)
+		if len(holds) > 0 {
+			f.setOwnRestart(&DaemonRestart{Reasons: []string{reason}, WaitingFor: strings.Join(holds, ", ")})
+			return DaemonRestartProgress{WaitingFor: holds}
+		}
+	}
+
 	f.selfFired, f.selfVersion = true, version
+	// The status keeps saying what is happening until the process re-executes:
+	// with nothing left to wait for, the restart on its way would otherwise
+	// read as none.
+	f.setOwnRestart(&DaemonRestart{Reasons: []string{reason}})
 	f.announceRestartAll(reason, version)
 	// At most one decision per process, so a full channel means the decision
 	// is already on its way; never block a sweep on a main that stopped
@@ -255,7 +293,10 @@ func (f *Fleet) requestRestart(ctx context.Context, now bool, progress func(Daem
 	}
 	if now {
 		f.sweepMu.Lock()
-		line := f.fireSelfRestart(ctx, selfRestartRequested)
+		// --now asks for the restart now: the busy child holding it is what
+		// the caller asked to walk over, so nothing is asked again after the
+		// build check.
+		line := f.fireSelfRestart(ctx, selfRestartRequested, false)
 		f.sweepMu.Unlock()
 		progress(line)
 		return nil
@@ -263,19 +304,38 @@ func (f *Fleet) requestRestart(ctx context.Context, now bool, progress func(Daem
 	for {
 		f.sweepMu.Lock()
 		holds := f.daemonHolds(ctx, time.Now(), false)
-		if len(holds) == 0 {
-			line := f.fireSelfRestart(ctx, selfRestartRequested)
-			f.sweepMu.Unlock()
-			progress(line)
-			return nil
+		var line DaemonRestartProgress
+		if len(holds) > 0 {
+			// Asked for and not yet possible: the status says so, so `marshal
+			// daemon status` reports a request it is waiting on (decision 4).
+			f.setOwnRestart(&DaemonRestart{
+				Reasons:    []string{selfRestartRequested},
+				WaitingFor: strings.Join(holds, ", "),
+			})
+		} else {
+			line = f.fireSelfRestart(ctx, selfRestartRequested, true)
 		}
 		f.sweepMu.Unlock()
-		// The line is written without sweepMu held: a slow client must not
-		// hold up a sweep.
-		progress(DaemonRestartProgress{WaitingFor: holds})
+		if len(holds) > 0 {
+			// The line is written without sweepMu held: a slow client must not
+			// hold up a sweep.
+			progress(DaemonRestartProgress{WaitingFor: holds})
+		} else {
+			progress(line)
+			if line.Restarting || line.Error != "" {
+				// The answer ended: it restarts, or it was refused.
+				return nil
+			}
+			// The daemon went busy again while the build was checked, so the
+			// request keeps waiting rather than ending a turn nobody asked to
+			// end (decision 2).
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-f.done:
+			// The fleet is closing: nothing is left to restart.
+			return nil
 		case <-time.After(restartRequestedInterval):
 		}
 	}

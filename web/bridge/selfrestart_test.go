@@ -42,6 +42,32 @@ func replaceOwnBinary(t *testing.T, path, body string) {
 	}
 }
 
+// ageChildActivity puts root's sessions past the quiet window, so a sweep and
+// the fire it leads to both see an idle child: the quiet gate is asked twice,
+// and a viewer that attached a moment ago would hold the restart at the second
+// ask (decision 3).
+func ageChildActivity(t *testing.T, h *attachHarness, root string) {
+	t.Helper()
+	for _, pc := range h.fleet.projectChildSnapshot() {
+		if pc.root != root {
+			continue
+		}
+		pc.mu.Lock()
+		reg := pc.reg
+		pc.mu.Unlock()
+		if reg == nil {
+			t.Fatalf("the child for %s has no registry", root)
+		}
+		reg.mu.Lock()
+		for _, info := range reg.sessions {
+			info.lastActive = time.Now().Add(-restartQuiet - time.Minute)
+		}
+		reg.mu.Unlock()
+		return
+	}
+	t.Fatalf("no project child was built for %s", root)
+}
+
 // awaitSelfRestart waits for the fleet's decision to re-execute.
 func awaitSelfRestart(t *testing.T, f *Fleet) SelfRestart {
 	t.Helper()
@@ -161,6 +187,51 @@ func TestAnUnchangedBridgeDoesNotRestart(t *testing.T) {
 	}
 	if restart := reportedOwnRestart(t, h); restart != nil {
 		t.Errorf("restart = %+v, want none", restart)
+	}
+}
+
+// TestTheDaemonsStatusKeepsARequestedRestart: an unchanged build ends an
+// unasked restart, but a requested one is not about the build, so a sweep
+// leaves it reported (decision 4).
+func TestTheDaemonsStatusKeepsARequestedRestart(t *testing.T) {
+	h, _ := ownBinaryHarness(t)
+	ctx := ctlContext(t)
+	h.fleet.setOwnRestart(&DaemonRestart{
+		Reasons:    []string{"a restart was asked for"},
+		WaitingFor: "a prompt is running",
+	})
+
+	h.fleet.SweepRestarts(ctx, time.Now())
+
+	noSelfRestart(t, h.fleet)
+	restart := reportedOwnRestart(t, h)
+	if restart == nil {
+		t.Fatal("GET /api/daemon reported no restart, want the requested one kept")
+	}
+	if len(restart.Reasons) != 1 || restart.Reasons[0] != "a restart was asked for" {
+		t.Errorf("restart.reasons = %v, want the requested restart", restart.Reasons)
+	}
+	if restart.WaitingFor != "a prompt is running" {
+		t.Errorf("restart.waitingFor = %q, want the busy line kept", restart.WaitingFor)
+	}
+}
+
+// TestASweepAfterCloseDoesNotFire: a sweep already in flight when the fleet
+// closes does not restart a daemon whose run has returned.
+func TestASweepAfterCloseDoesNotFire(t *testing.T) {
+	h, bin := ownBinaryHarness(t)
+	ctx := ctlContext(t)
+	h.fleet.checkBuild = func(ctx context.Context, path string) (string, error) {
+		return "test-new", nil
+	}
+	replaceOwnBinary(t, bin, "#!/bin/sh\necho webbridge test-new, a longer build\n")
+
+	h.fleet.Close()
+	h.fleet.SweepRestarts(ctx, time.Now())
+
+	noSelfRestart(t, h.fleet)
+	if restart := h.fleet.ownRestart(); restart != nil {
+		t.Errorf("restart = %+v, want none once the fleet has closed", restart)
 	}
 }
 
@@ -300,9 +371,12 @@ func TestTheViewersHearTheDaemonRestart(t *testing.T) {
 	}
 	replaceOwnBinary(t, bin, "#!/bin/sh\necho webbridge test-new, a longer build\n")
 
-	// A live viewer keeps its child busy within the quiet window, so the sweep
-	// is run at a moment past that window: the child is quiet by then.
-	h.fleet.SweepRestarts(ctx, time.Now().Add(restartQuiet+time.Minute))
+	// A live viewer keeps its child busy within the quiet window. The fire asks
+	// that gate again at the real clock, so the viewer's look is aged past the
+	// window rather than the sweep being run at a future moment: the child is
+	// quiet for both asks, and the viewer is still attached to hear the frame.
+	ageChildActivity(t, h, root)
+	h.fleet.SweepRestarts(ctx, time.Now())
 
 	line := res.readLine(t)
 	var frame struct {
@@ -425,6 +499,10 @@ func TestTheRestartRouteNowDoesNotWait(t *testing.T) {
 // nothing restarts afterwards because the binary on disk did not change.
 func TestClosingTheRequestWithdrawsIt(t *testing.T) {
 	shortRestartInterval(t)
+	// A request that outlived its context fires within one sweep of the child
+	// going idle, so twenty of the shortened intervals is a window no starved
+	// tick slips past, while keeping the test short.
+	window := 20 * restartRequestedInterval
 	h, _ := ownBinaryHarness(t)
 	h.fleet.checkBuild = func(ctx context.Context, path string) (string, error) {
 		return "test-new", nil
@@ -443,12 +521,104 @@ func TestClosingTheRequestWithdrawsIt(t *testing.T) {
 	if err := resp.Body.Close(); err != nil {
 		t.Fatalf("close the request: %v", err)
 	}
-	// Enough sweeps for a request that outlived its client to have fired.
-	time.Sleep(10 * restartRequestedInterval)
-
+	// The child goes idle, so a request that outlived its client would fire.
 	fakeResult(fake, "project/state", map[string]any{"version": "v1"})
 	h.fleet.SweepRestarts(ctlContext(t), time.Now())
+
+	// Nothing restarts for the whole window: a single short look could miss a
+	// fire that a starved sweep only reached a tick late.
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		select {
+		case sr := <-h.fleet.SelfRestarts():
+			t.Fatalf("the bridge restarted after its request was withdrawn: %+v", sr)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// TestARequestedRestartIsVisibleInTheDaemonsStatus: a restart asked for without
+// --now waits for a busy child, and GET /api/daemon reports it while it does
+// (decision 4).
+func TestARequestedRestartIsVisibleInTheDaemonsStatus(t *testing.T) {
+	shortRestartInterval(t)
+	h, _ := ownBinaryHarness(t)
+	busyChild(t, h, []string{"a prompt is running"})
+
+	ctx, cancel := context.WithCancel(ctlContext(t))
+	defer cancel()
+	answered := make(chan struct{}, 1)
+	go func() {
+		_ = h.fleet.requestRestart(ctx, false, func(DaemonRestartProgress) {
+			// Dropped when full: the request must never block on a test that
+			// stopped reading its lines.
+			select {
+			case answered <- struct{}{}:
+			default:
+			}
+		})
+	}()
+	select {
+	case <-answered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the restart request answered no waiting line")
+	}
+
+	restart := reportedOwnRestart(t, h)
+	if restart == nil {
+		t.Fatal("GET /api/daemon reported no restart while one was asked for")
+	}
+	if len(restart.Reasons) != 1 || restart.Reasons[0] != "a restart was asked for" {
+		t.Errorf("restart.reasons = %v, want the requested restart", restart.Reasons)
+	}
+	if !strings.Contains(restart.WaitingFor, "a prompt is running") {
+		t.Errorf("restart.waitingFor = %q, want the busy line holding it", restart.WaitingFor)
+	}
+	cancel()
+}
+
+// TestARequestedRestartWaitsAgainWhenATurnStarts: a turn that begins while the
+// new build is being checked holds the requested restart, which then waits
+// again instead of ending that turn (decision 2).
+func TestARequestedRestartWaitsAgainWhenATurnStarts(t *testing.T) {
+	shortRestartInterval(t)
+	h, _ := ownBinaryHarness(t)
+	_, fake := busyChild(t, h, nil)
+	h.fleet.checkBuild = func(ctx context.Context, path string) (string, error) {
+		// The turn starts inside the check, after daemonHolds found nothing
+		// holding the restart.
+		fakeResult(fake, "project/state", map[string]any{
+			"busy": []string{"a prompt is running"}, "version": "v1",
+		})
+		return "test-new", nil
+	}
+
+	ctx, cancel := context.WithCancel(ctlContext(t))
+	defer cancel()
+	lines := make(chan DaemonRestartProgress, 8)
+	go func() {
+		_ = h.fleet.requestRestart(ctx, false, func(line DaemonRestartProgress) {
+			select {
+			case lines <- line:
+			default:
+			}
+		})
+	}()
+
+	var waited DaemonRestartProgress
+	select {
+	case waited = <-lines:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the restart request answered no line")
+	}
+	if waited.Restarting || waited.Error != "" {
+		t.Fatalf("the request answered %+v, want a waiting line", waited)
+	}
+	if len(waited.WaitingFor) != 1 || waited.WaitingFor[0] != "a prompt is running" {
+		t.Errorf("waiting line = %v, want the turn that started during the check", waited.WaitingFor)
+	}
 	noSelfRestart(t, h.fleet)
+	cancel()
 }
 
 // TestTheRestartRouteIsSocketOnly: the network listener never restarts the

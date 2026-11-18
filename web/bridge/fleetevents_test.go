@@ -208,6 +208,22 @@ func TestClassifyTelemetryDecodesEngineShape(t *testing.T) {
 	}
 }
 
+func TestTelemetryCarriesSteps(t *testing.T) {
+	live := newLiveState()
+	d, ok := classifyNotification("session/update", json.RawMessage(
+		`{"sessionId":"s1","update":{"kind":"session_telemetry","steps":{"done":3}}}`))
+	if !ok || d.Kind != "telemetry" {
+		t.Fatalf("telemetry was dropped: %+v ok=%v", d, ok)
+	}
+	if d.StepsDone == nil || *d.StepsDone != 3 {
+		t.Fatalf("StepsDone = %v, want 3", d.StepsDone)
+	}
+	live.apply(d)
+	if got := live.get("s1").stepsDone; got != 3 {
+		t.Fatalf("live stepsDone = %d, want 3", got)
+	}
+}
+
 func TestClassifyTelemetryWithNoChangesStillCounts(t *testing.T) {
 	d, ok := classifyNotification("session/update", json.RawMessage(
 		`{"sessionId":"s1","update":{"kind":"session_telemetry","changedFiles":[],"toolStats":[],"rules":[]}}`))

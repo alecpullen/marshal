@@ -146,6 +146,7 @@ class AgentStatus {
     this.activity,
     this.contextPct,
     this.changedFiles,
+    this.stepsDone,
     this.interrupted,
     this.versionWarning,
     this.held,
@@ -181,6 +182,10 @@ class AgentStatus {
   final String? activity;
   final int? contextPct;
   final int? changedFiles;
+  /// StepsDone is how many steps the current turn has taken. A turn's steps
+  /// are discovered as the model narrates, so there is no total while it
+  /// runs: a client shows a step number, never a fraction.
+  final int? stepsDone;
   final bool? interrupted;
   /// VersionWarning, when non-empty, says the agent runs a marshal other
   /// than the daemon's, in the daemon's own words: "agent runs marshal
@@ -239,6 +244,7 @@ class AgentStatus {
       activity: json['activity'] as String?,
       contextPct: (json['contextPct'] as num?)?.toInt(),
       changedFiles: (json['changedFiles'] as num?)?.toInt(),
+      stepsDone: (json['stepsDone'] as num?)?.toInt(),
       interrupted: json['interrupted'] as bool?,
       versionWarning: json['versionWarning'] as String?,
       held: json['held'] as bool?,
@@ -294,6 +300,9 @@ class AgentStatus {
     }
     if (changedFiles != null) {
       json['changedFiles'] = changedFiles;
+    }
+    if (stepsDone != null) {
+      json['stepsDone'] = stepsDone;
     }
     if (interrupted != null) {
       json['interrupted'] = interrupted;
@@ -14475,6 +14484,7 @@ class FleetDelta {
     this.access,
     this.contextPct,
     this.changedFiles,
+    this.stepsDone,
     this.pendingKind,
     this.gate,
     this.agentID,
@@ -14494,6 +14504,7 @@ class FleetDelta {
   final AccessState? access;
   final int? contextPct;
   final int? changedFiles;
+  final int? stepsDone;
   final PendingKind? pendingKind;
   final GateRecord? gate;
   final String? agentID;
@@ -14531,6 +14542,7 @@ class FleetDelta {
       ),
       contextPct: (json['contextPct'] as num?)?.toInt(),
       changedFiles: (json['changedFiles'] as num?)?.toInt(),
+      stepsDone: (json['stepsDone'] as num?)?.toInt(),
       pendingKind: pendingKind,
       gate: _objectOrNull(
         json['gate'],
@@ -14563,6 +14575,9 @@ class FleetDelta {
     }
     if (changedFiles != null) {
       json['changedFiles'] = changedFiles;
+    }
+    if (stepsDone != null) {
+      json['stepsDone'] = stepsDone;
     }
     if (pendingKind != null) {
       json['pendingKind'] = rawEnums['pendingKind'] ?? pendingKind!.wire;

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/services.dart' show LogicalKeyboardKey, TextInputAction;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
@@ -595,12 +596,105 @@ void main() {
 
     expect(find.text('PROJECTS'), findsOneWidget);
     expect(find.byTooltip('Projects and threads'), findsNothing);
-    // The search field is drawn where it will live, disabled, and says why. It
-    // has no label above it: a magnifying glass names it.
+    // The search field is drawn here, above the tree. It has no label above
+    // it: a magnifying glass names it, and its tooltip says what it finds.
     expect(find.byType(Field), findsOneWidget);
     expect(find.byIcon(Glyphs.search), findsOneWidget);
     expect(find.text('Search'), findsNothing);
-    expect(find.byTooltip('Search arrives in a later phase'), findsOneWidget);
+    expect(
+      find.byTooltip('Find a thread, project or place (⌘K)'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('typing filters the sidebar to what matches', (tester) async {
+    final (shell, _) = shellAt(const Place.overview());
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    await tester.enterText(find.byType(Field), 'recover');
+    await tester.pump();
+
+    // The tree is replaced by what matches: the thread whose title holds the
+    // word, with no other thread of the project's under it.
+    expect(find.text('THREADS'), findsOneWidget);
+    expect(find.text('Reliable session recovery'), findsOneWidget);
+    expect(find.text('Web studio contract'), findsNothing);
+    expect(find.text('Bump the gate'), findsNothing);
+
+    // The fixed places and the tree's own labels are gone with it, and a
+    // group holding nothing — here the places and the projects — is not
+    // drawn at all.
+    expect(find.text('PROJECTS'), findsNothing);
+    expect(find.text('PLACES'), findsNothing);
+    expect(find.text('Inbox'), findsNothing);
+  });
+
+  testWidgets('Enter opens the first match', (tester) async {
+    final (shell, opened) = shellAt(const Place.overview());
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    await tester.enterText(find.byType(Field), 'studio');
+    await tester.pump();
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+
+    // A thread is the first thing found: Enter opens it.
+    expect(opened, [const Place(PlaceKind.thread, host: 'local', id: 'a-2')]);
+
+    // And the search is put back: the tree is drawn again in full.
+    expect(find.text('THREADS'), findsNothing);
+    expect(find.text('Bump the gate'), findsOneWidget);
+    expect(find.text('PROJECTS'), findsOneWidget);
+  });
+
+  testWidgets('Escape restores the tree', (tester) async {
+    final (shell, opened) = shellAt(const Place.overview());
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    await tester.enterText(find.byType(Field), 'recover');
+    await tester.pump();
+    expect(find.text('Web studio contract'), findsNothing);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+
+    // The query is gone, so the tree is back, and nothing was opened.
+    expect(opened, isEmpty);
+    expect(find.text('PROJECTS'), findsOneWidget);
+    expect(find.text('Reliable session recovery'), findsOneWidget);
+    expect(find.text('Web studio contract'), findsOneWidget);
+
+    // The field also let go of the keyboard: its text is empty and unfocused,
+    // so the tree's own shortcuts are the ones the keyboard reaches.
+    final field = tester.widget<Field>(find.byType(Field));
+    expect(field.controller?.text, isEmpty);
+    expect(
+      tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+      isFalse,
+    );
+  });
+
+  testWidgets('nothing matching says so', (tester) async {
+    final (shell, _) = shellAt(const Place.overview());
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    await tester.enterText(find.byType(Field), 'zzz');
+    await tester.pump();
+
+    // One line, in the words of the thing searched for, and no group labels
+    // standing over nothing.
+    expect(find.text('Nothing is called “zzz”'), findsOneWidget);
+    expect(find.text('THREADS'), findsNothing);
+    expect(find.text('PROJECTS'), findsNothing);
+    expect(find.text('Reliable session recovery'), findsNothing);
   });
 
   testWidgets('the narrow app bar has New', (tester) async {

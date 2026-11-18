@@ -1,3 +1,5 @@
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
+
 import '../../model/fleet_store.dart' show HostView;
 import '../../model/nav_model.dart';
 import '../../model/place.dart';
@@ -66,6 +68,16 @@ class _SidebarState extends State<Sidebar> {
   /// starts closed: it is there to be found, not to be read.
   final _openEarlier = <String>{};
 
+  /// What is typed in the search field. While it holds something, the sidebar
+  /// draws what the search finds in place of its tree.
+  final _query = TextEditingController();
+
+  @override
+  void dispose() {
+    _query.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final now = widget.now ?? DateTime.now();
@@ -73,6 +85,9 @@ class _SidebarState extends State<Sidebar> {
     final above = fixed.take(navAboveProjects).toList();
     final below = fixed.skip(navAboveProjects).toList();
     final tree = _tree();
+    final found = _query.text.trim().isEmpty
+        ? null
+        : searchNav(fixed, tree, _query.text);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -94,19 +109,31 @@ class _SidebarState extends State<Sidebar> {
                 now: now,
               ),
               const SizedBox(height: Space.s8),
-              // Search arrives in a later phase; the field is drawn where it
-              // will live and says so rather than pretending to search. The
-              // plus beside it starts work, the way a page header's New does
-              // (F9 B3).
+              // The search finds by title: what is typed narrows the sidebar to
+              // the places, threads and projects whose words it holds, and
+              // Enter opens the first of them. The plus beside it starts work,
+              // the way a page header's New does (F9 B3).
               Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  const Expanded(
+                  Expanded(
                     child: Tip(
-                      message: 'Search arrives in a later phase',
-                      child: Field.search(
-                        hint: 'Search or jump to',
-                        enabled: false,
+                      message: 'Find a thread, project or place (⌘K)',
+                      child: CallbackShortcuts(
+                        // Escape is the field's own: it empties the search and
+                        // lets the keyboard go, so the tree's shortcuts work
+                        // again.
+                        bindings: {
+                          const SingleActivator(LogicalKeyboardKey.escape):
+                              _escape,
+                        },
+                        child: Field.search(
+                          controller: _query,
+                          hint: 'Search threads and places',
+                          onChanged: (_) => setState(() {}),
+                          onSubmitted: (text) =>
+                              _openFirst(searchNav(fixed, tree, text)),
+                        ),
                       ),
                     ),
                   ),
@@ -119,43 +146,85 @@ class _SidebarState extends State<Sidebar> {
             ],
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: Space.s8),
-          child: Column(children: [for (final row in above) _row(row)]),
-        ),
-        const SizedBox(height: Space.s12),
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(Space.s8, 0, Space.s8, Space.s8),
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  Space.s4,
-                  Space.s6,
-                  Space.s4,
-                  Space.s4,
-                ),
-                child: Row(
-                  children: [
-                    const Expanded(child: Label('Projects')),
-                    if (widget.onConnectRepo != null)
-                      IconBtn(
-                        Glyphs.plus,
-                        tooltip: 'Connect a repository',
-                        onTap: widget.onConnectRepo,
-                      ),
-                  ],
-                ),
-              ),
-              for (final project in tree) ..._project(project),
-            ],
+        if (found != null)
+          Expanded(child: _results(found))
+        else ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: Space.s8),
+            child: Column(children: [for (final row in above) _row(row)]),
           ),
+          const SizedBox(height: Space.s12),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(
+                Space.s8,
+                0,
+                Space.s8,
+                Space.s8,
+              ),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    Space.s4,
+                    Space.s6,
+                    Space.s4,
+                    Space.s4,
+                  ),
+                  child: Row(
+                    children: [
+                      const Expanded(child: Label('Projects')),
+                      if (widget.onConnectRepo != null)
+                        IconBtn(
+                          Glyphs.plus,
+                          tooltip: 'Connect a repository',
+                          onTap: widget.onConnectRepo,
+                        ),
+                    ],
+                  ),
+                ),
+                for (final project in tree) ..._project(project),
+              ],
+            ),
+          ),
+          const Hairline(),
+          Padding(
+            padding: const EdgeInsets.all(Space.s8),
+            child: Column(children: [for (final row in below) _row(row)]),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// What the search found, drawn in place of the fixed rows, the tree and the
+  /// foot: places, then threads, then projects, and a group with nothing in it
+  /// is not drawn at all.
+  Widget _results(NavSearch found) {
+    if (found.isEmpty) {
+      final e = Ember.of(context);
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(Space.s12, 0, Space.s12, 0),
+        child: Text(
+          'Nothing is called “${_query.text.trim()}”',
+          style: e.small.tint(e.muted),
         ),
-        const Hairline(),
-        Padding(
-          padding: const EdgeInsets.all(Space.s8),
-          child: Column(children: [for (final row in below) _row(row)]),
-        ),
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(Space.s8, 0, Space.s8, Space.s8),
+      children: [
+        if (found.places.isNotEmpty) ...[
+          const _GroupLabel('Places'),
+          for (final place in found.places) _row(place),
+        ],
+        if (found.threads.isNotEmpty) ...[
+          const _GroupLabel('Threads'),
+          for (final thread in found.threads) _threadRow(thread),
+        ],
+        if (found.projects.isNotEmpty) ...[
+          const _GroupLabel('Projects'),
+          for (final project in found.projects) _projectRow(project),
+        ],
       ],
     );
   }
@@ -198,7 +267,7 @@ class _SidebarState extends State<Sidebar> {
         onToggle: () => setState(() {
           open ? _closed.add(project.id) : _closed.remove(project.id);
         }),
-        onTap: () => widget.onSelect(Place(PlaceKind.project, id: project.id)),
+        onTap: () => _open(Place(PlaceKind.project, id: project.id)),
       ),
       if (open) ...[
         for (final thread in project.current)
@@ -232,9 +301,8 @@ class _SidebarState extends State<Sidebar> {
     title: thread.title,
     kind: _kind(thread.kind),
     selected: _isOpen(thread),
-    onTap: () => widget.onSelect(
-      Place(PlaceKind.thread, host: thread.host, id: thread.id),
-    ),
+    onTap: () =>
+        _open(Place(PlaceKind.thread, host: thread.host, id: thread.id)),
   );
 
   /// Opens and closes a project's earlier threads. A group holding the open
@@ -254,8 +322,52 @@ class _SidebarState extends State<Sidebar> {
     icon: _icon(row.kind),
     count: row.count,
     selected: row.active,
-    onTap: () => widget.onSelect(Place(row.kind)),
+    onTap: () => _open(Place(row.kind)),
   );
+
+  /// A project the search found: its folder and its name, opening its page.
+  Widget _projectRow(NavProject project) => NavRow(
+    label: project.name,
+    icon: Glyphs.folder,
+    selected: project.active,
+    onTap: () => _open(Place(PlaceKind.project, id: project.id)),
+  );
+
+  /// Opens [place], and clears the search: what was found is now what is open.
+  void _open(Place place) {
+    widget.onSelect(place);
+    if (_query.text.isNotEmpty) _clear();
+  }
+
+  /// Enter: the first entry the search draws — a place, else a thread, else a
+  /// project — opens, and the field goes back to empty.
+  void _openFirst(NavSearch found) {
+    if (found.places.isNotEmpty) {
+      _open(Place(found.places.first.kind));
+    } else if (found.threads.isNotEmpty) {
+      final first = found.threads.first;
+      _open(Place(PlaceKind.thread, host: first.host, id: first.id));
+    } else if (found.projects.isNotEmpty) {
+      _open(Place(PlaceKind.project, id: found.projects.first.id));
+    } else {
+      // Nothing was found to open: the field still empties, so the tree the
+      // person was looking for is one keystroke away.
+      _clear();
+    }
+  }
+
+  /// Empties the field, so the sidebar draws its tree again.
+  void _clear() {
+    _query.clear();
+    setState(() {});
+  }
+
+  /// Escape empties the search and lets go of the keyboard, so the tree's own
+  /// shortcuts work again: the field is the only thing Escape is bound to.
+  void _escape() {
+    _clear();
+    FocusScope.of(context).unfocus();
+  }
 
   /// The mark each fixed place carries (§6: a kind is an icon and a tooltip,
   /// and a place is its icon here).
@@ -284,4 +396,18 @@ class _SidebarState extends State<Sidebar> {
     model.ThreadKind.planRun => ThreadKind.planRun,
     model.ThreadKind.session => ThreadKind.session,
   };
+}
+
+/// The label above one group of search results, spaced as the tree's own
+/// `Projects` label is.
+class _GroupLabel extends StatelessWidget {
+  const _GroupLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(Space.s4, Space.s6, Space.s4, Space.s4),
+    child: Label(text),
+  );
 }

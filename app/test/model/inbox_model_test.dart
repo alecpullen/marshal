@@ -883,6 +883,38 @@ void main() {
     expect(ask.provenance.contains('·  ·'), isFalse);
   });
 
+  test('a thread’s ask leads with the thread', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/marshal')],
+        agents: [
+          agent(
+            name: 'Reliable session recovery',
+            status: AgentState.agentAwaitingApproval,
+            pending: approval(),
+            project: '/home/u/marshal',
+            lastActive: now.subtract(const Duration(minutes: 3)),
+          ),
+        ],
+      ),
+    ], now: now);
+    final inbox = await inboxFor(fixture);
+
+    final ask = inbox.asks.single;
+
+    // The card names the thread that asked before the feed that reported it,
+    // so one line says where the work is.
+    expect(
+      ask.provenance,
+      'marshal › Reliable session recovery · Fleet · Everyone',
+    );
+    // The thread leads on its own: nothing is left blank where a part would
+    // have been.
+    expect(ask.provenance.split(' › '), hasLength(2));
+    expect(ask.provenance.split(' · ').where((part) => part.isEmpty), isEmpty);
+  });
+
   test('a draft blocks work and a completion does not', () async {
     final fixture = await ModelFixture.start([
       FixtureHost(

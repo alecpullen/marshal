@@ -223,7 +223,9 @@ void main() {
 
     // The Inbox's own callback leaves the place, and it asks as the sidebar
     // does: a place's content is no way around the one guard.
-    await tester.tap(find.text('Fleet · Everyone'));
+    await tester.tap(
+      find.text('marshal › Reliable session recovery · Fleet · Everyone'),
+    );
     await tester.pumpAndSettle();
     expect(find.text('Leave without saving?'), findsOneWidget);
     expect(opened, isEmpty);

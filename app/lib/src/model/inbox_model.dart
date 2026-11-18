@@ -5,6 +5,7 @@ import '../client/contract.g.dart';
 import '../client/transport.dart';
 import 'attention.dart';
 import 'fleet_store.dart';
+import 'nav_model.dart' show projectName;
 import 'thread_ref.dart';
 import 'factory_store.dart';
 import 'work_item_model.dart' show asksOf;
@@ -264,7 +265,22 @@ class Ask {
   };
 
   /// The card's source line.
-  String get provenance => provenanceOf(source, project, scope);
+  ///
+  /// An ask that belongs to a thread leads with the thread's project and its
+  /// title, so a person reads which thread asked before which feed reported
+  /// it: `marshal › Reliable session recovery · Fleet · Everyone`. The card
+  /// draws the line once and ellipsizes its end, so the thread stays readable
+  /// when the line is long.
+  ///
+  /// An ask with no thread — an intake, a held review, a failed fix — keeps
+  /// the source's own line, which names the project only when the source
+  /// names one.
+  String get provenance {
+    final thread = this.thread;
+    if (thread == null) return provenanceOf(source, project, scope);
+    return '${projectName(thread.project)} › ${thread.title} · '
+        '${source.label} · ${scope.label}';
+  }
 
   /// The pull request's failed fix, when this is one (F5 decision 6): which
   /// check, what became of it, what was tried, what it found and what the

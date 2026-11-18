@@ -447,4 +447,61 @@ void main() {
     expect(find.text('spawned a reviewer'), findsOneWidget);
     expect(find.text('4m'), findsOneWidget);
   });
+
+  testWidgets('the spend rail draws the day spark', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: const SpendSummary(
+        day: '2026-11-17',
+        spentUSD: 6,
+        capUSD: 20,
+        blocked: false,
+      ),
+      spendDays: const [
+        UsagePoint(key: '2026-11-15', costUSD: 1, tokens: 10),
+        UsagePoint(key: '2026-11-16', costUSD: 2.5, tokens: 20),
+        UsagePoint(key: '2026-11-17', costUSD: 6, tokens: 30),
+      ],
+    );
+    await tester.pumpWidget(show(overview));
+
+    // The spark is the days behind today, oldest first, and says what it is
+    // of for a reader who cannot see the shape.
+    final spark = tester.widget<Spark>(find.byType(Spark));
+    expect(spark.semanticLabel, 'Daily spend');
+    expect(spark.values, [1.0, 2.5, 6.0]);
+  });
+
+  testWidgets('the split names the top three roles', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: const SpendSummary(
+        day: '2026-11-17',
+        spentUSD: 100,
+        capUSD: 200,
+        blocked: false,
+      ),
+      spendByRole: const [
+        UsagePoint(key: 'implementer', costUSD: 61, tokens: 0),
+        UsagePoint(key: 'reviewer', costUSD: 24, tokens: 0),
+        UsagePoint(key: 'planner', costUSD: 15, tokens: 0),
+      ],
+    );
+    await tester.pumpWidget(show(overview));
+
+    expect(
+      find.text('Implementer 61% · reviewer 24% · planner 15%'),
+      findsOneWidget,
+    );
+  });
 }

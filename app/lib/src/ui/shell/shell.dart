@@ -11,7 +11,8 @@ import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
 import '../../model/inbox_model.dart' as inbox;
 import '../../model/nav_model.dart';
-import '../../model/overview_model.dart' show AuditEvent, buildOverview;
+import '../../model/overview_model.dart'
+    show AuditEvent, UsageReport, buildOverview;
 import '../../model/place.dart';
 import '../../model/planning_model.dart';
 import '../../model/project_model.dart';
@@ -389,6 +390,7 @@ class Studio extends StatefulWidget {
     this.factory,
     this.read,
     this.readAudit,
+    this.readUsage,
     this.threadStore,
     this.composerFor,
     this.newWorkFor,
@@ -427,6 +429,11 @@ class Studio extends StatefulWidget {
   /// Overview's activity feed. Null leaves the feed empty rather than
   /// promising one.
   final Future<List<AuditEvent>> Function()? readAudit;
+
+  /// Reads the usage report the Overview's spend rail draws, grouped by [by]:
+  /// the day series for its spark and the role series for its split. Null
+  /// leaves the rail with today's spend alone.
+  final Future<UsageReport> Function({String by})? readUsage;
 
   /// Builds the store a thread place reads its session into. Null draws a
   /// thread place as planned: a test or an embedded host that supplies none
@@ -510,6 +517,11 @@ class _StudioState extends State<Studio> {
   /// Overview's activity feed. Empty when no read has succeeded.
   List<AuditEvent> _audit = const [];
 
+  /// The spend's day series and role split, as the last read answered them;
+  /// null when no read has succeeded.
+  UsageReport? _spendByDay;
+  UsageReport? _spendByRole;
+
   /// The one guard every place leaving this screen consults: the shell asks
   /// it, and a place that edits watches the models it holds (F7 decision 3).
   final _unsaved = UnsavedGuard();
@@ -579,6 +591,18 @@ class _StudioState extends State<Studio> {
         _audit = const [];
       }
     }
+    final readUsage = widget.readUsage;
+    if (readUsage != null) {
+      try {
+        _spendByDay = await readUsage(by: 'day');
+        _spendByRole = await readUsage(by: 'role');
+      } catch (_) {
+        // The rail keeps today's spend; the trend and the split say nothing
+        // rather than something untrue.
+        _spendByDay = null;
+        _spendByRole = null;
+      }
+    }
     if (!mounted) return;
     setState(() => _read = true);
   }
@@ -638,6 +662,8 @@ class _StudioState extends State<Studio> {
           widget.store,
           widget.inbox,
           audit: _audit,
+          usageByDay: _spendByDay,
+          usageByRole: _spendByRole,
         ),
         now: widget.store.now,
         hosts: widget.store.hosts,

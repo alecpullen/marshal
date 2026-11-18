@@ -412,6 +412,7 @@ class Overview extends StatelessWidget {
   /// The side rail: what each host is carrying, and the day's spend.
   Widget _rail(BuildContext context) {
     final spend = overview.spend;
+    final split = _roleSplit();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -442,6 +443,22 @@ class Overview extends StatelessWidget {
                 ? 'The daily cap is holding work back'
                 : 'Today’s spend against the daily cap',
           ),
+          // The days behind today, as the mock's rail draws them: a shape,
+          // not a table (the spark says nothing about values).
+          if (overview.spendDays.isNotEmpty) ...[
+            const SizedBox(height: Space.s8),
+            Spark(
+              [for (final point in overview.spendDays) point.costUSD],
+              semanticLabel: 'Daily spend',
+            ),
+          ],
+          if (split != null) ...[
+            const SizedBox(height: Space.s8),
+            Text(
+              split,
+              style: Ember.of(context).small.tint(Ember.of(context).muted),
+            ),
+          ],
         ],
         const SizedBox(height: Space.s24),
         const Label('Activity'),
@@ -494,6 +511,25 @@ class Overview extends StatelessWidget {
   String _eventAge(String ts) {
     final at = DateTime.tryParse(ts);
     return at == null ? '' : relativeAge(at, now);
+  }
+
+  /// The window's spend by role, largest first, as shares of the whole: at
+  /// most three roles, and none too small to name a percentage of its own.
+  /// The first word is capitalised so the line reads as a sentence.
+  String? _roleSplit() {
+    final roles = overview.spendByRole;
+    final total = roles.fold<double>(0, (sum, role) => sum + role.costUSD);
+    if (total <= 0) return null;
+    final named = <String>[];
+    for (final role in roles) {
+      final share = role.costUSD / total * 100;
+      if (share < 1) continue;
+      named.add('${role.key} ${share.round()}%');
+      if (named.length == 3) break;
+    }
+    if (named.isEmpty) return null;
+    final line = named.join(' · ');
+    return '${line[0].toUpperCase()}${line.substring(1)}';
   }
 
   Widget _stateMessage(StateKind state) {

@@ -124,6 +124,10 @@ Future<void> main() async {
           // host that answers reports. A read that fails leaves the card
           // empty without failing the page.
           readAudit: () => hosts.hosts.first.client.audit(limit: 20),
+          // The spend rail's trend and split: the same usage ledger, read by
+          // day and by role.
+          readUsage: ({String by = 'project'}) =>
+              hosts.hosts.first.client.usage(by: by),
           // The place the page's own address names: an old hash route from the
           // Svelte Studio, or this build's own path (F8 decision 2). A
           // desktop has no page, so its window opens the Overview.

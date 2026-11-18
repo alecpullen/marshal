@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-import '../client/contract.g.dart' show AuditEvent;
+import '../client/contract.g.dart' show AuditEvent, UsagePoint, UsageReport;
 import '../client/host.dart';
 import 'fleet_store.dart';
 import 'inbox_model.dart';
@@ -11,7 +11,7 @@ import 'thread_ref.dart';
 // The activity feed is the bridge's audit log, drawn as it answered it. The
 // contract type is re-exported the way schedules_model.dart re-exports
 // Schedule, so a screen can name it without reaching into client/.
-export '../client/contract.g.dart' show AuditEvent;
+export '../client/contract.g.dart' show AuditEvent, UsagePoint, UsageReport;
 
 /// How many asks the Overview shows before it hands over to the Inbox.
 const overviewAsks = 3;
@@ -115,6 +115,8 @@ class OverviewModel {
     required this.capacity,
     required this.spend,
     this.activity = const [],
+    this.spendDays = const [],
+    this.spendByRole = const [],
   });
 
   /// The oldest asks, at most [overviewAsks] of them.
@@ -141,6 +143,12 @@ class OverviewModel {
 
   /// The newest audit events, most recent first, at most [overviewActivity].
   final List<AuditEvent> activity;
+
+  /// The day series, oldest first: what the spend spark draws.
+  final List<UsagePoint> spendDays;
+
+  /// The window's spend by role, largest first: what the split names.
+  final List<UsagePoint> spendByRole;
 }
 
 /// The Overview for what [store] holds and what [inbox] counts as waiting.
@@ -151,6 +159,8 @@ OverviewModel buildOverview(
   FleetStore store,
   InboxModel inbox, {
   List<AuditEvent> audit = const [],
+  UsageReport? usageByDay,
+  UsageReport? usageByRole,
 }) {
   final running = <ThreadRef>[];
   final projects = <String, List<ThreadRef>>{};
@@ -204,6 +214,17 @@ OverviewModel buildOverview(
     // the card. No event is filtered: a feed that hides kinds is a second,
     // wrong feed.
     activity: List.unmodifiable(audit.take(overviewActivity)),
+    // The bridge answers the day series oldest first, which is the direction
+    // a spark reads; the roles are ranked here, largest first, because the
+    // split names the biggest.
+    spendDays: List.unmodifiable(
+      usageByDay?.series ?? const <UsagePoint>[],
+    ),
+    spendByRole: List.unmodifiable(
+      [
+        for (final role in usageByRole?.series ?? const <UsagePoint>[]) role,
+      ]..sort((a, b) => b.costUSD.compareTo(a.costUSD)),
+    ),
   );
 }
 

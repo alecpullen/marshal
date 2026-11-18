@@ -367,6 +367,18 @@ relay = "nope"
 
 // TestARelayMustNotBeRelayed holds D20's "There are no chains": a relay naming
 // a server that is itself relayed is refused.
+func TestAServerNameIsNotDotsAlone(t *testing.T) {
+	for _, name := range []string{".", ".."} {
+		_, err := Load(writeFleet(t, "[servers.\""+name+"\"]\nurl = \"https://fleet.example.com\"\n"))
+		if err == nil {
+			t.Fatalf("a server named %q was loaded, want a refusal", name)
+		}
+		if want := "dots alone"; !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to hold %q", err, want)
+		}
+	}
+}
+
 func TestARelayMustNotBeRelayed(t *testing.T) {
 	_, err := Load(writeFleet(t, `
 [servers.hub]

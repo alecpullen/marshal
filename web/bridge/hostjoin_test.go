@@ -124,6 +124,14 @@ func joinerConnClosed(c *joinedConn) bool {
 
 // TestAJoinerKeepsTwoSpareConnections is D14: a joiner holds two idle joined
 // connections, and no more until the relay sends a request down one.
+func TestAJoinNameIsNotDotsAlone(t *testing.T) {
+	for _, name := range []string{".", ".."} {
+		if _, err := NewJoiner(JoinConfig{URL: "http://127.0.0.1:1", Name: name, Secret: "s"}, joinerAnswer()); err == nil {
+			t.Fatalf("a join named %q was accepted, want a refusal", name)
+		}
+	}
+}
+
 func TestAJoinerKeepsTwoSpareConnections(t *testing.T) {
 	_, relay, ts := relayServer(t)
 	j := joinerFor(t, ts, "alpha", "alpha-secret", joinerAnswer())

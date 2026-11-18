@@ -860,7 +860,16 @@ relay row whose hub exists but has no `url` is skipped like a missing hub;
 browser discovery lists the page's own host first and swallows a relay failure
 to just that host; the `'settings · hosts · relayed'` screen draws its two
 relayed hosts in one `PageBody`, since a `ScreenCase` has a single `ready`
-builder.
+builder, and its models carry a `clearToken`, so the Sign out they now draw is
+pumped by the overflow and tooltip runs rather than trusted.
+
+Two readings worth recording: a `fleet servers --json` row that carried both a
+`url` and a `relay` — only possible from a binary older than the validation —
+is read as direct, so the `url` wins and `via` stays null; and a relayed host's
+detail no longer offers Remove in a browser, because plan 2's review gated that
+row on the runner a browser never has. A name of dots alone (`.` or `..`) is
+refused on both sides, since it passes the character rule but is a path
+segment: `..` would climb out of `/api/hosts/<name>`.
 
 **Mutation checks.** The plan's four all ran and failed the test it named,
 then passed after restore: the relay-of-a-relay check dropped

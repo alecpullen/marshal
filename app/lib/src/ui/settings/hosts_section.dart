@@ -258,6 +258,11 @@ class _HostDetailState extends State<HostDetail> {
   /// Whether the relay this host is reached through is one the bridge refused.
   /// While it is, signing in here cannot help: the relay's own token is what is
   /// refused, so the detail says so and offers no Sign in of its own (D23).
+  ///
+  /// A `via` the section does not list is read as not refused: both real
+  /// compositions always list the relay's own row (the page's host first in a
+  /// browser, the hub's row in a native build), so this only answers a
+  /// fixture that withholds it.
   bool get _relayRefused {
     final via = widget.host.via;
     if (via == null) return false;

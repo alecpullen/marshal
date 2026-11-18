@@ -195,6 +195,12 @@ func checkName(name string) error {
 	if !serverNameRe.MatchString(name) {
 		return fmt.Errorf("fleet.toml: servers.%s: a server's name may hold only letters, digits, '.', '_' and '-'", name)
 	}
+	// Dots alone pass the character rule but are a path segment in every URL
+	// the name builds: ".." would climb out of /api/hosts/<name> and answer
+	// from the relay's own API. Neither is a server name.
+	if name == "." || name == ".." {
+		return fmt.Errorf("fleet.toml: servers.%s: a server's name may not be dots alone", name)
+	}
 	return nil
 }
 

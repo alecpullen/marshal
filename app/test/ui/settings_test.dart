@@ -343,7 +343,9 @@ void main() {
     );
   });
 
-  testWidgets('a relayed host offers sign out once signed in', (tester) async {
+  testWidgets('a relayed host offers sign out where a store can clear it', (
+    tester,
+  ) async {
     final stored = <String>[];
     final cleared = <String>[];
     final retried = <String>[];

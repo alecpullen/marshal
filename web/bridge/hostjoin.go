@@ -126,6 +126,11 @@ func NewJoiner(cfg JoinConfig, h http.Handler) (*Joiner, error) {
 	if !relayNameRe.MatchString(cfg.Name) {
 		return nil, fmt.Errorf("join name %q is not [A-Za-z0-9._-]", cfg.Name)
 	}
+	// A name of dots alone would be a traversal segment in the paths its
+	// host is forwarded under, so it is refused here as the profile side does.
+	if cfg.Name == "." || cfg.Name == ".." {
+		return nil, fmt.Errorf("join name %q is dots alone", cfg.Name)
+	}
 	if cfg.Secret == "" {
 		return nil, fmt.Errorf("join name %q has no secret", cfg.Name)
 	}

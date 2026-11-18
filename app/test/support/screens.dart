@@ -956,19 +956,21 @@ Widget _hostsRelayed() {
     width: PageWidth.list,
     children: [
       HostDetail(
-        model: HostsModel.fixture([
-          hub,
-          laptop,
-        ], profiles: const _FixtureFleetProfiles()),
+        model: HostsModel.fixture(
+          [hub, laptop],
+          profiles: const _FixtureFleetProfiles(),
+          clearToken: (_) {},
+        ),
         host: laptop,
         now: shellNow,
       ),
       const SizedBox(height: Space.s32),
       HostDetail(
-        model: HostsModel.fixture([
-          refusedHub,
-          behind,
-        ], profiles: const _FixtureFleetProfiles()),
+        model: HostsModel.fixture(
+          [refusedHub, behind],
+          profiles: const _FixtureFleetProfiles(),
+          clearToken: (_) {},
+        ),
         host: behind,
         now: shellNow,
       ),

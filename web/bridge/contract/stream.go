@@ -23,6 +23,10 @@ const (
 	DeltaPull DeltaKind = "pull"
 )
 
+// DeltaSessions announces that a project's sessions changed. Its payload is
+// SessionsDelta.
+const DeltaSessions DeltaKind = "sessions"
+
 // FleetDelta is one entry on the fleet stream.
 type FleetDelta struct {
 	Kind         DeltaKind       `json:"kind"`
@@ -66,6 +70,12 @@ type BudgetDelta struct {
 
 // ProjectRemovedDelta is a "project_removed" fleet delta.
 type ProjectRemovedDelta struct {
+	Kind    DeltaKind `json:"kind"`
+	Project string    `json:"project"`
+}
+
+// SessionsDelta is a "sessions" fleet delta: read the index for Project again.
+type SessionsDelta struct {
 	Kind    DeltaKind `json:"kind"`
 	Project string    `json:"project"`
 }

@@ -247,6 +247,10 @@ type Fleet struct {
 
 	// ctl is the lazily started control agent (see control.go).
 	ctl *controlRuntime
+	// planners is the planner service plannerRoutes built; nil when this
+	// server serves no planner routes (decision 4). It is set once, before
+	// anything serves, and read by ownedSessions.
+	planners *PlannerService
 	// usage is the monthly spend ledger; budgets enforce caps over it.
 	usage   *UsageLog
 	budgets *budgetState
@@ -287,6 +291,20 @@ type Fleet struct {
 	// by their cleaned root.
 	projMu   sync.Mutex
 	projects map[string]*projectChild
+
+	// listMu guards the listing cache (sessions.go): each root's first page
+	// of stored sessions, its error, and when it was read, plus the map from
+	// every session id a listing named to the root that named it (P7 D10).
+	// It is taken alone and never held across a child request, so it nests
+	// with neither c.mu nor projMu.
+	listMu       sync.Mutex
+	listings     map[string]listingEntry
+	sessionRoots map[string]string
+	// listNow is the listing cache's clock; nil is time.Now. listTimeout
+	// bounds each session/list; zero is listTimeoutDefault. Tests shorten
+	// both.
+	listNow     func() time.Time
+	listTimeout time.Duration
 
 	// newRuntime builds the Child for an agent. Tests inject a fake
 	// transport here; production returns a container-backed Child.
@@ -1166,12 +1184,16 @@ func (f *Fleet) RuntimeForSession(id string) (*agentRuntime, error) {
 	}
 	return rt, nil
 }
+
+// LogForSession is the log a session's events are read from: the one rule
+// resolves it, so a terminal's client session streams from its project child
+// and an agent's from its own runtime (P7 D2).
 func (f *Fleet) LogForSession(id string) (*EventLog, error) {
-	rt, err := f.RuntimeForSession(id)
+	rs, err := f.ResolveSession(id)
 	if err != nil {
 		return nil, err
 	}
-	return rt.log, nil
+	return rs.Log, nil
 }
 func (f *Fleet) ResolvePermission(id string, d Decision) error {
 	f.mu.Lock()
@@ -1182,6 +1204,19 @@ func (f *Fleet) ResolvePermission(id string, d Decision) error {
 	f.mu.Unlock()
 	for _, rt := range rts {
 		if err := rt.reg.ResolvePermission(id, d); !errors.Is(err, ErrGone) {
+			return err
+		}
+	}
+	// A terminal's session lives on its project's child, not on an agent's
+	// runtime, and the Studio answers it through the same route (P7 D2).
+	for _, pc := range f.projectChildSnapshot() {
+		pc.mu.Lock()
+		reg := pc.reg
+		pc.mu.Unlock()
+		if reg == nil {
+			continue
+		}
+		if err := reg.ResolvePermission(id, d); !errors.Is(err, ErrGone) {
 			return err
 		}
 	}
@@ -1197,6 +1232,19 @@ func (f *Fleet) ResolveQuestion(id string, a Answers) error {
 	f.mu.Unlock()
 	for _, rt := range rts {
 		if err := rt.reg.ResolveQuestion(id, a); !errors.Is(err, ErrGone) {
+			return err
+		}
+	}
+	// The same rule as ResolvePermission: a client session's ask is parked on
+	// its project child's registry.
+	for _, pc := range f.projectChildSnapshot() {
+		pc.mu.Lock()
+		reg := pc.reg
+		pc.mu.Unlock()
+		if reg == nil {
+			continue
+		}
+		if err := reg.ResolveQuestion(id, a); !errors.Is(err, ErrGone) {
 			return err
 		}
 	}

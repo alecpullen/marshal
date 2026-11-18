@@ -260,6 +260,9 @@ final _codecs = <String, _Codec>{
   // session.json
   'SessionSummary': (json) => SessionSummary.fromJson(_object(json)).toJson(),
   'SessionList': (json) => SessionList.fromJson(_object(json)).toJson(),
+  'SessionIndex': (json) => SessionIndex.fromJson(_object(json)).toJson(),
+  'ProjectSessions': (json) => ProjectSessions.fromJson(_object(json)).toJson(),
+  'SessionRow': (json) => SessionRow.fromJson(_object(json)).toJson(),
   'PromptRequest': (json) => PromptRequest.fromJson(_object(json)).toJson(),
   'SteerRequest': (json) => SteerRequest.fromJson(_object(json)).toJson(),
   'ModeRequest': (json) => ModeRequest.fromJson(_object(json)).toJson(),
@@ -321,6 +324,8 @@ final _codecs = <String, _Codec>{
   'FleetDelta': (json) => FleetDelta.fromJson(_object(json)).toJson(),
   'ProjectRemovedDelta': (json) =>
       ProjectRemovedDelta.fromJson(_object(json)).toJson(),
+  'DeltaSessions': (json) => DeltaKind.fromWire(json! as String).wire,
+  'SessionsDelta': (json) => SessionsDelta.fromJson(_object(json)).toJson(),
   // connections.json
   'Credential': (json) => Credential.fromJson(_object(json)).toJson(),
   'CredentialInput': (json) => CredentialInput.fromJson(_object(json)).toJson(),

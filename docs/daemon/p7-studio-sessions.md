@@ -464,7 +464,193 @@ Baseline at `bdd20ddc`, recorded 2026-11-18 while the plans were written:
 
 ### Plan 1
 
-Not started.
+Executed 2026-11-18 on `p7-1-bridge`, one commit per task (`p7-1-bridge: task N
+— …`, tasks 1–8) and then this record. The branch's merge base with `main` is
+`b6ade2cf`; every anchor the plan quotes resolved there, task by task. Against
+that base the plan changed 23 files under `web/`, `app/` and `test/contract/`
+(`web/bridge/sessions.go` and `sessions_test.go` are new) and the four
+documents.
+
+**What landed.**
+
+- **The wire types.** `contract.SessionIndex`, `ProjectSessions`,
+  `SessionRow` and `SessionsDelta`/`DeltaSessions`
+  (`web/bridge/contract/session.go`, `stream.go`), a fixture for each in
+  `test/contract/session.json` and `stream.json`, `contract.g.dart`
+  regenerated (`TestDartContractIsCurrent`), and the four types decoded in
+  `app/test/client/contract_fixture_test.dart`.
+- **Listing without a registry.** `controlChild` replaced
+  `controlRegistryForRoot` (`control.go`): `GET /api/sessions`' no-live-agent
+  path and `listRoot` ask the live child itself, so the control child's
+  `OnRequest`/`OnNotification`/`OnRestart` chain is never rebuilt.
+- **The change notice.** `Registry.OnChange` with its six kinds,
+  `clientSessions()`, `PendingRequest` and the `permParams`/`quesParams`
+  payload maps (`registry.go`); `EventLog.Subscribers` (`events.go`).
+- **Watched sessions, and the child's log.** The sweep skips a session with a
+  stream subscriber (`idle.go`). A project child's log keeps every session,
+  emits one `sessions` delta per change, drops its root's listing on a new
+  track and on a turn's end, and wires `OnUnsubscribe` to `Registry.touch`
+  (`projectchild.go`, `events.go`).
+- **One rule, one home.** `sessions.go`: `ResolveSession`, `OpenSession`,
+  `ErrSessionOwned`, `ownedSessions`, `knownRoots`, `rootOfSession`, the
+  listing cache (`listRoot`, `fetchListing`, `normaliseListing`,
+  `dropListing`, `dropListings`), `followClientSession`, `SessionIndex` and
+  `serveSessionIndex`. `Fleet` gained `planners`, `listMu`, `listings`,
+  `sessionRoots`, `listNow` and `listTimeout` (`fleet.go`); `PlannerService`
+  gained `sessionIDs()` (`planner_service.go`), and `plannerRoutes` sets
+  `f.planners`.
+- **Every route through it.** `registryForSession`, `LogForSession`,
+  `imageTarget`, `loadSession` and the event stream resolve through the one
+  rule; `ErrSessionOwned` answers 409; `GET /api/sessions/all` is registered;
+  `ResolvePermission` and `ResolveQuestion` reach the project children
+  (`http.go`, `fleet.go`, `images.go`). Both attach paths follow the session
+  (`attach.go`).
+- **Docs.** The `/api/sessions/all` row in
+  `docs/studio-flutter/route-parity.md`.
+
+**Tests.** 36 new test functions and one replaced
+(`TestAProjectChildLogsTheFleetsSessionsOnly` → `TestAProjectChildLogsEverySession`):
+23 in `sessions_test.go`, 5 in `registry_change_test.go`, 3 in
+`attach_test.go`, 3 in `fleetchild_test.go`, 2 in `idle_test.go`. §Testing's
+table is covered row for row; `TestDeleteReportsItsDrop` is the one test past
+it, for decision 2 below.
+
+**Decisions the executor had to make.**
+
+1. **Two children tracking one id resolve in root order.**
+   `projectChildSnapshot` is unordered, so the walk goes through a new
+   `projectChildrenInRootOrder()`: one id answers the same child on every
+   call.
+2. **`Registry.Delete` reports `changeDropped` too.** The plan named
+   `closeTracked` and `forget`, but `Delete` untracks a session as well;
+   without the report the index would keep a deleted session as open until
+   something else announced the project. `TestDeleteReportsItsDrop` pins it.
+3. **`changed` forced four methods off `defer r.mu.Unlock()`.**
+   `attachViewer`, `detachViewer`, `beginTurn` and `endTurn` release the lock
+   and report afterwards, because `OnChange` runs with the registry's locks
+   released; `resumeAll` collects its ids under the lock and reports them
+   after it.
+4. **The payload maps are reset wherever the session maps are** — in
+   `ResolvePermission`, `ResolveQuestion`, `drainSession` and `clearPending` —
+   so a payload never outlives its request.
+5. **`ownedSessions` reads shared state in one hold each.** It copies
+   `f.sessionAgent` under `f.mu` before iterating, reads `f.ctl` directly
+   rather than calling `control(ctx)` (ownership must never start the control
+   agent), and names an agent by its display name when the record still
+   exists and by its id when it does not.
+6. **An unreadable planner store claims nothing.** `PlannerService.sessionIDs`
+   answers nil when `records()` fails, so an id is never refused as a
+   planner's on the strength of a store the bridge could not read.
+7. **The listing cache never holds its lock across a child request.**
+   `listRoot` reads the clock through `listClock()`, so a test ages an entry
+   instead of sleeping, and `fetchListing`/`normaliseListing` are separate
+   functions for the same reason.
+8. **`listSessions` keeps one `child` value.** The control fallback assigns it
+   and the registry path falls back to `reg.child`, so both paths issue the
+   same single `session/list` and neither rebuilds a child's hooks.
+9. **The index narrows only to a known root.** An unknown `root` answers
+   `{"projects":[]}`, not an error: it is a host that holds no session.
+10. **Both parts of a group are newest first, ties broken by id**
+    (`sortNewestFirst`), so the same state reads the same on every call.
+11. **`OpenSession` guards a nil registry** after the child lookup with its own
+    error, and re-arms the linger when a resume fails, as the attach handshake
+    does.
+12. **`imageTarget` keeps its unused `root` argument,** with a comment saying
+    why: the route still refuses a missing or relative root, and resolution
+    must not open a child on an upload's behalf.
+13. **The sweep checks the log before asking the child.** `log != nil &&
+    log.Subscribers(id) > 0` is read first, so a child built without a log
+    needs no special case.
+14. **`serveSessionIndex` answers 501 for a server with no fleet,** as
+    `attachProject` does.
+15. **One app line went past the plan's non-goal.** `fleet_store.dart`'s
+    exhaustive `switch (delta.kind)` gained `case DeltaKind.deltaSessions:` in
+    its "handled elsewhere" group. Task 1's regenerated contract adds the enum
+    value, and without the case the whole `flutter test` suite fails to
+    compile. The case changes no behaviour — a `sessions` delta carries no
+    agent row — and plan 2 replaces it with the index read.
+
+**Mutation checks.** Five, one per task that named one. Each was re-run against
+the landed tree for this record, and each failed as the plan requires:
+
+| Mutation | Test | Result |
+|---|---|---|
+| `NewRegistry(child)` inside `controlChild` | `TestListingLeavesTheControlChildsHooksAlone` | FAIL: "listing sessions replaced the control child's OnRequest: got 0xf62160, want 0xf08a20" |
+| `OpenSession` resumes on a registry over the control child | `TestOpenSessionResumesOnTheProjectChild` | FAIL: the result's registry is not the project child's |
+| the `followClientSession` after `pc.reg.New` removed | `TestAnAttachFollowsItsSession`, `TestATerminalTurnMarksTheSessionBusy` | FAIL: "session/follow sent 0 times on the child's own connection, want 1"; "timed out waiting for the followed run to mark the session busy" |
+| `LogForSession` back on `RuntimeForSession` | `TestATerminalTurnStreams` | FAIL: "GET the session stream = 404, want 200" |
+| the owned filter dropped from the closed rows | `TestTheIndexLeavesTheBridgesOwnOut` | FAIL: the group lists the agent's, the control agent's and the planner's rows beside the client's |
+
+**Verification.**
+
+- `gofmt -l web cmd`: nothing.
+- `go vet ./web/...`: clean.
+- `TMPDIR=/tmp/p7-1 go test ./web/bridge/ -run TestWebIsStdlibOnly -count=1`:
+  `ok marshal/web/bridge 0.008s`.
+- `TMPDIR=/tmp/p7-1 scripts/test.sh` (`changed`, 28 packages): passes —
+  `web/bridge` in 61.8 s, `web/bridge/contract` in 0.01 s. An earlier run of the
+  same command failed two of `internal/acp`'s wall-clock budgets,
+  `TestStackPatchApplyBudget` (median 2.225356 ms, budget 2 ms) and
+  `TestStackRoundTripBudget` (first read 56.155462 ms, budget 50 ms), while the
+  suite ran packages in parallel. Both pass with `./internal/acp` alone on this
+  branch (`ok`, 24.3 s) and unchanged on `b6ade2cf`; they are the laptop budgets
+  CI carries separately, and the re-run was green.
+- `cd app && flutter test` (Flutter 3.50.0): `+3288: All tests passed!`.
+
+**Post-review fixes.** Two branch reviews of this plan found four defects and
+one unreproduced flake. Each is fixed on their own with a test that fails when
+the fix is reverted; nothing else on the branch changed.
+
+1. **A caller leaving is not a root's failure.** `listRoot` runs `session/list`
+   on its caller's context — the index's `r.Context()`, and `rootOfSession`'s —
+   so a browser or client that went away mid-request had `context.Canceled`
+   stored as that root's error and served for the thirty-second failure TTL:
+   every index read then reported the root dead and every `OpenSession` in it
+   404'd, although the child was healthy. `listRoot` now returns a fetch made
+   under a context that is already done without writing it to the cache, and
+   leaves an existing entry alone. The `listTimeout` deadline still caches,
+   because it is a fact about the root. `TestACancelledListingIsNotCached`
+   gates the child on a channel, cancels the read, releases it, and asserts
+   the next index read asks the child again and answers with its rows.
+2. **`ResolveSession` reads a child under its lock.** It read `pc.reg`/`pc.log`
+   off the struct holding only `projMu`, while `startProjectChildLocked`
+   writes both under `pc.mu`. It now copies them under `pc.mu`, as `OpenSession`,
+   `ResolvePermission`, `sweepIdleSessions` and `SessionIndex` do, and skips a
+   child whose registry is nil. `TestResolveSessionReadsAChildUnderItsLock`.
+3. **The id→root map no longer grows for the daemon's lifetime.**
+   `dropListing` kept the dropped root's ids in `sessionRoots`, which only
+   `dropListings` cleared. Both a drop and the successful re-list that replaces
+   a listing now forget that root's own ids (`forgetRootSessionsLocked`),
+   asserted in `TestListRootNormalises`.
+4. **An error group still lists its open sessions.** `contract/session.go`
+   promises that a group with an `error` carries its open rows, and no test
+   covered it: the failing root had no live child.
+   `TestTheIndexShowsADeadRootBesideItsSiblings` now runs a project child for
+   the failing root and asserts that child's client session is listed, open,
+   beside the error.
+5. **One test-fixture data race.** The full package under `-race` fired in
+   `TestTheRegistryReportsEachChange`: its `OnChange` callback appends to a
+   slice from the child's read goroutine while the test reads it. The reports
+   are now read and written under a mutex; no assertion changed.
+
+The review's one unreproduced finding — `TestOpenSessionResumesOnTheProjectChild`
+failing once with the right root and id but another child's registry — did not
+reproduce: five `-race` runs of the open/resolve/list/index tests are clean and
+the identity assertion is left as the tripwire. (An unsynchronised read of
+`pc.reg`/`pc.log` is the one production-side way resolution could pair an entry
+with the wrong registry, which is what fix 2 removes.)
+
+Two `-race` failures in the full package belong to other subsystems and
+pre-date this plan: `TestFactoryRevisionEndToEndFollowUp` reports a data race
+in the factory controller, and
+`TestMarshalStudioRealSessionNoCredentialOrPathLeak` compares
+`filepath.Base(b.root)` — a random three-digit temp directory — against a tool
+result, so it fails by coincidence when the name appears in a hash. Both
+reproduce on `b2289d7b` untouched and are left for their own owners.
+
+Left alone deliberately: the `DeltaKind.deltaSessions` arm in
+`app/lib/src/model/fleet_store.dart` (decision 15, reviewed as correct), and the
+idle sweep's check-then-act window (accepted by design; `idle.go` says so).
 
 ### Plan 2
 

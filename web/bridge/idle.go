@@ -51,12 +51,19 @@ func (f *Fleet) sweepIdleSessions(ctx context.Context, now time.Time) []string {
 	var closed []string
 	for _, pc := range f.projectChildSnapshot() {
 		pc.mu.Lock()
-		child, reg := pc.child, pc.reg
+		child, reg, log := pc.child, pc.reg, pc.log
 		pc.mu.Unlock()
 		if child == nil || reg == nil {
 			continue
 		}
 		for _, id := range reg.idleCandidates(cutoff) {
+			// A watched session is not idle: an SSE client holding a
+			// subscriber is a viewer the registry does not count, so it is
+			// checked here, before the status request (P4 D7a). A child built
+			// without a log has no subscribers.
+			if log != nil && log.Subscribers(id) > 0 {
+				continue
+			}
 			if !f.sessionIsIdle(ctx, child, pc.root, id, cutoff) {
 				continue
 			}

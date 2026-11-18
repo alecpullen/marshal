@@ -428,6 +428,13 @@ func workingDraftFactoryRequest(draft WorkingDraft, requestID string) (FactoryCr
 // and a check run's name is verbatim while its app id goes through
 // int.tryParse, which reads no surrounding space, so `check_run:b: 1` is not a
 // number. Each of those is mirrored below rather than tidied up.
+//
+// Two corners are read one way rather than the other: the app id is a decimal
+// integer, though int.tryParse also reads a `0x` prefix, and a line is trimmed
+// by Go's whitespace set, though Dart's trim also drops a leading byte-order
+// mark. Neither reaches this function from a handoff, whose text is the
+// canonical rendering of the checks it holds — decimal ids, no edge space — so
+// they are stated here rather than coded for.
 func workingDraftExpectedChecks(mode, text string) ([]FactoryCheckKey, error) {
 	switch strings.TrimSpace(mode) {
 	case "", workingDraftChecksInherit:

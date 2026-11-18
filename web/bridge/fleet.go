@@ -133,6 +133,13 @@ type Fleet struct {
 	gatesMu sync.Mutex
 	gates   map[string]gateRecord
 
+	// relayMu guards relays, the live attach relays by the registry whose
+	// viewer count they hold, so a child's restart announcement reaches
+	// exactly that child's viewers (decision 3). An entry goes when its last
+	// relay does.
+	relayMu sync.Mutex
+	relays  map[*Registry]map[*relay]struct{}
+
 	// buildVersion is the bridge's own version, the same value daemonVersion
 	// reports: the release stamp, else the source build's dev+<commit>
 	// (bridge.SourceBuild's rule).
@@ -378,6 +385,12 @@ type Fleet struct {
 	// lives on (P4 D7a); zero never ends one. SetIdleSessionTimeout sets it
 	// before serving.
 	idleTimeout time.Duration
+
+	// checkBuild runs a new binary's --version; tests replace it. Nil runs
+	// the binary.
+	checkBuild func(ctx context.Context, bin string) (version string, err error)
+	// sweepMu keeps one restart sweep at a time.
+	sweepMu sync.Mutex
 
 	// pruneMu serializes prune callers against each other: the HTTP
 	// prune endpoint and the spawn-path enforceDisk prune both call

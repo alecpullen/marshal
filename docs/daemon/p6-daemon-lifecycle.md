@@ -901,6 +901,164 @@ own, because `TestTheStatusCarriesAPendingRestart` pins the raw `"restart"`
 key on the wire; and `TestWroteIgnoresOtherPaths`, which is weaker than it
 looks, because the exact-match `assertStale` pins that no reason appears.
 
+### Plan 4 — a stale project child restarts when it is idle
+
+Executed on Linux on branch `p6-4-restart-when-idle`, one commit per task. The
+branch is stacked on PR #153's docs branch, so its base is `6d13e269`
+(`docs/daemon: P6 plans 4 and 5`), whose code is identical to `bdd20ddc`. The
+`TMPDIR` the plan names is a macOS path; every run used
+`TMPDIR=/tmp/p6-4-suite`. CI's suite command was run at `6d13e269` in a clean
+detached worktree on Linux: no Go test failed and nothing panicked, so no task
+re-proved a baseline failure.
+
+The commits, in the order they landed:
+
+- `25ad8a03` task 1 — the wire
+- `72aa7a70` task 2 — `Child.Recycle`
+- `55565c7e` task 5 — `marshal daemon status` shows pending restarts
+- `19d60421` task 3 — the relays' registry, the notification, and quiet
+- `13939cc1` task 4 — the sweep and the restart
+- `6814d356` task 6 — end to end (L1 to L5)
+
+**What was built.** Six commits turn B4 into the bridge's own loop.
+
+- **The wire.** `web/bridge/contract/daemon.go` gains `DaemonRestart` with
+  `Reasons`, `WaitingFor` and `Refused`, and `DaemonChild` gains
+  `Restart *DaemonRestart`, nil while the child is current. `DaemonRestart` is
+  aliased beside `DaemonChild` in `web/bridge/daemoninfo.go`, as the plan
+  says; the Dart mirror and the two contract recordings were regenerated.
+- **`Child.Recycle`** ends the current generation as `Stop` does without
+  ending supervision: `supervise` respawns from the binary on disk, the
+  handshake and a pin's hold are repeated, `OnRestart` runs, and it returns
+  once that generation's output has closed.
+- **The relays count themselves.** `Fleet` tracks each live relay by the
+  registry it counts on, `Registry.quietSince` answers whether no session has
+  a viewer or none was active after the cutoff, and `announceRestart` writes
+  `marshal/restarting` to every relay of a child before that child restarts.
+- **The sweep** (`web/bridge/restart.go`, new) runs every 30s on the local
+  profile, whether or not idle sessions are being ended. For each ready
+  project child it asks `project/state` bounded by 5s, publishes the pending
+  restart and what holds it, checks the binary on disk with `--version` (10s)
+  *before* the note, sends the refusal's or the restart's note, asks `busy` a
+  second time, and only then recycles. A child with no viewer needs only an
+  empty `busy`; a viewed one also waits for two quiet minutes. A child that
+  does not answer, and a fleet agent's own child, are skipped.
+- **`marshal daemon status`** prints each child's pending restart and what it
+  waits for, from the last sweep.
+- **The end-to-end tests** in `test/daemon/restart_test.go` cover L1 to L5
+  over a real daemon, a real project child and a real session screen: the
+  restart when idle, the held restart while a turn runs, the watch that holds
+  it, the draft that comes back, and the status's data that the command
+  renders.
+
+**Deviations and gaps filled.**
+
+- **The Status line was not edited**, because the base commit already says
+  plans 4 and 5 are written with their anchors checked at `bdd20ddc`. The
+  plan's step 1 assumed a base without it.
+- **`internal/daemon/client.go` gained `type DaemonRestart =
+  contract.DaemonRestart`**, beside the other wire aliases, so `cmd/marshal`'s
+  test names the type through the daemon seam instead of importing
+  `web/bridge/contract` directly. No task's file list names it; the change is
+  additive.
+- **`web/bridge/fakeagent_test.go` gained `opens`/`openFailFrom` on
+  `fakeProjectChild`**, so `TestARestartThatDoesNotComeBackDropsTheChild` can
+  make the second `Open` fail.
+- **A busy child's `WaitingFor` is not empty.** The plan's step 5 says a
+  non-busy waiting-for is "empty", but its own `TestABusyChildWaits` (and L2)
+  require the busy lines there, so the busy reasons are joined into it: the
+  status reads "waiting for <the busy lines>".
+- **`TestAUserConfigWriteMarksOnlyTheOtherProject` needed a
+  root-parameterized attach** (`tryAttachAt`), because the harness's `attach`
+  is fixed to the harness root.
+- **`TestAnActiveWatchHoldsTheRestart` proves the restart by the child's
+  process identity, not by a reattach.** The restarted child answered
+  `unknown session` to `session/attach`: the session's `session/resume` failed
+  and the sweep does not see that error, because the registry's `resumeAll`
+  runs on its own goroutine by design. It is recorded as an open observation
+  for review, not as a fix.
+- **`docs/ARCHITECTURE.md` was not changed:** it does not list the sweeps.
+
+**Mutation checks.** Two, both performed and restored.
+
+- **Task 4, the quiet rule:** `case !reg.quietSince(now.Add(-restartQuiet)):`
+  was changed to append ` && false`, so every child is treated as quiet.
+  `TestAViewedChildWaitsForAQuietMoment` failed: `restart_test.go:187:
+  generations = 2, want the viewed child kept`.
+- **Task 6, the second `project/state` ask plus the busy check:** bypassing
+  only the second ask and its busy block left `TestARunningTurnHoldsTheRestart`
+  *passing*, because the first busy check at the top of the sweep already
+  holds the restart. The mutation was extended to the first busy check
+  (`case false && len(state.Busy) > 0:`), which failed: `restart_test.go:318:
+  the held restart reaching the session's status did not happen within 30s:
+  the status carries no restart`. So the plan's literal mutation alone was not
+  sufficient for that test: the sweep refuses a busy child twice, and only
+  removing both shows that the test has a grip on it. The literal half is not
+  unguarded though — `TestABuildThatGoesBusyWaits` fails under it, because a
+  single `project/state` answer that is idle lets the sweep recycle.
+
+**The manual run was not performed.** It needs a person at a terminal with the
+daemon installed from this build: a draft typed into a session screen,
+`marshal` rebuilt at the installed path, up to two and a half minutes without
+typing, and then a long turn and a second rebuild to watch
+`marshal daemon status` say `restart pending … waiting for a run in …` until
+the turn ends. No one was at such a terminal for this record, and nothing here
+claims it passed. The end-to-end tests above are the half that ran.
+
+**Verification.** Run from this worktree on Linux, in the plan's order, with
+`TMPDIR=/tmp/p6-4-suite`:
+
+- `gofmt -l internal cmd test web` printed nothing.
+- `CGO_ENABLED=1 go vet ./...` was clean.
+- CI's suite command (`-p=1 ./... -count=1 -timeout 20m` with the twelve
+  latency budgets skipped by name) passed every package: `test/daemon` in
+  18.935s, `web/bridge` in 60.661s, `internal/snapshot` in 24.347s, and no
+  package anything but `ok`.
+- `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` built.
+- The scripted usability suite passed against that binary at the repository
+  root: `ok marshal/test/usability 44.421s`.
+- `cd app && flutter test test/boundary_test.dart` passed, nine rules, with
+  Flutter installed (`command -v flutter` found 3.50.0).
+
+**The review round.** Three reviewer subagents read the branch before it left
+draft (the wire and CLI surface, the sweep's concurrency, and the plan's own
+test list). One major and two minor findings against the sweep were acted on
+in `46e3fba5`, which is after the six task commits:
+
+- **The marker outlived its child.** `recycleProjectChild` installed the
+  recycling marker *before* checking that the entry still had a child, so a
+  stop landing between the sweep's checks and its note (a session-less
+  child's linger firing, or a failed start's cleanup) left a channel nothing
+  would ever close: the sweep skips that entry forever and every later attach
+  waits on it until its own context ends. The marker is now installed only
+  under the lock that reads the child, and the gone-child path returns with
+  nothing opened.
+- **The marker was not bound to a generation.** A crash during the sweep's
+  checks could have its handshake in flight when the marker went up; that
+  handshake is on the generation `Recycle` then ends, so its failure closed
+  the marker and the sweep read a restart that had not happened, bypassing
+  decision 7's give-up. The sweep records the generation it meant to end and
+  counts the restart only when the counter is past it.
+- **A refusal's sentence was dropped.** `Refused` was copied from
+  `pc.restart`, so a sweep that saw the child current in between cleared it
+  and the next stale sweep published a pending restart that neither said why
+  it was refused nor would run. The text now lives beside the refused file's
+  identity (`refusedText`).
+- **The marker wait ignored `ctx`.** It now selects on it, so a shutdown is
+  not trailed by up to `recycleTimeout` per restarted child.
+- Two record nits: the e2e tests cover the status's *data* rather than the
+  command, and the literal busy-check mutation is caught by
+  `TestABuildThatGoesBusyWaits`.
+
+`TestAChildThatGoesAwayBeforeTheRestartLeavesNoMarker` pins the first. What
+the reviewers found sound is also part of the record: the wire change is
+additive with `StatusSchema` still 1, the Dart mirror is generated and
+currently checked, `Child.Recycle` cannot kill a replacement generation,
+`announceRestart` serialises per relay and skips closed clients, and no path
+holds `pc.mu` across a wait. One NIT was left: `daemonRestartLines` prints
+nothing for a marker with reasons but no waiting-for, a shape no producer can
+make.
+
 ### Plan 6 — a wake with no screen, and the two P4 warnings
 
 Executed on Linux at `5a7aa4ab` on branch `p6-6-wake-warnings`, one commit per

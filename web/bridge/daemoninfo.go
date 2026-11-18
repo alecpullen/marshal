@@ -16,6 +16,9 @@ type DaemonRefresh = contract.DaemonRefresh
 // DaemonChild is contract.DaemonChild; see that declaration.
 type DaemonChild = contract.DaemonChild
 
+// DaemonRestart is contract.DaemonRestart; see that declaration.
+type DaemonRestart = contract.DaemonRestart
+
 // SetDaemonInfo makes GET /api/daemon answer info; without it the route
 // answers 404 (decision 8).
 func (s *Server) SetDaemonInfo(info DaemonInfo) {
@@ -91,7 +94,7 @@ func (f *Fleet) projectChildren() []DaemonChild {
 	out := make([]DaemonChild, 0, len(children))
 	for _, pc := range children {
 		pc.mu.Lock()
-		version, envWarning, reg := pc.version, pc.envWarning, pc.reg
+		version, envWarning, reg, restart := pc.version, pc.envWarning, pc.reg, pc.restart
 		pc.mu.Unlock()
 		child := DaemonChild{
 			Root:       pc.root,
@@ -99,6 +102,7 @@ func (f *Fleet) projectChildren() []DaemonChild {
 			EnvWarning: envWarning,
 			Pinned:     f.pinned(pc.root),
 			Sessions:   []DaemonSession{},
+			Restart:    restart,
 		}
 		if reg != nil {
 			child.Sessions = reg.summaries()

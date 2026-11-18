@@ -1887,6 +1887,7 @@ class DaemonChild {
     this.envWarning,
     this.pinned,
     required this.sessions,
+    this.restart,
   });
 
   final String root;
@@ -1894,6 +1895,8 @@ class DaemonChild {
   final String? envWarning;
   final bool? pinned;
   final List<DaemonSession> sessions;
+  /// nil while the child is current
+  final DaemonRestart? restart;
 
   factory DaemonChild.fromJson(Map<String, dynamic> json) {
     return DaemonChild(
@@ -1904,6 +1907,10 @@ class DaemonChild {
       sessions: _list(
         json['sessions'],
         (value) => _object(value, DaemonSession.fromJson),
+      ),
+      restart: _objectOrNull(
+        json['restart'],
+        DaemonRestart.fromJson,
       ),
     );
   }
@@ -1921,6 +1928,48 @@ class DaemonChild {
     json['sessions'] = [
       for (final value in sessions) value.toJson(),
     ];
+    if (restart != null) {
+      json['restart'] = restart!.toJson();
+    }
+    return json;
+  }
+}
+
+/// DaemonRestart is a restart the daemon is holding, as GET /api/daemon
+/// reports it (P6 B4).
+class DaemonRestart {
+  const DaemonRestart({
+    required this.reasons,
+    this.waitingFor,
+    this.refused,
+  });
+
+  final List<String> reasons;
+  /// "" when nothing holds it
+  final String? waitingFor;
+  /// the new build's failure; "" when none
+  final String? refused;
+
+  factory DaemonRestart.fromJson(Map<String, dynamic> json) {
+    return DaemonRestart(
+      reasons: _list(
+        json['reasons'],
+        (value) => value as String,
+      ),
+      waitingFor: json['waitingFor'] as String?,
+      refused: json['refused'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['reasons'] = reasons;
+    if (waitingFor != null) {
+      json['waitingFor'] = waitingFor;
+    }
+    if (refused != null) {
+      json['refused'] = refused;
+    }
     return json;
   }
 }

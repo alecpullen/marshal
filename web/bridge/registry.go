@@ -458,6 +458,31 @@ func (r *Registry) touch(id string) {
 	}
 }
 
+// quietSince reports whether no session has a viewer, or none was active
+// after cutoff (decision 3). It is the per-child quiet rule a restart waits
+// for: a session nobody watches, however recently it ran, is not a reason to
+// keep a child busy.
+func (r *Registry) quietSince(cutoff time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	watched := false
+	for _, info := range r.sessions {
+		if info.viewers > 0 {
+			watched = true
+			break
+		}
+	}
+	if !watched {
+		return true
+	}
+	for _, info := range r.sessions {
+		if info.lastActive.After(cutoff) {
+			return false
+		}
+	}
+	return true
+}
+
 // summaries lists the tracked sessions, most recently active first. Ties
 // break by ID so the order is stable across calls. A fleet agent's session
 // is left out: it is not a client's session a daemon listing offers (P4 D10).

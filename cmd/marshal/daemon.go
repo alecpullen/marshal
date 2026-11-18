@@ -521,6 +521,9 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 	fmt.Fprintln(stdout, daemonRefreshLine(info))
 	for _, child := range info.Children {
 		fmt.Fprintln(stdout, daemonChildLine(child, marshalVersion))
+		for _, line := range daemonRestartLines(child) {
+			fmt.Fprintln(stdout, line)
+		}
 		if warning := strings.TrimSpace(child.EnvWarning); warning != "" {
 			fmt.Fprintf(stdout, "  environment: %s\n", warning)
 		}
@@ -675,6 +678,34 @@ func daemonChildLine(child daemon.ChildInfo, marshalVersion string) string {
 		line += ", pinned"
 	}
 	return line
+}
+
+// daemonRestartLines are the restart lines under a child's: what the daemon
+// is holding a restart for and, while something holds it, what it waits for.
+// A restart that was tried and refused says so on a line of its own — the
+// reasons are the same, but the build the daemon would swap in failed, which
+// is the state a reader most needs told.
+//
+// The reasons are the pending line's subject, so a restart held with none
+// (only a waiter, or only a refusal) prints no bare `restart pending: `: the
+// line says what it has and nothing more.
+func daemonRestartLines(child daemon.ChildInfo) []string {
+	restart := child.Restart
+	if restart == nil {
+		return nil
+	}
+	var lines []string
+	if len(restart.Reasons) != 0 {
+		line := "  restart pending: " + strings.Join(restart.Reasons, ", ")
+		if waiting := restart.WaitingFor; waiting != "" {
+			line += ", waiting for " + waiting
+		}
+		lines = append(lines, line)
+	}
+	if refused := restart.Refused; refused != "" {
+		lines = append(lines, "  restart refused: "+refused)
+	}
+	return lines
 }
 
 // daemonPinnedLines are the `pinned <root>: not running` lines, one per

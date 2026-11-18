@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -36,6 +38,8 @@ const helperEnv = "GO_WANT_HELPER_PROCESS"
 //   - "die": replies to the first request, then exits 1.
 //   - "notify": emits the "helper/ready" notification immediately, then
 //     behaves like "normal".
+//   - "stubborn": behaves like "normal" but ignores SIGTERM and outlives
+//     the close of its stdin, so only SIGKILL ends it.
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv(helperEnv) != "1" {
 		return
@@ -53,6 +57,11 @@ func helperCommand(mode string) (string, []string, []string) {
 
 func runHelperChild(mode string) {
 	fmt.Fprintln(os.Stderr, "helper ready")
+	if mode == "stubborn" {
+		// Survive the SIGTERM a recycle sends, so ending this generation
+		// takes the escalation to SIGKILL.
+		signal.Ignore(syscall.SIGTERM)
+	}
 	if mode == "notify" {
 		fmt.Println(`{"jsonrpc":"2.0","method":"helper/ready","params":{"pid":1}}`)
 	}
@@ -120,6 +129,13 @@ func runHelperChild(mode string) {
 		_ = enc.Encode(resp)
 		if mode == "die" {
 			os.Exit(1)
+		}
+	}
+	// "stubborn" outlives the close of its stdin and keeps its stdout open,
+	// so only SIGKILL ends this generation.
+	if mode == "stubborn" {
+		for {
+			time.Sleep(time.Hour)
 		}
 	}
 }
@@ -718,6 +734,135 @@ func TestChildStopDuringRestartReturns(t *testing.T) {
 	case <-stopped:
 	case <-time.After(20 * time.Second):
 		t.Fatal("Stop did not return: it is waiting on a generation it never signalled")
+	}
+}
+
+// restartCounter counts OnRestart calls for the recycle tests.
+type restartCounter struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (r *restartCounter) count() { r.mu.Lock(); r.n++; r.mu.Unlock() }
+
+func (r *restartCounter) get() int { r.mu.Lock(); defer r.mu.Unlock(); return r.n }
+
+// TestRecycleRespawnsAndKeepsSupervising: a recycle ends only the current
+// generation. Supervision respawns it, OnRestart runs, the replacement serves
+// requests, and a later Stop still ends the Child.
+func TestRecycleRespawnsAndKeepsSupervising(t *testing.T) {
+	var restarts restartCounter
+	c := newTestChild(t, "normal")
+	c.OnRestart = restarts.count
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer c.Stop()
+
+	// Generation 1 is up and answering before it is recycled.
+	ctx, cancel := testContext(t)
+	defer cancel()
+	if _, err := c.Request(ctx, "session/new", nil); err != nil {
+		t.Fatalf("request on generation 1: %v", err)
+	}
+
+	if err := c.Recycle(); err != nil {
+		t.Fatalf("Recycle: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, "a replacement generation", func() bool {
+		return c.Generation() >= 2
+	})
+	// OnRestart runs after the replacement has spawned and the generation is
+	// already bumped, so wait for it rather than asserting straight away.
+	waitFor(t, 5*time.Second, "OnRestart to run once", func() bool {
+		return restarts.get() == 1
+	})
+
+	waitFor(t, 5*time.Second, "the replacement to answer", func() bool {
+		rctx, rcancel := testContext(t)
+		defer rcancel()
+		_, err := c.Request(rctx, "ping", nil)
+		return err == nil
+	})
+
+	// Supervision is intact: Stop still ends the Child.
+	stopped := make(chan struct{})
+	go func() {
+		c.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop did not end the Child after a recycle")
+	}
+}
+
+// TestRecycleEscalatesAStubbornGeneration: a generation that ignores SIGTERM
+// and the stdin close is killed once stopGrace passes, and the kill reaches
+// only that generation — the replacement still answers.
+func TestRecycleEscalatesAStubbornGeneration(t *testing.T) {
+	prev := stopGrace
+	stopGrace = 200 * time.Millisecond
+	t.Cleanup(func() { stopGrace = prev })
+
+	var restarts restartCounter
+	c := newTestChild(t, "stubborn")
+	c.OnRestart = restarts.count
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer c.Stop()
+
+	// Generation 1 prints its startup line before it starts reading stdin.
+	waitFor(t, 5*time.Second, "generation 1 to start", func() bool {
+		return strings.Contains(c.StderrLog(), "helper ready")
+	})
+
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- c.Recycle() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Recycle: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Recycle did not return: the stubborn generation was never killed")
+	}
+	if elapsed := time.Since(start); elapsed < stopGrace {
+		t.Fatalf("Recycle returned after %v, before the %v grace period: the generation did not survive the signal", elapsed, stopGrace)
+	}
+
+	waitFor(t, 5*time.Second, "a replacement generation", func() bool {
+		return c.Generation() >= 2
+	})
+	waitFor(t, 5*time.Second, "OnRestart to run once", func() bool {
+		return restarts.get() == 1
+	})
+
+	// The replacement was not caught by the escalation, so it still serves.
+	ctx, cancel := testContext(t)
+	defer cancel()
+	if _, err := c.Request(ctx, "ping", nil); err != nil {
+		t.Fatalf("request on the replacement generation: %v", err)
+	}
+}
+
+// TestRecycleRefusesAStoppedChild: there is no generation to recycle before
+// Start or after Stop, and both are errors.
+func TestRecycleRefusesAStoppedChild(t *testing.T) {
+	c := newTestChild(t, "normal")
+	if err := c.Recycle(); err == nil {
+		t.Fatal("Recycle before Start: expected an error, got nil")
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	c.Stop()
+	if err := c.Recycle(); err == nil {
+		t.Fatal("Recycle after Stop: expected an error, got nil")
 	}
 }
 

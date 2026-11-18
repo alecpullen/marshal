@@ -615,6 +615,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		// one, and the sweep returns at once.
 		fleet.SetIdleSessionTimeout(cfg.idleSessionTimeout)
 		go fleet.RunIdleSweep(ctx)
+		// A stale child is restarted on a new marshal build once it is idle
+		// (P6 B4), on its own goroutine: unlike the idle sweep, this one runs
+		// whatever the idle timeout is.
+		go fleet.RunRestartSweep(ctx)
 	}
 
 	secrets, err := buildSecretProvider(cfg)

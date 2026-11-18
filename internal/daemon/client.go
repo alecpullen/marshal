@@ -33,6 +33,9 @@ const (
 // ChildInfo is the contract's DaemonChild; see that declaration.
 type ChildInfo = contract.DaemonChild
 
+// DaemonRestart is the contract's DaemonRestart; see that declaration.
+type DaemonRestart = contract.DaemonRestart
+
 // SessionInfo is the contract's DaemonSession; see that declaration.
 type SessionInfo = contract.DaemonSession
 

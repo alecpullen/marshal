@@ -23,11 +23,15 @@ class HostSpec {
     required this.name,
     required this.kind,
     required this.client,
+    this.via,
   });
 
   final String name;
   final HostKind kind;
   final BridgeClient client;
+
+  /// The relay's host name this host is reached through, or null.
+  final String? via;
 }
 
 /// Finds the hosts this build can reach.
@@ -47,11 +51,15 @@ class Host extends ChangeNotifier {
     required this.kind,
     required this.client,
     required this.fleet,
+    this.via,
   });
 
   final String name;
   final HostKind kind;
   final BridgeClient client;
+
+  /// The relay's host name this host is reached through, or null.
+  final String? via;
 
   /// The fleet stream this host follows.
   final EventStream fleet;
@@ -139,6 +147,7 @@ class HostRegistry extends ChangeNotifier {
         kind: spec.kind,
         client: spec.client,
         fleet: _fleetFor(spec.client),
+        via: spec.via,
       );
       host.start();
       _hosts.add(host);

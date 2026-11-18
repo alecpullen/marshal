@@ -75,10 +75,14 @@ class HostsSection extends StatelessWidget {
     model.draftChanged(null);
   }
 
-  /// What the host is, in one line: a local daemon, or a server profile.
+  /// What the host is, in one line: a local daemon, or a server profile — and
+  /// a relayed profile says where it is reached (spec D23).
   static String _kind(HostView host) => switch (host.kind.name) {
     'local' => 'A local daemon, on this machine',
-    _ => 'A server profile, over TLS',
+    _ =>
+      host.via == null
+          ? 'A server profile, over TLS'
+          : 'A server profile, through ${host.via}',
   };
 }
 
@@ -242,6 +246,18 @@ class _HostDetailState extends State<HostDetail> {
     super.dispose();
   }
 
+  /// Whether the relay this host is reached through is one the bridge refused.
+  /// While it is, signing in here cannot help: the relay's own token is what is
+  /// refused, so the detail says so and offers no Sign in of its own (D23).
+  bool get _relayRefused {
+    final via = widget.host.via;
+    if (via == null) return false;
+    for (final other in widget.model.items) {
+      if (other.name == via) return other.refused;
+    }
+    return false;
+  }
+
   /// A refused token is not a silence: a server profile that refused one is
   /// signed in to again, and one whose sign-in failed when it was added says
   /// why beside the field (decision 5).
@@ -252,6 +268,7 @@ class _HostDetailState extends State<HostDetail> {
     final seen = host.lastContact;
     final server = host.kind.name != 'local';
     final loginFailure = widget.model.loginFailure(host.name);
+    final relayRefused = _relayRefused;
     final failure = _failure;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -274,6 +291,10 @@ class _HostDetailState extends State<HostDetail> {
                     'heard from.',
           style: e.small.tint(e.muted),
         ),
+        if (relayRefused) ...[
+          const SizedBox(height: Space.s12),
+          Text('Sign in to the relay first.', style: e.small.tint(e.err)),
+        ],
         if (server) ...[
           const SizedBox(height: Space.s16),
           Align(
@@ -281,7 +302,9 @@ class _HostDetailState extends State<HostDetail> {
             child: Btn('Remove…', onTap: () => _remove(context)),
           ),
         ],
-        if (server && (host.refused || loginFailure != null)) ...[
+        if (server &&
+            !relayRefused &&
+            (host.refused || loginFailure != null)) ...[
           const SizedBox(height: Space.s20),
           if (loginFailure != null) ...[
             Text(loginFailure, style: e.small.tint(e.err)),

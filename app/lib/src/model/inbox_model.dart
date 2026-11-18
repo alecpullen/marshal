@@ -94,7 +94,7 @@ enum AskActionKind {
 /// One answer an ask offers. [primary] marks the one action its card draws
 /// filled (§5: at most one primary in a group, and it comes first). A
 /// question's options are equals, so none of them is marked; an answer that
-/// commits, an approval's allow and an intake's start are.
+/// commits, an approval's allow, an intake's start and a card's `Open` are.
 @immutable
 class AskAction {
   const AskAction(

@@ -188,8 +188,8 @@ class _AnswerableAskState extends State<AnswerableAsk> {
             spacing: Space.s8,
             runSpacing: Space.s8,
             children: [
-              for (final (index, action) in ask.actions.indexed)
-                index == 0
+              for (final action in ask.actions)
+                action.primary
                     ? Btn.primary(action.label, onTap: _tap(ask, action))
                     : Btn(action.label, onTap: _tap(ask, action)),
             ],

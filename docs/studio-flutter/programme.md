@@ -69,6 +69,12 @@ Phase documents: [F0](f0-foundations.md), [F1](f1-client.md),
 [F8](f8-cutover.md). Each was written on 2026-11-17, ahead of the phases
 before it, and opens with what to re-read before starting.
 
+After F8 shipped, a comparison of the mock against the running Studio found
+nine places where the app is behind the reference: three surfaces that exist
+but nothing reaches, four affordances only reachable from inside a thread,
+and two surfaces thinner than the mock. [F9](f9-parity.md) closes them, after
+the programme's completion, in three batches.
+
 1. **One app, in `app/`.** The tray stays as it is and becomes one entry
    into the same program; the Studio window is the other. The web Studio is
    the same code built for the browser, without the tray. The mock stays in

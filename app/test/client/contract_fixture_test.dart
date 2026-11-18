@@ -261,8 +261,7 @@ final _codecs = <String, _Codec>{
   'SessionSummary': (json) => SessionSummary.fromJson(_object(json)).toJson(),
   'SessionList': (json) => SessionList.fromJson(_object(json)).toJson(),
   'SessionIndex': (json) => SessionIndex.fromJson(_object(json)).toJson(),
-  'ProjectSessions': (json) =>
-      ProjectSessions.fromJson(_object(json)).toJson(),
+  'ProjectSessions': (json) => ProjectSessions.fromJson(_object(json)).toJson(),
   'SessionRow': (json) => SessionRow.fromJson(_object(json)).toJson(),
   'PromptRequest': (json) => PromptRequest.fromJson(_object(json)).toJson(),
   'SteerRequest': (json) => SteerRequest.fromJson(_object(json)).toJson(),

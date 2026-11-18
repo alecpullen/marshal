@@ -4,10 +4,16 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/client/transport.dart';
+import 'package:marshal_app/src/model/bots_model.dart';
 import 'package:marshal_app/src/model/recipes_model.dart';
 import 'package:marshal_app/src/model/schedules_model.dart';
+import 'package:marshal_app/src/model/section_model.dart';
+import 'package:marshal_app/src/model/watches_model.dart';
+import 'package:marshal_app/src/ui/automations/automations_place.dart';
+import 'package:marshal_app/src/ui/automations/bots_tab.dart';
 import 'package:marshal_app/src/ui/automations/recipes_tab.dart';
 import 'package:marshal_app/src/ui/automations/schedules_tab.dart';
+import 'package:marshal_app/src/ui/automations/watches_tab.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 
 /// A transport that answers canned routes and records what was asked, so a
@@ -227,5 +233,96 @@ void main() {
     expect(copies, hasLength(1));
     expect((copies.single.body! as RecipeCopy).name, 'my-gate');
     expect(model.items.map((recipe) => recipe.name), contains('my-gate'));
+  });
+
+  testWidgets('every tab carries its count', (tester) async {
+    final now = DateTime.utc(2026, 11, 17, 4);
+    final bots = BotsModel.fixture(
+      const [
+        Bot(
+          kind: BotKind.review,
+          enabled: true,
+          repoID: 'acme/widgets',
+          summary: 'On',
+          facts: [],
+        ),
+        Bot(
+          kind: BotKind.fixer,
+          enabled: true,
+          repoID: 'acme/widgets',
+          summary: 'On',
+          facts: [],
+        ),
+      ],
+      project: '/home/u/marshal',
+      now: now,
+    );
+    final schedules = SchedulesModel.fixture([
+      for (var i = 0; i < 3; i++)
+        Schedule(
+          id: 's-$i',
+          name: 'schedule $i',
+          recipe: 'gate',
+          cron: '0 3 * * *',
+          enabled: true,
+          ownerID: 'owner-1',
+        ),
+    ]);
+    final watches = WatchesModel.fixture(const [
+      WatchInfo(
+        agentID: 'studio',
+        id: 'w-1',
+        name: 'the gate',
+        kind: 'command',
+        state: 'watching',
+        mode: 'interval',
+        intervalMs: 60000,
+        fireCount: 0,
+        createdAt: 1763352000000,
+        samples: [],
+      ),
+    ], now: now);
+    final recipes = RecipesModel.fixture([
+      for (var i = 0; i < 4; i++)
+        Recipe(
+          name: 'recipe-$i',
+          title: 'Recipe $i',
+          kind: 'prompt',
+          prompt: 'Run it',
+        ),
+    ]);
+    for (final model in <SectionModel<Object>>[
+      bots,
+      schedules,
+      watches,
+      recipes,
+    ]) {
+      addTearDown(model.dispose);
+      await model.load();
+    }
+
+    await pump(
+      tester,
+      AutomationsPlace(
+        bots: (tabs, state) => BotsTab(model: bots, tabs: tabs, state: state),
+        schedules: (tabs, state) =>
+            SchedulesTab(model: schedules, tabs: tabs, state: state),
+        watches: (tabs, state) =>
+            WatchesTab(model: watches, tabs: tabs, state: state),
+        recipes: (tabs, state) =>
+            RecipesTab(model: recipes, tabs: tabs, state: state),
+        counts: {
+          0: bots.items.length,
+          1: schedules.items.length,
+          2: watches.items.length,
+          3: recipes.items.length,
+        },
+      ),
+    );
+
+    // Bots, Schedules, Watches and Recipes: the four tabs say how many entries
+    // each one holds, from the model that holds them.
+    final bar = tester.widget<Tabs>(find.byType(Tabs));
+    expect([for (final item in bar.tabs) item.count], [2, 3, 1, 4]);
   });
 }

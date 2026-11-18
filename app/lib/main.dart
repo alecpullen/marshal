@@ -364,6 +364,15 @@ class _Sections {
           RecipesTab(model: models.recipes, tabs: tabs, state: state),
       tab: section,
       state: state,
+      // Each tab says how many entries it holds, from the model that already
+      // holds them (F9 B4). Bots counts the project's forge rows; a fleet with
+      // no project draws the planned tab, which has nothing to count.
+      counts: {
+        0: models.project.isEmpty ? null : models.bots.items.length,
+        1: models.schedules.items.length,
+        2: models.watches.items.length,
+        3: models.recipes.items.length,
+      },
     );
   }
 

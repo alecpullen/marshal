@@ -9,11 +9,16 @@ class AutomationsTabs {
     required this.items,
     required this.index,
     required this.onChanged,
+    this.trailing,
   });
 
   final List<TabItem> items;
   final int index;
   final ValueChanged<int> onChanged;
+
+  /// The place's own control, drawn at the end of the tab row (F9 B4): the one
+  /// New automation, beside the tabs whose kinds it can start.
+  final Widget? trailing;
 }
 
 /// One tab of Automations: its content, given the bar it draws and the state
@@ -38,6 +43,7 @@ class AutomationsPlace extends StatefulWidget {
     required this.recipes,
     this.tab = 0,
     this.state,
+    this.counts = const {},
   });
 
   final AutomationsTab bots;
@@ -50,6 +56,11 @@ class AutomationsPlace extends StatefulWidget {
 
   /// The state the shell knows, shown by the tab that is open.
   final StateKind? state;
+
+  /// How many entries each tab has, by tab index (F9 B4). A tab with no count
+  /// draws none, and so does a place the shell cannot count — the planned Bots
+  /// tab of a fleet with no project.
+  final Map<int, int?> counts;
 
   @override
   State<AutomationsPlace> createState() => _AutomationsPlaceState();
@@ -65,7 +76,10 @@ class _AutomationsPlaceState extends State<AutomationsPlace> {
   @override
   Widget build(BuildContext context) {
     final tabs = AutomationsTabs(
-      items: [for (final label in _labels) TabItem(label)],
+      items: [
+        for (var i = 0; i < _labels.length; i++)
+          TabItem(_labels[i], count: widget.counts[i]),
+      ],
       index: _tab,
       onChanged: (index) => setState(() => _tab = index),
     );

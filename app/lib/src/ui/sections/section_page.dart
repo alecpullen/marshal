@@ -22,6 +22,7 @@ class SectionPage<T> extends StatelessWidget {
     this.tabs,
     this.tabIndex = 0,
     this.onTab,
+    this.trailing,
     this.state,
     this.emptyMessage = 'Nothing here yet.',
     this.emptyAction,
@@ -59,6 +60,11 @@ class SectionPage<T> extends StatelessWidget {
   final List<TabItem>? tabs;
   final int tabIndex;
   final ValueChanged<int>? onTab;
+
+  /// The place's own control, drawn at the end of the tab row when there are
+  /// tabs (F9 B4): Automations' one New, beside the tabs whose kinds it can
+  /// start.
+  final Widget? trailing;
 
   /// A state the caller knows and the model cannot: the host is away, or
   /// the last read is old. Loading, empty, error and unavailable replace the
@@ -109,7 +115,18 @@ class SectionPage<T> extends StatelessWidget {
           width: PageWidth.list,
           children: [
             if (tabs != null) ...[
-              Tabs(tabs: tabs, index: tabIndex, onChanged: onTab ?? (_) {}),
+              Row(
+                children: [
+                  Expanded(
+                    child: Tabs(
+                      tabs: tabs,
+                      index: tabIndex,
+                      onChanged: onTab ?? (_) {},
+                    ),
+                  ),
+                  ?trailing,
+                ],
+              ),
               const SizedBox(height: Space.s20),
             ],
             ...header,

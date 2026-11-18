@@ -27,6 +27,7 @@ class SchedulesTab extends StatelessWidget {
       tabs: tabs?.items,
       tabIndex: tabs?.index ?? 0,
       onTab: tabs?.onChanged,
+      trailing: tabs?.trailing,
       state: state,
       createLabel: 'New schedule',
       blank: SchedulesModel.blank,

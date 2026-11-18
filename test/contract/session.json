@@ -55,5 +55,58 @@
   "RosterBudget": {
     "maxFixRounds": 3,
     "maxTotalTokens": 120000
+  },
+  "SessionIndex": {
+    "projects": [
+      {
+        "root": "/home/u/src/marshal",
+        "sessions": [
+          {
+            "sessionId": "s-1",
+            "title": "fix the login bug",
+            "updatedAt": 1700000009000,
+            "messageCount": 42,
+            "open": true,
+            "viewers": 1,
+            "busy": true,
+            "pending": {
+              "kind": "approval",
+              "id": "tc-1",
+              "params": {
+                "command": "go test ./..."
+              }
+            }
+          }
+        ]
+      },
+      {
+        "root": "/home/u/src/other",
+        "sessions": [],
+        "error": "the project's runtime did not answer"
+      }
+    ]
+  },
+  "ProjectSessions": {
+    "root": "/home/u/src/marshal",
+    "sessions": [
+      {
+        "sessionId": "s-1",
+        "title": "fix the login bug",
+        "updatedAt": 1700000009000,
+        "messageCount": 42,
+        "open": true,
+        "viewers": 1,
+        "busy": false
+      }
+    ]
+  },
+  "SessionRow": {
+    "sessionId": "s-2",
+    "title": "release 0.9",
+    "updatedAt": 1700000013000,
+    "messageCount": 7,
+    "open": false,
+    "viewers": 0,
+    "busy": false
   }
 }

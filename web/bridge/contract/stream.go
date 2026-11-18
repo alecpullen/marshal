@@ -23,6 +23,10 @@ const (
 	DeltaPull DeltaKind = "pull"
 )
 
+// DeltaSessions announces that a project's sessions changed. Its payload is
+// SessionsDelta.
+const DeltaSessions DeltaKind = "sessions"
+
 // FleetDelta is one entry on the fleet stream.
 type FleetDelta struct {
 	Kind         DeltaKind       `json:"kind"`
@@ -31,6 +35,7 @@ type FleetDelta struct {
 	Access       *AccessState    `json:"access,omitempty"`
 	ContextPct   *int            `json:"contextPct,omitempty"`
 	ChangedFiles *int            `json:"changedFiles,omitempty"`
+	StepsDone    *int            `json:"stepsDone,omitempty"`
 	PendingKind  PendingKind     `json:"pendingKind,omitempty"`
 	Gate         *GateRecord     `json:"gate,omitempty"`
 	AgentID      string          `json:"agentId,omitempty"`
@@ -66,6 +71,12 @@ type BudgetDelta struct {
 
 // ProjectRemovedDelta is a "project_removed" fleet delta.
 type ProjectRemovedDelta struct {
+	Kind    DeltaKind `json:"kind"`
+	Project string    `json:"project"`
+}
+
+// SessionsDelta is a "sessions" fleet delta: read the index for Project again.
+type SessionsDelta struct {
 	Kind    DeltaKind `json:"kind"`
 	Project string    `json:"project"`
 }

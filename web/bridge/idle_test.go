@@ -110,6 +110,74 @@ func TestAnIdleSessionIsClosed(t *testing.T) {
 	}
 }
 
+// TestAWatchedSessionIsNotSwept: an SSE client holding a subscriber on the
+// child's log is a viewer the registry does not count, so a session it watches
+// is not idle — the sweep never even asks the child about it.
+func TestAWatchedSessionIsNotSwept(t *testing.T) {
+	p := newIdleProject(t, 30*time.Minute, nil)
+	p.fake.results["session/status"] = map[string]any{}
+	now := time.Now()
+	setIdleLastActive(t, p.pc.reg, idleSessionID, now.Add(-time.Hour))
+	if p.pc.log == nil {
+		t.Fatal("the project child has no event log")
+	}
+	_, unsub := p.pc.log.Subscribe(idleSessionID)
+	defer unsub()
+
+	closed := p.fleet.sweepIdleSessions(ctlContext(t), now)
+
+	if len(closed) != 0 {
+		t.Fatalf("closed = %v, want nothing", closed)
+	}
+	if calls := p.fake.calls("session/status"); len(calls) != 0 {
+		t.Fatalf("the sweep asked for the status of a watched session: %v", calls)
+	}
+	if got := closedSessions(p.fake); len(got) != 0 {
+		t.Fatalf("the sweep closed a watched session: %v", got)
+	}
+	if !p.pc.reg.sessionTracked(idleSessionID) {
+		t.Fatal("the watched session is no longer tracked")
+	}
+}
+
+// TestAnUnwatchedSessionIsSweptAfterItsTimeout: the disconnect that leaves a
+// session unwatched counts as activity, so the sweep right afterwards keeps it
+// and only a sweep a full timeout later closes it.
+func TestAnUnwatchedSessionIsSweptAfterItsTimeout(t *testing.T) {
+	p := newIdleProject(t, 30*time.Minute, nil)
+	p.fake.results["session/status"] = map[string]any{}
+	setIdleLastActive(t, p.pc.reg, idleSessionID, time.Now().Add(-time.Hour))
+	if p.pc.log == nil {
+		t.Fatal("the project child has no event log")
+	}
+	_, unsub := p.pc.log.Subscribe(idleSessionID)
+	unsub()
+
+	// The session had been idle for an hour, but its client has just gone: the
+	// unsubscribe touched it, so it has the timeout again from now.
+	if closed := p.fleet.sweepIdleSessions(ctlContext(t), time.Now()); len(closed) != 0 {
+		t.Fatalf("the sweep closed a session its client had just stopped watching: %v", closed)
+	}
+	if got := closedSessions(p.fake); len(got) != 0 {
+		t.Fatalf("the sweep sent session/close for %v", got)
+	}
+	if !p.pc.reg.sessionTracked(idleSessionID) {
+		t.Fatal("the just-unwatched session is no longer tracked")
+	}
+
+	closed := p.fleet.sweepIdleSessions(ctlContext(t), time.Now().Add(31*time.Minute))
+
+	if len(closed) != 1 || closed[0] != idleSessionID {
+		t.Fatalf("closed = %v, want [%s]", closed, idleSessionID)
+	}
+	if got := closedSessions(p.fake); len(got) != 1 || got[0] != idleSessionID {
+		t.Fatalf("the fake saw session/close for %v, want [%s]", got, idleSessionID)
+	}
+	if p.pc.reg.sessionTracked(idleSessionID) {
+		t.Fatal("the closed session is still tracked")
+	}
+}
+
 // TestASessionWithAViewerIsKept: a viewer keeps the session alive, and the
 // sweep does not even ask about it.
 func TestASessionWithAViewerIsKept(t *testing.T) {

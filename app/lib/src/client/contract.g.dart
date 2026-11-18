@@ -146,6 +146,7 @@ class AgentStatus {
     this.activity,
     this.contextPct,
     this.changedFiles,
+    this.stepsDone,
     this.interrupted,
     this.versionWarning,
     this.held,
@@ -181,6 +182,10 @@ class AgentStatus {
   final String? activity;
   final int? contextPct;
   final int? changedFiles;
+  /// StepsDone is how many steps the current turn has taken. A turn's steps
+  /// are discovered as the model narrates, so there is no total while it
+  /// runs: a client shows a step number, never a fraction.
+  final int? stepsDone;
   final bool? interrupted;
   /// VersionWarning, when non-empty, says the agent runs a marshal other
   /// than the daemon's, in the daemon's own words: "agent runs marshal
@@ -239,6 +244,7 @@ class AgentStatus {
       activity: json['activity'] as String?,
       contextPct: (json['contextPct'] as num?)?.toInt(),
       changedFiles: (json['changedFiles'] as num?)?.toInt(),
+      stepsDone: (json['stepsDone'] as num?)?.toInt(),
       interrupted: json['interrupted'] as bool?,
       versionWarning: json['versionWarning'] as String?,
       held: json['held'] as bool?,
@@ -294,6 +300,9 @@ class AgentStatus {
     }
     if (changedFiles != null) {
       json['changedFiles'] = changedFiles;
+    }
+    if (stepsDone != null) {
+      json['stepsDone'] = stepsDone;
     }
     if (interrupted != null) {
       json['interrupted'] = interrupted;
@@ -12872,6 +12881,134 @@ class RosterBudget {
   }
 }
 
+/// SessionIndex is GET /api/sessions/all's answer: every project's sessions,
+/// sorted by root. Projects is never null.
+class SessionIndex {
+  const SessionIndex({
+    required this.projects,
+  });
+
+  final List<ProjectSessions> projects;
+
+  factory SessionIndex.fromJson(Map<String, dynamic> json) {
+    return SessionIndex(
+      projects: _list(
+        json['projects'],
+        (value) => _object(value, ProjectSessions.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projects'] = [
+      for (final value in projects) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// ProjectSessions is one project root's sessions. Sessions is never null.
+/// Error is why the root's listing failed; its open sessions still list.
+class ProjectSessions {
+  const ProjectSessions({
+    required this.root,
+    required this.sessions,
+    this.error,
+  });
+
+  final String root;
+  final List<SessionRow> sessions;
+  final String? error;
+
+  factory ProjectSessions.fromJson(Map<String, dynamic> json) {
+    return ProjectSessions(
+      root: json['root'] as String,
+      sessions: _list(
+        json['sessions'],
+        (value) => _object(value, SessionRow.fromJson),
+      ),
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['root'] = root;
+    json['sessions'] = [
+      for (final value in sessions) value.toJson(),
+    ];
+    if (error != null) {
+      json['error'] = error;
+    }
+    return json;
+  }
+}
+
+/// SessionRow is one session the index lists (P7 D7).
+class SessionRow {
+  const SessionRow({
+    required this.sessionID,
+    this.title,
+    this.updatedAt,
+    this.messageCount,
+    required this.open,
+    required this.viewers,
+    required this.busy,
+    this.pending,
+  });
+
+  final String sessionID;
+  final String? title;
+  /// Unix milliseconds
+  final int? updatedAt;
+  final int? messageCount;
+  /// tracked on its project's live child
+  final bool open;
+  /// terminals attached through the relay
+  final int viewers;
+  final bool busy;
+  /// a turn the bridge started is parked on it
+  final PendingRequest? pending;
+
+  factory SessionRow.fromJson(Map<String, dynamic> json) {
+    return SessionRow(
+      sessionID: json['sessionId'] as String,
+      title: json['title'] as String?,
+      updatedAt: (json['updatedAt'] as num?)?.toInt(),
+      messageCount: (json['messageCount'] as num?)?.toInt(),
+      open: json['open'] as bool,
+      viewers: (json['viewers'] as num).toInt(),
+      busy: json['busy'] as bool,
+      pending: _objectOrNull(
+        json['pending'],
+        PendingRequest.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['sessionId'] = sessionID;
+    if (title != null) {
+      json['title'] = title;
+    }
+    if (updatedAt != null) {
+      json['updatedAt'] = updatedAt;
+    }
+    if (messageCount != null) {
+      json['messageCount'] = messageCount;
+    }
+    json['open'] = open;
+    json['viewers'] = viewers;
+    json['busy'] = busy;
+    if (pending != null) {
+      json['pending'] = pending!.toJson();
+    }
+    return json;
+  }
+}
+
 /// SpawnRequest is a POST /api/agents body.
 class SpawnRequest {
   const SpawnRequest({
@@ -14447,6 +14584,7 @@ enum DeltaKind {
   deltaProjectRemoved('project_removed'),
   deltaInbox('inbox'),
   deltaPull('pull'),
+  deltaSessions('sessions'),
   unknown('unknown');
 
   const DeltaKind(this.wire);
@@ -14475,6 +14613,7 @@ class FleetDelta {
     this.access,
     this.contextPct,
     this.changedFiles,
+    this.stepsDone,
     this.pendingKind,
     this.gate,
     this.agentID,
@@ -14494,6 +14633,7 @@ class FleetDelta {
   final AccessState? access;
   final int? contextPct;
   final int? changedFiles;
+  final int? stepsDone;
   final PendingKind? pendingKind;
   final GateRecord? gate;
   final String? agentID;
@@ -14531,6 +14671,7 @@ class FleetDelta {
       ),
       contextPct: (json['contextPct'] as num?)?.toInt(),
       changedFiles: (json['changedFiles'] as num?)?.toInt(),
+      stepsDone: (json['stepsDone'] as num?)?.toInt(),
       pendingKind: pendingKind,
       gate: _objectOrNull(
         json['gate'],
@@ -14563,6 +14704,9 @@ class FleetDelta {
     }
     if (changedFiles != null) {
       json['changedFiles'] = changedFiles;
+    }
+    if (stepsDone != null) {
+      json['stepsDone'] = stepsDone;
     }
     if (pendingKind != null) {
       json['pendingKind'] = rawEnums['pendingKind'] ?? pendingKind!.wire;
@@ -14709,6 +14853,43 @@ class ProjectRemovedDelta {
       rawEnums['kind'] = kindWire;
     }
     return ProjectRemovedDelta(
+      kind: kind,
+      project: json['project'] as String,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = rawEnums['kind'] ?? kind.wire;
+    json['project'] = project;
+    return json;
+  }
+}
+
+/// SessionsDelta is a "sessions" fleet delta: read the index for Project again.
+class SessionsDelta {
+  const SessionsDelta({
+    required this.kind,
+    required this.project,
+    this.rawEnums = const {},
+  });
+
+  final DeltaKind kind;
+  final String project;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory SessionsDelta.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final kindWire = json['kind'] as String;
+    final kind = DeltaKind.fromWire(kindWire);
+    if (kind == DeltaKind.unknown) {
+      rawEnums['kind'] = kindWire;
+    }
+    return SessionsDelta(
       kind: kind,
       project: json['project'] as String,
       rawEnums: rawEnums,

@@ -696,9 +696,10 @@ func TestMarshalStudioRealSessionNoCredentialOrPathLeak(t *testing.T) {
 		if strings.Contains(result, token) {
 			t.Fatalf("%s disclosed the enrollment's credential: %s", tool, result)
 		}
-		if strings.Contains(result, filepath.Base(b.root)) {
-			t.Fatalf("%s disclosed this host's project root: %s", tool, result)
-		}
+		// The path is checked whole. The directory's own name is a short
+		// temp-dir segment (`.../TestThing123/001`), so matching it alone
+		// fires by coincidence whenever those digits appear inside a hash —
+		// the flake that made this test fail on CI while passing locally.
 		assertNoHostPath(t, result, b.root)
 	}
 

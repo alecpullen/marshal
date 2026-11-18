@@ -657,6 +657,24 @@ func (s *PlannerService) records() ([]PlannerRecord, error) {
 	return out, nil
 }
 
+// sessionIDs maps each planner session the store knows to its planner's id.
+// An unreadable store maps nothing: a caller deciding whether the bridge owns
+// an id must not be told a planner claims one it cannot read.
+func (s *PlannerService) sessionIDs() map[string]string {
+	records, err := s.records()
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(records))
+	for _, rec := range records {
+		if rec.SessionID == "" {
+			continue
+		}
+		out[rec.SessionID] = rec.ID
+	}
+	return out
+}
+
 // view projects a record for the browser. A record with no live owner reports
 // state "unknown" rather than claiming to be active, and a session resume is
 // offered only when it is actually available.
@@ -1173,6 +1191,10 @@ func (inst *plannerInstance) end() error {
 // not know.
 func (s *Server) plannerRoutes() {
 	svc := newPlannerService(s.fleet, s.fleet.stateDir)
+	// The fleet keeps the service so one ownership map covers agents, the
+	// control agent and planners (decision 4): a planner's session is the
+	// bridge's own and must never be reopened as a client's.
+	s.fleet.planners = svc
 	// The factory service is read when a handoff runs, not when this route is
 	// registered: NewServer installs the factory routes after the planner's, so
 	// the field is still unset here. A bridge without one leaves the source

@@ -50,12 +50,18 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 			// ChangedFiles holds objects ({path, added, removed}); only the
 			// count is used here, so entries stay undecoded.
 			ChangedFiles []json.RawMessage `json:"changedFiles"`
-			ToolStats    json.RawMessage   `json:"toolStats"`
-			Rules        json.RawMessage   `json:"rules"`
-			Run          json.RawMessage   `json:"run"`
-			Usage        json.RawMessage   `json:"usage"`
-			Event        json.RawMessage   `json:"event"`
-			Context      struct {
+			// Steps is a pointer so a payload that carries no steps key is
+			// distinguishable from one that reports zero: a missing field
+			// is not a zero.
+			Steps *struct {
+				Done int `json:"done"`
+			} `json:"steps"`
+			ToolStats json.RawMessage `json:"toolStats"`
+			Rules     json.RawMessage `json:"rules"`
+			Run       json.RawMessage `json:"run"`
+			Usage     json.RawMessage `json:"usage"`
+			Event     json.RawMessage `json:"event"`
+			Context   struct {
 				UsedPct       int `json:"usedPct"`
 				PackTokens    int `json:"packTokens"`
 				PackMaxTokens int `json:"packMaxTokens"`
@@ -85,6 +91,13 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 		pct := contextPct(p.Update.Context.UsedPct, p.Update.Context.PackTokens, p.Update.Context.PackMaxTokens)
 		changed := len(p.Update.ChangedFiles)
 		d.Kind, d.ChangedFiles, d.ContextPct = "telemetry", &changed, &pct
+		// Only a payload that carried steps says how many the turn has taken;
+		// the rest leave the count alone, so a keyless delta never reads as a
+		// turn that went back three steps.
+		if p.Update.Steps != nil {
+			done := p.Update.Steps.Done
+			d.StepsDone = &done
+		}
 		d.ToolStats, d.Rules = p.Update.ToolStats, p.Update.Rules
 		d.usage = p.Update.Usage
 	case "watch":
@@ -119,6 +132,7 @@ type observedPending struct {
 type agentLive struct {
 	activity                 string
 	contextPct, changedFiles int
+	stepsDone                int
 	updatedAt                time.Time
 	pending                  *observedPending
 	// access is the session's last committed interaction state, and
@@ -166,6 +180,9 @@ func (s *liveState) apply(d fleetDelta) {
 		}
 		if d.ChangedFiles != nil {
 			a.changedFiles = *d.ChangedFiles
+		}
+		if d.StepsDone != nil {
+			a.stepsDone = *d.StepsDone
 		}
 	case "run":
 		a.run, a.runAt = d.Run, time.Now().UTC()

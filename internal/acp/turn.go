@@ -1633,6 +1633,7 @@ func (m *TurnManager) buildTelemetry(sessionID string, state *session.State, usa
 		"rules":           rules,
 		"permissionRules": permissionRules,
 		"sessionFooter":   buildSessionFooter(state),
+		"steps":           map[string]any{"done": state.TurnSteps()},
 	}
 	if usage := m.newUsageRows(sessionID, usageDB, projectID); usage != nil {
 		out["usage"] = usage

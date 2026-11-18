@@ -331,7 +331,10 @@ class FleetStore extends ChangeNotifier {
       case DeltaKind.deltaBudget:
       case DeltaKind.deltaProjectRemoved:
       case DeltaKind.deltaInbox:
-        // Handled elsewhere, or a kind this build does not know.
+      case DeltaKind.deltaSessions:
+        // Handled elsewhere, or a kind this build does not know. A project's
+        // sessions changed (P7 D9): the project tree reads the session index,
+        // which is P7 plan 2's, and no agent row changes here.
         return;
       case DeltaKind.deltaPull:
         // Pull requests are not agent rows: `PullsStore` follows the same

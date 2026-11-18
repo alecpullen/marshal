@@ -122,13 +122,15 @@ void main() {
     );
   }
 
-  Future<void> pump(WidgetTester tester, Widget screen) async {
+  Future<void> pump(
+    WidgetTester tester,
+    Widget screen, {
+    Brightness? brightness = Brightness.light,
+  }) async {
     tester.view.physicalSize = const Size(1200, 1000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
-    await tester.pumpWidget(
-      EmberApp(brightness: Brightness.light, home: screen),
-    );
+    await tester.pumpWidget(EmberApp(brightness: brightness, home: screen));
   }
 
   testWidgets('sections in the specified order', (tester) async {
@@ -406,15 +408,8 @@ void main() {
     final preferences = GeneralPreferences();
     await pump(tester, place(section: 9, preferences: preferences));
 
-    // General opens as the system's, and the place holds no brightness of
-    // its own until one is chosen.
+    // General opens as the system's.
     expect(preferences.appearance, Appearance.system);
-    expect(
-      find.byWidgetPredicate(
-        (w) => w is EmberTheme && w.brightness == Brightness.dark,
-      ),
-      findsNothing,
-    );
 
     await tester.tap(find.text('Appearance'));
     await tester.pumpAndSettle();
@@ -423,12 +418,24 @@ void main() {
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
 
+    // The choice is the window's, not the place's: the root holds it (the
+    // whole window is under it), so what this place leaves behind is the
+    // preference itself.
     expect(preferences.appearance, Appearance.dark);
-    expect(
-      find.byWidgetPredicate(
-        (w) => w is EmberTheme && w.brightness == Brightness.dark,
-      ),
-      findsOneWidget,
-    );
+  });
+
+  testWidgets('Settings follows the window, not the system', (tester) async {
+    // Finding 3: the window chose dark, the machine is in light. The place
+    // draws no theme of its own, so its text is the window's dark `fg` —
+    // not the system's light `fg`, which was near-invisible on a dark
+    // background.
+    tester.platformDispatcher.platformBrightnessTestValue = Brightness.light;
+    addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+
+    await pump(tester, place(), brightness: Brightness.dark);
+
+    final heading = tester.widget<Text>(find.text('Settings'));
+    expect(heading.style?.color, Ember.dark.fg);
+    expect(heading.style?.color, isNot(Ember.light.fg));
   });
 }

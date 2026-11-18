@@ -10,6 +10,7 @@ import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/client/event_stream.dart';
 import 'package:marshal_app/src/client/transport.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
+import 'package:marshal_app/src/model/thread_view_state.dart' show Density;
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
 import 'package:marshal_app/src/model/inbox_model.dart';
 import 'package:marshal_app/src/model/place.dart';
@@ -98,6 +99,7 @@ Future<void> _pumpSessionPlace(
   WidgetTester tester,
   ModelFixture fixture, {
   required StackStore Function(String sessionId) storeFor,
+  Density density = Density.comfortable,
 }) async {
   final inbox = InboxModel(fixture.store, client: fixture.clientFor);
   addTearDown(inbox.dispose);
@@ -107,6 +109,7 @@ Future<void> _pumpSessionPlace(
       home: Studio(
         store: fixture.store,
         inbox: inbox,
+        density: density,
         threadStore: (thread) => storeFor(thread.id),
         initialPlace: const Place(
           PlaceKind.thread,
@@ -645,6 +648,23 @@ void main() {
       findsWidgets,
       reason: 'the header names the thread\'s kind',
     );
+  });
+
+  testWidgets('a thread opens at the chosen density', (tester) async {
+    // Finding 4: Settings' General section chose what a transcript starts as,
+    // so every thread the Studio opens begins at it. A thread's own switch is
+    // the only thing that overrides it, and it overrides it for that thread
+    // alone.
+    final fixture = await _fixtureListingSession(tester);
+    await _pumpSessionPlace(
+      tester,
+      fixture,
+      storeFor: _emptyStore,
+      density: Density.full,
+    );
+
+    final screen = tester.widget<ThreadScreen>(find.byType(ThreadScreen));
+    expect(screen.view.density, Density.full);
   });
 
   testWidgets('a gone session offers reopen', (tester) async {

@@ -578,6 +578,7 @@ class Studio extends StatefulWidget {
     this.libraryFor,
     this.settingsFor,
     this.signals,
+    this.density = Density.comfortable,
     this.initialPlace = const Place.overview(),
     this.startPage,
   });
@@ -693,6 +694,11 @@ class Studio extends StatefulWidget {
   /// Null leaves the Overview's Automations card with nothing to list, so a
   /// test or an embedded host that supplies none still builds.
   final SignalsStore? signals;
+
+  /// The density a thread opens at, as Settings' General section set it: what
+  /// General picks is what a transcript starts as. A thread's own switch still
+  /// overrides it for that thread, which is the only place it can be changed.
+  final Density density;
 
   /// The place a deep link names.
   final Place initialPlace;
@@ -1079,6 +1085,7 @@ class _StudioState extends State<Studio> {
           threadStore: build,
           composerFor: widget.composerFor,
           now: widget.store.now,
+          density: widget.density,
           onRetry: () => unawaited(factory.refresh(thread.host)),
         );
       }
@@ -1088,6 +1095,7 @@ class _StudioState extends State<Studio> {
           thread: thread,
           buildStore: build,
           composerFor: widget.composerFor,
+          density: widget.density,
           // The thread's own ⌘N opens the Studio's one dialog, naming the
           // thread's host and project; the dialog may then move to another
           // host (spec D10, P8 plan 2 decision 6).
@@ -1413,12 +1421,18 @@ class _ThreadPlace extends StatefulWidget {
     this.onAnswer,
     this.now,
     this.pulls,
+    this.density = Density.comfortable,
   });
 
   final model.ThreadRef thread;
   final StackStore Function(model.ThreadRef thread) buildStore;
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
+
+  /// What this thread opens as, from Settings' General section: the density a
+  /// transcript starts at. The thread's own switch still overrides it, for
+  /// this thread alone.
+  final Density density;
 
   /// Builds this thread's Share model, once, when the place opens. Null
   /// leaves the header's Share disabled.
@@ -1447,7 +1461,8 @@ class _ThreadPlace extends StatefulWidget {
 
 class _ThreadPlaceState extends State<_ThreadPlace> {
   late final StackStore _store = widget.buildStore(widget.thread);
-  late final ThreadViewState _view = ThreadViewState();
+  late final ThreadViewState _view = ThreadViewState()
+    ..density = widget.density;
 
   /// The inspector this thread's tabs read, built once so a rebuild does not
   /// rebuild five models (F9 decision 4).
@@ -1641,6 +1656,7 @@ class _WorkItemPlace extends StatefulWidget {
     this.threadStore,
     this.composerFor,
     this.now,
+    this.density = Density.comfortable,
     this.onRetry,
   });
 
@@ -1654,6 +1670,11 @@ class _WorkItemPlace extends StatefulWidget {
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
   final DateTime? now;
+
+  /// The density the item's worker transcript opens at, passed on from the
+  /// Studio: what Settings' General section chose.
+  final Density density;
+
   final VoidCallback? onRetry;
 
   @override
@@ -1713,6 +1734,7 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
               buildStore: build,
               composerFor: widget.composerFor,
               now: widget.now,
+              density: widget.density,
               pulls: widget.pulls,
             ),
       onBack: () => setState(() => _worker = null),

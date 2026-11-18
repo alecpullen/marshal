@@ -12,8 +12,8 @@ implemented through plan 7 (merged at `87c41ad9`), with plan 8 in review
 Status: approved, 2026-11-16, with all nine decisions as recommended.
 Behaviour written the same day. Plans 1, 2, 3 and 6 are written, with their
 anchors checked at `87c41ad9` with plan 8's branch (`d57f178f`) merged in.
-Plans 4 and 5 build on plans 2 and 3, and are written once those are on
-`main`.
+All four are implemented on `main`. Plans 4 and 5 are written (2026-11-18),
+with their anchors checked at `bdd20ddc`.
 
 ## Goal
 

@@ -22,12 +22,13 @@ import (
 // The attach wire contract. The bridge speaks it as an external ACP
 // client, so the strings are the binding rather than a shared type.
 const (
-	attachPath       = "/api/projects/attach"
-	attachProtocol   = "marshal-acp"
-	sessionHeader    = "Marshal-Session"
-	agentHeader      = "Marshal-Agent"
-	envWarningHeader = "Marshal-Env-Warning"
-	pinPath          = "/api/projects/pin"
+	attachPath        = "/api/projects/attach"
+	attachProtocol    = "marshal-acp"
+	sessionHeader     = "Marshal-Session"
+	agentHeader       = "Marshal-Agent"
+	envWarningHeader  = "Marshal-Env-Warning"
+	pinPath           = "/api/projects/pin"
+	daemonRestartPath = "/api/daemon/restart"
 )
 
 // ChildInfo is the contract's DaemonChild; see that declaration.
@@ -47,6 +48,10 @@ type Info = contract.DaemonInfo
 
 // PinState is the contract's PinState; see that declaration.
 type PinState = contract.PinState
+
+// RestartProgress is the contract's DaemonRestartProgress; see that
+// declaration.
+type RestartProgress = contract.DaemonRestartProgress
 
 // SpawnRequest is the contract's SpawnRequest; see that declaration.
 type SpawnRequest = contract.SpawnRequest
@@ -309,6 +314,88 @@ func (c *Client) Pin(ctx context.Context, root string, pinned bool) (PinState, e
 		return PinState{}, fmt.Errorf("decode daemon answer: %w", err)
 	}
 	return state, nil
+}
+
+// Restart asks the daemon to restart, calling progress for each line. It
+// answers nil once a Restarting line has arrived and the answer has ended, and
+// an error for an Error line or an answer that ends without either.
+func (c *Client) Restart(ctx context.Context, now bool, progress func(RestartProgress)) error {
+	body, err := json.Marshal(contract.DaemonRestartRequest{Now: now})
+	if err != nil {
+		return fmt.Errorf("encode restart request: %w", err)
+	}
+
+	// The answer takes as long as the daemon's sweeps do, so the request
+	// carries no deadline of its own: the caller's ctx bounds it.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://daemon"+daemonRestartPath, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("daemon request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("daemon at %s: %w", c.socket, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// The handler answers {"error": "..."} on a refusal; keep
+		// that text, since it says why better than the status does.
+		answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return fmt.Errorf("read daemon answer: %w", err)
+		}
+		var refused struct {
+			Error string `json:"error"`
+		}
+		detail := strings.TrimSpace(string(answer))
+		if json.Unmarshal(answer, &refused) == nil && refused.Error != "" {
+			detail = refused.Error
+		}
+		return fmt.Errorf("daemon answered %s: %s", resp.Status, detail)
+	}
+
+	// The answer is newline-delimited JSON, one line per sweep, and it ends
+	// with the line that says whether the restart is happening.
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+
+	restarting := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var step RestartProgress
+		if err := json.Unmarshal([]byte(line), &step); err != nil {
+			return fmt.Errorf("decode daemon answer: %w", err)
+		}
+		if progress != nil {
+			progress(step)
+		}
+		if step.Error != "" {
+			return errors.New(step.Error)
+		}
+		if step.Restarting {
+			restarting = true
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// The daemon closing the connection as it goes is a normal end
+		// once it has said it is restarting.
+		if !restarting {
+			return fmt.Errorf("read daemon answer: %w", err)
+		}
+	}
+	if !restarting {
+		return errors.New("the daemon ended the restart without restarting")
+	}
+	return nil
 }
 
 // Spawn starts an agent on the daemon (POST /api/agents), bounded by ctx. The

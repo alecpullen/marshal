@@ -19,6 +19,12 @@ type DaemonChild = contract.DaemonChild
 // DaemonRestart is contract.DaemonRestart; see that declaration.
 type DaemonRestart = contract.DaemonRestart
 
+// DaemonRestartRequest is contract.DaemonRestartRequest; see that declaration.
+type DaemonRestartRequest = contract.DaemonRestartRequest
+
+// DaemonRestartProgress is contract.DaemonRestartProgress; see that declaration.
+type DaemonRestartProgress = contract.DaemonRestartProgress
+
 // SetDaemonInfo makes GET /api/daemon answer info; without it the route
 // answers 404 (decision 8).
 func (s *Server) SetDaemonInfo(info DaemonInfo) {
@@ -43,6 +49,10 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	out.Projects = s.projectRoots()
 	out.Pinned = s.pinnedRoots()
 	out.Children = s.projectChildren()
+	out.Restart = nil
+	if s.fleet != nil {
+		out.Restart = s.fleet.ownRestart()
+	}
 	out.Refresh = nil
 	if s.refresh != nil {
 		pid, restarts := s.refresh.State()

@@ -18,6 +18,21 @@ type DaemonInfo struct {
 	Pinned      []string       `json:"pinned"`            // filled per request
 	Children    []DaemonChild  `json:"children"`          // filled per request
 	Refresh     *DaemonRefresh `json:"refresh,omitempty"` // filled per request
+	Restart     *DaemonRestart `json:"restart,omitempty"` // the daemon's own; filled per request
+}
+
+// DaemonRestartRequest is POST /api/daemon/restart's body (P6 B5).
+type DaemonRestartRequest struct {
+	Now bool `json:"now,omitempty"`
+}
+
+// DaemonRestartProgress is one line of POST /api/daemon/restart's answer:
+// newline-delimited JSON, one line per sweep, ending with Restarting or Error.
+type DaemonRestartProgress struct {
+	WaitingFor []string `json:"waitingFor,omitempty"`
+	Restarting bool     `json:"restarting,omitempty"`
+	Version    string   `json:"version,omitempty"` // the build it restarts on
+	Error      string   `json:"error,omitempty"`   // why it will not; the answer ends
 }
 
 // DaemonRefresh is the refresh helper as GET /api/daemon reports it.

@@ -1777,6 +1777,7 @@ class DaemonInfo {
     required this.pinned,
     required this.children,
     this.refresh,
+    this.restart,
   });
 
   final String version;
@@ -1800,6 +1801,8 @@ class DaemonInfo {
   final List<DaemonChild> children;
   /// filled per request
   final DaemonRefresh? refresh;
+  /// the daemon's own; filled per request
+  final DaemonRestart? restart;
 
   factory DaemonInfo.fromJson(Map<String, dynamic> json) {
     return DaemonInfo(
@@ -1826,6 +1829,10 @@ class DaemonInfo {
         json['refresh'],
         DaemonRefresh.fromJson,
       ),
+      restart: _objectOrNull(
+        json['restart'],
+        DaemonRestart.fromJson,
+      ),
     );
   }
 
@@ -1849,6 +1856,79 @@ class DaemonInfo {
     ];
     if (refresh != null) {
       json['refresh'] = refresh!.toJson();
+    }
+    if (restart != null) {
+      json['restart'] = restart!.toJson();
+    }
+    return json;
+  }
+}
+
+/// DaemonRestartRequest is POST /api/daemon/restart's body (P6 B5).
+class DaemonRestartRequest {
+  const DaemonRestartRequest({
+    this.now,
+  });
+
+  final bool? now;
+
+  factory DaemonRestartRequest.fromJson(Map<String, dynamic> json) {
+    return DaemonRestartRequest(
+      now: json['now'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (now != null) {
+      json['now'] = now;
+    }
+    return json;
+  }
+}
+
+/// DaemonRestartProgress is one line of POST /api/daemon/restart's answer:
+/// newline-delimited JSON, one line per sweep, ending with Restarting or Error.
+class DaemonRestartProgress {
+  const DaemonRestartProgress({
+    this.waitingFor,
+    this.restarting,
+    this.version,
+    this.error,
+  });
+
+  final List<String>? waitingFor;
+  final bool? restarting;
+  /// the build it restarts on
+  final String? version;
+  /// why it will not; the answer ends
+  final String? error;
+
+  factory DaemonRestartProgress.fromJson(Map<String, dynamic> json) {
+    return DaemonRestartProgress(
+      waitingFor: _listOrNull(
+        json['waitingFor'],
+        (value) => value as String,
+      ),
+      restarting: json['restarting'] as bool?,
+      version: json['version'] as String?,
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (waitingFor != null) {
+      json['waitingFor'] = waitingFor!;
+    }
+    if (restarting != null) {
+      json['restarting'] = restarting;
+    }
+    if (version != null) {
+      json['version'] = version;
+    }
+    if (error != null) {
+      json['error'] = error;
     }
     return json;
   }

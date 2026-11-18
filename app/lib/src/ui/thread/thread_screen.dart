@@ -350,18 +350,10 @@ class _ThreadScreenState extends State<ThreadScreen> {
     );
   }
 
-  /// Every tab this thread kind has (decision 2). F6 brings the work item's
-  /// and the plan run's sets; until then those kinds have none.
-  List<InspectorTab> get _inspectorTabs => switch (widget.thread.kind) {
-    model.ThreadKind.agent => const [
-      InspectorTab.changes,
-      InspectorTab.files,
-      InspectorTab.terminal,
-      InspectorTab.preview,
-      InspectorTab.inspect,
-    ],
-    model.ThreadKind.workItem || model.ThreadKind.planRun => const [],
-  };
+  /// Every tab this thread kind has. The set is the kind's, declared by
+  /// `tabsForThread` (F4 decision 2, F6 decision 6), so this screen and the
+  /// model cannot disagree about which tabs a kind has.
+  List<InspectorTab> get _inspectorTabs => tabsForThread(widget.thread.kind);
 
   /// Whether the inspector is a sheet below the medium breakpoint.
   bool get _inspectorBelowBreakpoint =>

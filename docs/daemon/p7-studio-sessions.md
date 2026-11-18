@@ -653,4 +653,209 @@ idle sweep's check-then-act window (accepted by design; `idle.go` says so).
 
 ### Plan 2
 
-Not started.
+Executed 2026-11-18 on `p7-2-studio`, one commit per task
+(`p7-2-studio: task N — …`, tasks 1–5), one commit carrying the message-count
+contract (`a session thread carries its message count`), two baseline-hygiene
+commits, and then this record. The branch's merge base with `main` is
+`b6ade2cf`, the base plan 1 records. The eight plan-2 commits sit on plan 1's
+`6487f4e2`; from there the plan changed 32 files (1842 insertions, 40
+deletions) under `app/` and `docs/studio-flutter/`, two of them the regenerated
+gallery goldens. **No Go file changed:** every route the Studio asks for landed
+with plan 1.
+
+**What landed.**
+
+- **The session kind (task 1).** `docs/studio-flutter/design-system.md` §6 now
+  names four kinds — "agent, work item, plan run, session" — and defines a
+  session as "a conversation a daemon's project holds that no agent owns,
+  usually one a terminal started", its icon the desktop computer.
+  `app/lib/src/ui/kit/vocabulary.dart` gains
+  `session('Session', CupertinoIcons.desktopcomputer)`; the gallery's
+  `_threads()` gains a sixth row (idle, "Terminal session", kind `session`);
+  `app/test/kit/thread_row_test.dart` gains
+  `a session row's kind has its tooltip`; both gallery goldens were regenerated.
+- **The client and the store (task 2).** `BridgeClient.sessionIndex({String?
+  root})` reads `/api/sessions/all` and `openSession(String)` posts
+  `/api/sessions/{id}/load`; `docs/studio-flutter/route-parity.md`'s two rows
+  name those methods instead of `dropped:`. `FleetStore` gains `HostedSession`,
+  `sessions({String? host})`, `session(host, sessionId)`,
+  `sessionsError(host, root)` and `refreshSessions(host, {String? root})`, which
+  keeps one read in flight per host and coalesces the roots asked for meanwhile
+  into one follow-up; `_sessionsFrom` replaces, adds or removes only the root a
+  rooted read answered, a read with no root replaces them all, a failed read
+  keeps the held groups, and a 404/501 from an older bridge leaves them empty.
+  `_applyDelta` gains a `sessions` case that decodes `SessionsDelta` and
+  re-reads its root unawaited.
+- **Sessions are threads (task 3).** `ThreadKind.session`, `ThreadRef.closed`,
+  `ThreadRef.messageCount`, `statusOfSession` and `threadOfSession`
+  (`app/lib/src/model/thread_ref.dart`); `isEarlier` leads with `closed`;
+  `buildNavModel` adds each host's sessions beside its agents and items, and a
+  session whose project the host never listed still gets its project row. All
+  six switches over the model's kind handle `session` (`sidebar.dart`,
+  `pull_facts.dart`, `thread_header.dart`, `pulls_store.dart`,
+  `tabsForThread` in `inspector_state.dart`, `_inspectorTabs` in
+  `thread_screen.dart`).
+- **Opening a session (task 4).** `StackStatus.gone`, `StackStore.opener`,
+  `StackStore.failure` and `reopen()`; `start` awaits the opener before it
+  opens the stream and fetches, a failed open is `error` carrying the bridge's
+  words, and a 404 in a store with an opener is `gone`. `main.dart` passes the
+  opener only for a thread of kind `session`; the shell's `_threadOn` answers a
+  session between the work items and the agents; the thread screen draws
+  "This session was closed while idle." with Reopen for `gone`, and the
+  bridge's words for `error`.
+- **The project page and the ask (task 5).** `ProjectPage` gains `sessions`,
+  `sessionsError`, `onOpenSession` and `onRetrySessions` and draws a Sessions
+  group after Agents; the shell orders it open first, then closed, newest first,
+  ties by id, and wires the error and Try again; `InboxModel._askForPendingOn`
+  is split out of `_askForPending`, and `_rebuild` adds one ask per hosted
+  session whose row carries a `pending`.
+
+**Tests.** The plan names 36 tests across nine files, and all 36 are present
+and pass: 1 in `app/test/kit/thread_row_test.dart`, 3 in
+`app/test/client/bridge_client_test.dart`, 7 in `app/test/model/fleet_store_test.dart`,
+6 in `app/test/model/thread_ref_test.dart`, 4 in `app/test/model/nav_model_test.dart`,
+5 in `app/test/model/stack_store_test.dart`, 2 in `app/test/ui/shell_test.dart`,
+5 in `app/test/ui/project/project_page_test.dart` and 3 in
+`app/test/model/inbox_model_test.dart`. The `'session thread'` ScreenCase is
+registered in `app/test/support/screens.dart:1436` with every required state and
+the inspector on Inspect, so `states_test`, `tooltips_test` and `overflow_test`
+all reach it through the registry. (`design_rules_test` reads `lib/src/ui` as
+source and `contrast_test` reads the token palette, so neither iterates
+`screens`; they bear on the screen the way they bear on every other.)
+
+**Decisions the executor had to make.**
+
+1. **The gallery goldens were regenerated on Linux, not macOS.** The plan's
+   "macOS only" line is stale: `app/test/gallery_test.dart:21` pins
+   `Platform.isLinux` and skips the golden comparison everywhere else, which is
+   what CI runs. The two PNGs in task 1's commit are therefore Linux renders,
+   and `flutter test test/gallery_test.dart` compares rather than skips on this
+   host.
+2. **`ThreadRef` carries a session's message count.** Decision 8's row says how
+   many messages a session holds, and the plan's `List<threads.ThreadRef>`
+   contract could not carry it. `ThreadRef` gained `int? messageCount`, set by
+   `threadOfSession` from the row and included in `==` and `hashCode` (its own
+   commit, `1ef259f9`). It is the one contract the plan's Contracts section does
+   not spell out; the project page omits the phrase entirely when it is null.
+3. **`_applyDelta` matches the wire literal `'sessions'`.** Its neighbouring
+   arms switch on the string, so the new one does too; the enum constant stays
+   in `_applyFleetDelta` as "not an agent row", which is where plan 1 left it
+   (plan 1's decision 15).
+4. **`StackStore.opener` is a public final field.** It takes the same shape as
+   `sessionId`: a named parameter assigned to a private field trips
+   `prefer_initializing_formals`, and a private named parameter is not legal
+   Dart.
+5. **`main.dart` imports the model's `ThreadKind` under a `threads` prefix**
+   (`import 'src/model/thread_ref.dart' as threads;`). The kit exports a
+   `ThreadKind` of its own and the plain import made the name ambiguous.
+6. **A session row's description joins with `' · '`** — "Open · 8m · 18
+   messages" — carries no `value` (unlike an agent's status word), and leaves
+   the count out when the index did not carry one.
+7. **A root's listing error replaces the "appear here" sentence** rather than
+   sitting above it when there are no rows. The group is one `if (error !=
+   null) … else if (sessions.isEmpty) …`, so a failed root with no rows says why
+   and offers Try again instead of claiming no session exists.
+8. **Baseline hygiene.** `app/test/client/contract_fixture_test.dart` was left
+   unformatted by plan 1 and was formatted in its own commit (`13f010c9`), so
+   the plan's `dart format --set-exit-if-changed` check can pass. A plan-1 lint
+   (`use_null_aware_elements` in `fleet_store.dart`'s `_sessionsFrom`) was fixed
+   in its own commit (`64f9b2c1`) for the same reason.
+
+**Mutation checks.** Four, one per task that named one. Each was run when its
+task landed and is recorded here as observed; none was re-run for this record.
+The lines each reverts are still present, and the four tests that caught them
+all pass in the full run below.
+
+| Mutation | Test | Result |
+|---|---|---|
+| a rooted read replaced every group | `a sessions delta re-reads its root only` | FAIL: `Expected: contains all of ['s-2', 't-1']`, `Actual: ['s-2']` |
+| the `closed` clause dropped from `isEarlier` | `a closed session counts toward earlier` | FAIL: `Expected: <1>`, `Actual: <0>` |
+| the stream started before awaiting the opener | `a store with an opener opens before it follows` | FAIL: `Expected: ['open']`, `Actual: ['stream', 'open']` |
+| the sessions loop skipped in `_rebuild` | `a session's parked approval is an ask on its thread`, `answering it posts the permission` | FAIL: neither ask appears on the session's thread; the answer posts nothing |
+
+**Acceptance run: not performed by hand.** The acceptance run the Testing
+section lists is a person at a desktop: two terminals, a browser on the Studio,
+and a judgement of what it shows. This host is a headless Linux box with no
+interactive desktop session, and the Studio is a canvas-rendered Flutter app, so
+steps 2–4 cannot be performed here at all. A `marshal-daemon.service` belonging
+to the user's own installation is also running on this machine, and
+`scripts/dev-studio.sh` restarts it; running it would have interrupted the
+user's daemon and Studio. **No browser was opened, no screenshot was taken and
+no person observed the Studio.** What follows is, step by step, the automated
+evidence that stands in for each one and what it leaves unobserved. Steps are
+quoted from §Testing.
+
+1. *"Build, restart the daemon with `scripts/dev-studio.sh`, and open the
+   Studio with `marshal studio`."* **Nothing covers it.** No test builds the
+   binaries, runs the dev script or opens the Studio in a browser;
+   `marshal studio` exists (`cmd/marshal/main.go:191`) and the script exists,
+   but neither ran here. Unobserved.
+2. *"With two terminal sessions on one project, both appear under the
+   project."* Covered as a rule, not as a composition:
+   `TestTheIndexGroupsOpenAndClosedSessions` (`web/bridge/sessions_test.go:1018`)
+   groups two rows of one root into that root's group,
+   `an open session is a current thread under its project`
+   (`app/test/model/nav_model_test.dart:298`) puts a session in its project's
+   tree, and `sessions list open first, then closed`
+   (`app/test/ui/project/project_page_test.dart:395`) lists both parts on the
+   page. Nothing runs two real terminals and reads the resulting page, so the
+   two-terminal composition is unobserved.
+3. *"Type a prompt in one terminal: its thread shows running, and its
+   transcript streams in the Studio."* The bridge half is covered:
+   `TestATerminalTurnStreams` (`fleetchild_test.go:113`) delivers a terminal
+   session's `session/update` to an `/api/events?sessionId=` subscriber, and
+   `TestATerminalTurnMarksTheSessionBusy` (`attach_test.go:1635`) marks the
+   session busy for the run and clears it at the end; `a busy session is
+   running` (`thread_ref_test.dart:185`) maps that busy row to the running
+   status. Unobserved: a real terminal's turn reaching a rendered screen.
+4. *"Send a prompt from the Studio: it moves in the terminal."* The bridge half
+   is covered by `TestEveryPerSessionRouteReachesAProjectSession`
+   (`sessions_test.go:80`), where a `POST /api/sessions/{id}/prompt` is accepted
+   and arrives on the project child as `session/prompt` naming the session.
+   Unobserved: the child forwarding it into the terminal's agent process — the
+   child under test is a test double — and the terminal moving in answer.
+5. *"Prompt from the Studio while the terminal's turn runs: you get the `409`
+   notice."* Covered: `TestAPromptDuringATerminalTurnIs409`
+   (`fleetchild_test.go:147`) refuses the Studio's prompt 409 while the
+   followed run is live and accepts it 202 once the run ends. The Studio's side
+   of that is the composer's existing behaviour — `a refused send keeps the
+   draft and says why` (`app/test/model/composer_model_test.dart:90`) — which
+   this plan did not extend. Unobserved: the notice on a real screen.
+6. *"Open a closed session from the project page: it reads, then drives."*
+   Covered as separate links of one chain: `choosing a session opens it`
+   (`project_page_test.dart:550`) calls `onOpenSession`;
+   `a session's thread place opens the session thread` (`shell_test.dart:293`)
+   resolves `/thread/<host>/<id>` to the session's title and word;
+   `a store with an opener opens before it follows` (`stack_store_test.dart:351`)
+   proves the opener completes before the first fetch and the stream;
+   `TestLoadOpensAClosedSession` (`sessions_test.go:132`) and
+   `TestOpenSessionResumesOnTheProjectChild` (`sessions_test.go:469`) reopen one
+   on its project's child; and `a 404 for an opened session is gone`
+   (`stack_store_test.dart:410`) with `a gone session offers reopen`
+   (`shell_test.dart:315`) cover the sweep's 404 and its Reopen. Unobserved: the
+   chain in one run against a live daemon, and the drive that follows the read.
+
+The gallery golden this plan regenerated is compared, not skipped, on Linux
+(`flutter test test/gallery_test.dart` below), so the one acceptance-adjacent
+item that a headless host *can* check is checked.
+
+**Verification.**
+
+- `cd app && flutter analyze`: `No issues found! (ran in 0.7s)`.
+- `cd app && flutter test` (Flutter 3.50.0): `+3384: All tests passed!` —
+  3384 passed, none failed, none skipped by this plan's screens.
+- `cd app && dart format --output=none --set-exit-if-changed lib test`:
+  `Formatted 340 files (0 changed) in 0.90 seconds.`, exit 0.
+- `cd app && flutter test test/gallery_test.dart`: `+6: All tests passed!` —
+  the light and dark gallery compares, and both menu and sheet goldens, against
+  the regenerated files.
+- `TMPDIR=/tmp/p7-2 go test ./web/bridge/... -count=1` (the plan writes
+  `/private/tmp/p7-2`, a macOS path): `ok marshal/web/bridge 63.199s`,
+  `ok marshal/web/bridge/contract 0.009s`,
+  `ok marshal/web/bridge/contract/dartgen 0.009s`. The route-parity table is
+  shared, and `TestDartContractIsCurrent` passes, so the app's contract module
+  matches `web/bridge/contract`.
+
+The plan's `Done when` list is met by these tests except for the acceptance
+run, which could not be performed on this host and is recorded above as
+unobserved rather than claimed.

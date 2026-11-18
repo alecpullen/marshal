@@ -633,6 +633,10 @@ class HostView {
   /// Whether the host is answering now.
   bool get live => reach.name == 'live';
 
+  /// Whether the bridge refused this page's token for it. A refusal is not a
+  /// silence: a screen says so and offers the way to sign in.
+  bool get refused => reach.name == 'unauthorized';
+
   /// The reach in the design system's words, with its age when the host is
   /// not answering: "live", "stale 4m", "unreachable 4m", "token refused".
   /// A screen shows this rather than colouring a dot it cannot explain.

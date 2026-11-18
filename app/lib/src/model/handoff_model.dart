@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/contract.g.dart';
 import 'drafts_model.dart';
+import 'expected_checks.dart';
 import 'planning_model.dart';
 
 // The create route and the defaults are passed in, so their fields stay
@@ -102,8 +103,9 @@ class ProjectDefaults {
   final String implementerModel;
   final String reviewerModel;
 
-  /// Every check that must pass, by the name the forge gives it.
-  final List<String> expectedChecks;
+  /// Every check that must pass, exactly as the forge names it: its kind, its
+  /// name and, for a `check_run`, the app that runs it.
+  final List<ExpectedCheck> expectedChecks;
 
   /// How many repair rounds the work may take.
   final int maxRounds;
@@ -137,9 +139,11 @@ class ProjectDefaults {
       // that names none runs it on the host that holds the project.
       native: workspace.isEmpty,
       expectedChecks: [
+        // Every key the bridge sent is kept, in its order: a check with an
+        // empty name is the bridge's to refuse, not this mapping's to drop.
         for (final check
             in factory?.expectedChecks ?? const <FactoryCheckKey>[])
-          if (check.name.trim().isNotEmpty) check.name.trim(),
+          ExpectedCheck.of(check),
       ],
       maxRounds: factory?.maxRounds ?? 3,
     );
@@ -265,6 +269,17 @@ class HandoffModel extends ChangeNotifier {
   static int _reviews = 0;
   final int _review = _reviews++;
 
+  /// Whether the person acknowledged that this work requires no checks at
+  /// all. Theirs to choose, never derived: a project that states no checks is
+  /// still followed until they say otherwise.
+  bool _noRequiredCIAcknowledged = false;
+
+  /// The expected checks as the person typed them, verbatim, or null while
+  /// they have typed none and the field follows the project. Text the parser
+  /// refuses is kept here rather than replaced by the checks that happened to
+  /// parse (the project editor keeps its own text the same way).
+  String? _checksText;
+
   /// The settings version this review is bound to, and the one in force when
   /// an approval last checked. [settingsConflict] is worded from the two.
   String? _reviewed;
@@ -280,6 +295,11 @@ class HandoffModel extends ChangeNotifier {
 
   /// The item the last [approve] created, if it created one.
   FactoryItem? get created => _created;
+
+  /// Whether the person acknowledged that this work requires no checks. The
+  /// acknowledgement is theirs to give or take back; it is never read out of
+  /// how many checks are stated.
+  bool get noRequiredCIAcknowledged => _noRequiredCIAcknowledged;
 
   /// The settings-version conflict, in the words the sheet needs: the version
   /// this review displayed and the one now in force. Null when they agree, or
@@ -349,26 +369,111 @@ class HandoffModel extends ChangeNotifier {
 
   /// The value [field] runs with, as words the sheet draws.
   String words(String field) => switch (valueOf(field)) {
-    final List<String> values =>
-      values.isEmpty ? 'None required' : values.join(', '),
+    final List<ExpectedCheck> checks =>
+      checks.isEmpty
+          ? 'None required'
+          : [for (final check in checks) check.words].join(', '),
     final String value => value.trim().isEmpty ? 'Not stated' : value.trim(),
     final Object value => '$value',
     null => 'Not stated',
   };
 
   /// Sets one field to the person's own value, which marks it overridden.
+  ///
+  /// The expected checks are typed as raw lines, so a set of them is written
+  /// as those lines and kept verbatim. The sheet does not come through here
+  /// for them: its field types through [setChecksText], which is the same
+  /// path with the text the person actually wrote.
   void set(String field, Object value) {
     if (!HandoffField.all.contains(field)) return;
+    if (field == HandoffField.checks && value is List<ExpectedCheck>) {
+      setChecksText(formatExpectedChecks(value));
+      return;
+    }
     _overrides[field] = value;
     _autosave();
     notifyListeners();
   }
 
   /// Puts one field back to the project's value.
+  ///
+  /// Resetting the expected checks also takes back the no-checks
+  /// acknowledgement: they cannot both be live, so the project's own checks
+  /// come back with nothing claiming they are unused.
   void reset(String field) {
-    if (_overrides.remove(field) == null) return;
+    final overridden = _overrides.remove(field) != null;
+    final acknowledged =
+        field == HandoffField.checks && _noRequiredCIAcknowledged;
+    if (field == HandoffField.checks) {
+      _checksText = null;
+      _noRequiredCIAcknowledged = false;
+    }
+    if (!overridden && !acknowledged) return;
     _autosave();
     notifyListeners();
+  }
+
+  /// Records the person's acknowledgement that this work requires no checks,
+  /// or takes it back. Like a field edit it autosaves the draft, so the
+  /// acknowledgement survives a page that closes.
+  ///
+  /// Acknowledging clears the stated checks: the working draft sends
+  /// `checksMode: 'none'` for an acknowledgement, which drops stated checks,
+  /// so keeping them here would make the draft and the item's config encode
+  /// different work. Taking the acknowledgement back states no checks either;
+  /// the project is followed again until the person states some.
+  void setNoRequiredCIAcknowledged(bool acknowledged) {
+    _noRequiredCIAcknowledged = acknowledged;
+    if (acknowledged) {
+      _checksText = null;
+      _overrides[HandoffField.checks] = const <ExpectedCheck>[];
+    } else {
+      _dropEmptyChecksOverride();
+    }
+    _autosave();
+    notifyListeners();
+  }
+
+  /// The expected checks as the person typed them, verbatim: their own raw
+  /// lines, or the project's as canonical lines while they have typed none.
+  String get checksText => _checksText ?? formatExpectedChecks(_checks);
+
+  /// Why the typed checks text cannot be read as checks, in the parser's own
+  /// words — the ones the project editor shows — or null when it can.
+  String? get checksError => parseExpectedChecks(checksText).error;
+
+  /// Types the expected checks as canonical raw lines.
+  ///
+  /// Text that does not parse is kept verbatim, with the checks that did
+  /// parse beside it, so nothing the person typed is rewritten away; the
+  /// [blockers] list refuses approval until it can be read. Stating a check
+  /// also takes back the no-checks acknowledgement, because the two cannot
+  /// both be live. A field with no checks in it is not an override at all:
+  /// the project's checks are followed again until the person states some,
+  /// while the field itself stays as empty as they left it.
+  void setChecksText(String text) {
+    final parsed = parseExpectedChecks(text);
+    _checksText = text;
+    _overrides[HandoffField.checks] = parsed.checks;
+    if (parsed.checks.isNotEmpty) _noRequiredCIAcknowledged = false;
+    _dropEmptyChecksOverride();
+    _autosave();
+    notifyListeners();
+  }
+
+  /// Forgets a checks override that holds nothing.
+  ///
+  /// An empty override says "overridden to no checks", which is not a choice
+  /// a cleared field makes: the project's checks still apply, so the row reads
+  /// as inherited and the draft encodes `inherit` with it. The one empty
+  /// override that stays is the acknowledgement's own, which is what makes
+  /// the stated checks empty while `checksMode` says `none`.
+  void _dropEmptyChecksOverride() {
+    if (_noRequiredCIAcknowledged) return;
+    final checks = _overrides[HandoffField.checks];
+    if (checks is List<ExpectedCheck> && checks.isEmpty) {
+      _overrides.remove(HandoffField.checks);
+    }
   }
 
   /// Queues the draft the review is, two seconds after the last edit (F6
@@ -394,12 +499,18 @@ class HandoffModel extends ChangeNotifier {
     maxRoundsOverride: '$_rounds',
     ciPollOverride: '',
     ciWaitOverride: '',
-    checksMode: _checks.isEmpty ? 'none' : 'custom',
-    expectedChecksText: _checks.join(', '),
+    // The checks mode states which of the three shapes the review holds: the
+    // person acknowledged that nothing is required ('none'), the project
+    // states its own checks ('custom'), or neither — the item follows the
+    // project rather than silently requiring nothing ('inherit').
+    checksMode: _noRequiredCIAcknowledged
+        ? 'none'
+        : (_checks.isEmpty ? 'inherit' : 'custom'),
+    expectedChecksText: formatExpectedChecks(_checks),
     native: _native,
     nativeChosen: true,
     implementerAuto: true,
-    noRequiredCIAcknowledged: _checks.isEmpty,
+    noRequiredCIAcknowledged: _noRequiredCIAcknowledged,
   );
 
   /// What stops approval, in plain words. Empty means the action may be
@@ -409,6 +520,10 @@ class HandoffModel extends ChangeNotifier {
     if (planToSend.trim().isEmpty) 'There is no plan text to hand over.',
     if (_rounds < 1) 'The round allowance must be at least one.',
     if (title.trim().isEmpty) 'Give the work a name.',
+    // Checks text that cannot be read is not approvable: posting it would
+    // drop every line the parser refused, which is exactly what the sheet
+    // shows the person as typed.
+    ?checksError,
     ?settingsConflict,
   ]);
 
@@ -490,11 +605,8 @@ class HandoffModel extends ChangeNotifier {
       reviewerRouting: _routing(_model(HandoffField.reviewer)),
       reviewerInstructions: '',
       implementerAuto: true,
-      expectedChecks: [
-        for (final name in _checks)
-          FactoryCheckKey(kind: 'check_run', name: name, appID: 0),
-      ],
-      noRequiredCIAcknowledged: _checks.isEmpty,
+      expectedChecks: [for (final check in _checks) check.toKey()],
+      noRequiredCIAcknowledged: _noRequiredCIAcknowledged,
       maxRounds: _rounds,
       ciPollSeconds: 30,
       ciWaitSeconds: 900,
@@ -565,8 +677,8 @@ class HandoffModel extends ChangeNotifier {
       : '';
   bool get _native =>
       (valueOf(HandoffField.environment) as String) != _workspaceEnvironment;
-  List<String> get _checks =>
-      (valueOf(HandoffField.checks) as List<String>).toList();
+  List<ExpectedCheck> get _checks =>
+      (valueOf(HandoffField.checks) as List<ExpectedCheck>).toList();
   String _model(String field) => (valueOf(field) as String).trim();
 
   String get _repoWords => _repoID.isEmpty ? 'the repository' : _repoID;

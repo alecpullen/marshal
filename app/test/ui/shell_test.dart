@@ -1,4 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
+import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
@@ -185,5 +187,76 @@ void main() {
     // The search field is drawn where it will live, disabled, and says why.
     expect(find.text('Search'), findsOneWidget);
     expect(find.byTooltip('Search arrives in a later phase'), findsOneWidget);
+  });
+
+  group('the fleet state (§7)', () {
+    HostView host(String name, HostReach reach) => HostView(
+      name: name,
+      kind: HostKind.local,
+      reach: reach,
+      lastContact: shellNow,
+    );
+
+    StateKind? kindFor(List<HostView> hosts, {bool anyAgents = false}) =>
+        fleetStateKind(
+          read: true,
+          failed: false,
+          anyAgents: anyAgents,
+          hosts: hosts,
+        );
+
+    test('a refused token is unauthorized, never unreachable', () {
+      expect(
+        kindFor([host('local', HostReach.unauthorized)]),
+        StateKind.unauthorized,
+        reason:
+            'a page whose token the bridge refused must say so: reporting it '
+            'as unreachability sends the reader to look at the wrong thing',
+      );
+    });
+
+    test('a host nothing answers on is unavailable', () {
+      expect(
+        kindFor([host('local', HostReach.unreachable)]),
+        StateKind.unavailable,
+      );
+    });
+
+    test('a refusal explains a fleet of refusals better than a silence', () {
+      expect(
+        kindFor([
+          host('local', HostReach.unreachable),
+          host('studio', HostReach.unauthorized),
+        ]),
+        StateKind.unauthorized,
+      );
+    });
+
+    test('a fleet still showing agents is stale, not a state page', () {
+      expect(
+        kindFor([
+          host('local', HostReach.live),
+          host('studio', HostReach.unauthorized),
+        ], anyAgents: true),
+        StateKind.stale,
+      );
+    });
+
+    test('a fleet with nothing to show and no answers is empty or error', () {
+      expect(kindFor([]), StateKind.empty);
+      expect(
+        fleetStateKind(read: true, failed: true, anyAgents: false, hosts: []),
+        StateKind.error,
+      );
+      expect(
+        fleetStateKind(
+          read: false,
+          failed: false,
+          anyAgents: false,
+          hosts: [host('local', HostReach.live)],
+        ),
+        StateKind.loading,
+      );
+    });
   });
 }

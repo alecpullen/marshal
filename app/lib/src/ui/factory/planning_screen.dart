@@ -449,6 +449,7 @@ class _PlanningScreenState extends State<PlanningScreen> {
         message: 'The plan could not be read.',
         retry: retry,
       ),
+      StateKind.unauthorized => const StateMessage.unauthorized(),
       StateKind.unavailable => StateMessage.unavailable(
         host: widget.title,
         lastSeen: relativeAge(_now, _now),

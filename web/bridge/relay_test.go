@@ -858,3 +858,123 @@ func TestTheRelayLogsNoParams(t *testing.T) {
 		t.Errorf("the relay's log does not name the root:\n%s", sink.String())
 	}
 }
+
+// registryForRoot is the registry of the project child the harness started for
+// root: the registry a restart of that child counts its viewers on.
+func (h *attachHarness) registryForRoot(t *testing.T, root string) *Registry {
+	t.Helper()
+	pc, err := h.fleet.projectChildFor(context.Background(), root)
+	if err != nil {
+		t.Fatalf("projectChildFor(%s): %v", root, err)
+	}
+	return pc.reg
+}
+
+// trackedRelays is how many live relays the fleet has counted on reg.
+func (f *Fleet) trackedRelays(reg *Registry) int {
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	return len(f.relays[reg])
+}
+
+// keptRegistry reports whether reg still has an entry in the fleet's map.
+func (f *Fleet) keptRegistry(reg *Registry) bool {
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	_, ok := f.relays[reg]
+	return ok
+}
+
+// TestTheRelayIsTrackedWhileItRuns: an attach is in f.relays under the child's
+// registry for as long as it runs, and its registry's entry goes with it.
+func TestTheRelayIsTrackedWhileItRuns(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+
+	res := h.attach(http.MethodPost, root, "", true)
+	if res.status != http.StatusSwitchingProtocols {
+		t.Fatalf("attach = %d, want 101", res.status)
+	}
+	reg := h.registryForRoot(t, root)
+	eventually(t, "the relay to be tracked", func() bool {
+		return h.fleet.trackedRelays(reg) == 1
+	})
+
+	_ = res.conn.Close()
+	eventually(t, "the relay to be untracked", func() bool {
+		return h.fleet.trackedRelays(reg) == 0
+	})
+	if h.fleet.keptRegistry(reg) {
+		t.Fatal("an emptied registry kept its entry in the fleet's relay map")
+	}
+}
+
+// TestTheViewersHearTheRestart: one announcement reaches every viewer of the
+// child it names, as the agent's own marshal/restarting frame.
+func TestTheViewersHearTheRestart(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+
+	first := h.attach(http.MethodPost, root, "", true)
+	if first.status != http.StatusSwitchingProtocols {
+		t.Fatalf("first attach = %d, want 101", first.status)
+	}
+	sessionID := first.header.Get(sessionHeader)
+	second := h.attach(http.MethodPost, root, sessionID, true)
+	if second.status != http.StatusSwitchingProtocols {
+		t.Fatalf("second attach = %d, want 101", second.status)
+	}
+
+	reg := h.registryForRoot(t, root)
+	eventually(t, "both viewers to be tracked", func() bool {
+		return h.fleet.trackedRelays(reg) == 2
+	})
+
+	if got := h.fleet.announceRestart(reg, "a new marshal build", "v2"); got != 2 {
+		t.Fatalf("announceRestart reached %d viewers, want 2", got)
+	}
+	want := `{"jsonrpc":"2.0","method":"marshal/restarting","params":{"reason":"a new marshal build","version":"v2"}}` + "\n"
+	for i, res := range []*attachResult{first, second} {
+		if line := readLine(t, res.reader); line != want {
+			t.Errorf("viewer %d heard %q, want %q", i+1, line, want)
+		}
+	}
+}
+
+// TestAnAnnouncementSkipsOtherChildren: an announcement is the child's, so a
+// viewer of another child hears nothing. The frame carries no version when
+// there is none, as the agent's own does not.
+func TestAnAnnouncementSkipsOtherChildren(t *testing.T) {
+	firstRoot := t.TempDir()
+	otherRoot := t.TempDir()
+	h := newAttachHarness(t)
+
+	first := h.attach(http.MethodPost, firstRoot, "", true)
+	if first.status != http.StatusSwitchingProtocols {
+		t.Fatalf("first attach = %d, want 101", first.status)
+	}
+	other := h.attach(http.MethodPost, otherRoot, "", true)
+	if other.status != http.StatusSwitchingProtocols {
+		t.Fatalf("other attach = %d, want 101", other.status)
+	}
+
+	firstReg := h.registryForRoot(t, firstRoot)
+	otherReg := h.registryForRoot(t, otherRoot)
+	eventually(t, "both children's viewers to be tracked", func() bool {
+		return h.fleet.trackedRelays(firstReg) == 1 && h.fleet.trackedRelays(otherReg) == 1
+	})
+
+	if got := h.fleet.announceRestart(firstReg, "a new marshal build", ""); got != 1 {
+		t.Fatalf("announceRestart reached %d viewers, want 1", got)
+	}
+	want := `{"jsonrpc":"2.0","method":"marshal/restarting","params":{"reason":"a new marshal build"}}` + "\n"
+	if line := readLine(t, first.reader); line != want {
+		t.Errorf("the child's viewer heard %q, want %q", line, want)
+	}
+
+	_ = other.conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if line, err := other.reader.ReadString('\n'); err == nil {
+		t.Fatalf("the other child's viewer heard %q", line)
+	}
+	_ = other.conn.SetReadDeadline(time.Time{})
+}

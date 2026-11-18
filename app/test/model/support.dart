@@ -75,6 +75,7 @@ FactoryItem factoryItem({
   String state = 'implementing',
   String stage = '',
   String project = '/home/u/alpha',
+  String repo = 'repo-1',
   int version = 1,
   String plan = '## Task 1\nRead the item.\n## Task 2\nApprove it.\n',
   List<FactoryWorker> workers = const [],
@@ -90,7 +91,7 @@ FactoryItem factoryItem({
   'title': title,
   'state': state,
   'stage': stage,
-  'repoId': 'repo-1',
+  'repoId': repo,
   'projectRoot': project,
   'hostId': 'local',
   'branch': 'factory/$id',
@@ -102,7 +103,7 @@ FactoryItem factoryItem({
     'plan': plan,
     'spec': 'Ship the work item thread.',
     'config': {
-      'repoId': 'repo-1',
+      'repoId': repo,
       'projectRoot': project,
       'hostId': 'local',
       'targetBranch': 'main',
@@ -132,6 +133,49 @@ FactoryItem factoryItem({
   'approvedAt': '2026-11-17T09:05:00Z',
   'updatedAt': (updatedAt ?? DateTime.utc(2026, 11, 17, 10)).toIso8601String(),
 });
+
+/// One CI check as a test writes one: a check run names the app that runs it,
+/// a commit status its own context.
+FactoryCheck factoryCheck({
+  String kind = 'check_run',
+  String name = 'build',
+  int appID = 42,
+  String observedAt = '2026-11-17T09:10:00Z',
+}) => FactoryCheck.fromJson({
+  'key': {'kind': kind, 'name': name, 'appId': appID},
+  'id': 'check-$name-$appID',
+  'sha': 'head-1',
+  'status': 'completed',
+  'conclusion': 'success',
+  'url': '',
+  'logTail': '',
+  'observedAt': observedAt,
+});
+
+/// One round's CI as a test writes one.
+FactoryCI factoryCI({
+  List<FactoryCheck> checks = const [],
+  String observedAt = '2026-11-17T09:10:00Z',
+}) => FactoryCI.fromJson({
+  'headSha': 'head-1',
+  'checks': [for (final check in checks) check.toJson()],
+  'complete': true,
+  'observedAt': observedAt,
+});
+
+/// One round as a test writes one; a null [ci] is a round that recorded none.
+FactoryRound factoryRound({int number = 1, FactoryCI? ci}) =>
+    FactoryRound.fromJson({
+      'number': number,
+      'approvalRevision': 1,
+      'implementEffectId': 'effect-$number',
+      'baseSha': 'base-1',
+      'headSha': 'head-$number',
+      'treeSha': 'tree-$number',
+      'ci': ci?.toJson(),
+      'startedAt': '2026-11-17T09:00:00Z',
+      'finishedAt': '2026-11-17T09:20:00Z',
+    });
 
 /// One factory worker as a test writes one.
 FactoryWorker factoryWorker({

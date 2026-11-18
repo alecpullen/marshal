@@ -40,12 +40,32 @@ func TestMain(m *testing.M) {
 	os.Exit(testenv.Run(m))
 }
 
+// buildEnv names the build a `--version` answer reports. The bridge checks a
+// new build by running the binary's `--version` (web/bridge/restart.go), and
+// the child inherits this process's environment, so a test that rebuilt the
+// file says which build it is. Unset in ordinary runs.
+const buildEnv = "MARSHAL_DAEMON_TEST_BUILD"
+
+// testBuild is the build a `--version` answer names when buildEnv is unset.
+const testBuild = "test-build"
+
 // runChild is the child the bridge starts, served over this process's own
 // stdio. A project's child is `acp --viewers unix://<socket>`: it returns when
 // the bridge ends stdio, and the viewers end with it. A plain `acp` is the
 // child an agent of its own gets — web/bridge starts that one with no
 // arguments — and it serves its one session over stdio.
+//
+// A sole `--version` answers the build check instead: the bridge runs it to
+// learn whether the binary on disk starts at all, and what it is (P6 B4).
 func runChild(args []string) error {
+	if len(args) == 1 && args[0] == "--version" {
+		build := os.Getenv(buildEnv)
+		if build == "" {
+			build = testBuild
+		}
+		fmt.Printf("marshal %s\n", build)
+		return nil
+	}
 	if len(args) == 1 && args[0] == "acp" {
 		return acp.Run(context.Background(), os.Stdin, os.Stdout, os.Stderr)
 	}

@@ -1043,6 +1043,10 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
           ? null
           : () => _sendBack(context),
       onNewWork: widget.newWorkFor == null ? null : () => _openNewWork(context),
+      // Stop ends the turn through the composer's own route. Hold is not
+      // passed: no bridge route holds an agent, so the header would offer an
+      // item that cannot work (f9-parity.md decision 2).
+      onStop: _composer == null ? null : () => unawaited(_composer!.stop()),
       composer: composer == null
           ? null
           : ThreadComposer(model: composer, view: _view),

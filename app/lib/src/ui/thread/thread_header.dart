@@ -120,6 +120,9 @@ class ThreadHeader extends StatelessWidget {
                 : 'Share a read-only status link',
             onTap: onShare,
           ),
+          // `onHold` is null everywhere today because no route holds an agent
+          // (f9-parity.md decision 2), so Stop is the only item the menu can
+          // carry; a null callback is already omitted.
           if (onStop != null || onHold != null)
             Menu(
               choices: [

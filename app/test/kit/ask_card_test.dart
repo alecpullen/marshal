@@ -9,7 +9,7 @@ void main() {
   AskCard ask({
     AskKind kind = AskKind.decision,
     AskPlacement placement = AskPlacement.inbox,
-    VoidCallback? onKeep,
+    List<AskAction>? actions,
     VoidCallback? onOpenSource,
   }) => AskCard(
     kind: kind,
@@ -22,11 +22,13 @@ void main() {
     source: 'marshal › Reliable session recovery',
     onOpenSource: onOpenSource,
     placement: placement,
-    actions: [
-      AskAction('Keep to reconnects', onTap: onKeep ?? () {}),
-      AskAction('Expand scope', onTap: () {}),
-      AskAction('Discuss', onTap: () {}),
-    ],
+    actions:
+        actions ??
+        [
+          AskAction('Keep to reconnects', onTap: () {}),
+          AskAction('Expand scope', onTap: () {}),
+          AskAction('Discuss', onTap: () {}),
+        ],
   );
 
   Future<void> pump(WidgetTester tester, AskCard card) =>
@@ -52,13 +54,28 @@ void main() {
     }
   });
 
-  testWidgets('the first action is the one primary', (tester) async {
+  testWidgets('the marked action is the one primary', (tester) async {
     var kept = 0;
-    await pump(tester, ask(onKeep: () => kept++));
+    await pump(
+      tester,
+      ask(
+        actions: [
+          AskAction('Keep to reconnects', primary: true, onTap: () => kept++),
+          AskAction('Expand scope', onTap: () {}),
+          AskAction('Discuss', onTap: () {}),
+        ],
+      ),
+    );
     final buttons = tester.widgetList<Btn>(find.byType(Btn)).toList();
     expect(buttons.map((b) => b.primary), [true, false, false]);
     await tester.tap(find.text('Keep to reconnects'));
     expect(kept, 1);
+  });
+
+  testWidgets('a card with no marked action has no primary', (tester) async {
+    await pump(tester, ask());
+    final buttons = tester.widgetList<Btn>(find.byType(Btn)).toList();
+    expect(buttons.map((b) => b.primary), [false, false, false]);
   });
 
   testWidgets('an approval shows its command in mono', (tester) async {

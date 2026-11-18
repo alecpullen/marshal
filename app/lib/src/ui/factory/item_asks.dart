@@ -217,6 +217,7 @@ class _ItemAsksState extends State<ItemAsks> {
         _draft.answer.text.trim().isEmpty;
     return AskAction(
       action.label,
+      primary: action.primary,
       onTap: enabled && !blocked && !unanswered
           ? () => _act(ask, action)
           : null,

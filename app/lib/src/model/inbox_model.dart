@@ -91,8 +91,10 @@ enum AskActionKind {
   dismiss,
 }
 
-/// One answer an ask offers. The first is the primary one (§5: at most one
-/// primary in a group, and it comes first).
+/// One answer an ask offers. [primary] marks the one action its card draws
+/// filled (§5: at most one primary in a group, and it comes first). A
+/// question's options are equals, so none of them is marked; an answer that
+/// commits, an approval's allow and an intake's start are.
 @immutable
 class AskAction {
   const AskAction(
@@ -1068,8 +1070,9 @@ class InboxModel extends ChangeNotifier {
         ? const <AskOption>[]
         : questions.first.options;
     return [
-      for (final (index, option) in options.indexed)
-        AskAction(option.label, primary: index == 0),
+      // Every option is an answer, so none of them is marked primary: the
+      // card draws them as equals (§5, design-system.md's AskCard row).
+      for (final option in options) AskAction(option.label),
       const AskAction(_reply, kind: AskActionKind.reply),
     ];
   }

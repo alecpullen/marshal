@@ -152,6 +152,7 @@ class _RunScreenState extends State<RunScreen> {
     actions: [
       AskAction(
         'Answer',
+        primary: true,
         onTap: model.canAnswer ? () => unawaited(_answer(model)) : null,
         note: model.canAnswer
             ? null

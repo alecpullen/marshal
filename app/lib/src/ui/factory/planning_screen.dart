@@ -353,6 +353,7 @@ class _PlanningScreenState extends State<PlanningScreen> {
         ? [
             AskAction(
               'Allow',
+              primary: true,
               onTap: () => unawaited(model.answer(request.requestID, 'allow')),
             ),
             AskAction(
@@ -363,6 +364,7 @@ class _PlanningScreenState extends State<PlanningScreen> {
         : [
             AskAction(
               'Answer',
+              primary: true,
               onTap: () => unawaited(_answerQuestion(model, request)),
             ),
           ],

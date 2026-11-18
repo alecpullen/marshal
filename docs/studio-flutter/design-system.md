@@ -195,7 +195,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Rows` | A list of name, description, value, and optionally a day's `Spark` | Every settings-style list |
 | `NavRow` | A row of the sidebar | An icon, a label, an optional count; a project's row has a disclosure chevron instead of an icon. Only threads carry a status, in a `ThreadRow` |
 | `PageBody` | Title, subtitle, actions, content | Every page that is not a thread |
-| `AskCard` | Something waiting on the user | The only way an ask is shown |
+| `AskCard` | Something waiting on the user | The only way an ask is shown. Primary is the action the caller marks, at most one and first; a question's options are equals, so none of them is |
 | `PrCard` | A pull request with its CI | The only way a pull request is shown in a list |
 | `ThreadRow` | A thread in a list | Dot, title, kind icon |
 | `TurnPrompt` | What the user said | Right-aligned, bordered, no fill. A row of the transcript, never a chat bubble |

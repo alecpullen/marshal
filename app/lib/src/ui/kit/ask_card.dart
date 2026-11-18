@@ -28,13 +28,22 @@ enum AskKind {
   final bool blocking;
 }
 
-/// One answer an ask offers. The first is the primary one.
+/// One answer an ask offers.
 @immutable
 class AskAction {
-  const AskAction(this.label, {required this.onTap, this.note});
+  const AskAction(
+    this.label, {
+    required this.onTap,
+    this.note,
+    this.primary = false,
+  });
 
   final String label;
   final VoidCallback? onTap;
+
+  /// The one action drawn primary. At most one action of a card is, and it
+  /// is the first; a card may have none.
+  final bool primary;
 
   /// Why an action with no [onTap] cannot be taken, drawn as its tooltip
   /// (§9). An action the app cannot perform says so rather than offering a
@@ -59,8 +68,9 @@ enum AskPlacement {
 /// its thread, so answering it anywhere is one action.
 ///
 /// A blocking ask has the `attention` border and a `warn` icon; its kind is
-/// also spelled out, so it is never colour alone. Its first action is the
-/// primary one (§5: at most one, and first).
+/// also spelled out, so it is never colour alone. The action the caller marks
+/// [AskAction.primary] is drawn as the primary one (§5: at most one, and
+/// first); a card may mark none.
 class AskCard extends StatelessWidget {
   const AskCard({
     super.key,
@@ -98,6 +108,11 @@ class AskCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // §5: at most one action is primary, and it is the first.
+    assert(
+      actions.indexed.every((entry) => !entry.$2.primary || entry.$1 == 0),
+      'At most one action of a card is primary, and it is the first.',
+    );
     final e = Ember.of(context);
     final ink = kind.blocking ? e.warn : e.muted;
     final source = placement == AskPlacement.thread ? null : this.source;
@@ -157,20 +172,17 @@ class AskCard extends StatelessWidget {
           Wrap(
             spacing: Space.s8,
             runSpacing: Space.s8,
-            children: [
-              for (final (i, action) in actions.indexed)
-                _action(i == 0, action),
-            ],
+            children: [for (final action in actions) _action(action)],
           ),
         ],
       ),
     );
   }
 
-  /// One action: primary when it is the first, and disabled with its reason
-  /// when it has no callback but says why (§7, §9).
-  Widget _action(bool primary, AskAction action) {
-    final button = primary
+  /// One action: primary when the caller marks it, and disabled with its
+  /// reason when it has no callback but says why (§7, §9).
+  Widget _action(AskAction action) {
+    final button = action.primary
         ? Btn.primary(action.label, onTap: action.onTap)
         : Btn(action.label, onTap: action.onTap);
     final note = action.note;

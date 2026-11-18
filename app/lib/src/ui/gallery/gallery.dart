@@ -587,7 +587,7 @@ class _GalleryState extends State<Gallery> {
       source: 'marshal › Reliable session recovery',
       onOpenSource: () {},
       actions: [
-        AskAction('Keep to reconnects', onTap: () {}),
+        AskAction('Keep to reconnects', primary: true, onTap: () {}),
         AskAction('Expand scope', onTap: () {}),
         AskAction('Discuss', onTap: () {}),
       ],
@@ -599,6 +599,7 @@ class _GalleryState extends State<Gallery> {
       waiting: '8m',
       source: 'marshal › Fixture cleanup',
       placement: AskPlacement.overview,
+      // A question's options are equals: it marks none of them.
       actions: [
         AskAction('Remove them', onTap: () {}),
         AskAction('Keep them', onTap: () {}),
@@ -611,7 +612,7 @@ class _GalleryState extends State<Gallery> {
       waiting: '1m',
       placement: AskPlacement.thread,
       actions: [
-        AskAction('Allow once', onTap: () {}),
+        AskAction('Allow once', primary: true, onTap: () {}),
         AskAction('Allow for this agent', onTap: () {}),
         AskAction('Refuse', onTap: () {}),
       ],
@@ -623,7 +624,7 @@ class _GalleryState extends State<Gallery> {
       waiting: '3m',
       source: 'av-portal › Booking updates',
       actions: [
-        AskAction('Allow for this agent', onTap: () {}),
+        AskAction('Allow for this agent', primary: true, onTap: () {}),
         AskAction('Add to environment', onTap: () {}),
         AskAction('Block', onTap: () {}),
       ],
@@ -635,7 +636,7 @@ class _GalleryState extends State<Gallery> {
       waiting: '20m',
       source: 'marshal › PR review bot',
       actions: [
-        AskAction('Post it', onTap: () {}),
+        AskAction('Post it', primary: true, onTap: () {}),
         AskAction('Edit', onTap: () {}),
       ],
     ),
@@ -646,7 +647,7 @@ class _GalleryState extends State<Gallery> {
       waiting: '1h 4m',
       source: 'marshal › Issue intake',
       actions: [
-        AskAction('Start it', onTap: () {}),
+        AskAction('Start it', primary: true, onTap: () {}),
         AskAction('Dismiss', onTap: () {}),
       ],
     ),
@@ -659,7 +660,7 @@ class _GalleryState extends State<Gallery> {
       waiting: '6m',
       source: 'acme/widgets › Quiet capture mode',
       actions: [
-        AskAction('Open', onTap: () {}),
+        AskAction('Open', primary: true, onTap: () {}),
         AskAction('Try again', onTap: () {}),
         AskAction('Dismiss', onTap: () {}),
       ],

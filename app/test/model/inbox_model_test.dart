@@ -258,7 +258,8 @@ void main() {
       [for (final action in ask.actions) action.label],
       ['main', 'next', 'Reply'],
     );
-    expect(ask.actions.first.primary, isTrue);
+    // An option is not the primary one: the card draws them as equals.
+    expect(ask.actions.first.primary, isFalse);
 
     // An option answers with its wire value, which need not be its label.
     await inbox.answer(ask, ask.actions[1]);
@@ -272,6 +273,47 @@ void main() {
     expect(
       fixture.requests('local').last.body,
       '{"answers":[{"question":"Which branch?","answer":"a topic branch"}]}',
+    );
+  });
+
+  test('a question’s options are equals', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        agents: [
+          agent(
+            id: 'a-1',
+            status: AgentState.agentAwaitingQuestion,
+            pending: const PendingRequest(
+              kind: PendingKind.pendingQuestion,
+              id: 'q-1',
+              params: {
+                'questions': [
+                  {
+                    'question': 'Which branch?',
+                    'options': [
+                      {'label': 'main', 'value': 'main'},
+                      {'label': 'next', 'value': 'release/next'},
+                    ],
+                  },
+                ],
+              },
+            ),
+          ),
+        ],
+      ),
+    ], now: now);
+
+    final inbox = await inboxFor(fixture);
+    final ask = inbox.asks.single;
+    expect(ask.kind, AskKind.question);
+    expect(
+      [for (final action in ask.actions) action.primary],
+      [false, false, false],
+      reason:
+          'choosing among a question’s options is not the ask’s primary '
+          'action, and neither is the free reply',
     );
   });
 

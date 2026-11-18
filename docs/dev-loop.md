@@ -240,6 +240,55 @@ Two things do not travel through the forward:
   url = "https://<host>.<tailnet>.ts.net:8443"
   ```
 
+## A relay on the development box
+
+One box can hold both halves of a relay: the Studio on `127.0.0.1:7700` relays,
+and the local daemon joins it as `local`. That is the way to see a relayed host
+without a second machine.
+
+Give the Studio the name it relays and that name's secret. Install first: the
+install rewrites `webbridge.env`, so the relay line is appended after it, and
+another `--install` later wipes it and needs the append again.
+
+```bash
+secret_dir="${MARSHAL_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/marshal}/studio"
+scripts/dev-studio.sh --install
+install -m 0600 /dev/null "$secret_dir/join-local.secret"
+printf '%s\n' 'some-long-secret' > "$secret_dir/join-local.secret"
+printf 'WEBBRIDGE_RELAY_JOIN=local=%s\n' "$secret_dir/join-local.secret" \
+  >> "$secret_dir/webbridge.env"
+scripts/dev-studio.sh --restart
+```
+
+The unit reads `webbridge.env` as an `EnvironmentFile`, so a plain `--restart`
+keeps the relay. Point the daemon at the same relay, store the same secret, and
+reinstall — the join is a unit argument, so it changes only there:
+
+```bash
+marshal daemon join-token          # paste the secret above; it never echoes
+# ~/.config/marshal/config.toml:
+#   [daemon]
+#   join_url = "http://127.0.0.1:7700"
+#   join_name = "local"
+marshal daemon install
+marshal daemon status              # relay: joined http://127.0.0.1:7700 as local
+```
+
+The relay lists what joined it, and a forward needs both tokens: the relay's
+bearer, then the host's own, which `marshal daemon token` prints for a pipe.
+
+```bash
+curl -s -H "Authorization: Bearer $(cat "$secret_dir/token")" \
+  127.0.0.1:7700/api/relay/hosts
+
+curl -s -H "Authorization: Bearer $(cat "$secret_dir/token")" \
+  -H "X-Marshal-Host-Token: $(marshal daemon token)" \
+  127.0.0.1:7700/api/hosts/local/api/agents
+```
+
+The daemon's own token opens no relay route, and the join secret only lets a
+daemon offer itself: the relay gives reach, not authority.
+
 ## Restart cost
 
 - The daemon's restart ends running turns. The TUI is told

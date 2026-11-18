@@ -45,6 +45,7 @@ import 'package:marshal_app/src/client/contract.g.dart'
         WireReceipt,
         WireStep,
         WireTool;
+import 'package:marshal_app/src/client/fleet_profiles.dart';
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/attention.dart';
 import 'package:marshal_app/src/model/bots_model.dart';
@@ -435,12 +436,21 @@ Widget _overview({StateKind? state}) => Overview(
   ],
   automations: [
     TrippedWatch(
+      host: 'local',
       name: 'the gate',
       agent: 'Agent a-1',
       action: 'Reroutes implementer to local',
       age: '4m',
     ),
+    TrippedWatch(
+      host: 'studio',
+      name: 'the queue',
+      agent: 'studio',
+      action: 'Notifies you',
+      age: '12m',
+    ),
   ],
+  manyHosts: true,
   state: state,
   onRetry: () {},
   onSelect: (_) {},
@@ -491,50 +501,54 @@ RecipesModel _recipesFixture() => RecipesModel.fixture(const [
 
 /// The watches the Automations fixture lists: one that tripped with a
 /// reroute, and one watching quietly from the bridge's own session.
-WatchesModel _watchesFixture() => WatchesModel.fixture([
-  WatchInfo(
-    agentID: 'a-1',
-    id: 'w-1',
-    name: 'the gate',
-    kind: 'command',
-    state: 'fired',
-    condition: 'exit != 0',
-    mode: 'interval',
-    intervalMs: 5000,
-    owner: 'a-1',
-    fireCount: 2,
-    lastSample: 'exit 1',
-    createdAt: 1763352000000,
-    lastFiredAt: shellNow.millisecondsSinceEpoch - 4 * 60 * 1000,
-    samples: const [
-      WatchSample(at: 1763352300000, value: 0, tripped: false),
-      WatchSample(at: 1763352600000, value: 1, tripped: true),
-    ],
-    onTrip: const OnTrip(
+WatchesModel _watchesFixture() => WatchesModel.fixture(
+  [
+    WatchInfo(
+      agentID: 'a-1',
+      id: 'w-1',
+      name: 'the gate',
+      kind: 'command',
+      state: 'fired',
+      condition: 'exit != 0',
+      mode: 'interval',
+      intervalMs: 5000,
+      owner: 'a-1',
+      fireCount: 2,
+      lastSample: 'exit 1',
+      createdAt: 1763352000000,
+      lastFiredAt: shellNow.millisecondsSinceEpoch - 4 * 60 * 1000,
+      samples: const [
+        WatchSample(at: 1763352300000, value: 0, tripped: false),
+        WatchSample(at: 1763352600000, value: 1, tripped: true),
+      ],
+      onTrip: const OnTrip(
+        notify: true,
+        resume: false,
+        reroute: RerouteRule(role: 'implementer', preset: 'local'),
+      ),
       notify: true,
       resume: false,
-      reroute: RerouteRule(role: 'implementer', preset: 'local'),
     ),
-    notify: true,
-    resume: false,
-  ),
-  WatchInfo(
-    agentID: 'studio',
-    id: 'w-2',
-    name: 'the queue',
-    kind: 'file',
-    state: 'watching',
-    condition: 'the file appears',
-    mode: 'interval',
-    intervalMs: 60000,
-    fireCount: 0,
-    createdAt: 1763352000000,
-    samples: const [
-      WatchSample(at: 1763352300000, value: 0, tripped: false),
-      WatchSample(at: 1763352600000, value: 0, tripped: false),
-    ],
-  ),
-], now: shellNow);
+    WatchInfo(
+      agentID: 'studio',
+      id: 'w-2',
+      name: 'the queue',
+      kind: 'file',
+      state: 'watching',
+      condition: 'the file appears',
+      mode: 'interval',
+      intervalMs: 60000,
+      fireCount: 0,
+      createdAt: 1763352000000,
+      samples: const [
+        WatchSample(at: 1763352300000, value: 0, tripped: false),
+        WatchSample(at: 1763352600000, value: 0, tripped: false),
+      ],
+    ),
+  ],
+  now: shellNow,
+  host: 'local',
+);
 
 /// The bots the Automations fixture lists: the review bot with one held
 /// review, and the CI fixer with one recent run.
@@ -854,6 +868,116 @@ Widget _designer({StateKind? state}) => EnvironmentDesigner(
   state: state,
 );
 
+/// The `marshal fleet` commands as a fixture: a build that can add, remove
+/// and sign in, which runs nothing. A screen fixture draws the state a command
+/// leaves behind; it never runs one.
+class _FixtureFleetProfiles implements FleetProfiles {
+  const _FixtureFleetProfiles();
+
+  @override
+  bool get supported => true;
+
+  @override
+  Future<void> add(String name, Uri url, {String? caFile}) async {}
+
+  @override
+  Future<void> login(String name, String token) async {}
+
+  @override
+  Future<void> remove(String name) async {}
+}
+
+/// The Hosts add form, open with the failure an add comes back with: the
+/// fields are kept, and the profile it names is not written.
+Widget _hostsAdd() => Sheet(
+  title: 'Add a host',
+  actions: [Btn('Cancel', onTap: () {})],
+  child: HostForm(
+    model: HostsModel.fixture(
+      shellHosts,
+      profiles: const _FixtureFleetProfiles(),
+    ),
+    initialFailure: 'studio is already in fleet.toml',
+  ),
+);
+
+/// A server profile whose token the bridge refused: its detail offers Sign in,
+/// because a refusal is terminal and waiting never clears it (decision 6).
+Widget _hostsSignIn() {
+  final refused = HostView(
+    name: 'studio',
+    kind: HostKind.server,
+    reach: HostReach.unauthorized,
+    lastContact: shellNow.subtract(const Duration(minutes: 4)),
+  );
+  return HostDetail(
+    model: HostsModel.fixture([
+      shellHosts.first,
+      refused,
+    ], profiles: const _FixtureFleetProfiles()),
+    host: refused,
+    now: shellNow,
+  );
+}
+
+/// A relayed host whose relay is live, and one behind a relay the bridge
+/// refused: the first says where it is reached, and the second says to sign in
+/// to the relay first and offers no Sign in of its own (spec D23).
+Widget _hostsRelayed() {
+  final hub = HostView(
+    name: 'hub',
+    kind: HostKind.server,
+    reach: HostReach.live,
+    lastContact: shellNow,
+  );
+  final laptop = HostView(
+    name: 'laptop',
+    kind: HostKind.server,
+    reach: HostReach.live,
+    lastContact: shellNow,
+    via: 'hub',
+  );
+  final refusedHub = HostView(
+    name: 'hub',
+    kind: HostKind.server,
+    reach: HostReach.unauthorized,
+    lastContact: shellNow.subtract(const Duration(minutes: 4)),
+  );
+  final behind = HostView(
+    name: 'build',
+    kind: HostKind.server,
+    reach: HostReach.unauthorized,
+    lastContact: shellNow.subtract(const Duration(minutes: 4)),
+    via: 'hub',
+  );
+  return PageBody(
+    title: 'Hosts',
+    subtitle: 'A relayed host, and one behind a refused relay',
+    width: PageWidth.list,
+    children: [
+      HostDetail(
+        model: HostsModel.fixture(
+          [hub, laptop],
+          profiles: const _FixtureFleetProfiles(),
+          clearToken: (_) {},
+        ),
+        host: laptop,
+        now: shellNow,
+      ),
+      const SizedBox(height: Space.s32),
+      HostDetail(
+        model: HostsModel.fixture(
+          [refusedHub, behind],
+          profiles: const _FixtureFleetProfiles(),
+          clearToken: (_) {},
+        ),
+        host: behind,
+        now: shellNow,
+      ),
+    ],
+  );
+}
+
 /// The Settings place, with the sections this build has and the rest planned.
 /// [section] is the index in the design's order: 0 Hosts … 9 General.
 Widget _settings({int section = 0, StateKind? state}) {
@@ -871,7 +995,7 @@ Widget _settings({int section = 0, StateKind? state}) {
       reach: HostReach.unreachable,
       lastContact: shellNow.subtract(const Duration(minutes: 4)),
     ),
-  ]);
+  ], profiles: const _FixtureFleetProfiles());
   final general = GeneralModel.fixture(
     preferences: preferences,
     keyboard: [for (final key in threadKeys) (key.key, key.description)],
@@ -1294,6 +1418,30 @@ final screens = <ScreenCase>[
   ScreenCase(
     name: 'settings · hosts',
     ready: () => _settings(section: 0),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 0, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · hosts · add',
+    ready: () => _hostsAdd(),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 0, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · hosts · sign in',
+    ready: () => _hostsSignIn(),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 0, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · hosts · relayed',
+    ready: () => _hostsRelayed(),
     states: {
       for (final kind in requiredStates)
         kind: () => _settings(section: 0, state: kind),

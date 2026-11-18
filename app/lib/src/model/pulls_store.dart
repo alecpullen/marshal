@@ -223,12 +223,24 @@ class PullsStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// A host was discovered: hold its records and follow it.
+  /// The registry changed: a host it discovered has its records held and its
+  /// stream followed, and a host it has forgotten takes them with it (spec D9).
   void _hostsChanged() {
+    var changed = false;
+    final listed = {for (final owner in _hosts.hosts) owner.name};
+    for (final name in _pulls.keys.toList(growable: false)) {
+      if (listed.contains(name)) continue;
+      // The wiring goes with the state, so nothing a gone host's bridge still
+      // sends can put its records back.
+      _wiring.remove(name)?.dispose();
+      _pulls.remove(name);
+      changed = true;
+    }
     for (final owner in _hosts.hosts) {
       _state(owner.name);
       _follow(owner);
     }
+    if (changed) notifyListeners();
   }
 
   /// One host's records, created empty on first use.

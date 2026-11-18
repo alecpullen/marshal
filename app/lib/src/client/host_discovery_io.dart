@@ -4,6 +4,7 @@ import 'dart:io';
 import '../daemon/cli.dart';
 import 'bridge_client.dart';
 import 'host.dart';
+import 'relayed_transport.dart';
 import 'transport.dart';
 
 /// The name the local daemon's host is known by.
@@ -63,21 +64,60 @@ Future<List<HostSpec>> _serverHosts(DaemonCli cli) async {
     return const [];
   }
 
-  final hosts = <HostSpec>[];
+  // Every profile the document names, by name: a relayed profile is built
+  // from its hub's row, which may come before it or after it.
+  final rows = <String, Map<String, dynamic>>{};
+  final order = <String>[];
   for (final value in servers) {
     if (value is! Map<String, dynamic>) continue;
     final name = value['name'] as String? ?? '';
+    if (name.isEmpty) continue;
+    rows[name] = value;
+    order.add(name);
+  }
+
+  final hosts = <HostSpec>[];
+  for (final name in order) {
+    final value = rows[name]!;
     final url = value['url'] as String? ?? '';
-    if (name.isEmpty || url.isEmpty) continue;
+    if (url.isNotEmpty) {
+      hosts.add(
+        HostSpec(
+          name: name,
+          kind: HostKind.server,
+          client: BridgeClient(
+            serverTransport(
+              Uri.parse(url),
+              token: () => _fleetToken(cli, name),
+              caFile: value['caFile'] as String?,
+            ),
+          ),
+        ),
+      );
+      continue;
+    }
+    // D20: a profile with a relay in place of a url is reached through that
+    // server's own transport, and carries its own token to the host behind it.
+    final hub = value['relay'] as String? ?? '';
+    final through = hub.isEmpty ? null : rows[hub];
+    final hubURL = through?['url'] as String? ?? '';
+    // A relay the document does not name — or one with no url of its own to
+    // dial — is no way to reach the host, so the host is not listed.
+    if (through == null || hubURL.isEmpty) continue;
     hosts.add(
       HostSpec(
         name: name,
         kind: HostKind.server,
+        via: hub,
         client: BridgeClient(
-          serverTransport(
-            Uri.parse(url),
+          relayedTransport(
+            serverTransport(
+              Uri.parse(hubURL),
+              token: () => _fleetToken(cli, hub),
+              caFile: through['caFile'] as String?,
+            ),
+            host: name,
             token: () => _fleetToken(cli, name),
-            caFile: value['caFile'] as String?,
           ),
         ),
       ),

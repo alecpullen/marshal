@@ -914,4 +914,78 @@ void main() {
     );
     expect(fixture.store.sessionsError('local', '/home/u/beta'), isNull);
   });
+
+  test("a forgotten host's agents and projects go", () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        agents: [agent(id: 'a-1')],
+        queue: [
+          InboxItem(
+            kind: InboxItemKind.inboxItemAgent,
+            agentID: 'a-1',
+            at: '2026-11-17T04:00:00Z',
+          ),
+        ],
+      ),
+      FixtureHost(
+        name: 'studio',
+        kind: HostKind.server,
+        projects: [project('/home/u/beta')],
+        agents: [agent(id: 'b-1', project: '/home/u/beta')],
+      ),
+    ]);
+    await fixture.refresh();
+    expect([for (final a in fixture.store.agents()) a.id], ['a-1', 'b-1']);
+
+    // The bridge ends this host's connection, so it can serve it again below,
+    // when the fleet lists it again.
+    await fixture.frames['local']!.end();
+    fixture.frames['local']!.reopen();
+
+    fixture.registry.forget('local');
+    await settle();
+
+    // What the fleet no longer lists is not in the fleet's rows.
+    expect([for (final a in fixture.store.agents()) a.id], ['b-1']);
+    expect(
+      [for (final p in fixture.store.projects()) p.root],
+      ['/home/u/beta'],
+    );
+    expect(fixture.store.inbox(), isEmpty);
+    // Nor is any of it held for a name the fleet has forgotten.
+    expect(fixture.store.agents(host: 'local'), isEmpty);
+    expect(fixture.store.projects(host: 'local'), isEmpty);
+    expect(fixture.store.inbox(host: 'local'), isEmpty);
+
+    // A host the fleet lists again — its profile restored — is followed
+    // afresh: the name is not still wired to the stream the forgotten host
+    // left, which nothing would ever speak on again.
+    await fixture.registry.discover();
+    await eventually(
+      () => fixture.store.agents(host: 'local').isNotEmpty,
+      reason: 'a host that is listed again is read afresh',
+    );
+
+    // And a delta it sends now is applied, as it was before it was forgotten.
+    fixture.delta('local', {
+      'kind': 'inbox',
+      'inbox': {
+        'groups': {
+          'needsYou': <String>[],
+          'running': <String>[],
+          'ready': <String>[],
+          'earlier': <String>[],
+        },
+        'queue': [
+          {'kind': 'agent', 'agentId': 'a-1', 'at': '2026-11-17T04:10:00Z'},
+        ],
+      },
+    });
+    await eventually(
+      () => fixture.store.inbox(host: 'local').length == 1,
+      reason: 'a delta for a host the fleet lists again is applied',
+    );
+  });
 }

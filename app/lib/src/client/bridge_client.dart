@@ -17,6 +17,13 @@ class BridgeClient {
   /// GET /api/daemon: what the local daemon reports about itself.
   Future<DaemonInfo> daemon() => _objectOf('/api/daemon', DaemonInfo.fromJson);
 
+  /// GET /api/relay/hosts: the hosts this bridge relays (P8 D16).
+  ///
+  /// It is what a browser discovers beside the bridge that served its page: a
+  /// page cannot read `fleet.toml`, so the relay names the hosts instead.
+  Future<RelayHosts> relayHosts() =>
+      _objectOf('/api/relay/hosts', RelayHosts.fromJson);
+
   /// GET /api/agents: every agent the bridge supervises.
   Future<List<AgentStatus>> agents() =>
       _listOf('/api/agents', AgentStatus.fromJson);
@@ -73,7 +80,7 @@ class BridgeClient {
         query: {'range': range, 'by': by},
       );
 
-  /// GET /api/audit?limit=: the audit log, newest first.
+  /// GET /api/audit?limit=: the audit log, oldest first.
   Future<List<AuditEvent>> audit({int limit = 50}) =>
       _listOf('/api/audit', AuditEvent.fromJson, query: {'limit': '$limit'});
 

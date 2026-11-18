@@ -414,6 +414,18 @@ func merge(cfg *Config, file configFile) error {
 		if file.Daemon.StudioAddr != nil && *file.Daemon.StudioAddr != "" {
 			cfg.Daemon.StudioAddr = *file.Daemon.StudioAddr
 		}
+		// The relay the daemon joins (P8 D12). All three are user-global, as
+		// studio_addr is, and an empty value never overwrites one already
+		// set, so a project file cannot unset the user's join.
+		if file.Daemon.JoinURL != nil && *file.Daemon.JoinURL != "" {
+			cfg.Daemon.JoinURL = *file.Daemon.JoinURL
+		}
+		if file.Daemon.JoinName != nil && *file.Daemon.JoinName != "" {
+			cfg.Daemon.JoinName = *file.Daemon.JoinName
+		}
+		if file.Daemon.JoinCAFile != nil && *file.Daemon.JoinCAFile != "" {
+			cfg.Daemon.JoinCAFile = *file.Daemon.JoinCAFile
+		}
 	}
 	if file.Web != nil {
 		set(&cfg.Web.Enabled, file.Web.Enabled)

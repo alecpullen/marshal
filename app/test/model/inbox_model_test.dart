@@ -1003,4 +1003,69 @@ void main() {
 
     expect(inbox.asks, isEmpty);
   });
+
+  /// One blocked request on [host], handed to the inbox as the Network
+  /// section does, and an inbox that records which host an answer went to.
+  Future<InboxModel> inboxWithBlock(
+    ModelFixture fixture,
+    List<String> answered,
+  ) async {
+    await fixture.refresh();
+    final model = InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+      onAnswered: answered.add,
+    );
+    addTearDown(model.dispose);
+    model.showPendingBlocks('local', const [
+      NetPending(
+        kind: 'network_block',
+        sessionID: 's-1',
+        agentID: 'a-1',
+        host: 'api.example.com',
+        workspace: 'default',
+        at: 1763352000000,
+      ),
+    ]);
+    return model;
+  }
+
+  test('answering a network ask asks for a re-read of its host', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    final answered = <String>[];
+    final inbox = await inboxWithBlock(fixture, answered);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/network/decisions',
+      const FakeReply(200, body: '{}'),
+    );
+
+    final ask = inbox.asks.single;
+    expect(ask.kind, AskKind.network);
+    await inbox.answer(ask, ask.actions.first);
+
+    expect(answered, ['local']);
+  });
+
+  test('a failed answer asks for nothing', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    final answered = <String>[];
+    final inbox = await inboxWithBlock(fixture, answered);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/network/decisions',
+      const FakeReply(500, body: '{"error":"the host is gone"}'),
+    );
+
+    final ask = inbox.asks.single;
+    await inbox.answer(ask, ask.actions.first);
+
+    // Nothing changed on the bridge, so nothing is re-read.
+    expect(answered, isEmpty);
+    expect(inbox.asks.single.state, AskState.failed);
+  });
 }

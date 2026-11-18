@@ -77,6 +77,13 @@ Dart module, `app/lib/src/client/contract.g.dart`: regenerate with
 `go test ./web/bridge/contract/dartgen -run TestDartContractIsCurrent -update`.
 That currency test fails on a contract change that is not regenerated.
 
+A bridge given `--relay-join NAME=PATH` is a relay for the hosts that join it:
+each forwarded request arrives under `/api/hosts/<name>/` and is decided by
+that host's own token, never the relay's. `--join URL` — the local daemon's
+`daemon.join_url`, its secret stored by `marshal daemon join-token` — makes a
+bridge dial out and join one, where the joining bridge serves and the relay is
+its client.
+
 `webbridge --profile local` is the user's local daemon (P4): a unix socket,
 host processes only, and no container machinery. Each project runs its own
 `marshal acp --viewers` child, started on the first attach and stopped 30s
@@ -122,8 +129,12 @@ elsewhere, over TLS. The profiles live in `fleet.toml` in the user's config
 directory (`~/.config/marshal/fleet.toml` by default), which must be private —
 `0600`, owned by the user — and holds no token: a server's token comes from its
 `token_cmd`, or from the keychain, where `marshal fleet login NAME` stores it.
+`marshal fleet add NAME URL` and `marshal fleet remove NAME` write the file,
+keeping its comments.
 Each `[servers.<name>]` table names an `https://` origin (or a loopback
-`http://` one) and may set `ca_file` and `notify`; `[local] notify` turns
+`http://` one) and may set `ca_file` and `notify`; a table with `relay = "HUB"`
+in place of `url` is reached through HUB, and the fleet screen does not use one
+yet; `[local] notify` turns
 notifications off for the local daemon. The bridge serves the agent attach on
 its network listener behind the bearer token, over TLS or on a loopback
 address, and refuses it 403 elsewhere. `internal/fleetprofile` owns that file.

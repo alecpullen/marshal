@@ -9,6 +9,11 @@ import 'handoff_model.dart' show FieldSource;
 import 'section_model.dart' show SaveState, UnsavedEditsSource;
 import 'thread_ref.dart' show ThreadStatus;
 
+// The schedule and watch types the Automations tab lists reach their screens
+// through the model, so `ui/` reads `model/` and never `client/`
+// (test/boundary_test.dart).
+export '../client/contract.g.dart' show Schedule, WatchInfo;
+
 // The readers and the writer are passed in, so their fields stay private: Dart
 // has no private named parameter.
 // ignore_for_file: prefer_initializing_formals
@@ -664,12 +669,18 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
     Future<ProjectHealth> Function()? readHealth,
     Future<List<RunListEntry>> Function()? readRuns,
     Future<DiscoveryReport> Function(String repoID)? discover,
+    Future<List<Schedule>> Function()? readSchedules,
+    Future<List<WatchInfo>> Function()? readWatches,
+    String? Function(String agentID)? projectOfAgent,
     DateTime Function()? now,
   }) : _read = read,
        _write = write,
        _readHealth = readHealth,
        _readRuns = readRuns,
        _discover = discover,
+       _readSchedules = readSchedules,
+       _readWatches = readWatches,
+       _projectOfAgent = projectOfAgent,
        _now = now ?? DateTime.now;
 
   /// The project's root, its id everywhere else in the app.
@@ -694,6 +705,14 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
   final Future<List<RunListEntry>> Function()? _readRuns;
 
   final Future<DiscoveryReport> Function(String repoID)? _discover;
+
+  /// The schedules and watches read for the Automations tab, and the resolver
+  /// that says which project a watch's agent belongs to. All three are
+  /// optional: a host that wires none leaves the tab with its forge rows.
+  final Future<List<Schedule>> Function()? _readSchedules;
+  final Future<List<WatchInfo>> Function()? _readWatches;
+  final String? Function(String agentID)? _projectOfAgent;
+
   final DateTime Function() _now;
 
   ProjectSettings? _stored;
@@ -713,6 +732,12 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
   DiscoveryView? _discovery;
   bool _discovering = false;
   String? _discoveryError;
+
+  /// The project's own schedules and the watches its agents started, as the
+  /// Automations tab lists them. Empty until a read answers, and after a read
+  /// that fails: the tab draws what it has.
+  List<Schedule> _schedules = const [];
+  List<WatchInfo> _watches = const [];
 
   /// The document the bridge last answered with, or null before the first
   /// read.
@@ -766,6 +791,18 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
     final configured = _stored?.automations;
     return configured == null ? null : ProjectAutomations.of(configured);
   }
+
+  /// The schedules this project owns, as the Automations tab lists them: the
+  /// bridge's list filtered to those whose project is this root.
+  List<Schedule> get automationSchedules => _schedules;
+
+  /// The watches this project's agents started: the bridge's list filtered to
+  /// those whose agent resolves to this root.
+  List<WatchInfo> get automationWatches => _watches;
+
+  /// The labels an intake issue must carry to be picked up, and none when the
+  /// project watches every issue of its repository.
+  List<String> get intakeLabels => _stored?.intake.labels ?? const [];
 
   /// The repository discovery probes: the intake wiring's repo, or "" when the
   /// project names none, in which case discovery is not offered.
@@ -833,6 +870,41 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
       _loading = false;
       notifyListeners();
     }
+    // The schedules and watches the Automations tab lists: read in the same
+    // load, and never failing it. A list the bridge will not answer is empty,
+    // and the page's own state already says the read failed.
+    await _readAutomations();
+  }
+
+  /// Reads the project's schedules and its agents' watches, each filtered to
+  /// this root. A failed read leaves that list empty rather than failing the
+  /// page: the Automations tab draws what it has.
+  Future<void> _readAutomations() async {
+    final readSchedules = _readSchedules;
+    final readWatches = _readWatches;
+    final projectOf = _projectOfAgent;
+    if (readSchedules == null && readWatches == null) return;
+    if (readSchedules != null) {
+      try {
+        _schedules = List.unmodifiable([
+          for (final schedule in await readSchedules())
+            if (schedule.project == root) schedule,
+        ]);
+      } catch (_) {
+        _schedules = const [];
+      }
+    }
+    if (readWatches != null && projectOf != null) {
+      try {
+        _watches = List.unmodifiable([
+          for (final watch in await readWatches())
+            if (projectOf(watch.agentID) == root) watch,
+        ]);
+      } catch (_) {
+        _watches = const [];
+      }
+    }
+    notifyListeners();
   }
 
   /// Reads the health report. A failure is its own line in the Health tab; it

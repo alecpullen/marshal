@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../model/age.dart';
 import '../../model/expected_checks.dart';
+import '../../model/place.dart' show automationsSections;
 import '../../model/project_model.dart';
 import '../../model/section_model.dart' show SaveState;
 import '../../model/thread_ref.dart' as threads;
@@ -86,8 +87,10 @@ class ProjectPage extends StatefulWidget {
   final void Function(threads.ThreadRef session)? onOpenSession;
   final void Function(ProjectRun run)? onOpenRun;
 
-  /// Opens the Automations place. Null leaves the summary without its link.
-  final VoidCallback? onOpenAutomations;
+  /// Opens the Automations place, at the tab [tab] names (its index into
+  /// [automationsSections]) or at its first tab when it is null. Null leaves
+  /// the summary without its link.
+  final void Function(int? tab)? onOpenAutomations;
 
   /// Reads the project's sessions again, after the index failed to list them.
   final VoidCallback? onRetrySessions;
@@ -413,6 +416,12 @@ class _ProjectPageState extends State<ProjectPage> {
               value: _onOff(automations.autoFix),
             ),
           ]),
+        // What the project actually has, each row opening the editor that owns
+        // it (F9 decision 1). A section with nothing is absent entirely, so the
+        // tab never grows an empty heading.
+        ..._schedules(context),
+        ..._watches(context),
+        ..._intake(context),
         const SizedBox(height: Space.s16),
         if (widget.onOpenAutomations != null)
           Align(
@@ -420,12 +429,115 @@ class _ProjectPageState extends State<ProjectPage> {
             child: Btn(
               'Open automations',
               icon: Glyphs.arrow_right,
-              onTap: widget.onOpenAutomations,
+              onTap: () => widget.onOpenAutomations!(null),
             ),
           ),
       ],
     );
   }
+
+  /// The schedules this project owns, each opening its row on the Schedules
+  /// tab of the Automations place.
+  List<Widget> _schedules(BuildContext context) {
+    final schedules = widget.model.automationSchedules;
+    if (schedules.isEmpty) return const [];
+    return [
+      const SizedBox(height: Space.s16),
+      Label('Schedules', count: schedules.length),
+      const SizedBox(height: Space.s8),
+      Rows([
+        for (final schedule in schedules)
+          RowItem(
+            name: schedule.name.isEmpty ? schedule.id : schedule.name,
+            description: schedule.cron.isEmpty ? 'No cron yet' : schedule.cron,
+            value: _scheduleState(schedule),
+            onTap: _openAutomationsAt('schedules'),
+          ),
+      ]),
+    ];
+  }
+
+  /// The watches this project's agents started, each opening its row on the
+  /// Watches tab of the Automations place.
+  List<Widget> _watches(BuildContext context) {
+    final watches = widget.model.automationWatches;
+    if (watches.isEmpty) return const [];
+    return [
+      const SizedBox(height: Space.s16),
+      Label('Watches', count: watches.length),
+      const SizedBox(height: Space.s8),
+      Rows([
+        for (final watch in watches)
+          RowItem(
+            name: watch.name,
+            description: _watchAbout(watch),
+            value: _watchState(watch),
+            onTap: _openAutomationsAt('watches'),
+          ),
+      ]),
+    ];
+  }
+
+  /// The issue intake this project registered: the repository it watches and
+  /// the labels an issue must carry. It is a fact, not a second editor —
+  /// connecting a repository is what registers one (F9 decision 1).
+  List<Widget> _intake(BuildContext context) {
+    final model = widget.model;
+    final repo = model.repoID;
+    if (repo.isEmpty) return const [];
+    final labels = model.intakeLabels;
+    return [
+      const SizedBox(height: Space.s16),
+      const Label('Issue intake'),
+      const SizedBox(height: Space.s8),
+      Rows([
+        RowItem(
+          name: repo,
+          mono: true,
+          description: labels.isEmpty
+              ? 'Every issue in this repository'
+              : 'Issues labelled ${labels.join(', ')}',
+        ),
+      ]),
+    ];
+  }
+
+  /// A row's tap: the Automations place at the tab named [section], or null
+  /// when the page has no way there.
+  VoidCallback? _openAutomationsAt(String section) {
+    final open = widget.onOpenAutomations;
+    if (open == null) return null;
+    final index = automationsSections.indexOf(section);
+    return () => open(index < 0 ? null : index);
+  }
+
+  /// Where a schedule stands: paused, never run, or what its last run
+  /// answered — the words the Schedules section uses.
+  static String _scheduleState(Schedule schedule) {
+    if (!schedule.enabled) return 'Paused';
+    final result = schedule.lastResult ?? '';
+    return result.isEmpty ? 'Never run' : result;
+  }
+
+  /// What a watch watches: the agent that started it, its kind and its
+  /// condition — the words the Watches section uses.
+  static String _watchAbout(WatchInfo watch) {
+    final who = watch.agentID == 'studio'
+        ? 'The bridge'
+        : 'Agent ${watch.agentID}';
+    final what = watch.kind.isEmpty ? 'a watch' : watch.kind;
+    final condition = watch.condition ?? '';
+    return condition.isEmpty ? '$who · $what' : '$who · $what · $condition';
+  }
+
+  /// Where a watch stands, in the Watches section's one word.
+  static String _watchState(WatchInfo watch) => switch (watch.state) {
+    'watching' => 'Watching',
+    'fired' => 'Tripped',
+    'stopped' => 'Stopped',
+    'error' => 'Failed',
+    _ => watch.state.isEmpty ? 'Unknown' : watch.state,
+  };
 
   DateTime get _now => widget.now ?? DateTime.now();
 

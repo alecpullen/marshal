@@ -166,6 +166,33 @@ void main() {
     expect(headlineFor(agent()), '');
   });
 
+  test("a thread carries the turn's steps", () {
+    final thread = threadFor(
+      'local',
+      AgentStatus(
+        id: 'a-1',
+        project: '/home/u/alpha',
+        status: AgentState.agentRunning,
+        stepsDone: 3,
+        updatedAt: DateTime.utc(2026, 11, 17, 4).toIso8601String(),
+      ),
+    );
+    expect(thread.stepsDone, 3);
+
+    // An agent that has not reported a step carries none: its tile draws
+    // nothing rather than "step 0".
+    final quiet = threadFor(
+      'local',
+      AgentStatus(
+        id: 'a-2',
+        project: '/home/u/alpha',
+        status: AgentState.agentRunning,
+        updatedAt: DateTime.utc(2026, 11, 17, 4).toIso8601String(),
+      ),
+    );
+    expect(quiet.stepsDone, isNull);
+  });
+
   test('a session with a pending request needs you', () {
     // The request wins over the turn in flight, as a parked agent's does.
     expect(

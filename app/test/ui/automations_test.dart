@@ -269,7 +269,7 @@ void main() {
       now: now,
     );
     final schedules = SchedulesModel.fixture(const <Schedule>[]);
-    final watches = WatchesModel.fixture(const [], now: now);
+    final watches = WatchesModel.fixture(const [], now: now, host: 'local');
     final recipes = RecipesModel.fixture(const []);
     for (final model in <SectionModel<Object>>[
       bots,
@@ -320,7 +320,7 @@ void main() {
       now: now,
     );
     final schedules = SchedulesModel.fixture(const <Schedule>[]);
-    final watches = WatchesModel.fixture(const [], now: now);
+    final watches = WatchesModel.fixture(const [], now: now, host: 'local');
     final recipes = RecipesModel.fixture(const [
       Recipe(
         name: 'gate',
@@ -401,20 +401,24 @@ void main() {
           ownerID: 'owner-1',
         ),
     ]);
-    final watches = WatchesModel.fixture(const [
-      WatchInfo(
-        agentID: 'studio',
-        id: 'w-1',
-        name: 'the gate',
-        kind: 'command',
-        state: 'watching',
-        mode: 'interval',
-        intervalMs: 60000,
-        fireCount: 0,
-        createdAt: 1763352000000,
-        samples: [],
-      ),
-    ], now: now);
+    final watches = WatchesModel.fixture(
+      const [
+        WatchInfo(
+          agentID: 'studio',
+          id: 'w-1',
+          name: 'the gate',
+          kind: 'command',
+          state: 'watching',
+          mode: 'interval',
+          intervalMs: 60000,
+          fireCount: 0,
+          createdAt: 1763352000000,
+          samples: [],
+        ),
+      ],
+      now: now,
+      host: 'local',
+    );
     final recipes = RecipesModel.fixture([
       for (var i = 0; i < 4; i++)
         Recipe(

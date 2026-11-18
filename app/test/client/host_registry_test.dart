@@ -42,6 +42,37 @@ void main() {
     host = registry.hosts.single;
   });
 
+  test('a host keeps the relay it was found through', () async {
+    // A spec that names a relay is reached through that host: the registry
+    // keeps the name, so a screen can say where the host is reached (D23).
+    final relayed = HostRegistry(
+      discovery: () async => [
+        HostSpec(
+          name: 'laptop',
+          kind: HostKind.server,
+          client: BridgeClient(transport),
+          via: 'hub',
+        ),
+      ],
+      fleetFor: (client) => EventStream(
+        transport,
+        '/api/events',
+        now: clock.now,
+        wait: clock.wait,
+        jitter: 0,
+      ),
+    );
+    addTearDown(relayed.dispose);
+    await relayed.discover();
+
+    expect(relayed.hosts.single.via, 'hub');
+    expect(
+      host.via,
+      isNull,
+      reason: 'a host discovery found directly is reached on its own',
+    );
+  });
+
   test('a stopped daemon becomes stale then unreachable', () async {
     await pumpEventQueue();
     expect(host.reach, HostReach.connecting);
@@ -112,6 +143,61 @@ void main() {
       hasLength(1),
       reason: 'a refused token is never retried',
     );
+  });
+
+  test('forget stops and drops a host', () async {
+    var notified = 0;
+    registry.addListener(() => notified++);
+    // A name this fleet does not list is nothing to forget.
+    registry.forget('nope');
+    await pumpEventQueue();
+    expect(registry.hosts, hasLength(1));
+    expect(notified, 0);
+
+    // The connection dies, so the stream is waiting to retry when the host is
+    // forgotten.
+    await transport.last.close();
+    await pumpEventQueue();
+    final requests = transport.requests.length;
+
+    registry.forget('local');
+    await pumpEventQueue();
+
+    expect(registry.hosts, isEmpty);
+    expect(notified, 1, reason: 'whatever lists the hosts is told');
+    // Nothing is retried for a host the app has forgotten, however far the
+    // clock runs on.
+    clock.advance(const Duration(minutes: 5));
+    await pumpEventQueue();
+    expect(
+      transport.requests,
+      hasLength(requests),
+      reason: 'a forgotten host is not retried',
+    );
+  });
+
+  test("retry restarts a host's stream", () async {
+    // A refused token is terminal: the stream stops and is not retried
+    // (decision 6).
+    await pumpEventQueue();
+    transport.last.addError(Unauthorized());
+    await pumpEventQueue();
+    expect(host.reach, HostReach.unauthorized);
+    expect(transport.requests, hasLength(1));
+
+    // The token changed, so the host is asked to try once more.
+    registry.retry('local');
+    await pumpEventQueue();
+    expect(
+      transport.requests,
+      hasLength(2),
+      reason: 'the stream starts again rather than waiting for a new token',
+    );
+
+    // The new connection is followed as the old one was.
+    send(transport.last, ': hb\n\n');
+    await pumpEventQueue();
+    expect(host.reach, HostReach.live);
   });
 }
 

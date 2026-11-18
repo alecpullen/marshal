@@ -11,16 +11,21 @@ import '../../model/new_work_model.dart';
 import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
 import '../../model/inbox_model.dart' as inbox;
+import '../../model/inspector_state.dart';
 import '../../model/nav_model.dart';
-import '../../model/overview_model.dart' show buildOverview;
+import '../../model/overview_model.dart'
+    show AuditEvent, UsageReport, buildOverview;
 import '../../model/place.dart';
+import '../../model/place_host.dart' show placeHost;
 import '../../model/planning_model.dart';
 import '../../model/project_model.dart';
 import '../../model/route_translation.dart';
+import '../../model/signals_store.dart';
 import '../../model/source_state.dart';
 import '../../model/pulls_model.dart';
 import '../../model/revision_model.dart';
 import '../../model/run_model.dart';
+import '../../model/share_model.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
@@ -40,9 +45,11 @@ import '../pulls/merge_control.dart';
 import '../pulls/pulls_place.dart';
 import '../sections/unsaved_guard.dart';
 import '../new_work/new_work_dialog.dart';
+import '../thread/share_sheet.dart';
 import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
 import 'connect_repo_sheet.dart';
+import 'host_switcher.dart';
 import 'keys.dart';
 import 'placeholder.dart';
 import 'sidebar.dart';
@@ -67,6 +74,45 @@ typedef HandoffBuilder = Future<HandoffModel> Function(
   PlannerSnapshot? snapshot,
 });
 
+/// Builds a per-host place for [host] (spec D1): Automations, Library and
+/// Settings each read one bridge, so each is built from the host the
+/// switcher's scope resolves to.
+typedef HostPlaceBuilder = Widget? Function(
+  String host,
+  int section,
+  StateKind? state,
+);
+
+/// One open thread's inspector: the view state the frame animates, what each
+/// tab draws, and how to release both.
+class ThreadInspector {
+  const ThreadInspector({
+    required this.state,
+    required this.body,
+    required this.start,
+    this.dispose,
+  });
+
+  final InspectorState state;
+  final Widget Function(InspectorTab tab) body;
+
+  /// Starts the reads the tab models own. Called once, when the thread place
+  /// opens: a tab that draws what its model holds has nothing to draw until
+  /// the holder's own read runs.
+  final VoidCallback start;
+
+  /// Releases the tab models and the state. Called when the thread place
+  /// closes.
+  final VoidCallback? dispose;
+}
+
+/// Builds a thread's inspector, from the host's client. Null leaves a thread
+/// without the panel, which is what every thread had before F9.
+typedef InspectorBuilder = ThreadInspector Function(
+  String host,
+  model.ThreadRef thread,
+);
+
 /// The Studio's frame (design-system.md §4): the sidebar, and the place's
 /// content beside it. Below 760 the navigation becomes a panel over the
 /// content, opened from the app bar the narrow layout needs.
@@ -86,6 +132,10 @@ class Shell extends StatefulWidget {
     this.onRetry,
     this.unsaved,
     this.notice,
+    this.automationsFor,
+    this.libraryFor,
+    this.settingsFor,
+    this.signals,
     this.onConnectRepo,
     this.onNew,
   });
@@ -124,6 +174,22 @@ class Shell extends StatefulWidget {
   /// own.
   final String? notice;
 
+  /// Builds the Automations place for the host the switcher's scope resolves
+  /// to (F7 decision 4, D1). Null leaves the place planned, so a host that
+  /// wires no bridge never draws a section whose read could only fail.
+  final HostPlaceBuilder? automationsFor;
+
+  /// Builds the Library place for the resolved host (F7 decision 5).
+  final HostPlaceBuilder? libraryFor;
+
+  /// Builds the Settings place for the resolved host (F7 decision 7).
+  final HostPlaceBuilder? settingsFor;
+
+  /// Every host's tripped watches, blocked requests and held drafts (spec D4).
+  /// Null leaves the Overview's Automations card with nothing to list, so a
+  /// test or an embedded host that supplies none still builds.
+  final SignalsStore? signals;
+
   /// Connects a repository (F9 B1): the plus beside *Projects*. Null leaves
   /// the control out; the sheet is the Studio's, so the shell only offers the
   /// way into it.
@@ -149,6 +215,14 @@ class _ShellState extends State<Shell> {
 
   @override
   Widget build(BuildContext context) {
+    // A scope naming a host the fleet no longer lists reads as All hosts (see
+    // [placeHost]); it is cleared here, before anything is drawn, so the
+    // switcher's anchor and the places that read a host agree on the one they
+    // show from this frame on.
+    final host = _host;
+    if (host != null && !widget.hosts.any((each) => each.name == host)) {
+      _host = null;
+    }
     final narrow = MediaQuery.sizeOf(context).width < Layout.narrow;
     if (!narrow) {
       return Row(
@@ -174,10 +248,7 @@ class _ShellState extends State<Shell> {
     hosts: widget.hosts,
     place: widget.place,
     host: _host,
-    onHost: (host) => setState(() {
-      _host = host;
-      _panel = false;
-    }),
+    onHost: _setHost,
     onSelect: (place) => _leave(() => widget.onSelect(place)),
     onConnectRepo: widget.onConnectRepo,
     onNew: widget.onNew,
@@ -194,6 +265,14 @@ class _ShellState extends State<Shell> {
       unsaved: widget.unsaved,
     ),
   );
+
+  /// Narrows the tree — and the host a per-host place reads — to [host], or
+  /// to every host when it is null.
+  ///
+  /// The switcher is a way of leaving the place as much as the sidebar is, so
+  /// it goes through [_leave] too (design-system.md §9, decision 3): a place
+  /// holding an unsaved edit is asked about before the host changes under it.
+  void _setHost(String? host) => _leave(() => setState(() => _host = host));
 
   /// Opens [place], after asking about an unsaved edit when there is one:
   /// the shell is where "leaving" happens, so it is where the one guard is
@@ -290,9 +369,73 @@ class _ShellState extends State<Shell> {
     );
   }
 
+  /// The three places F7 built read one bridge each, so each is built for the
+  /// host the switcher's scope resolves to rather than for every host at once
+  /// (spec D1).
+  static const _perHost = {
+    PlaceKind.automations,
+    PlaceKind.library,
+    PlaceKind.settings,
+  };
+
+  /// The place when it is one the shell builds per host: the switcher above
+  /// it, naming the host it read, and the place itself.
+  ///
+  /// Every other place answers null, and [_body] draws it as it did. A place
+  /// this shell has no builder for answers null too: a switcher above a place
+  /// that reads nothing would change nothing, and the place it draws — the
+  /// promise, or whatever the content builder draws — is drawn without it.
+  Widget? _hostPlace() {
+    final kind = widget.place.kind;
+    if (!_perHost.contains(kind)) return null;
+    final build = switch (kind) {
+      PlaceKind.automations => widget.automationsFor,
+      PlaceKind.library => widget.libraryFor,
+      PlaceKind.settings => widget.settingsFor,
+      _ => null,
+    };
+    if (build == null) return null;
+    // No host is known only while the fleet lists none, and that is a fleet
+    // state of its own (§7): the place is drawn as it was before the scope
+    // reached it, without a switcher over an empty list.
+    final host = placeHost(widget.hosts, _host);
+    if (host == null) return null;
+    // A builder that answers nothing for this host leaves the place to the
+    // content builder, which is what drew it before the scope reached it.
+    final place =
+        build(host, sectionIndex(widget.place), widget.state) ?? _place();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          // The place's own page inset, so the switcher sits on the title's
+          // left edge, with the vertical spacing the sidebar's switcher takes.
+          padding: const EdgeInsets.fromLTRB(
+            Layout.pageSide,
+            Space.s12,
+            Layout.pageSide,
+            Space.s8,
+          ),
+          // Aligned left rather than stretched: the switcher is as wide as its
+          // label, as it is in the sidebar.
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: HostSwitcher(
+              hosts: widget.hosts,
+              selected: host,
+              onSelect: _setHost,
+              now: _now,
+            ),
+          ),
+        ),
+        Expanded(child: place),
+      ],
+    );
+  }
+
   /// The place's content, without the notice.
   Widget _body() {
-    final content = _place();
+    final content = _hostPlace() ?? _place();
     final state = widget.state;
     if (state == null) return content;
     if (state == StateKind.stale) {
@@ -416,9 +559,13 @@ class Studio extends StatefulWidget {
     this.pulls,
     this.factory,
     this.read,
+    this.readAudit,
+    this.readUsage,
     this.threadStore,
     this.composerFor,
     this.newWorkFor,
+    this.shareFor,
+    this.inspectorFor,
     this.connectRepoFor,
     this.planningFor,
     this.handoffFor,
@@ -429,6 +576,7 @@ class Studio extends StatefulWidget {
     this.automationsFor,
     this.libraryFor,
     this.settingsFor,
+    this.signals,
     this.initialPlace = const Place.overview(),
     this.startPage,
   });
@@ -450,6 +598,16 @@ class Studio extends StatefulWidget {
   /// Reads the fleet: discovery when the app starts, and again when a person
   /// asks.
   final Future<void> Function()? read;
+
+  /// Reads the newest audit events from the first host that answers, for the
+  /// Overview's activity feed. Null leaves the feed empty rather than
+  /// promising one.
+  final Future<List<AuditEvent>> Function()? readAudit;
+
+  /// Reads the usage report the Overview's spend rail draws, grouped by [by]:
+  /// the day series for its spark and the role series for its split. Null
+  /// leaves the rail with today's spend alone.
+  final Future<UsageReport> Function({String by})? readUsage;
 
   /// Builds the store a thread place reads its session into. Null draws a
   /// thread place as planned: a test or an embedded host that supplies none
@@ -473,6 +631,16 @@ class Studio extends StatefulWidget {
   /// leaves the sidebar's plus out: a host that wires no bridge cannot
   /// register a repository.
   final ConnectRepoModel Function(String host)? connectRepoFor;
+
+  /// Builds a thread's Share model, from the host's client (F7 decision 7).
+  /// Null leaves the header's Share disabled: a control that cannot work is
+  /// shown as unavailable, never as working.
+  final ShareModel Function(String host, String agentId)? shareFor;
+
+  /// Builds a thread's inspector, from the host's client (F9 decision 4).
+  /// Null leaves a thread without the panel, which is what every thread had
+  /// before F9.
+  final InspectorBuilder? inspectorFor;
 
   /// Builds a planning thread's model, for a planner a person started (F6
   /// decision 8). Null leaves the planning place unbuilt rather than drawing
@@ -506,17 +674,24 @@ class Studio extends StatefulWidget {
   /// never draws an editor that cannot save.
   final ProjectModel Function(String host, String root)? projectFor;
 
-  /// Builds the Automations place at one of its sections (F7 decision 4).
-  /// Null leaves the place planned, so a host that wires no bridge never
-  /// draws a section whose read could only fail; the builder itself answers
-  /// null while no host has answered yet.
-  final Widget? Function(int section, StateKind? state)? automationsFor;
+  /// Builds the Automations place for one host at one of its sections (F7
+  /// decision 4, D1). Null leaves the place planned, so a host that wires no
+  /// bridge never draws a section whose read could only fail; the builder
+  /// itself answers null while no host has answered yet.
+  final HostPlaceBuilder? automationsFor;
 
-  /// Builds the Library place at one of its sections (F7 decision 5).
-  final Widget? Function(int section, StateKind? state)? libraryFor;
+  /// Builds the Library place for one host at one of its sections (F7
+  /// decision 5).
+  final HostPlaceBuilder? libraryFor;
 
-  /// Builds the Settings place at one of its sections (F7 decision 7).
-  final Widget? Function(int section, StateKind? state)? settingsFor;
+  /// Builds the Settings place for one host at one of its sections (F7
+  /// decision 7).
+  final HostPlaceBuilder? settingsFor;
+
+  /// Every host's tripped watches, blocked requests and held drafts (spec D4).
+  /// Null leaves the Overview's Automations card with nothing to list, so a
+  /// test or an embedded host that supplies none still builds.
+  final SignalsStore? signals;
 
   /// The place a deep link names.
   final Place initialPlace;
@@ -538,6 +713,19 @@ class _StudioState extends State<Studio> {
   String? _notice;
   bool _read = false;
   String? _failure;
+
+  /// The newest audit events the last read answered, newest first: the
+  /// Overview's activity feed. Empty when no read has succeeded.
+  List<AuditEvent> _audit = const [];
+
+  /// The spend's day series and role split, as the last read answered them;
+  /// null when no read has succeeded.
+  UsageReport? _spendByDay;
+  UsageReport? _spendByRole;
+
+  /// The usage ledger read by project: what the projects table joins for its
+  /// spend column. Null when no read has succeeded.
+  UsageReport? _spendByProject;
 
   /// The one guard every place leaving this screen consults: the shell asks
   /// it, and a place that edits watches the models it holds (F7 decision 3).
@@ -598,6 +786,30 @@ class _StudioState extends State<Studio> {
         _failure = describeFailure(error);
       }
     }
+    final readAudit = widget.readAudit;
+    if (readAudit != null) {
+      try {
+        _audit = await readAudit();
+      } catch (_) {
+        // The feed is a nicety: a bridge that will not answer leaves the card
+        // empty rather than failing the page.
+        _audit = const [];
+      }
+    }
+    final readUsage = widget.readUsage;
+    if (readUsage != null) {
+      try {
+        _spendByProject = await readUsage(by: 'project');
+        _spendByDay = await readUsage(by: 'day');
+        _spendByRole = await readUsage(by: 'role');
+      } catch (_) {
+        // The rail keeps today's spend; the table's column, the trend and the
+        // split say nothing rather than something untrue.
+        _spendByProject = null;
+        _spendByDay = null;
+        _spendByRole = null;
+      }
+    }
     if (!mounted) return;
     setState(() => _read = true);
   }
@@ -605,7 +817,11 @@ class _StudioState extends State<Studio> {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: Listenable.merge([widget.store, widget.inbox]),
+      animation: Listenable.merge([
+        widget.store,
+        widget.inbox,
+        if (widget.signals != null) widget.signals!,
+      ]),
       builder: (context, _) {
         final store = widget.store;
         final place = _place;
@@ -626,6 +842,10 @@ class _StudioState extends State<Studio> {
           now: store.now,
           unsaved: _unsaved,
           notice: _notice,
+          automationsFor: widget.automationsFor,
+          libraryFor: widget.libraryFor,
+          settingsFor: widget.settingsFor,
+          signals: widget.signals,
           onConnectRepo: widget.connectRepoFor == null
               ? null
               : () => unawaited(_openConnectRepo(context)),
@@ -708,9 +928,19 @@ class _StudioState extends State<Studio> {
   Widget _content(Place place, NavModel nav, PlaceNavigation navigation) {
     if (place.kind == PlaceKind.overview) {
       return Overview(
-        overview: buildOverview(widget.store, widget.inbox),
+        overview: buildOverview(
+          widget.store,
+          widget.inbox,
+          audit: _audit,
+          pulls: widget.pulls?.views ?? const [],
+          usageByProject: _spendByProject,
+          usageByDay: _spendByDay,
+          usageByRole: _spendByRole,
+        ),
         now: widget.store.now,
         hosts: widget.store.hosts,
+        automations: widget.signals?.tripped ?? const [],
+        manyHosts: widget.signals?.manyHosts ?? false,
         pulls: widget.pulls?.views ?? const [],
         state: _state(widget.store),
         onSelect: navigation.go,
@@ -763,24 +993,6 @@ class _StudioState extends State<Studio> {
         ),
       );
     }
-    if (place.kind == PlaceKind.automations) {
-      final build = widget.automationsFor;
-      if (build == null) return plannedPlace(place, nav);
-      final built = build(sectionIndex(place), _state(widget.store));
-      return built ?? plannedPlace(place, nav);
-    }
-    if (place.kind == PlaceKind.library) {
-      final build = widget.libraryFor;
-      if (build == null) return plannedPlace(place, nav);
-      final built = build(sectionIndex(place), _state(widget.store));
-      return built ?? plannedPlace(place, nav);
-    }
-    if (place.kind == PlaceKind.settings) {
-      final build = widget.settingsFor;
-      if (build == null) return plannedPlace(place, nav);
-      final built = build(sectionIndex(place), _state(widget.store));
-      return built ?? plannedPlace(place, nav);
-    }
     if (place.kind == PlaceKind.project) {
       final root = place.id;
       final build = widget.projectFor;
@@ -805,8 +1017,12 @@ class _StudioState extends State<Studio> {
           Place(PlaceKind.thread, host: session.host, id: session.id),
         ),
         onOpenRun: (run) => _openRun(navigation, host, run),
-        onOpenAutomations: () =>
-            navigation.go(const Place(PlaceKind.automations)),
+        // The tab a row names, or the place's first tab when it names none.
+        onOpenAutomations: (tab) => navigation.go(
+          tab == null
+              ? const Place(PlaceKind.automations)
+              : Place(PlaceKind.automations, section: automationsSections[tab]),
+        ),
         onNewWork: widget.newWorkFor == null
             ? null
             : () => unawaited(_openNewWork(navigation, host, root)),
@@ -871,9 +1087,15 @@ class _StudioState extends State<Studio> {
           thread: thread,
           buildStore: build,
           composerFor: widget.composerFor,
-          // The thread's own ⌘N resolves to the shell's one call, so it obeys
-          // the same rule about a composer that has the keyboard (F9 decision
-          // 6).
+          // The thread's own ⌘N opens the Studio's one dialog, naming the
+          // thread's host and project; the dialog may then move to another
+          // host (spec D10, P8 plan 2 decision 6).
+          shareFor: widget.shareFor,
+          inspectorFor: widget.inspectorFor,
+          // The thread's own ⌘N is the shell's one call, so it obeys the same
+          // rule about a composer that has the keyboard (F9 decision 6). The
+          // dialog opens on this thread's host and may move to another (spec
+          // D10, P8 plan 2 decision 6).
           onNewWork: widget.newWorkFor == null ? null : _newWorkFromKeys,
           asks: [
             for (final ask in widget.inbox.asks)
@@ -1093,18 +1315,23 @@ class _StudioState extends State<Studio> {
       newWorkDialog(
         model,
         onCancel: () => Navigator.maybePop(context),
+        // The dialog may move to another host after it opens (spec D10), so
+        // every answer lands on the host the model names now, not the one the
+        // sheet opened on.
         onStarted: (agentId) {
           Navigator.maybePop(context);
-          navigation.go(Place(PlaceKind.thread, host: host, id: agentId));
+          navigation.go(Place(PlaceKind.thread, host: model.host, id: agentId));
         },
         onPlanned: (planner) {
           Navigator.maybePop(context);
-          _rememberPlanner(host, project, planner);
-          navigation.go(Place(PlaceKind.thread, host: host, id: planner.id));
+          _rememberPlanner(model.host, project, planner);
+          navigation.go(
+            Place(PlaceKind.thread, host: model.host, id: planner.id),
+          );
         },
         onWorkItem: (prompt) {
           Navigator.maybePop(context);
-          unawaited(_openNewWorkItem(navigation, host, project, prompt));
+          unawaited(_openNewWorkItem(navigation, model.host, project, prompt));
         },
       ),
     );
@@ -1178,6 +1405,8 @@ class _ThreadPlace extends StatefulWidget {
     required this.thread,
     required this.buildStore,
     this.composerFor,
+    this.shareFor,
+    this.inspectorFor,
     this.onNewWork,
     this.asks = const [],
     this.onAnswer,
@@ -1190,11 +1419,19 @@ class _ThreadPlace extends StatefulWidget {
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
 
-  /// Opens the Studio's one new-work dialog for this thread's project: `⌘N`,
-  /// and the empty transcript's "Start an agent". Null leaves both without a
+  /// Builds this thread's Share model, once, when the place opens. Null
+  /// leaves the header's Share disabled.
+  final ShareModel Function(String host, String agentId)? shareFor;
+
+  /// Builds this thread's inspector, once, when the place opens: the panel
+  /// beside the transcript (F9 decision 4). Null leaves the thread without
+  /// one, as every thread was before F9.
+  final InspectorBuilder? inspectorFor;
+
+  /// Opens the Studio's one new-work dialog for this thread's host and
+  /// project. Null leaves `⌘N` and the empty transcript's action without a
   /// dialog.
   final VoidCallback? onNewWork;
-
   final List<inbox.Ask> asks;
   final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
   final DateTime? now;
@@ -1210,13 +1447,25 @@ class _ThreadPlace extends StatefulWidget {
 class _ThreadPlaceState extends State<_ThreadPlace> {
   late final StackStore _store = widget.buildStore(widget.thread);
   late final ThreadViewState _view = ThreadViewState();
+
+  /// The inspector this thread's tabs read, built once so a rebuild does not
+  /// rebuild five models (F9 decision 4).
+  late final ThreadInspector? _inspector = widget.inspectorFor?.call(
+    widget.thread.host,
+    widget.thread,
+  );
   ComposerModel? _composer;
+  ShareModel? _share;
 
   @override
   void initState() {
     super.initState();
     _store.start();
+    // The holder owns its five models, so it starts their first read: nothing
+    // else would, and Changes would draw loading forever.
+    _inspector?.start();
     _composer = widget.composerFor?.call(widget.thread, _view);
+    _share = widget.shareFor?.call(widget.thread.host, widget.thread.id);
     // A thread opened while its agent is mid-turn offers Steer and Stop from
     // the first frame, from the fleet's own report of the agent.
     _composer?.setRunning(_turnRunning);
@@ -1241,19 +1490,18 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
 
   @override
   void dispose() {
+    // The inspector's tab models and its state outlive no thread: they are
+    // released before the store the screen was reading.
+    _inspector?.dispose?.call();
     _store
       ..stop()
       ..dispose();
     _view.dispose();
     _composer?.dispose();
+    _share?.dispose();
     super.dispose();
   }
 
-  /// Opens the new-work dialog, and the thread it starts.
-  ///
-  /// The Studio opens it (it owns the navigation the dialog's answers land
-  /// on), so this place only asks for it: `⌘N` and the empty transcript's one
-  /// action are the same call.
   @override
   Widget build(BuildContext context) {
     final composer = _composer;
@@ -1271,6 +1519,19 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
           ? null
           : () => _sendBack(context),
       onNewWork: widget.onNewWork,
+      // The panel beside the transcript, when a host built one (F9
+      // decision 4). Null leaves the screen as it was before F9.
+      inspector: _inspector?.state,
+      inspectorBody: _inspector?.body,
+      // Share mints this thread's status link on the host's client. Null
+      // leaves the header's Share disabled (F7 decision 7).
+      onShare: _share == null
+          ? null
+          : () => unawaited(showShareSheet(context, _share!)),
+      // Stop ends the turn through the composer's own route. Hold is not
+      // passed: no bridge route holds an agent, so the header would offer an
+      // item that cannot work (f9-parity.md decision 2).
+      onStop: _composer == null ? null : () => unawaited(_composer!.stop()),
       composer: composer == null
           ? null
           : ThreadComposer(model: composer, view: _view),
@@ -1674,7 +1935,7 @@ class _ProjectPlace extends StatefulWidget {
   final void Function(model.ThreadRef agent)? onOpenAgent;
   final void Function(model.ThreadRef session)? onOpenSession;
   final void Function(ProjectRun run)? onOpenRun;
-  final VoidCallback? onOpenAutomations;
+  final void Function(int? tab)? onOpenAutomations;
 
   /// Opens the Studio's new-work dialog for this project: the page's "New".
   final VoidCallback? onNewWork;

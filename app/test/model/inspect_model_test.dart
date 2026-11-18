@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -155,4 +156,53 @@ void main() {
       hasLength(1),
     );
   });
+
+  test(
+    'a request in flight notifies nobody once the thread has closed',
+    () async {
+      final held = _HeldTransport();
+      final model = InspectModel(BridgeClient(held), sessionId: 's-1');
+
+      final reading = model.loadRequest();
+      // The thread place closes while the bridge has not answered: the request
+      // still lands, and its answer must not reach a disposed model.
+      model.dispose();
+      held.release();
+
+      await reading;
+    },
+  );
+}
+
+/// A transport whose answer waits for the test: a read can be in flight while
+/// the model it feeds is disposed, which is what a thread closing mid-read
+/// does.
+class _HeldTransport implements Transport {
+  Completer<Response>? _read;
+  bool _released = false;
+
+  @override
+  Future<Response> send(Request request) {
+    if (_released) {
+      return Future.value(
+        const Response(status: 404, body: '{"error":"no canned route"}'),
+      );
+    }
+    final read = Completer<Response>();
+    _read = read;
+    return read.future;
+  }
+
+  /// Answers the read that is in flight, as the bridge does after the thread
+  /// that asked it has closed.
+  void release() {
+    _released = true;
+    _read?.complete(
+      const Response(status: 404, body: '{"error":"no canned route"}'),
+    );
+    _read = null;
+  }
+
+  @override
+  Stream<String> lines(Request request) => const Stream.empty();
 }

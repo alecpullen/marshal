@@ -1177,4 +1177,139 @@ void main() {
     expect(opened?.id, 'sess_1');
     expect(opened?.host, 'local');
   });
+
+  testWidgets('a project lists its schedules and watches', (tester) async {
+    final opened = <int?>[];
+    final model = ProjectModel(
+      root: '/home/u/alpha',
+      name: 'alpha',
+      now: () => _now,
+      read: () async => ProjectSettingsVersion(
+        settings: contract.ProjectSettings.fromJson({
+          'routing': {'profile': 'balanced'},
+          'mode': 'act',
+          'intake': {
+            'repoId': 'repo-1',
+            'labels': ['studio'],
+          },
+        }),
+        etag: 'v1',
+      ),
+      write: (next, etag) async =>
+          ProjectSettingsVersion(settings: next, etag: etag),
+      readSchedules: () async => const [
+        contract.Schedule(
+          id: 's-1',
+          name: 'nightly gate',
+          recipe: 'gate',
+          project: '/home/u/alpha',
+          cron: '0 3 * * *',
+          enabled: true,
+          lastResult: 'passed',
+          ownerID: 'owner-1',
+        ),
+        contract.Schedule(
+          id: 's-2',
+          name: 'weekly review',
+          recipe: 'review',
+          project: '/home/u/alpha',
+          cron: '0 9 * * 1',
+          enabled: false,
+          ownerID: 'owner-1',
+        ),
+      ],
+      readWatches: () async => [
+        contract.WatchInfo(
+          agentID: 'a-1',
+          id: 'w-1',
+          name: 'the gate',
+          kind: 'command',
+          state: 'fired',
+          condition: 'exit != 0',
+          mode: 'interval',
+          intervalMs: 5000,
+          fireCount: 1,
+          createdAt: 1763352000000,
+          samples: const [],
+        ),
+      ],
+      projectOfAgent: (agentID) => agentID == 'a-1' ? '/home/u/alpha' : null,
+    );
+    addTearDown(model.dispose);
+
+    await _pumpTall(
+      tester,
+      ProjectPage(
+        model: model,
+        initialTab: 1,
+        now: _now,
+        onOpenAutomations: opened.add,
+      ),
+    );
+    // The model's read lands after the first frame.
+    await tester.pump();
+
+    // Every row says what it is and where it stands, in the words its own
+    // section uses. A section label is uppercase (§5).
+    expect(find.text('SCHEDULES'), findsOneWidget);
+    expect(find.text('nightly gate'), findsOneWidget);
+    expect(find.text('0 3 * * *'), findsOneWidget);
+    expect(find.text('passed'), findsOneWidget);
+    expect(find.text('weekly review'), findsOneWidget);
+    expect(find.text('Paused'), findsOneWidget);
+    expect(find.text('WATCHES'), findsOneWidget);
+    expect(find.text('the gate'), findsOneWidget);
+    expect(find.text('Tripped'), findsOneWidget);
+    // The intake names the repository and the label an issue must carry.
+    expect(find.text('ISSUE INTAKE'), findsOneWidget);
+    expect(find.text('repo-1'), findsOneWidget);
+    expect(find.text('Issues labelled studio'), findsOneWidget);
+
+    // Each row opens the editor that owns it, at that tab.
+    await tester.tap(find.text('nightly gate'));
+    await tester.pump();
+    await tester.tap(find.text('the gate'));
+    await tester.pump();
+    expect(opened, [
+      automationsSections.indexOf('schedules'),
+      automationsSections.indexOf('watches'),
+    ]);
+  });
+
+  testWidgets('a tab section with nothing is absent', (tester) async {
+    final model = ProjectModel(
+      root: '/home/u/alpha',
+      name: 'alpha',
+      now: () => _now,
+      read: () async => ProjectSettingsVersion(
+        settings: contract.ProjectSettings.fromJson({
+          'routing': {'profile': 'balanced'},
+          'mode': 'act',
+        }),
+        etag: 'v1',
+      ),
+      write: (next, etag) async =>
+          ProjectSettingsVersion(settings: next, etag: etag),
+      readSchedules: () async => const <contract.Schedule>[],
+      readWatches: () async => const <contract.WatchInfo>[],
+      projectOfAgent: (_) => null,
+    );
+    addTearDown(model.dispose);
+
+    await _pumpTall(
+      tester,
+      ProjectPage(
+        model: model,
+        initialTab: 1,
+        now: _now,
+        onOpenAutomations: (_) {},
+      ),
+    );
+    await tester.pump();
+
+    // A heading with nothing under it is not drawn at all.
+    expect(find.text('SCHEDULES'), findsNothing);
+    expect(find.text('WATCHES'), findsNothing);
+    expect(find.text('ISSUE INTAKE'), findsNothing);
+  });
 }

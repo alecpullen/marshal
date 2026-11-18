@@ -35,6 +35,7 @@ type FleetDelta struct {
 	Access       *AccessState    `json:"access,omitempty"`
 	ContextPct   *int            `json:"contextPct,omitempty"`
 	ChangedFiles *int            `json:"changedFiles,omitempty"`
+	StepsDone    *int            `json:"stepsDone,omitempty"`
 	PendingKind  PendingKind     `json:"pendingKind,omitempty"`
 	Gate         *GateRecord     `json:"gate,omitempty"`
 	AgentID      string          `json:"agentId,omitempty"`

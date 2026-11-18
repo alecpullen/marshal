@@ -1,5 +1,5 @@
 import '../../model/age.dart';
-import '../../model/fleet_store.dart' show HostView;
+import '../../model/fleet_store.dart' show HostView, describeFailure;
 import '../../model/hosts_model.dart';
 import '../kit/kit.dart';
 import '../sections/section_page.dart';
@@ -7,8 +7,9 @@ import '../sections/section_page.dart';
 /// Settings' Hosts section (F7 decision 7): every host discovery found, with
 /// its kind, what this app can reach of it and when it was last heard from.
 ///
-/// Read-only, and adding a host is a planned row (decision 9): a host is
-/// configured by the fleet profile file and found by discovery, not here.
+/// A host is named in `fleet.toml` and found by discovery. A build that can
+/// run `marshal fleet` adds one here; a browser cannot, and says what it
+/// reaches instead (spec D22).
 class HostsSection extends StatelessWidget {
   const HostsSection({super.key, required this.model, this.state, this.now});
 
@@ -36,48 +37,264 @@ class HostsSection extends StatelessWidget {
         value: host.reachWords(clock),
         onTap: onTap,
       ),
-      footer: const [
+      footer: [
         Rows([
-          RowItem.planned(
-            name: 'Add a host',
-            description:
-                'Host onboarding is planned: a host is named in `fleet.toml` '
-                'and discovery finds it, so this row lists what it finds.',
-          ),
+          if (model.canAdd)
+            RowItem(
+              name: 'Add a host',
+              description:
+                  'A server profile, added to `fleet.toml` and signed in to',
+              onTap: () => _add(context),
+            )
+          else
+            RowItem.planned(
+              name: 'Add a host',
+              description:
+                  'A browser reaches the hosts the bridge that served it '
+                  'relays: join a daemon to it with `webbridge --join`.',
+            ),
         ]),
       ],
-      detail: (context, host) => _HostDetail(host: host, now: clock),
+      detail: (context, host) =>
+          HostDetail(model: model, host: host, now: clock),
     );
   }
 
-  /// What the host is, in one line: a local daemon, or a server profile.
+  /// Adds a server profile: its name, its URL, the certificates it is trusted
+  /// with and its token. A draft that holds anything counts for the shell's
+  /// guard while the sheet is open (design-system.md §9).
+  Future<void> _add(BuildContext context) async {
+    await Sheet.show<void>(
+      context,
+      Sheet(
+        title: 'Add a host',
+        actions: [Btn('Cancel', onTap: () => Navigator.maybePop(context))],
+        child: HostForm(model: model),
+      ),
+    );
+    model.draftChanged(null);
+  }
+
+  /// What the host is, in one line: a local daemon, or a server profile — and
+  /// a relayed profile says where it is reached (spec D23).
   static String _kind(HostView host) => switch (host.kind.name) {
     'local' => 'A local daemon, on this machine',
-    _ => 'A server profile, over TLS',
+    _ =>
+      host.via == null
+          ? 'A server profile, over TLS'
+          : 'A server profile, through ${host.via}',
   };
 }
 
-/// What a host is: read once, since nothing here edits it.
-class _HostDetail extends StatelessWidget {
-  const _HostDetail({required this.host, required this.now});
+/// What the add sheet holds (spec D6): a server's name and URL, the file whose
+/// certificates it is trusted with, and the token to reach it with.
+///
+/// The token is written and never read back, as Secrets' new value is. A
+/// failed add keeps the fields and says why under them; the sheet closes as
+/// added, because the profile is there and only the token is not.
+class HostForm extends StatefulWidget {
+  const HostForm({super.key, required this.model, this.initialFailure});
 
-  final HostView host;
-  final DateTime now;
+  final HostsModel model;
+
+  /// A failure shown under the fields before anything is submitted: what the
+  /// caller already knows, or a fixture's.
+  final String? initialFailure;
+
+  @override
+  State<HostForm> createState() => _HostFormState();
+}
+
+class _HostFormState extends State<HostForm> {
+  final _name = TextEditingController();
+  final _url = TextEditingController();
+  final _caFile = TextEditingController();
+  final _token = TextEditingController();
+  String? _failure;
+  bool _adding = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _failure = widget.initialFailure;
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _url.dispose();
+    _caFile.dispose();
+    _token.dispose();
+    super.dispose();
+  }
+
+  HostDraft get _draft => HostDraft(
+    name: _name.text,
+    url: _url.text,
+    caFile: _caFile.text,
+    token: _token.text,
+  );
+
+  void _changed(String _) {
+    widget.model.draftChanged(_draft);
+    if (_failure != null) setState(() => _failure = null);
+  }
+
+  Future<void> _add() async {
+    setState(() {
+      _adding = true;
+      _failure = null;
+    });
+    try {
+      await widget.model.add(_draft);
+      if (!mounted) return;
+      Navigator.maybePop(context);
+    } catch (failure) {
+      if (!mounted) return;
+      setState(() {
+        _adding = false;
+        _failure = describeFailure(failure);
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final e = Ember.of(context);
+    final failure = _failure;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Field(
+          label: 'Name',
+          hint: 'studio',
+          controller: _name,
+          enabled: !_adding,
+          onChanged: _changed,
+        ),
+        const SizedBox(height: Space.s16),
+        Field(
+          label: 'URL',
+          hint: 'https://studio.example.com',
+          controller: _url,
+          enabled: !_adding,
+          onChanged: _changed,
+          onSubmitted: (_) => _add(),
+        ),
+        const SizedBox(height: Space.s16),
+        Field(
+          label: 'CA file',
+          hint: 'The certificates this host is trusted with',
+          controller: _caFile,
+          enabled: !_adding,
+          onChanged: _changed,
+        ),
+        const SizedBox(height: Space.s16),
+        Field(
+          label: 'Token',
+          hint: 'The token is written and never shown again',
+          controller: _token,
+          enabled: !_adding,
+          onChanged: _changed,
+          onSubmitted: (_) => _add(),
+        ),
+        if (failure != null) ...[
+          const SizedBox(height: Space.s12),
+          Text(failure, style: e.small.tint(e.err)),
+        ],
+        const SizedBox(height: Space.s16),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Btn.primary(
+            _adding ? 'Adding' : 'Add',
+            onTap: _adding ? null : _add,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// What a host is, and what a person can do about it: a server profile is
+/// removed, and one whose token the bridge refused is signed in to again. The
+/// local daemon is neither — it is this machine's, and its profile is not the
+/// Studio's to write.
+class HostDetail extends StatefulWidget {
+  const HostDetail({
+    super.key,
+    required this.model,
+    required this.host,
+    required this.now,
+  });
+
+  final HostsModel model;
+  final HostView host;
+  final DateTime now;
+
+  @override
+  State<HostDetail> createState() => _HostDetailState();
+}
+
+class _HostDetailState extends State<HostDetail> {
+  final _token = TextEditingController();
+
+  /// A sign-in's words, shown under the token field.
+  String? _failure;
+
+  /// A removal's words, shown under the button that asked for it: a host
+  /// that answered every request can still be refused a removal (an inline
+  /// definition, a file whose mode went loose), and that refusal is not a
+  /// sign-in failure.
+  String? _removeFailure;
+  bool _signingIn = false;
+  bool _signingOut = false;
+
+  @override
+  void dispose() {
+    _token.dispose();
+    super.dispose();
+  }
+
+  /// Whether the relay this host is reached through is one the bridge refused.
+  /// While it is, signing in here cannot help: the relay's own token is what is
+  /// refused, so the detail says so and offers no Sign in of its own (D23).
+  ///
+  /// A `via` the section does not list is read as not refused: both real
+  /// compositions always list the relay's own row (the page's host first in a
+  /// browser, the hub's row in a native build), so this only answers a
+  /// fixture that withholds it.
+  bool get _relayRefused {
+    final via = widget.host.via;
+    if (via == null) return false;
+    for (final other in widget.model.items) {
+      if (other.name == via) return other.refused;
+    }
+    return false;
+  }
+
+  /// A refused token is not a silence: a server profile that refused one is
+  /// signed in to again, and one whose sign-in failed when it was added says
+  /// why beside the field (decision 5).
+  @override
+  Widget build(BuildContext context) {
+    final e = Ember.of(context);
+    final host = widget.host;
     final seen = host.lastContact;
+    final server = host.kind.name != 'local';
+    final loginFailure = widget.model.loginFailure(host.name);
+    final relayRefused = _relayRefused;
+    final failure = _failure;
+    final removeFailure = _removeFailure;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _Fact('Kind', HostsSection._kind(host)),
-        _Fact('Reach', host.reachWords(now)),
+        _Fact('Reach', host.reachWords(widget.now)),
         _Fact(
           'Last contact',
           seen == null
               ? 'Never'
-              : '${relativeAge(seen, now)} ago · ${_stamp(seen)}',
+              : '${relativeAge(seen, widget.now)} ago · ${_stamp(seen)}',
         ),
         const SizedBox(height: Space.s12),
         Text(
@@ -89,8 +306,146 @@ class _HostDetail extends StatelessWidget {
                     'heard from.',
           style: e.small.tint(e.muted),
         ),
+        if (relayRefused) ...[
+          const SizedBox(height: Space.s12),
+          Text('Sign in to the relay first.', style: e.small.tint(e.err)),
+        ],
+        // A browser cannot remove a profile any more than it can add one, so
+        // the affordance follows the runner rather than the host's kind.
+        if (server && widget.model.canAdd) ...[
+          const SizedBox(height: Space.s16),
+          Row(
+            children: [
+              Btn('Remove…', onTap: () => _remove(context)),
+              // Signing out is the browser's alone: it is what holds the token
+              // that reached a relayed host (decision 6, spec D22).
+              if (widget.model.canSignOut(host)) ...[
+                const SizedBox(width: Space.s12),
+                Btn('Sign out', onTap: _signingOut ? null : _signOut),
+              ],
+            ],
+          ),
+          if (removeFailure != null) ...[
+            const SizedBox(height: Space.s12),
+            Text(removeFailure, style: e.small.tint(e.err)),
+          ],
+        ],
+        if (server &&
+            !relayRefused &&
+            (host.refused || loginFailure != null)) ...[
+          const SizedBox(height: Space.s20),
+          if (loginFailure != null) ...[
+            Text(loginFailure, style: e.small.tint(e.err)),
+            const SizedBox(height: Space.s12),
+          ],
+          Field(
+            label: 'Token',
+            hint: 'The token is written and never shown again',
+            controller: _token,
+            enabled: !_signingIn,
+            onChanged: (_) {
+              if (failure != null) setState(() => _failure = null);
+            },
+            onSubmitted: (_) => _signIn(),
+          ),
+          if (failure != null) ...[
+            const SizedBox(height: Space.s12),
+            Text(failure, style: e.small.tint(e.err)),
+          ],
+          const SizedBox(height: Space.s16),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Btn.primary(
+              _signingIn ? 'Signing in' : 'Sign in',
+              onTap: _signingIn ? null : _signIn,
+            ),
+          ),
+        ],
       ],
     );
+  }
+
+  Future<void> _signIn() async {
+    final token = _token.text.trim();
+    if (token.isEmpty) {
+      setState(() => _failure = 'A token is needed');
+      return;
+    }
+    setState(() {
+      _signingIn = true;
+      _failure = null;
+    });
+    try {
+      await widget.model.signIn(widget.host.name, token);
+      if (!mounted) return;
+      _token.clear();
+      setState(() => _signingIn = false);
+    } catch (failure) {
+      if (!mounted) return;
+      setState(() {
+        _signingIn = false;
+        _failure = describeFailure(failure);
+      });
+    }
+  }
+
+  /// Forgets the token this browser kept for the host, then asks it to try
+  /// again: it reads "token refused" until it is signed in to with a new one
+  /// (decision 6, spec D22).
+  Future<void> _signOut() async {
+    setState(() {
+      _signingOut = true;
+      _failure = null;
+    });
+    await widget.model.signOut(widget.host.name);
+    if (!mounted) return;
+    setState(() => _signingOut = false);
+  }
+
+  /// Removes the profile and its stored token, after the confirmation Access
+  /// asks before a revoke: it names what is lost, and what keeps running.
+  Future<void> _remove(BuildContext context) async {
+    final host = widget.host;
+    if (_removeFailure != null) setState(() => _removeFailure = null);
+    // The sheet's navigator, taken before the first await: after it the
+    // widget's context may be gone, and this is the pop that closes the
+    // confirmation.
+    final navigator = Navigator.of(context);
+    final confirmed = await Sheet.show<bool>(
+      context,
+      Sheet(
+        title: 'Remove ${host.name}?',
+        actions: [Btn('Cancel', onTap: () => Navigator.maybePop(context))],
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'The Studio stops showing it, and its profile and stored token '
+              'are deleted. Its daemon keeps running.',
+            ),
+            const SizedBox(height: Space.s16),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Btn.primary(
+                'Remove',
+                onTap: () => Navigator.maybePop(context, true),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await widget.model.remove(host.name);
+    } catch (failure) {
+      if (!mounted) return;
+      setState(() => _removeFailure = describeFailure(failure));
+      return;
+    }
+    if (!mounted) return;
+    widget.model.cancel();
+    navigator.maybePop();
   }
 
   /// The exact moment, in the tooltip's manner: a date and a time in UTC, so

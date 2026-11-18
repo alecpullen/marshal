@@ -1601,7 +1601,7 @@ func TestDaemonStatusShowsTheDaemonsRestart(t *testing.T) {
 }
 
 // TestDaemonRejectsUnknownSubcommands pins the listing: the usage error names
-// all five subcommands, for a missing and for an unknown one.
+// every subcommand, for a missing and for an unknown one.
 func TestDaemonRejectsUnknownSubcommands(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1620,10 +1620,319 @@ func TestDaemonRejectsUnknownSubcommands(t *testing.T) {
 			if !strings.Contains(err.Error(), c.want) {
 				t.Errorf("error = %q, want it to mention %q", err, c.want)
 			}
-			for _, sub := range []string{"install", "start", "stop", "status", "restart", "pin", "unpin", "uninstall"} {
+			for _, sub := range []string{"install", "start", "stop", "status", "restart", "join-token", "token", "pin", "unpin", "uninstall"} {
 				if !strings.Contains(err.Error(), sub) {
 					t.Errorf("error = %q, want it to list %q", err, sub)
 				}
+			}
+		})
+	}
+}
+
+// daemonTestWebbridge writes an executable the unit can name as its web bridge
+// and returns its path, so a unit built by daemonUnitSpec resolves one.
+func daemonTestWebbridge(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "webbridge")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// daemonWriteUserConfig writes the user config daemonUnitSpec reads, for the
+// tests that state [daemon] settings.
+func daemonWriteUserConfig(t *testing.T, home, body string) {
+	t.Helper()
+	path := filepath.Join(home, ".config", "marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// daemonWriteJoinSecret stores the join secret daemonUnitSpec requires when
+// daemon.join_url is set, at the path the unit passes as --join-token-file.
+func daemonWriteJoinSecret(t *testing.T, home string) {
+	t.Helper()
+	path := daemon.PathsFor(home).JoinToken
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("join-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDaemonUnitSpecRefusesAJoinWithoutASecret: a unit installed with a join
+// and no stored secret would come up dead, so the install refuses and names the
+// command that stores one.
+func TestDaemonUnitSpecRefusesAJoinWithoutASecret(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\n"+
+		"join_url = \"https://relay.example.com\"\n"+
+		"join_name = \"box\"\n")
+
+	spec, err := daemonUnitSpec(daemonTestWebbridge(t), home)
+	if err == nil {
+		t.Fatalf("daemonUnitSpec accepted a join with no stored secret: %+v", spec.Join)
+	}
+	if !strings.Contains(err.Error(), "marshal daemon join-token") {
+		t.Errorf("error = %q, want it to name marshal daemon join-token", err)
+	}
+}
+
+// TestDaemonUnitSpecReadsTheJoin pins P8 D12's config: daemon.join_url,
+// join_name and join_ca_file become the unit's join and its arguments, and
+// they are read from the user config alone — as the Studio's address is, so a
+// project cannot point this machine's daemon at a relay.
+func TestDaemonUnitSpecReadsTheJoin(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\n"+
+		"join_url = \"https://relay.example.com\"\n"+
+		"join_name = \"box\"\n"+
+		"join_ca_file = \"/etc/marshal/relay-ca.pem\"\n")
+	daemonWriteJoinSecret(t, home)
+
+	// A project config names another relay; the unit must not pick it up.
+	work := t.TempDir()
+	projectConfig := filepath.Join(work, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(projectConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectConfig,
+		[]byte("[daemon]\njoin_url = \"https://elsewhere.example.com\"\njoin_name = \"other\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+
+	spec, err := daemonUnitSpec(daemonTestWebbridge(t), home)
+	if err != nil {
+		t.Fatalf("daemonUnitSpec: %v", err)
+	}
+	if spec.Join == nil {
+		t.Fatal("the unit joins no relay, want the user config's join")
+	}
+	want := daemon.Join{
+		URL:    "https://relay.example.com",
+		Name:   "box",
+		CAFile: "/etc/marshal/relay-ca.pem",
+	}
+	if *spec.Join != want {
+		t.Errorf("join = %+v, want %+v", *spec.Join, want)
+	}
+	joined := strings.Join(spec.Args(), " ")
+	for _, arg := range []string{
+		"--join https://relay.example.com",
+		"--join-name box",
+		"--join-token-file " + daemon.PathsFor(home).JoinToken,
+		"--join-ca-file /etc/marshal/relay-ca.pem",
+	} {
+		if !strings.Contains(joined, arg) {
+			t.Errorf("args = %q, want it to carry %q", joined, arg)
+		}
+	}
+}
+
+// TestDaemonUnitSpecRefusesAJoinWithoutAName: the name is what the relay's
+// fleet reader shows, so a join_url with no join_name is refused at install,
+// naming the key the user has to set.
+func TestDaemonUnitSpecRefusesAJoinWithoutAName(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\njoin_url = \"https://relay.example.com\"\n")
+
+	spec, err := daemonUnitSpec(daemonTestWebbridge(t), home)
+	if err == nil {
+		t.Fatalf("daemonUnitSpec accepted a join with no name: %+v", spec.Join)
+	}
+	if !strings.Contains(err.Error(), "daemon.join_name") {
+		t.Errorf("error = %q, want it to name daemon.join_name", err)
+	}
+}
+
+// TestDaemonJoinTokenStoresTheSecretPrivately holds `marshal daemon
+// join-token`: the secret arrives on stdin and is stored 0600 under the daemon
+// directory, replacing whatever an earlier run left there — mode included.
+func TestDaemonJoinTokenStoresTheSecretPrivately(t *testing.T) {
+	home := daemonTestEnv(t)
+	paths := daemon.PathsFor(home)
+	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// An earlier secret anyone could read: the new one replaces it and its
+	// mode.
+	if err := os.WriteFile(paths.JoinToken, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(paths.JoinToken, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"join-token"},
+		strings.NewReader("  s3cret-value  \n"), &stdout, &stderr); err != nil {
+		t.Fatalf("runDaemon join-token: %v\nstderr: %s", err, stderr.String())
+	}
+
+	stored, err := os.ReadFile(paths.JoinToken)
+	if err != nil {
+		t.Fatalf("read the join secret: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(stored)), "s3cret-value"; got != want {
+		t.Errorf("stored secret = %q, want %q", got, want)
+	}
+	fi, err := os.Stat(paths.JoinToken)
+	if err != nil {
+		t.Fatalf("stat the join secret: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("join secret mode = %o, want 600", perm)
+	}
+	if want := "Stored the join secret. Run marshal daemon install to apply it."; !strings.Contains(stdout.String(), want) {
+		t.Errorf("stdout = %q, want it to say %q", stdout.String(), want)
+	}
+}
+
+// TestDaemonTokenRefusesATerminal holds the guard `marshal fleet token` has:
+// a terminal would put the credential in scrollback, so nothing is printed.
+func TestDaemonTokenRefusesATerminal(t *testing.T) {
+	daemonTestEnv(t)
+
+	old := fleetStdoutIsTerminal
+	t.Cleanup(func() { fleetStdoutIsTerminal = old })
+	fleetStdoutIsTerminal = func(io.Writer) bool { return true }
+
+	var stdout, stderr bytes.Buffer
+	err := runDaemon(context.Background(), []string{"token"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("runDaemon token printed a token to a terminal")
+	}
+	for _, want := range []string{"terminal", "marshal daemon token | pbcopy"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to carry %q", err, want)
+		}
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing", stdout.String())
+	}
+}
+
+// TestDaemonTokenWritesTheTokenToAPipe: `marshal daemon token` hands a program
+// the token file's contents and a newline, and says how a daemon gets a token
+// when there is none yet.
+func TestDaemonTokenWritesTheTokenToAPipe(t *testing.T) {
+	home := daemonTestEnv(t)
+	paths := daemon.PathsFor(home)
+	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := runDaemon(context.Background(), []string{"token"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("runDaemon token succeeded with no token file: stdout %q", stdout.String())
+	}
+	for _, want := range []string{"no token yet", "daemon.studio_addr", "daemon.join_url", "marshal daemon install"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to carry %q", err, want)
+		}
+	}
+
+	// The bridge writes the token with a newline of its own; a program reads
+	// exactly one line either way.
+	if err := os.WriteFile(paths.Token, []byte("tok-123\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if err := runDaemon(context.Background(), []string{"token"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runDaemon token: %v\nstderr: %s", err, stderr.String())
+	}
+	if got, want := stdout.String(), "tok-123\n"; got != want {
+		t.Errorf("stdout = %q, want %q", got, want)
+	}
+}
+
+// daemonStatusInfo builds the document the fake daemon answers with: the wire
+// form the bridge sends, carrying the join joinJSON describes, or none when
+// joinJSON is empty.
+func daemonStatusInfo(t *testing.T, joinJSON string) daemon.Info {
+	t.Helper()
+	doc := `{"version":"1.0.0","profile":"local","pid":4242,"startedAt":1700000000000`
+	if joinJSON != "" {
+		doc += `,"join":` + joinJSON
+	}
+	doc += "}"
+
+	var info daemon.Info
+	if err := json.Unmarshal([]byte(doc), &info); err != nil {
+		t.Fatalf("unmarshal the daemon document: %v", err)
+	}
+	return info
+}
+
+// TestDaemonStatusPrintsTheJoin: the text status names the relay the daemon
+// joined and whether it is connected, with its last error when it is not — and
+// says nothing at all for a daemon that joins no relay.
+func TestDaemonStatusPrintsTheJoin(t *testing.T) {
+	cases := []struct {
+		name     string
+		joinJSON string
+		want     string
+	}{
+		{
+			name:     "connected",
+			joinJSON: `{"url":"https://relay.example.com","name":"box","connected":true}`,
+			want:     "relay: joined https://relay.example.com as box",
+		},
+		{
+			name:     "not connected",
+			joinJSON: `{"url":"https://relay.example.com","name":"box","lastError":"dial tcp 10.0.0.1:443: connection refused"}`,
+			want:     "relay: https://relay.example.com as box, not connected (dial tcp 10.0.0.1:443: connection refused)",
+		},
+		{
+			name: "no join",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			daemonTestEnv(t)
+			fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+				return []byte("state = running\npid = 4242\n"), nil
+			})
+			fakeDaemonSocket(t, fakeDaemonClient{info: daemonStatusInfo(t, tc.joinJSON)})
+
+			var stdout, stderr bytes.Buffer
+			if err := runDaemon(context.Background(), []string{"status"},
+				strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("runDaemon status: %v\nstderr: %s", err, stderr.String())
+			}
+
+			lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+			var relayLines []string
+			for _, line := range lines {
+				if strings.HasPrefix(line, "relay:") {
+					relayLines = append(relayLines, line)
+				}
+			}
+			if tc.want == "" {
+				if len(relayLines) != 0 {
+					t.Errorf("status printed %q for a daemon that joins no relay", relayLines)
+				}
+				return
+			}
+			if len(relayLines) != 1 {
+				t.Fatalf("status printed %d relay lines, want 1:\n%s", len(relayLines), stdout.String())
+			}
+			if relayLines[0] != tc.want {
+				t.Errorf("relay line = %q, want %q", relayLines[0], tc.want)
+			}
+			// It sits with the daemon's own lines, under the refresh helper
+			// and above the project children's.
+			if got := lines[4]; got != tc.want {
+				t.Errorf("line 5 = %q, want the relay line %q", got, tc.want)
 			}
 		})
 	}

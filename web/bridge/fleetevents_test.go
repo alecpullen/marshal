@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/web/bridge/contract"
 )
@@ -309,5 +310,103 @@ func TestLiveStateTelemetryZeroesAndActivityKeepsValues(t *testing.T) {
 	live.apply(tel(`[]`, "0"))
 	if got := live.get("s1"); got.changedFiles != 0 || got.contextPct != 0 {
 		t.Fatalf("telemetry zeros were not applied: %+v", got)
+	}
+}
+
+// TestSnapshotPendingCarriesWhenItWasParked: a parked ask reports when the
+// bridge saw it arrive, so a client measures the wait from the ask rather
+// than from the agent's last status line.
+func TestSnapshotPendingCarriesWhenItWasParked(t *testing.T) {
+	f := testFleet(t)
+	ctx, cancel := testContext(t)
+	defer cancel()
+	id, err := f.Spawn(ctx, "/home/u/a", SpawnOptions{Name: "agent one", Mode: "edit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := f.runtimeForAgent(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rt.reg.quesMu.Lock()
+	rt.reg.questions["q-3"] = make(chan Answers, 1)
+	rt.reg.quesSession["q-3"] = rt.sessionID
+	rt.reg.quesMu.Unlock()
+	before := time.Now().UnixMilli()
+	rt.reg.emitEvent(rt.sessionID, map[string]any{
+		"type": "question_request", "questionId": "q-3",
+		"params": json.RawMessage(`{"questions":[{"question":"proceed?"}]}`),
+	})
+	observed := time.Now().UnixMilli()
+
+	p := f.Snapshot()[0].Pending
+	if p == nil {
+		t.Fatal("Pending is nil for a parked question")
+	}
+	if p.At == 0 {
+		t.Fatal("Pending.At is zero, but the bridge saw the ask arrive")
+	}
+	if p.At < before || p.At > observed {
+		t.Fatalf("Pending.At = %d, want the park time within [%d, %d]", p.At, before, observed)
+	}
+}
+
+// TestPendingParkTimeOutlivesStatusUpdates: a status delta and an access
+// report move UpdatedAt, but the park time belongs to the ask, so a question
+// the bridge keeps seeing still says how long it has waited.
+func TestPendingParkTimeOutlivesStatusUpdates(t *testing.T) {
+	live := newLiveState()
+	live.observePending("a1", observedPending{kind: "question", id: "q-1", params: json.RawMessage(`{}`)})
+	first := live.get("a1")
+	if first.pending == nil || first.pending.at.IsZero() {
+		t.Fatalf("the ask was not recorded with a park time: %+v", first.pending)
+	}
+
+	// A status delta and an access report: both move UpdatedAt.
+	time.Sleep(2 * time.Millisecond)
+	live.apply(fleetDelta{FleetDelta: contract.FleetDelta{SessionID: "a1", Kind: "activity", Activity: "read"}})
+	live.setAccess("a1", "s1", AccessState{Mode: "edit", Revision: 1})
+	mid := live.get("a1")
+	if !mid.updatedAt.After(first.updatedAt) {
+		t.Fatalf("UpdatedAt did not move: %v then %v", first.updatedAt, mid.updatedAt)
+	}
+	if mid.pending == nil || !mid.pending.at.Equal(first.pending.at) {
+		t.Fatalf("a status update moved the park time: %+v then %+v", first.pending, mid.pending)
+	}
+
+	// The same ask seen again is the same wait.
+	time.Sleep(2 * time.Millisecond)
+	live.observePending("a1", observedPending{kind: "question", id: "q-1", params: json.RawMessage(`{}`)})
+	again := live.get("a1")
+	if !again.pending.at.Equal(first.pending.at) {
+		t.Fatalf("re-observing the ask moved the park time: %v then %v", first.pending.at, again.pending.at)
+	}
+	if !again.updatedAt.After(mid.updatedAt) {
+		t.Fatalf("UpdatedAt did not move on the repeated observation: %v then %v", mid.updatedAt, again.updatedAt)
+	}
+}
+
+// TestPendingParkTimeIsStampedAnewForANewRequest: the park time belongs to the
+// ask, so a different request seen parked later on the same agent begins its
+// own wait rather than inheriting the one before it.
+func TestPendingParkTimeIsStampedAnewForANewRequest(t *testing.T) {
+	live := newLiveState()
+	live.observePending("a1", observedPending{kind: "question", id: "q-1", params: json.RawMessage(`{}`)})
+	first := live.get("a1")
+	if first.pending == nil || first.pending.at.IsZero() {
+		t.Fatalf("the ask was not recorded with a park time: %+v", first.pending)
+	}
+
+	// A different ask on the same agent: it was parked when it was seen, not
+	// when the ask before it was.
+	time.Sleep(2 * time.Millisecond)
+	live.observePending("a1", observedPending{kind: "question", id: "q-2", params: json.RawMessage(`{}`)})
+	next := live.get("a1")
+	if next.pending == nil || next.pending.id != "q-2" {
+		t.Fatalf("the new ask was not recorded: %+v", next.pending)
+	}
+	if !next.pending.at.After(first.pending.at) {
+		t.Fatalf("the new ask inherited the old park time: %v then %v", first.pending.at, next.pending.at)
 	}
 }

@@ -561,6 +561,11 @@ class _ThreadScreenState extends State<ThreadScreen> {
   }
 
   /// The composer at the foot of the conversation, when the host gives one.
+  ///
+  /// It sits under the prose it drives: centred at the top of its space and
+  /// capped at the reading column, as the transcript's rows are. The page's
+  /// side padding stays outside that cap, so a wide window does not push the
+  /// field wider than the conversation above it.
   Widget _composer() {
     final composer = widget.composer;
     if (composer == null) return const SizedBox.shrink();
@@ -571,7 +576,14 @@ class _ThreadScreenState extends State<ThreadScreen> {
         Layout.pageSide,
         Space.s16,
       ),
-      child: composer,
+      child: Align(
+        alignment: Alignment.topCenter,
+        heightFactor: 1,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: Layout.reading),
+          child: composer,
+        ),
+      ),
     );
   }
 

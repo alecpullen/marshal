@@ -100,8 +100,7 @@ class _SidebarState extends State<Sidebar> {
                   const Expanded(
                     child: Tip(
                       message: 'Search arrives in a later phase',
-                      child: Field(
-                        label: 'Search',
+                      child: Field.search(
                         hint: 'Search or jump to',
                         enabled: false,
                       ),
@@ -127,9 +126,9 @@ class _SidebarState extends State<Sidebar> {
             children: [
               Padding(
                 padding: const EdgeInsets.fromLTRB(
-                  Space.s8,
+                  Space.s4,
                   Space.s6,
-                  Space.s8,
+                  Space.s4,
                   Space.s4,
                 ),
                 child: Row(
@@ -213,7 +212,7 @@ class _SidebarState extends State<Sidebar> {
             ),
             child: Text(
               'Earlier · ${project.earlier}',
-              style: Ember.of(context).small.tint(Ember.of(context).faint),
+              style: Ember.of(context).small.tint(Ember.of(context).muted),
             ),
           ),
       ],

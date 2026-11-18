@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../../model/changes_model.dart';
 import '../kit/kit.dart';
+import 'inspector.dart';
 import 'ship_sheet.dart';
 
 /// The Changes tab (f4-inspector.md decision 5): the gate, the files with
@@ -37,8 +38,9 @@ class ChangesTab extends StatelessWidget {
     );
   }
 
-  /// The five states every screen that shows data has (§7).
-  Widget _stateOnly(StateKind state) => switch (state) {
+  /// The five states every screen that shows data has (§7), inset as the
+  /// ready content is.
+  Widget _stateOnly(StateKind state) => TabMessage(switch (state) {
     StateKind.loading => const StateMessage.loading(lines: 6),
     StateKind.empty => StateMessage.empty(
       message: 'The agent has not changed a file yet.',
@@ -62,16 +64,18 @@ class ChangesTab extends StatelessWidget {
       name: 'A side-by-side diff',
       note: 'This phase reads a unified diff only',
     ),
-  };
+  });
 
   Widget _body(BuildContext context) {
     switch (model.status) {
       case ChangesStatus.loading:
-        return const StateMessage.loading(lines: 6);
+        return const TabMessage(StateMessage.loading(lines: 6));
       case ChangesStatus.failed:
-        return StateMessage.error(
-          message: model.failureMessage ?? 'The changes could not be read.',
-          retry: StateAction('Try again', onTap: model.refresh),
+        return TabMessage(
+          StateMessage.error(
+            message: model.failureMessage ?? 'The changes could not be read.',
+            retry: StateAction('Try again', onTap: model.refresh),
+          ),
         );
       case ChangesStatus.ready:
         return Column(

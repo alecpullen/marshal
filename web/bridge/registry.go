@@ -156,6 +156,9 @@ type Registry struct {
 	// listing can report it verbatim. Guarded by permMu, and reset wherever
 	// permSession is.
 	permParams map[string]json.RawMessage // toolCallId -> request params
+	// permAt is when each parked permission was first seen. Guarded by
+	// permMu, and reset wherever permSession is.
+	permAt map[string]time.Time // toolCallId -> parked at
 
 	quesMu      sync.Mutex
 	questions   map[string]chan Answers
@@ -163,6 +166,9 @@ type Registry struct {
 	// quesParams holds each parked question's payload as received. Guarded
 	// by quesMu, and reset wherever quesSession is.
 	quesParams map[string]json.RawMessage // questionId -> request params
+	// quesAt is when each parked question was first seen. Guarded by
+	// quesMu, and reset wherever quesSession is.
+	quesAt map[string]time.Time // questionId -> parked at
 
 	// steerMu guards the Send now receipts this registry observed: the newest
 	// receipt per session and request, bounded by
@@ -183,9 +189,11 @@ func NewRegistry(child *Child) *Registry {
 		permissions:  make(map[string]chan Decision),
 		permSession:  make(map[string]string),
 		permParams:   make(map[string]json.RawMessage),
+		permAt:       make(map[string]time.Time),
 		questions:    make(map[string]chan Answers),
 		quesSession:  make(map[string]string),
 		quesParams:   make(map[string]json.RawMessage),
+		quesAt:       make(map[string]time.Time),
 	}
 	child.OnRequest = r.handleChildRequest
 	// Followed runs are reported as session/update notifications, so the
@@ -934,6 +942,9 @@ func (r *Registry) PendingRequest(sessionID string) (contract.PendingRequest, bo
 				ID:     toolCallID,
 				Params: r.permParams[toolCallID],
 			}
+			if at := r.permAt[toolCallID]; !at.IsZero() {
+				out.At = at.UnixMilli()
+			}
 			r.permMu.Unlock()
 			return out, true
 		}
@@ -944,11 +955,15 @@ func (r *Registry) PendingRequest(sessionID string) (contract.PendingRequest, bo
 	defer r.quesMu.Unlock()
 	for questionID, sid := range r.quesSession {
 		if sid == sessionID {
-			return contract.PendingRequest{
+			out := contract.PendingRequest{
 				Kind:   contract.PendingQuestion,
 				ID:     questionID,
 				Params: r.quesParams[questionID],
-			}, true
+			}
+			if at := r.quesAt[questionID]; !at.IsZero() {
+				out.At = at.UnixMilli()
+			}
+			return out, true
 		}
 	}
 	return contract.PendingRequest{}, false
@@ -963,6 +978,7 @@ func (r *Registry) ResolvePermission(toolCallId string, d Decision) error {
 		delete(r.permissions, toolCallId)
 		delete(r.permSession, toolCallId)
 		delete(r.permParams, toolCallId)
+		delete(r.permAt, toolCallId)
 	}
 	r.permMu.Unlock()
 	if !ok {
@@ -981,6 +997,7 @@ func (r *Registry) ResolveQuestion(questionId string, a Answers) error {
 		delete(r.questions, questionId)
 		delete(r.quesSession, questionId)
 		delete(r.quesParams, questionId)
+		delete(r.quesAt, questionId)
 	}
 	r.quesMu.Unlock()
 	if !ok {
@@ -1030,6 +1047,7 @@ func (r *Registry) awaitPermission(ctx context.Context, params json.RawMessage) 
 	r.permissions[req.ToolCallID] = ch
 	r.permSession[req.ToolCallID] = req.SessionID
 	r.permParams[req.ToolCallID] = params
+	r.permAt[req.ToolCallID] = time.Now().UTC()
 	r.permMu.Unlock()
 	r.changed(req.SessionID, changePending)
 	// Clean up the pending entry on every exit path (resolve, session
@@ -1040,6 +1058,7 @@ func (r *Registry) awaitPermission(ctx context.Context, params json.RawMessage) 
 		delete(r.permissions, req.ToolCallID)
 		delete(r.permSession, req.ToolCallID)
 		delete(r.permParams, req.ToolCallID)
+		delete(r.permAt, req.ToolCallID)
 		r.permMu.Unlock()
 		r.changed(req.SessionID, changePending)
 	}()
@@ -1108,6 +1127,7 @@ func (r *Registry) awaitQuestion(ctx context.Context, params json.RawMessage) (a
 	r.questions[req.QuestionID] = ch
 	r.quesSession[req.QuestionID] = req.SessionID
 	r.quesParams[req.QuestionID] = params
+	r.quesAt[req.QuestionID] = time.Now().UTC()
 	r.quesMu.Unlock()
 	r.changed(req.SessionID, changePending)
 	// Clean up the pending entry on every exit path (resolve, session
@@ -1118,6 +1138,7 @@ func (r *Registry) awaitQuestion(ctx context.Context, params json.RawMessage) (a
 		delete(r.questions, req.QuestionID)
 		delete(r.quesSession, req.QuestionID)
 		delete(r.quesParams, req.QuestionID)
+		delete(r.quesAt, req.QuestionID)
 		r.quesMu.Unlock()
 		r.changed(req.SessionID, changePending)
 	}()
@@ -1282,6 +1303,7 @@ func (r *Registry) drainSession(id string) {
 			}
 			delete(r.permSession, toolCallID)
 			delete(r.permParams, toolCallID)
+			delete(r.permAt, toolCallID)
 		}
 	}
 	r.permMu.Unlock()
@@ -1295,6 +1317,7 @@ func (r *Registry) drainSession(id string) {
 			}
 			delete(r.quesSession, questionID)
 			delete(r.quesParams, questionID)
+			delete(r.quesAt, questionID)
 		}
 	}
 	r.quesMu.Unlock()
@@ -1361,6 +1384,7 @@ func (r *Registry) clearPending() {
 	}
 	r.permSession = make(map[string]string)
 	r.permParams = make(map[string]json.RawMessage)
+	r.permAt = make(map[string]time.Time)
 	r.permMu.Unlock()
 
 	r.quesMu.Lock()
@@ -1370,6 +1394,7 @@ func (r *Registry) clearPending() {
 	}
 	r.quesSession = make(map[string]string)
 	r.quesParams = make(map[string]json.RawMessage)
+	r.quesAt = make(map[string]time.Time)
 	r.quesMu.Unlock()
 }
 

@@ -385,7 +385,6 @@ class _HighlightPainter extends CustomPainter {
     final root = context.findRenderObject();
     if (root is! RenderBox) return;
     final origin = root.localToGlobal(Offset.zero);
-    var offset = 0;
     final paragraphs = <RenderParagraph>[];
     void visit(RenderObject node) {
       if (node is RenderParagraph) paragraphs.add(node);
@@ -393,10 +392,21 @@ class _HighlightPainter extends CustomPainter {
     }
 
     visit(root);
+    // A drawn row can say less than the store text it copies: the notice
+    // drops a blank line, markdown drops its markers. Locating each paragraph
+    // in the store text from a running cursor maps its offsets where it really
+    // is, so a highlight after such an omission lands on the drawn glyphs. A
+    // paragraph the text does not hold falls back to the cursor, so a control
+    // the row adds (the notice's *Details*) is not highlighted in its place.
+    var cursor = 0;
     for (final paragraph in paragraphs) {
-      final length = paragraph.text.toPlainText().length;
-      final from = (start - offset).clamp(0, length);
-      final to = (end - offset).clamp(0, length);
+      final plain = paragraph.text.toPlainText();
+      final found = plain.isEmpty
+          ? cursor
+          : text.indexOf(plain, cursor.clamp(0, text.length));
+      final base = found < 0 ? cursor : found;
+      final from = (start - base).clamp(0, plain.length);
+      final to = (end - base).clamp(0, plain.length);
       if (to > from) {
         final boxes = paragraph.getBoxesForSelection(
           TextSelection(baseOffset: from, extentOffset: to),
@@ -418,7 +428,7 @@ class _HighlightPainter extends CustomPainter {
           );
         }
       }
-      offset += length + 1;
+      cursor = base + plain.length;
     }
   }
 

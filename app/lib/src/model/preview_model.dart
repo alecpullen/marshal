@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../client/bridge_client.dart';
+import 'fleet_store.dart' show describeFailure;
 
 /// The agent's declared preview ports (f4-inspector.md decision 10).
 ///
@@ -66,7 +67,7 @@ class PreviewModel extends ChangeNotifier {
       _urls[port] = url;
       return url;
     } catch (error) {
-      _errors[port] = '$error';
+      _errors[port] = describeFailure(error);
       return null;
     } finally {
       _loading.remove(port);

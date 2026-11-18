@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/contract.g.dart';
 import '../client/transport.dart';
+import 'fleet_store.dart' show describeFailure;
 
 // The routes are functions passed in, so their fields stay private: Dart has
 // no private named parameter.
@@ -269,7 +270,7 @@ class DraftsModel extends ChangeNotifier {
       _drafts = List.unmodifiable(await _list(projectRoot));
       _failure = null;
     } catch (error) {
-      _failure = '$error';
+      _failure = describeFailure(error);
     }
     notifyListeners();
   }
@@ -373,7 +374,7 @@ class DraftsModel extends ChangeNotifier {
       // A refused delete leaves the bridge's draft — and its last saved text —
       // exactly as they were, so this is not an unsaved write: the text on
       // screen is still the bridge's.
-      _failure = '$error';
+      _failure = describeFailure(error);
       notifyListeners();
     }
   }
@@ -431,7 +432,7 @@ class DraftsModel extends ChangeNotifier {
           _writeFailed = true;
       }
     } catch (error) {
-      _failure = '$error';
+      _failure = describeFailure(error);
       _writeFailed = true;
     }
     _saving = false;
@@ -451,7 +452,7 @@ class DraftsModel extends ChangeNotifier {
     } catch (error) {
       // A read that fails leaves the conflict unnamed rather than claiming
       // the draft is gone: the person can retry.
-      _failure = '$error';
+      _failure = describeFailure(error);
       _writeFailed = true;
     }
   }

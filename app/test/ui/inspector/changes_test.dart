@@ -1,12 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 // The contract's CheckState is a CI check's wire state; the kit's is a check
 // drawn in the interface. This test reads the kit's.
+import 'package:marshal_app/src/client/bridge_client.dart';
 import 'package:marshal_app/src/client/contract.g.dart' hide CheckState;
+import 'package:marshal_app/src/client/transport.dart';
 import 'package:marshal_app/src/model/changes_model.dart';
 import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_view_state.dart';
 import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
+import 'package:marshal_app/src/ui/inspector/inspector.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
 
@@ -211,4 +216,59 @@ void main() {
     await pumpChanges(tester, model);
     expect(find.textContaining('Pull request'), findsNothing);
   });
+
+  testWidgets('a failed read says so in words, inset', (tester) async {
+    // A bridge whose answer is not the shape the client read it as: the read
+    // fails with a TypeError, whose own text names a Dart type.
+    final model = ChangesModel(BridgeClient(_Unreadable()), agentId: 'a-1');
+    await model.refresh();
+    expect(model.status, ChangesStatus.failed);
+
+    await pumpChanges(tester, model);
+
+    // §7: what failed, in plain words — never the exception's own text.
+    expect(
+      find.text(
+        'The bridge sent an answer this Studio cannot read. The bridge and '
+        'the Studio may be different versions.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('TypeError'), findsNothing);
+
+    // And the message sits on the tab's own inset, as the ready content does
+    // (f4-inspector.md decision 5): its mark starts a Space.s16 in.
+    final tab = tester.getTopLeft(find.byType(ChangesTab)).dx;
+    final mark = tester
+        .getTopLeft(
+          find.descendant(
+            of: find.byType(TabMessage),
+            matching: find.byIcon(Glyphs.exclamationmark_circle),
+          ),
+        )
+        .dx;
+    expect(mark - tab, Space.s16);
+  });
+}
+
+/// A bridge whose every answer is the wrong shape: each request raises the
+/// failure a decode does, so the tab shows what a version mismatch looks like.
+class _Unreadable implements Transport {
+  @override
+  Future<Response> send(Request request) async => throw _decodeFailure();
+
+  @override
+  Stream<String> lines(Request request) =>
+      throw StateError('the Changes tab opens no stream');
+}
+
+/// The failure a decode raises: a value that is not the shape the contract
+/// read it as (a null where the contract's `List` was expected).
+Object _decodeFailure() {
+  try {
+    final Object? value = null;
+    return value as List<Object?>;
+  } on TypeError catch (error) {
+    return error;
+  }
 }

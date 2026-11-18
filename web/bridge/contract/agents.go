@@ -42,6 +42,11 @@ type AgentStatus struct {
 	ID      string `json:"id"`
 	Project string `json:"project"`
 	Name    string `json:"name,omitempty"`
+	// Title is what the agent was asked, in one line: the first non-blank
+	// line of its spawn prompt, runs of whitespace collapsed to one space,
+	// at most 80 runes, ending in "…" when cut. Empty when it was spawned
+	// with no prompt.
+	Title string `json:"title,omitempty"`
 	// OwnerID, Origin and ClientID mirror Agent.OwnerID, Agent.Origin and
 	// Agent.ClientID in workspace.go.
 	OwnerID  string `json:"ownerId,omitempty"`
@@ -102,6 +107,9 @@ type PendingRequest struct {
 	ID string `json:"id"`
 	// Params is the original request payload, verbatim.
 	Params json.RawMessage `json:"params,omitempty"`
+	// At is when the bridge first saw the request parked, in Unix
+	// milliseconds. Zero (absent) when it did not see it arrive.
+	At int64 `json:"at,omitempty"`
 }
 
 // GateOverride records a pushed-despite-failure decision.

@@ -260,7 +260,7 @@ NavModel shellNavFor(Place place) => NavModel(
         _shellThread('a-3', 'Bump the gate', model.ThreadStatus.ready),
       ],
       earlier: 12,
-      active: place.kind == PlaceKind.thread && place.id == 'a-1',
+      active: place.kind == PlaceKind.project && place.id == '/home/u/marshal',
     ),
   ],
 );
@@ -316,7 +316,7 @@ final List<SourceState> _staleSources = [
     host: 'local',
     loaded: true,
     lastRead: shellNow.subtract(const Duration(minutes: 4)),
-    failure: 'offline',
+    failureWords: 'offline',
   ),
 ];
 

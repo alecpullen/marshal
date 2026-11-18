@@ -458,6 +458,17 @@ void main() {
       reason: 'the wire text is written back, not the word unknown',
     );
   });
+
+  test('a required list sent as null decodes empty', () {
+    // Go writes a nil slice as null, so a required array can arrive null:
+    // GET /api/agents/{id}/diff answered "files": null and the decoder threw.
+    final result = DiffResult.fromJson({'files': null});
+    expect(result.files, isEmpty, reason: 'a null array means no files');
+    expect(result.diff, isNull, reason: 'an absent diff stays absent');
+
+    final steps = StepDiffs.fromJson({'steps': null});
+    expect(steps.steps, isEmpty, reason: 'a null array means no steps');
+  });
 }
 
 /// The JSON object [json] names.

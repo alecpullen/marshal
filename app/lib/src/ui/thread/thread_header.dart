@@ -1,9 +1,12 @@
+import '../../model/nav_model.dart' show projectName;
 import '../../model/thread_ref.dart' as model;
 import '../kit/kit.dart';
 
 /// A thread's header (design-system.md §5, spec decision 10): project, kind,
 /// branch, environment and host on one line; the status dot, the title and
 /// the live headline on the next; Share and the overflow menu at the right.
+/// A thread that needs you has no headline: the ask in the conversation is
+/// where its question is read, and the dot's tooltip says what waits.
 ///
 /// Share makes a read-only status link for the thread (F7 decision 7). It is
 /// drawn disabled until a caller hands it one: a control that cannot work is
@@ -48,11 +51,13 @@ class ThreadHeader extends StatelessWidget {
     final e = Ember.of(context);
     final branch = this.branch;
     final environment = this.environment;
-    // One line, elided to the window: the tooltip is how the rest of a long
-    // path stays readable (§8, §11).
-    final identity =
-        '${thread.project}  ›  $_kindWord  ·  '
-        '${[?branch, ?environment, thread.host].join('  ·  ')}';
+    // One line, elided to the window, naming the project as the sidebar does
+    // rather than by its root. The tooltip is the same line with the full
+    // root, so a long path stays readable (§8, §11).
+    final rest =
+        '$_kindWord  ·  ${[?branch, ?environment, thread.host].join('  ·  ')}';
+    final identity = '${projectName(thread.project)}  ›  $rest';
+    final identityTip = '${thread.project}  ›  $rest';
     return Padding(
       padding: const EdgeInsets.fromLTRB(
         Layout.pageSide,
@@ -68,7 +73,7 @@ class ThreadHeader extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Tip(
-                  message: identity,
+                  message: identityTip,
                   child: Text(
                     identity,
                     style: e.monoSmall.tint(e.muted),
@@ -92,15 +97,18 @@ class ThreadHeader extends StatelessWidget {
                         ),
                       ),
                     ),
-                    const SizedBox(width: Space.s12),
-                    Expanded(
-                      child: Text(
-                        thread.headline,
-                        style: e.small.tint(e.muted),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                    if (thread.headline.isNotEmpty &&
+                        thread.status != model.ThreadStatus.needsYou) ...[
+                      const SizedBox(width: Space.s12),
+                      Expanded(
+                        child: Text(
+                          thread.headline,
+                          style: e.small.tint(e.muted),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
               ],

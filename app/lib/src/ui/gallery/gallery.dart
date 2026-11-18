@@ -107,6 +107,7 @@ class _GalleryState extends State<Gallery> {
         ..._section('StepHeader', _stepHeaders()),
         ..._section('ToolRow', _toolRows()),
         ..._section('Narration', _narrations()),
+        ..._section('Notice', _notices()),
         ..._section('OutputBlock', _outputBlocks()),
         ..._section('LiveRow', _liveRows()),
         ..._section('Composer', _composers()),
@@ -928,6 +929,8 @@ class _GalleryState extends State<Gallery> {
         children: [
           Field(label: 'Branch', hint: 'main'),
           SizedBox(height: Space.s16),
+          Field.search(hint: 'Search or jump to'),
+          SizedBox(height: Space.s16),
           Field(
             label: 'Base branch',
             error: 'That branch does not exist on the forge',
@@ -1079,6 +1082,33 @@ class _GalleryState extends State<Gallery> {
             '2. Run the suite\n\n'
             '> The legacy directory is different.\n\n'
             '```\nok  marshal/internal/viewmodel  0.12s\n```',
+      ),
+    ),
+  ];
+
+  List<Widget> _notices() => [
+    _narrow(
+      Layout.reading,
+      const Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Notice(
+            text:
+                'Context compacted: the earlier turns were summarised to fit '
+                'the window.',
+          ),
+          Notice(
+            text:
+                'Snapshot not recorded for acme-app (unrecorded): the '
+                'repository is larger than the snapshot limit.\n'
+                'No rollback snapshot was recorded, so the tool may proceed '
+                'WITHOUT a rollback snapshot; a later /rewind cannot undo '
+                'this change.\n'
+                'Limit: 512 MiB of working tree.\n'
+                'Recover: raise snapshot.max_bytes, then run '
+                '/snapshots verify.',
+          ),
+        ],
       ),
     ),
   ];

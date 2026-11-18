@@ -29,6 +29,11 @@ class ShareModel extends ChangeNotifier {
   StatusLinkCreated? _made;
   String? _failure;
 
+  /// Whether the sheet that owned this model closed it: a link still being
+  /// minted or revoked when it closes answers into nothing rather than into a
+  /// disposed notifier.
+  bool _disposed = false;
+
   /// True while a link is being minted or revoked.
   bool get busy => _busy;
 
@@ -45,7 +50,7 @@ class ShareModel extends ChangeNotifier {
   Future<void> mint({int hours = 24}) async {
     _busy = true;
     _failure = null;
-    notifyListeners();
+    _notify();
     try {
       _made = await _client.createStatusLink(agentId, ttlHours: hours);
     } catch (error) {
@@ -53,7 +58,7 @@ class ShareModel extends ChangeNotifier {
       _failure = '$error';
     } finally {
       _busy = false;
-      notifyListeners();
+      _notify();
     }
   }
 
@@ -65,7 +70,7 @@ class ShareModel extends ChangeNotifier {
     if (made == null) return;
     _busy = true;
     _failure = null;
-    notifyListeners();
+    _notify();
     try {
       await _client.revokeStatusLink(made.id);
       _made = null;
@@ -73,7 +78,20 @@ class ShareModel extends ChangeNotifier {
       _failure = '$error';
     } finally {
       _busy = false;
-      notifyListeners();
+      _notify();
     }
+  }
+
+  /// Notifies the sheet, unless it has closed this model: a mint or a revoke
+  /// already in flight still lands, and its answer must not reach a disposed
+  /// notifier.
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 }

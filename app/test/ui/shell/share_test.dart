@@ -116,6 +116,14 @@ void main() {
     await settleIo(tester);
 
     expect(find.text('Share this thread'), findsOneWidget);
+    // Nothing is minted until a person asks for a link, at the hours Settings
+    // offers.
+    expect(find.text(_url), findsNothing);
+    expect(find.text('Hours it lasts'), findsOneWidget);
+
+    await tester.tap(find.text('Make a link'));
+    await settleIo(tester);
+
     expect(find.text(_url), findsOneWidget);
 
     // The link is shown once; copying it is the sheet's one write.

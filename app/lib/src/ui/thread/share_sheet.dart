@@ -5,15 +5,16 @@ import 'package:flutter/services.dart';
 import '../../model/share_model.dart';
 import '../kit/kit.dart';
 
-/// The thread header's Share (F7 decision 7): mints a read-only status link,
-/// shows the one URL the bridge gives out, copies it, and revokes it.
+/// The thread header's Share (F7 decision 7): mints a read-only status link at
+/// the hours Settings offers, shows the one URL the bridge gives out, copies
+/// it, and revokes it.
 ///
 /// It is a sheet because the URL is shown once: closing it and sharing again
 /// mints a second link, which is what the revoke beside it makes plain.
+///
+/// Nothing is minted when the sheet opens: the hours a link lasts are a
+/// person's choice, made with the button that makes it (A2).
 Future<void> showShareSheet(BuildContext context, ShareModel model) {
-  // Share means "give me a link now": the sheet opens on the link it is
-  // making, and says so while the bridge answers.
-  unawaited(model.mint());
   return Sheet.show<void>(
     context,
     Sheet(
@@ -23,32 +24,106 @@ Future<void> showShareSheet(BuildContext context, ShareModel model) {
   );
 }
 
-class _ShareBody extends StatelessWidget {
+class _ShareBody extends StatefulWidget {
   const _ShareBody({required this.model});
 
   final ShareModel model;
 
   @override
+  State<_ShareBody> createState() => _ShareBodyState();
+}
+
+class _ShareBodyState extends State<_ShareBody> {
+  /// How long the link lasts, in the range Settings offers: 1–720 hours, a
+  /// day unless a person says otherwise.
+  final _hours = TextEditingController(text: '24');
+
+  @override
+  void dispose() {
+    _hours.dispose();
+    super.dispose();
+  }
+
+  /// What is wrong with the hours, in the Settings screen's own words. Null
+  /// when the value is one a status link can last.
+  String? get _hoursError {
+    final hours = int.tryParse(_hours.text.trim());
+    if (hours == null) return 'Hours is a whole number';
+    if (hours < 1 || hours > 720) {
+      return 'A status link lasts between 1 and 720 hours';
+    }
+    return null;
+  }
+
+  /// The hours a link would last, or null while the field names none it can.
+  int? get _chosenHours {
+    if (_hoursError != null) return null;
+    return int.tryParse(_hours.text.trim());
+  }
+
+  @override
   Widget build(BuildContext context) {
     final e = Ember.of(context);
-    // One sheet for the link's whole life: minted, shown, copied and revoked
-    // without closing and reopening it.
+    final model = widget.model;
+    // Made, shown, copied and revoked without closing and reopening the
+    // sheet, so the one URL the bridge gives out is not asked for twice.
     return AnimatedBuilder(
       animation: model,
       builder: (context, _) {
         final made = model.made;
         final failure = model.failure;
+        final hours = _chosenHours;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (model.busy)
-              const StateMessage.loading(lines: 2)
-            else if (failure != null)
+            if (made == null) ...[
+              Field(
+                label: 'Hours it lasts',
+                hint: '24',
+                controller: _hours,
+                error: _hoursError,
+                onChanged: (_) => setState(() {}),
+              ),
+              const SizedBox(height: Space.s16),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Btn.primary(
+                  'Make a link',
+                  onTap: hours == null || model.busy
+                      ? null
+                      : () => unawaited(model.mint(hours: hours)),
+                ),
+              ),
+              const SizedBox(height: Space.s16),
+            ],
+            // A failure with no link is a mint that was refused, and Try again
+            // is the mint again. A failure over a live link is a revoke that
+            // did not finish: the link is still there, and Try again is the
+            // revoke again — never a second link.
+            if (failure != null)
               StateMessage.error(
                 message: failure,
-                retry: StateAction('Try again', onTap: model.mint),
+                retry: StateAction(
+                  'Try again',
+                  onTap: made == null
+                      ? () {
+                          final hours = _chosenHours;
+                          if (hours != null) {
+                            unawaited(model.mint(hours: hours));
+                          }
+                        }
+                      : () => unawaited(_revoke(context)),
+                ),
               )
-            else if (made != null) ...[
+            else if (model.busy && made == null)
+              const StateMessage.loading(lines: 2)
+            else if (made == null)
+              Text(
+                'A link shows this thread’s status only, never its '
+                'transcript.',
+                style: e.small.tint(e.muted),
+              ),
+            if (made != null) ...[
               // The URL is shown once, in mono, as the Access section shows
               // the one a link is made with: there is no second copy to read.
               Box(
@@ -83,15 +158,12 @@ class _ShareBody extends StatelessWidget {
               const SizedBox(height: Space.s12),
               Align(
                 alignment: Alignment.centerLeft,
-                child: Btn('Revoke', onTap: () => _revoke(context)),
+                child: Btn(
+                  'Revoke',
+                  onTap: model.busy ? null : () => unawaited(_revoke(context)),
+                ),
               ),
             ],
-            const SizedBox(height: Space.s16),
-            Text(
-              'The link shows this thread’s status only, never its '
-              'transcript.',
-              style: e.small.tint(e.muted),
-            ),
           ],
         );
       },
@@ -101,8 +173,8 @@ class _ShareBody extends StatelessWidget {
   /// Revokes the link, and closes the sheet once it is gone: the URL the
   /// sheet was showing no longer works.
   Future<void> _revoke(BuildContext context) async {
-    await model.revoke();
-    if (model.made != null || !context.mounted) return;
+    await widget.model.revoke();
+    if (widget.model.made != null || !context.mounted) return;
     Navigator.maybePop(context);
   }
 }

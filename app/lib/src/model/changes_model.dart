@@ -213,6 +213,11 @@ class ChangesModel extends ChangeNotifier {
   Map<String, String>? _fileDiffs;
   bool _runningGate = false;
 
+  /// Whether the thread that owned this model closed it: a read still in
+  /// flight when the place closes answers into nothing rather than into a
+  /// disposed notifier.
+  bool _disposed = false;
+
   /// Whether a gate run is in flight.
   bool get runningGate => _runningGate;
 
@@ -317,7 +322,7 @@ class ChangesModel extends ChangeNotifier {
     if (client == null) return;
     _status = ChangesStatus.loading;
     failureMessage = null;
-    notifyListeners();
+    _notify();
     try {
       final result = await client.diff(agentId);
       final record = await client.gate(agentId);
@@ -339,7 +344,7 @@ class ChangesModel extends ChangeNotifier {
       _status = ChangesStatus.failed;
       failureMessage = '$error';
     }
-    notifyListeners();
+    _notify();
   }
 
   /// Runs the gate now: POST …/verify, then the record it answers with.
@@ -348,7 +353,7 @@ class ChangesModel extends ChangeNotifier {
     if (client == null) return;
     _runningGate = true;
     failureMessage = null;
-    notifyListeners();
+    _notify();
     try {
       final record = await client.verify(agentId);
       gate = record.result;
@@ -358,7 +363,7 @@ class ChangesModel extends ChangeNotifier {
       failureMessage = '$error';
     } finally {
       _runningGate = false;
-      notifyListeners();
+      _notify();
     }
   }
 
@@ -366,20 +371,20 @@ class ChangesModel extends ChangeNotifier {
   void setByStep(bool value) {
     if (_byStep == value) return;
     _byStep = value;
-    notifyListeners();
+    _notify();
   }
 
   /// Shows [path]'s diff. Null follows the agent again.
   void select(String? path) {
     if (_selectedFile == path) return;
     _selectedFile = path;
-    notifyListeners();
+    _notify();
   }
 
   /// Marks [path] read, or unmarks it.
   void toggleViewed(String path) {
     if (!_viewed.remove(path)) _viewed.add(path);
-    notifyListeners();
+    _notify();
   }
 
   /// Whether [path] is marked read.
@@ -434,7 +439,7 @@ class ChangesModel extends ChangeNotifier {
       ),
     );
     comments = [...comments, stored];
-    notifyListeners();
+    _notify();
   }
 
   /// Closes a comment's thread.
@@ -443,7 +448,7 @@ class ChangesModel extends ChangeNotifier {
     if (client == null) return;
     await client.resolveReviewComment(agentId, commentId);
     _resolved.add(commentId);
-    notifyListeners();
+    _notify();
   }
 
   /// Ships the work (decision 6): the message, whether to open a pull
@@ -535,7 +540,7 @@ class ChangesModel extends ChangeNotifier {
     _selectedFile = null;
     gate = null;
     gateRanAt = null;
-    notifyListeners();
+    _notify();
   }
 
   /// The change set as a patch file's text, for Export patch.
@@ -543,6 +548,19 @@ class ChangesModel extends ChangeNotifier {
     final client = _client;
     if (client == null) return '';
     return client.patch(agentId);
+  }
+
+  /// Notifies the tabs, unless the thread that owned this model has closed
+  /// it: a read already in flight still lands, and its answer must not reach
+  /// a disposed notifier.
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 
   /// The path a tool's target names: `file.go:12` is `file.go`.

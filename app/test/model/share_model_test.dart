@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -92,4 +93,34 @@ void main() {
     expect(revoke.method, 'DELETE');
     expect(revoke.path, '/api/status-links/link-1');
   });
+
+  test('a link in flight notifies nobody once the sheet has closed', () async {
+    final held = _HeldTransport();
+    final model = ShareModel(BridgeClient(held), agentId: 'a-1');
+
+    final making = model.mint();
+    // The sheet closes while the bridge has not answered: the answer still
+    // lands, and it must not reach a disposed model.
+    model.dispose();
+    held.release(created());
+
+    await making;
+    expect(model.made?.url, 'https://marshal.example/s/abc123');
+  });
+}
+
+/// A transport whose answer waits for the test: a link can be in flight while
+/// the sheet that asked for it closes.
+class _HeldTransport implements Transport {
+  final _answer = Completer<Response>();
+
+  @override
+  Future<Response> send(Request request) => _answer.future;
+
+  /// Answers the mint that is in flight, as the bridge does after the sheet
+  /// closed.
+  void release(Response response) => _answer.complete(response);
+
+  @override
+  Stream<String> lines(Request request) => const Stream.empty();
 }

@@ -29,8 +29,8 @@ class ThreadHeader extends StatelessWidget {
   /// The environment it runs in, when the fleet reports one.
   final String? environment;
 
-  /// Shares a read-only status link for this thread. Null disables the
-  /// control and its tooltip says why.
+  /// Shares a read-only status link for this thread. The icon is drawn faint
+  /// when this is null, and its tooltip names the action either way.
   final VoidCallback? onShare;
 
   /// Stops the thread. Null hides the action.

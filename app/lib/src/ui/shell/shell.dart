@@ -85,8 +85,10 @@ class ThreadInspector {
 
 /// Builds a thread's inspector, from the host's client. Null leaves a thread
 /// without the panel, which is what every thread had before F9.
-typedef InspectorBuilder =
-    ThreadInspector Function(String host, model.ThreadRef thread);
+typedef InspectorBuilder = ThreadInspector Function(
+  String host,
+  model.ThreadRef thread,
+);
 
 /// The Studio's frame (design-system.md §4): the sidebar, and the place's
 /// content beside it. Below 760 the navigation becomes a panel over the

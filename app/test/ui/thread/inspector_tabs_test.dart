@@ -12,7 +12,10 @@ void main() {
   // The screen with an inspector beside its transcript. The inspector is a
   // column only at or above the medium breakpoint, so the window is wide
   // enough for one; below it the panel is a sheet the header opens.
-  Future<void> pumpInspector(WidgetTester tester, model.ThreadRef thread) async {
+  Future<void> pumpInspector(
+    WidgetTester tester,
+    model.ThreadRef thread,
+  ) async {
     tester.view.physicalSize = const Size(1280, 800);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);

@@ -94,7 +94,8 @@ void main() {
             'files': [
               {'path': 'internal/acp/stack.go', 'added': 12, 'removed': 3},
             ],
-            'diff': 'diff --git a/internal/acp/stack.go b/internal/acp/stack.go\n',
+            'diff':
+                'diff --git a/internal/acp/stack.go b/internal/acp/stack.go\n',
           }),
         ),
       )

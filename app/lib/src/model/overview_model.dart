@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../client/contract.g.dart' show AuditEvent;
 import '../client/host.dart';
 import 'fleet_store.dart';
 import 'inbox_model.dart';
@@ -7,8 +8,16 @@ import 'nav_model.dart' show projectName;
 import 'source_state.dart';
 import 'thread_ref.dart';
 
+// The activity feed is the bridge's audit log, drawn as it answered it. The
+// contract type is re-exported the way schedules_model.dart re-exports
+// Schedule, so a screen can name it without reaching into client/.
+export '../client/contract.g.dart' show AuditEvent;
+
 /// How many asks the Overview shows before it hands over to the Inbox.
 const overviewAsks = 3;
+
+/// How many audit events the Overview shows.
+const overviewActivity = 6;
 
 /// One project's work, as the Overview's table shows it: a count per status,
 /// and nothing inferred (F2 decision 8).
@@ -105,6 +114,7 @@ class OverviewModel {
     required this.projects,
     required this.capacity,
     required this.spend,
+    this.activity = const [],
   });
 
   /// The oldest asks, at most [overviewAsks] of them.
@@ -128,13 +138,20 @@ class OverviewModel {
 
   /// Today's spend, or null when no host reported one.
   final SpendSummary? spend;
+
+  /// The newest audit events, most recent first, at most [overviewActivity].
+  final List<AuditEvent> activity;
 }
 
 /// The Overview for what [store] holds and what [inbox] counts as waiting.
 ///
 /// Every number here is a count of real items: nothing is estimated, and a
 /// host that has not answered contributes what it last said, never a guess.
-OverviewModel buildOverview(FleetStore store, InboxModel inbox) {
+OverviewModel buildOverview(
+  FleetStore store,
+  InboxModel inbox, {
+  List<AuditEvent> audit = const [],
+}) {
   final running = <ThreadRef>[];
   final projects = <String, List<ThreadRef>>{};
   final capacity = <HostCapacity>[];
@@ -183,6 +200,10 @@ OverviewModel buildOverview(FleetStore store, InboxModel inbox) {
     projects: List.unmodifiable(summaries),
     capacity: List.unmodifiable(capacity),
     spend: _spend(store),
+    // The bridge answers newest first, so the head of the list is the head of
+    // the card. No event is filtered: a feed that hides kinds is a second,
+    // wrong feed.
+    activity: List.unmodifiable(audit.take(overviewActivity)),
   );
 }
 

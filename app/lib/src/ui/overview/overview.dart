@@ -443,8 +443,57 @@ class Overview extends StatelessWidget {
                 : 'Today’s spend against the daily cap',
           ),
         ],
+        const SizedBox(height: Space.s24),
+        const Label('Activity'),
+        const SizedBox(height: Space.s12),
+        if (overview.activity.isEmpty)
+          // The rail card is not a page state: an empty feed says so in one
+          // quiet line rather than offering a second action beside the
+          // page's own (design-system.md §7 keeps one action per state).
+          Text(
+            'Nothing has happened yet.',
+            style: Ember.of(context).small.tint(Ember.of(context).muted),
+          )
+        else
+          Rows([
+            for (final event in overview.activity)
+              RowItem(
+                name: _eventWords(event.event),
+                description: _eventDetail(event),
+                value: _eventAge(event.ts),
+              ),
+          ]),
       ],
     );
+  }
+
+  /// An audit event's kind, worded for a person: `agent.spawn` reads
+  /// "Agent spawn". An event whose kind is one bare word keeps it.
+  static String _eventWords(String event) {
+    final words = [
+      for (final word in event.split(RegExp(r'[._\-\s]+')))
+        if (word.isNotEmpty) word,
+    ];
+    if (words.isEmpty) return event;
+    final first = words.first;
+    return [
+      '${first[0].toUpperCase()}${first.substring(1)}',
+      ...words.skip(1),
+    ].join(' ');
+  }
+
+  /// What the event says beyond its kind: the operator's reason first, then
+  /// the event's own detail, and nothing when it has neither.
+  static String _eventDetail(AuditEvent event) {
+    final reason = event.reason;
+    if (reason != null && reason.isNotEmpty) return reason;
+    return event.detail ?? '';
+  }
+
+  /// How long ago the event happened, in the sidebar's words.
+  String _eventAge(String ts) {
+    final at = DateTime.tryParse(ts);
+    return at == null ? '' : relativeAge(at, now);
   }
 
   Widget _stateMessage(StateKind state) {

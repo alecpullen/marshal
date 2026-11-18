@@ -331,4 +331,35 @@ void main() {
       expect(factorySource.stale, isFalse);
     },
   );
+
+  test('activity is the newest first, capped', () async {
+    final fixture = await ModelFixture.start([
+      const FixtureHost(name: 'local'),
+    ], now: now);
+    await fixture.refresh();
+    final inbox = InboxModel(fixture.store, client: fixture.clientFor);
+    addTearDown(inbox.dispose);
+
+    // The bridge answers newest first, so the model keeps the order it was
+    // handed and drops the tail past the cap rather than re-sorting.
+    final audit = [
+      for (var i = 0; i < 10; i++)
+        AuditEvent(
+          ts: now.subtract(Duration(minutes: i)).toIso8601String(),
+          event: 'agent.spawn',
+          detail: 'event $i',
+        ),
+    ];
+    final overview = buildOverview(fixture.store, inbox, audit: audit);
+
+    expect(overview.activity, hasLength(overviewActivity));
+    expect([for (final event in overview.activity) event.detail], [
+      'event 0',
+      'event 1',
+      'event 2',
+      'event 3',
+      'event 4',
+      'event 5',
+    ]);
+  });
 }

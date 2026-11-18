@@ -11,7 +11,7 @@ import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
 import '../../model/inbox_model.dart' as inbox;
 import '../../model/nav_model.dart';
-import '../../model/overview_model.dart' show buildOverview;
+import '../../model/overview_model.dart' show AuditEvent, buildOverview;
 import '../../model/place.dart';
 import '../../model/planning_model.dart';
 import '../../model/project_model.dart';
@@ -388,6 +388,7 @@ class Studio extends StatefulWidget {
     this.pulls,
     this.factory,
     this.read,
+    this.readAudit,
     this.threadStore,
     this.composerFor,
     this.newWorkFor,
@@ -421,6 +422,11 @@ class Studio extends StatefulWidget {
   /// Reads the fleet: discovery when the app starts, and again when a person
   /// asks.
   final Future<void> Function()? read;
+
+  /// Reads the newest audit events from the first host that answers, for the
+  /// Overview's activity feed. Null leaves the feed empty rather than
+  /// promising one.
+  final Future<List<AuditEvent>> Function()? readAudit;
 
   /// Builds the store a thread place reads its session into. Null draws a
   /// thread place as planned: a test or an embedded host that supplies none
@@ -500,6 +506,10 @@ class _StudioState extends State<Studio> {
   bool _read = false;
   String? _failure;
 
+  /// The newest audit events the last read answered, newest first: the
+  /// Overview's activity feed. Empty when no read has succeeded.
+  List<AuditEvent> _audit = const [];
+
   /// The one guard every place leaving this screen consults: the shell asks
   /// it, and a place that edits watches the models it holds (F7 decision 3).
   final _unsaved = UnsavedGuard();
@@ -559,6 +569,16 @@ class _StudioState extends State<Studio> {
         _failure = describeFailure(error);
       }
     }
+    final readAudit = widget.readAudit;
+    if (readAudit != null) {
+      try {
+        _audit = await readAudit();
+      } catch (_) {
+        // The feed is a nicety: a bridge that will not answer leaves the card
+        // empty rather than failing the page.
+        _audit = const [];
+      }
+    }
     if (!mounted) return;
     setState(() => _read = true);
   }
@@ -614,7 +634,11 @@ class _StudioState extends State<Studio> {
   Widget _content(Place place, NavModel nav, PlaceNavigation navigation) {
     if (place.kind == PlaceKind.overview) {
       return Overview(
-        overview: buildOverview(widget.store, widget.inbox),
+        overview: buildOverview(
+          widget.store,
+          widget.inbox,
+          audit: _audit,
+        ),
         now: widget.store.now,
         hosts: widget.store.hosts,
         pulls: widget.pulls?.views ?? const [],

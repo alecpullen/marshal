@@ -420,4 +420,31 @@ void main() {
     expect(find.text('Not seen yet'), findsOneWidget);
     expect(find.textContaining('ago'), findsNothing);
   });
+
+  testWidgets('the Activity card names an event', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: null,
+      activity: [
+        AuditEvent(
+          ts: shellNow.subtract(const Duration(minutes: 4)).toIso8601String(),
+          event: 'agent.spawn',
+          detail: 'spawned a reviewer',
+        ),
+      ],
+    );
+    await tester.pumpWidget(show(overview));
+
+    expect(find.text('ACTIVITY'), findsOneWidget);
+    // The event's kind is worded for a person, and the detail and the age sit
+    // beside it.
+    expect(find.text('Agent spawn'), findsOneWidget);
+    expect(find.text('spawned a reviewer'), findsOneWidget);
+    expect(find.text('4m'), findsOneWidget);
+  });
 }

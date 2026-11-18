@@ -120,6 +120,10 @@ Future<void> main() async {
           pulls: pulls,
           factory: factory,
           read: hosts.discover,
+          // The Overview's activity feed: the newest audit events the first
+          // host that answers reports. A read that fails leaves the card
+          // empty without failing the page.
+          readAudit: () => hosts.hosts.first.client.audit(limit: 20),
           // The place the page's own address names: an old hash route from the
           // Svelte Studio, or this build's own path (F8 decision 2). A
           // desktop has no page, so its window opens the Overview.

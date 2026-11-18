@@ -240,6 +240,10 @@ type Fleet struct {
 
 	// ctl is the lazily started control agent (see control.go).
 	ctl *controlRuntime
+	// planners is the planner service plannerRoutes built; nil when this
+	// server serves no planner routes (decision 4). It is set once, before
+	// anything serves, and read by ownedSessions.
+	planners *PlannerService
 	// usage is the monthly spend ledger; budgets enforce caps over it.
 	usage   *UsageLog
 	budgets *budgetState
@@ -280,6 +284,20 @@ type Fleet struct {
 	// by their cleaned root.
 	projMu   sync.Mutex
 	projects map[string]*projectChild
+
+	// listMu guards the listing cache (sessions.go): each root's first page
+	// of stored sessions, its error, and when it was read, plus the map from
+	// every session id a listing named to the root that named it (P7 D10).
+	// It is taken alone and never held across a child request, so it nests
+	// with neither c.mu nor projMu.
+	listMu       sync.Mutex
+	listings     map[string]listingEntry
+	sessionRoots map[string]string
+	// listNow is the listing cache's clock; nil is time.Now. listTimeout
+	// bounds each session/list; zero is listTimeoutDefault. Tests shorten
+	// both.
+	listNow     func() time.Time
+	listTimeout time.Duration
 
 	// newRuntime builds the Child for an agent. Tests inject a fake
 	// transport here; production returns a container-backed Child.

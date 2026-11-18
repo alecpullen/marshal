@@ -3,10 +3,13 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 // Listing sessions for a project with no live agent answers on the control
@@ -45,5 +48,391 @@ func TestListingLeavesTheControlChildsHooksAlone(t *testing.T) {
 	}
 	if got := reflect.ValueOf(child.OnRequest).Pointer(); got != want {
 		t.Fatalf("listing sessions replaced the control child's OnRequest: got %p, want %p", child.OnRequest, sentinel)
+	}
+}
+
+// controlFleet is projectFleetWith plus a fake control child whose session/list
+// answers through list, which is asked for one root at a time.
+func controlFleet(t *testing.T, list func(cwd string) (any, *rpcError)) (*Fleet, func(root string) *fakeProjectChild, *fakeAgent) {
+	t.Helper()
+	f, fakeFor := projectFleetWith(t, nil)
+	ctl := newFakeAgent()
+	if list != nil {
+		ctl.handler = func(method string, params json.RawMessage) (any, *rpcError, bool) {
+			if method != "session/list" {
+				return nil, nil, false
+			}
+			var p struct {
+				Cwd string `json:"cwd"`
+			}
+			_ = json.Unmarshal(params, &p)
+			res, rerr := list(p.Cwd)
+			return res, rerr, true
+		}
+	}
+	f.newControl = func() (*Child, error) { return &Child{Transport: ctl}, nil }
+	return f, fakeFor, ctl
+}
+
+// listing answers session/list with rows.
+func listing(rows ...map[string]any) any {
+	if rows == nil {
+		rows = []map[string]any{}
+	}
+	return map[string]any{"sessions": rows}
+}
+
+// TestResolveSessionOrder: an agent's session and a client session on a project
+// child resolve to their own registries, and only the agent's names an agent.
+func TestResolveSessionOrder(t *testing.T) {
+	f, fakeFor := hostOnlyProjectFleet(t)
+	ctx := ctlContext(t)
+	agentRoot, clientRoot := t.TempDir(), t.TempDir()
+
+	id, err := f.Spawn(ctx, agentRoot, SpawnOptions{Name: "one"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	rt, err := f.runtimeForAgent(id)
+	if err != nil {
+		t.Fatalf("runtimeForAgent: %v", err)
+	}
+	agentSession := f.sessionIDFor(rt)
+	if agentSession == "" {
+		t.Fatal("the spawned agent has no session id")
+	}
+
+	// The two children's fakes each number their own sessions from s-1, so the
+	// client's id is named explicitly: one id must never belong to two
+	// children.
+	pc, err := f.projectChildFor(ctx, clientRoot)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	clientFake := fakeFor(pc.root)
+	if clientFake == nil {
+		t.Fatal("no fake was built for the client root")
+	}
+	clientFake.fakeAgent.mu.Lock()
+	clientFake.fakeAgent.results["session/new"] = map[string]any{"sessionId": "client-1"}
+	clientFake.fakeAgent.mu.Unlock()
+	clientSession, err := pc.reg.New(ctx, AgentPath(pc.root), "")
+	if err != nil {
+		t.Fatalf("session/new on the client child: %v", err)
+	}
+	if clientSession == agentSession {
+		t.Fatalf("both sessions are %q", clientSession)
+	}
+
+	got, err := f.ResolveSession(agentSession)
+	if err != nil {
+		t.Fatalf("ResolveSession(agent session): %v", err)
+	}
+	if got.Reg != rt.reg || got.Agent != rt || got.Root != agentRoot || got.SessionID != agentSession {
+		t.Fatalf("agent session resolved to %+v, want the agent's runtime at %s", got, agentRoot)
+	}
+
+	got, err = f.ResolveSession(clientSession)
+	if err != nil {
+		t.Fatalf("ResolveSession(client session): %v", err)
+	}
+	if got.Reg != pc.reg || got.Log != pc.log || got.Root != clientRoot || got.SessionID != clientSession {
+		t.Fatalf("client session resolved to %+v, want the project child at %s", got, clientRoot)
+	}
+	if got.Agent != nil {
+		t.Fatalf("a client session named agent %q", got.Agent.id)
+	}
+}
+
+// TestResolveSessionSkipsFleetSessions: a fleet session on a project child is
+// the agent's, not a client's, and resolution leaves it alone even when no
+// agent mapping names it.
+func TestResolveSessionSkipsFleetSessions(t *testing.T) {
+	f, _ := projectFleet(t)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	pc, err := f.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	pc.reg.TrackFleet("fleet-1", AgentPath(root))
+
+	if _, err := f.ResolveSession("fleet-1"); !errors.Is(err, ErrUnknownSession) {
+		t.Fatalf("ResolveSession(fleet session) = %v, want ErrUnknownSession", err)
+	}
+}
+
+// TestResolveSessionNeverStartsAChild: an id only a listing names is unknown
+// to resolution, which never starts a project child to find it.
+func TestResolveSessionNeverStartsAChild(t *testing.T) {
+	root := t.TempDir()
+	f, fakeFor, _ := controlFleet(t, func(string) (any, *rpcError) {
+		return listing(map[string]any{"sessionId": "closed-1"}), nil
+	})
+	ctx := ctlContext(t)
+
+	rows, err := f.listRoot(ctx, root)
+	if err != nil {
+		t.Fatalf("listRoot: %v", err)
+	}
+	if len(rows) != 1 || rows[0].SessionID != "closed-1" {
+		t.Fatalf("listing = %+v, want closed-1", rows)
+	}
+
+	if _, err := f.ResolveSession("closed-1"); !errors.Is(err, ErrUnknownSession) {
+		t.Fatalf("ResolveSession(listed id) = %v, want ErrUnknownSession", err)
+	}
+	if fake := fakeFor(root); fake != nil {
+		t.Fatal("ResolveSession built a project child")
+	}
+	if _, ok := projectEntry(f, root); ok {
+		t.Fatal("ResolveSession left a project child in the fleet's map")
+	}
+}
+
+// TestOpenSessionResumesOnTheProjectChild: a closed session reopens on the
+// child of the root whose listing names it, and the control child is never
+// asked to load, resume or open it.
+func TestOpenSessionResumesOnTheProjectChild(t *testing.T) {
+	root := t.TempDir()
+	f, fakeFor, ctl := controlFleet(t, func(cwd string) (any, *rpcError) {
+		if cwd != root {
+			return listing(), nil
+		}
+		return listing(map[string]any{"sessionId": "closed-1", "title": "old"}), nil
+	})
+	ctx := ctlContext(t)
+	if err := f.ws.AddProject(root); err != nil {
+		t.Fatalf("AddProject: %v", err)
+	}
+
+	got, err := f.OpenSession(ctx, "closed-1")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	pc, ok := projectEntry(f, root)
+	if !ok {
+		t.Fatal("OpenSession did not resolve a project child for the session's root")
+	}
+	if got.Reg != pc.reg || got.Log != pc.log || got.Root != root || got.SessionID != "closed-1" {
+		t.Fatalf("OpenSession = %+v, want the project child at %s", got, root)
+	}
+	if got.Agent != nil {
+		t.Fatalf("a closed client session named agent %q", got.Agent.id)
+	}
+
+	fake := fakeFor(root)
+	if fake == nil {
+		t.Fatal("no fake was built for the session's root")
+	}
+	resumes := fake.calls("session/resume")
+	if len(resumes) != 1 {
+		t.Fatalf("session/resume on the project child = %v, want one", resumes)
+	}
+	if id, _ := paramsOf(t, resumes[0])["sessionId"].(string); id != "closed-1" {
+		t.Fatalf("session/resume named %q, want closed-1", id)
+	}
+	follows := fake.calls("session/follow")
+	if len(follows) != 1 {
+		t.Fatalf("session/follow on the project child = %v, want one", follows)
+	}
+	if id, _ := paramsOf(t, follows[0])["sessionId"].(string); id != "closed-1" {
+		t.Fatalf("session/follow named %q, want closed-1", id)
+	}
+
+	for _, method := range []string{"session/load", "session/resume", "session/new"} {
+		for _, raw := range ctl.calls(method) {
+			if strings.Contains(raw, "closed-1") {
+				t.Fatalf("the control child was asked for %s on the closed session: %s", method, raw)
+			}
+		}
+	}
+}
+
+// TestOpenSessionRefusesTheBridgesOwn: the bridge's own sessions are refused,
+// each naming its owner, and none of them starts a project child (P7 D5).
+func TestOpenSessionRefusesTheBridgesOwn(t *testing.T) {
+	ctx := ctlContext(t)
+
+	t.Run("a paused agent's session", func(t *testing.T) {
+		root := t.TempDir()
+		f, fakeFor, _ := controlFleet(t, nil)
+		if err := f.ws.PutAgent(Agent{ID: "a-paused", Project: root, Name: "paused one",
+			SessionID: "s-paused", OwnerID: DefaultOwnerID, Origin: OriginUI}); err != nil {
+			t.Fatalf("PutAgent: %v", err)
+		}
+
+		_, err := f.OpenSession(ctx, "s-paused")
+		var owned ErrSessionOwned
+		if !errors.As(err, &owned) {
+			t.Fatalf("OpenSession(paused agent's session) = %v, want ErrSessionOwned", err)
+		}
+		if owned.Owner != "agent paused one" {
+			t.Fatalf("owner = %q, want \"agent paused one\"", owned.Owner)
+		}
+		if fakeFor(root) != nil {
+			t.Fatal("a refused session started a project child")
+		}
+	})
+
+	t.Run("the control agent's project session", func(t *testing.T) {
+		root := t.TempDir()
+		f, _, _ := controlFleet(t, nil)
+		sid, err := f.projectSession(ctx, root)
+		if err != nil {
+			t.Fatalf("projectSession: %v", err)
+		}
+
+		_, err = f.OpenSession(ctx, sid)
+		var owned ErrSessionOwned
+		if !errors.As(err, &owned) {
+			t.Fatalf("OpenSession(control project session) = %v, want ErrSessionOwned", err)
+		}
+		if owned.Owner != "the control agent" {
+			t.Fatalf("owner = %q, want \"the control agent\"", owned.Owner)
+		}
+		if _, ok := projectEntry(f, root); ok {
+			t.Fatal("a refused session started a project child")
+		}
+	})
+
+	t.Run("a planner's session", func(t *testing.T) {
+		root := t.TempDir()
+		f, _, _ := controlFleet(t, nil)
+		svc := newPlannerService(f, f.stateDir)
+		plannerID := strings.Repeat("a", plannerIDLength)
+		if err := svc.store.write(PlannerRecord{ID: plannerID, SessionID: "s-planner",
+			ProjectRoot: root, State: plannerStateEnded}); err != nil {
+			t.Fatalf("write the planner record: %v", err)
+		}
+		f.planners = svc
+
+		_, err := f.OpenSession(ctx, "s-planner")
+		var owned ErrSessionOwned
+		if !errors.As(err, &owned) {
+			t.Fatalf("OpenSession(planner session) = %v, want ErrSessionOwned", err)
+		}
+		if owned.Owner != "planner "+plannerID {
+			t.Fatalf("owner = %q, want \"planner %s\"", owned.Owner, plannerID)
+		}
+		if _, ok := projectEntry(f, root); ok {
+			t.Fatal("a refused session started a project child")
+		}
+	})
+}
+
+// TestOpenSessionUnknownIs404: an id no listing names is unknown.
+func TestOpenSessionUnknownIs404(t *testing.T) {
+	root := t.TempDir()
+	f, fakeFor, _ := controlFleet(t, func(string) (any, *rpcError) {
+		return listing(), nil
+	})
+	ctx := ctlContext(t)
+	if err := f.ws.AddProject(root); err != nil {
+		t.Fatalf("AddProject: %v", err)
+	}
+
+	if _, err := f.OpenSession(ctx, "no-such-session"); !errors.Is(err, ErrUnknownSession) {
+		t.Fatalf("OpenSession(unknown) = %v, want ErrUnknownSession", err)
+	}
+	if fakeFor(root) != nil {
+		t.Fatal("an unknown session started a project child")
+	}
+}
+
+// TestListRootNormalises: the child's updatedAt becomes Unix milliseconds and
+// _meta.messageCount becomes messageCount, both 0 when absent or unreadable.
+func TestListRootNormalises(t *testing.T) {
+	root := t.TempDir()
+	f, _, _ := controlFleet(t, func(string) (any, *rpcError) {
+		return listing(
+			map[string]any{"sessionId": "s-1", "title": "one",
+				"updatedAt": "2026-01-02T03:04:05Z", "_meta": map[string]any{"messageCount": 7}},
+			map[string]any{"sessionId": "s-2", "title": "two"},
+			map[string]any{"sessionId": "s-3", "updatedAt": "not a time"},
+		), nil
+	})
+
+	rows, err := f.listRoot(ctlContext(t), root)
+	if err != nil {
+		t.Fatalf("listRoot: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows = %+v, want three", rows)
+	}
+	want := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC).UnixMilli()
+	if rows[0].UpdatedAt != want {
+		t.Fatalf("updatedAt = %d, want %d", rows[0].UpdatedAt, want)
+	}
+	if rows[0].MessageCount != 7 {
+		t.Fatalf("messageCount = %d, want 7", rows[0].MessageCount)
+	}
+	if rows[0].Title != "one" || rows[0].SessionID != "s-1" {
+		t.Fatalf("row = %+v", rows[0])
+	}
+	for _, row := range rows[1:] {
+		if row.UpdatedAt != 0 || row.MessageCount != 0 {
+			t.Fatalf("%s = %+v, want zero updatedAt and messageCount", row.SessionID, row)
+		}
+	}
+}
+
+// TestListRootCachesAFailedRoot: a root that cannot be listed is retried once
+// per thirty seconds, not on every read.
+func TestListRootCachesAFailedRoot(t *testing.T) {
+	root := t.TempDir()
+	f, _, ctl := controlFleet(t, func(string) (any, *rpcError) {
+		return nil, &rpcError{Code: -32603, Message: "no listing"}
+	})
+	now := time.Unix(1_760_000_000, 0)
+	f.listNow = func() time.Time { return now }
+	ctx := ctlContext(t)
+
+	for i := 0; i < 2; i++ {
+		if _, err := f.listRoot(ctx, root); err == nil {
+			t.Fatalf("call %d: listRoot succeeded, want the child's failure", i+1)
+		}
+	}
+	if got := len(ctl.calls("session/list")); got != 1 {
+		t.Fatalf("session/list calls within 30 s = %d, want 1", got)
+	}
+
+	now = now.Add(31 * time.Second)
+	if _, err := f.listRoot(ctx, root); err == nil {
+		t.Fatal("listRoot succeeded after the failure aged out, want it retried and failing")
+	}
+	if got := len(ctl.calls("session/list")); got != 2 {
+		t.Fatalf("session/list calls after 31 s = %d, want 2", got)
+	}
+}
+
+// TestAControlRestartDropsTheListings: a restarted control child has forgotten
+// every session it listed, so the cached listings go with it.
+func TestAControlRestartDropsTheListings(t *testing.T) {
+	root := t.TempDir()
+	f, _, ctl := controlFleet(t, func(string) (any, *rpcError) {
+		return listing(map[string]any{"sessionId": "s-1"}), nil
+	})
+	ctx := ctlContext(t)
+
+	if _, err := f.listRoot(ctx, root); err != nil {
+		t.Fatalf("listRoot: %v", err)
+	}
+	child, err := f.controlChild(ctx)
+	if err != nil {
+		t.Fatalf("controlChild: %v", err)
+	}
+	if child.OnRestart == nil {
+		t.Fatal("the control child has no restart hook")
+	}
+	// This is the call the child's supervisor makes after an unexpected exit.
+	child.OnRestart()
+
+	if _, err := f.listRoot(ctx, root); err != nil {
+		t.Fatalf("listRoot after the restart: %v", err)
+	}
+	if got := len(ctl.calls("session/list")); got != 2 {
+		t.Fatalf("session/list calls = %d, want 2: the restart must drop the cached listing", got)
 	}
 }

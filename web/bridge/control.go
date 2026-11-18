@@ -148,6 +148,10 @@ func (f *Fleet) control(ctx context.Context) (*controlRuntime, error) {
 			c.ready = false
 			c.projectSessions = make(map[string]string)
 			c.mu.Unlock()
+			// Every listing was read from this child's sessions, and a
+			// restarted child has forgotten them (P7 D10). Failures are
+			// dropped too: the reason a root failed may have been this child.
+			f.dropListings()
 		}
 		child.OnNotification = f.onControlNotification
 		if err := child.Start(); err != nil {

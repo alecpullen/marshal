@@ -115,15 +115,17 @@ class SectionPage<T> extends StatelessWidget {
           width: PageWidth.list,
           children: [
             if (tabs != null) ...[
-              Row(
+              // The tabs, and the place's own control when it fits beside
+              // them. A control that does not fit — a narrow window, the text
+              // at twice its size — takes the line below rather than squeezing
+              // the tabs until a label is cut (design-system.md §4).
+              Wrap(
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: Space.s16,
+                runSpacing: Space.s8,
                 children: [
-                  Expanded(
-                    child: Tabs(
-                      tabs: tabs,
-                      index: tabIndex,
-                      onChanged: onTab ?? (_) {},
-                    ),
-                  ),
+                  Tabs(tabs: tabs, index: tabIndex, onChanged: onTab ?? (_) {}),
                   ?trailing,
                 ],
               ),
@@ -199,14 +201,36 @@ class SectionPage<T> extends StatelessWidget {
 
   /// Opens the detail the way every section does (F7 decision 2).
   void _open(BuildContext context, T item) {
-    model.edit(item);
-    openDetail(
+    final title = detailTitle?.call(item) ?? row(item, () {}).name;
+    openSectionDetail<T>(
       context,
-      title: detailTitle?.call(item) ?? row(item, () {}).name,
-      body: _Detail<T>(model: model, detail: detail),
-      actions: [_DetailActions<T>(model: model, readOnly: readOnly)],
+      model: model,
+      detail: detail,
+      item: item,
+      title: title,
+      readOnly: readOnly,
     );
   }
+}
+
+/// Opens one item's detail the way every section does (F7 decision 2): the
+/// row's, or a new item's. The section page's own New and a tab's New both
+/// come through here, so both start the same form.
+void openSectionDetail<T>(
+  BuildContext context, {
+  required SectionModel<T> model,
+  required Widget Function(BuildContext context, T item) detail,
+  required T item,
+  required String title,
+  bool readOnly = false,
+}) {
+  model.edit(item);
+  openDetail(
+    context,
+    title: title,
+    body: _Detail<T>(model: model, detail: detail),
+    actions: [_DetailActions<T>(model: model, readOnly: readOnly)],
+  );
 }
 
 /// A detail's content: the refusal above, then the edit. Both listen to the

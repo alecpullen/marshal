@@ -45,6 +45,18 @@ class SchedulesTab extends StatelessWidget {
     );
   }
 
+  /// Opens a new schedule's form — the one the section page's own New opens.
+  static void create(BuildContext context, SchedulesModel model) {
+    openSectionDetail<Schedule>(
+      context,
+      model: model,
+      detail: (context, schedule) =>
+          _ScheduleForm(model: model, schedule: schedule),
+      item: SchedulesModel.blank(),
+      title: 'New schedule',
+    );
+  }
+
   /// What the schedule does, in one line: its recipe and its cron.
   static String _about(Schedule schedule) {
     final recipe = schedule.recipe.isEmpty ? 'No recipe yet' : schedule.recipe;

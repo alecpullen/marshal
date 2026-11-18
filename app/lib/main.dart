@@ -48,6 +48,7 @@ import 'src/ui/automations/bots_tab.dart';
 import 'src/ui/automations/placeholder.dart';
 import 'src/ui/automations/recipes_tab.dart';
 import 'src/ui/automations/schedules_tab.dart';
+import 'src/ui/automations/watch_form.dart';
 import 'src/ui/automations/watches_tab.dart';
 import 'src/ui/kit/kit.dart';
 import 'src/ui/library/library_place.dart';
@@ -372,6 +373,17 @@ class _Sections {
         1: models.schedules.items.length,
         2: models.watches.items.length,
         3: models.recipes.items.length,
+      },
+      // New automation starts the kind it names (F9 B4), in the tab that owns
+      // that form. A recipe has no create of its own — one is made by copying
+      // a built-in on the Recipes tab, which the Recipe choice opens.
+      onNew: (tab, context) async {
+        switch (tab) {
+          case 1:
+            SchedulesTab.create(context, models.schedules);
+          case 2:
+            await showWatchForm(context, models.watches);
+        }
       },
     );
   }

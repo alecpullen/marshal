@@ -1,20 +1,29 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
+import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/model/inbox_model.dart' as inbox;
+import 'package:marshal_app/src/model/new_work_model.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/client/event_stream.dart';
 import 'package:marshal_app/src/client/transport.dart';
+import 'package:marshal_app/src/model/stack_store.dart';
+import 'package:marshal_app/src/ui/thread/thread_screen.dart';
 import 'package:marshal_app/src/model/inbox_model.dart';
 import 'package:marshal_app/src/model/place.dart';
-import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
-import 'package:marshal_app/src/ui/thread/thread_screen.dart';
 
 import '../model/support.dart';
+import '../support/fake_bridge.dart';
 import '../support/screens.dart';
 
+/// The shell's rules (F2 decision 1 and §4): a row opens its place, the
+/// narrow layout reaches the same navigation through the app bar, a place a
+/// later phase brings says so, and a host that is away is listed with the
+/// time it was last seen.
 /// The session a thread place opens: one row of the fleet's index, with the
 /// title the thread is called by.
 SessionRow _sessionRow() => const SessionRow(
@@ -113,9 +122,14 @@ Future<void> _pumpSessionPlace(
 /// narrow layout reaches the same navigation through the app bar, a place a
 /// later phase brings says so, and a host that is away is listed with the
 /// time it was last seen.
+
 void main() {
   /// The shell with a recorder for the place it opened.
-  (Widget, List<Place>) shellAt(Place place, {StateKind? state}) {
+  (Widget, List<Place>) shellAt(
+    Place place, {
+    StateKind? state,
+    VoidCallback? onNew,
+  }) {
     final opened = <Place>[];
     final nav = shellNavFor(place);
     return (
@@ -127,6 +141,7 @@ void main() {
         now: shellNow,
         onRetry: () {},
         onSelect: opened.add,
+        onNew: onNew,
         content: (_) => plannedPlace(place, nav),
       ),
       opened,
@@ -288,6 +303,160 @@ void main() {
     // The search field is drawn where it will live, disabled, and says why.
     expect(find.text('Search'), findsOneWidget);
     expect(find.byTooltip('Search arrives in a later phase'), findsOneWidget);
+  });
+
+  testWidgets('the narrow app bar has New', (tester) async {
+    tester.view.physicalSize = const Size(600, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final (shell, _) = shellAt(const Place.overview(), onNew: () {});
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    expect(find.byTooltip('New'), findsOneWidget);
+  });
+
+  testWidgets('the sidebar has New beside search', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final (shell, _) = shellAt(const Place.overview(), onNew: () {});
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    // The wide layout draws the sidebar and no app bar, so the one plus is
+    // the sidebar's.
+    expect(find.byTooltip('New'), findsOneWidget);
+    expect(find.byTooltip('Projects and threads'), findsNothing);
+  });
+
+  testWidgets('New starts work in the first project', (tester) async {
+    tester.view.physicalSize = const Size(600, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final started = await tester.runAsync(
+      () => ModelFixture.start([
+        FixtureHost(name: 'local', projects: [project('/home/u/marshal')]),
+      ], now: DateTime.utc(2026, 11, 17, 12)),
+    );
+    final fixture = started!;
+    await tester.runAsync(() => fixture.refresh());
+    fixture.bridges['local']!
+      ..reply(
+        'GET',
+        '/api/prompts/recent',
+        const FakeReply(200, body: '{"prompts":[]}'),
+      )
+      ..reply('GET', '/api/recipes', const FakeReply(200, body: '[]'));
+    final inboxModel = inbox.InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+    );
+    addTearDown(inboxModel.dispose);
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inboxModel,
+          newWorkFor: (host, root) => NewWorkModel.forProject(
+            project('/home/u/marshal'),
+            fixture.clientFor('local'),
+            host: 'local',
+          ),
+        ),
+      ),
+    );
+    // The fleet store has a live stream and a clock, so nothing ever settles:
+    // the Studio's own tests pump explicitly (test/ui/f2_flow_test).
+    for (var i = 0; i < 8; i++) {
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+    }
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('New'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('Start a new agent'), findsOneWidget);
+  });
+
+  group('the fleet state (§7)', () {
+    HostView host(String name, HostReach reach) => HostView(
+      name: name,
+      kind: HostKind.local,
+      reach: reach,
+      lastContact: shellNow,
+    );
+
+    StateKind? kindFor(List<HostView> hosts, {bool anyAgents = false}) =>
+        fleetStateKind(
+          read: true,
+          failed: false,
+          anyAgents: anyAgents,
+          hosts: hosts,
+        );
+
+    test('a refused token is unauthorized, never unreachable', () {
+      expect(
+        kindFor([host('local', HostReach.unauthorized)]),
+        StateKind.unauthorized,
+        reason:
+            'a page whose token the bridge refused must say so: reporting it '
+            'as unreachability sends the reader to look at the wrong thing',
+      );
+    });
+
+    test('a host nothing answers on is unavailable', () {
+      expect(
+        kindFor([host('local', HostReach.unreachable)]),
+        StateKind.unavailable,
+      );
+    });
+
+    test('a refusal explains a fleet of refusals better than a silence', () {
+      expect(
+        kindFor([
+          host('local', HostReach.unreachable),
+          host('studio', HostReach.unauthorized),
+        ]),
+        StateKind.unauthorized,
+      );
+    });
+
+    test('a fleet still showing agents is stale, not a state page', () {
+      expect(
+        kindFor([
+          host('local', HostReach.live),
+          host('studio', HostReach.unauthorized),
+        ], anyAgents: true),
+        StateKind.stale,
+      );
+    });
+
+    test('a fleet with nothing to show and no answers is empty or error', () {
+      expect(kindFor([]), StateKind.empty);
+      expect(
+        fleetStateKind(read: true, failed: true, anyAgents: false, hosts: []),
+        StateKind.error,
+      );
+      expect(
+        fleetStateKind(
+          read: false,
+          failed: false,
+          anyAgents: false,
+          hosts: [host('local', HostReach.live)],
+        ),
+        StateKind.loading,
+      );
+    });
   });
 
   testWidgets('a session\'s thread place opens the session thread', (

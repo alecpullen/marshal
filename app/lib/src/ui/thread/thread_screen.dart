@@ -647,6 +647,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
       message: 'The transcript could not be read.',
       retry: StateAction('Try again', onTap: () {}),
     ),
+    StateKind.unauthorized => const StateMessage.unauthorized(),
     StateKind.unavailable => StateMessage.unavailable(
       host: widget.thread.host,
       lastSeen: '4m',

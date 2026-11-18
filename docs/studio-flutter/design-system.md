@@ -317,6 +317,10 @@ test covers each:
   data as current, and never infer failure from a lost connection.
 - **Error** — what failed, in plain words, and one action to retry.
 - **Unavailable** — the host is unreachable; say when it was last seen.
+- **Unauthorized** — the bridge refused this page's token, which no retry
+  clears: name the host that refused it and say how to sign in again. Never
+  drawn as unreachability — that sends the reader to look at the network when
+  the fix is a sign-in.
 - **Planned** — a capability that does not exist yet is a disabled row where
   it will live, with one line saying so. It is never drawn as working.
 
@@ -412,7 +416,7 @@ widget tree; none needs a daemon.
 | · `kit components do not fetch` | A file under `ui/kit/` imports `model/` or `client/` |
 | · `terminal colours stay in the terminal widget` | `termBlue`, `termMagenta` or `termCyan` is used under `ui/` outside `tokens.dart` and `terminal_view.dart` |
 | `tooltips_test.dart` | Any screen, pumped with fixture data at each width, contains an icon-only control, dot, chip icon or strip without a tooltip |
-| `states_test.dart` | A registered screen lacks a case for loading, empty, stale, error or unavailable |
+| `states_test.dart` | A registered screen lacks a case for loading, empty, stale, error, unavailable or unauthorized |
 | `contrast_test.dart` | A token pair in §2 falls below its ratio in either theme |
 | `gallery_test.dart` | A kit component is missing from the gallery, or a gallery golden differs in light or dark |
 | `overflow_test.dart` | Any screen overflows or scrolls sideways at 390, 800 or 1440 wide, or at text scale 2 |

@@ -1158,3 +1158,161 @@ func TestTheAttachmentReadsTheEnvWarning(t *testing.T) {
 		})
 	}
 }
+
+// TestRestartStreamsProgress: the answer is newline-delimited JSON, one line
+// per sweep, and the client hands each to progress as it arrives.
+func TestRestartStreamsProgress(t *testing.T) {
+	socket := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Errorf("the test answer cannot be flushed")
+			return
+		}
+		for _, line := range []string{
+			`{"waitingFor":["sess-1"]}` + "\n",
+			`{"waitingFor":["sess-2"]}` + "\n",
+			`{"restarting":true,"version":"2.0.0"}` + "\n",
+		} {
+			_, _ = io.WriteString(w, line)
+			flusher.Flush()
+		}
+	}))
+
+	var seen []RestartProgress
+	err := NewClient(socket).Restart(context.Background(), false, func(p RestartProgress) {
+		seen = append(seen, p)
+	})
+	if err != nil {
+		t.Fatalf("Restart(): %v", err)
+	}
+
+	if len(seen) != 3 {
+		t.Fatalf("progress saw %d lines, want 3: %+v", len(seen), seen)
+	}
+	if got := seen[0].WaitingFor; len(got) != 1 || got[0] != "sess-1" {
+		t.Errorf("line 1 waitingFor = %v, want [sess-1]", got)
+	}
+	if got := seen[1].WaitingFor; len(got) != 1 || got[0] != "sess-2" {
+		t.Errorf("line 2 waitingFor = %v, want [sess-2]", got)
+	}
+	if !seen[2].Restarting || seen[2].Version != "2.0.0" {
+		t.Errorf("line 3 = %+v, want restarting on 2.0.0", seen[2])
+	}
+}
+
+// TestRestartReturnsTheDaemonsError: a refusal ends the answer, and the client
+// carries the daemon's own sentence rather than inventing one.
+func TestRestartReturnsTheDaemonsError(t *testing.T) {
+	t.Run("the line", func(t *testing.T) {
+		const sentence = "an agent is running"
+
+		socket := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"waitingFor":["sess-1"]}`+"\n")
+			_, _ = io.WriteString(w, `{"error":"`+sentence+`"}`+"\n")
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}))
+
+		err := NewClient(socket).Restart(context.Background(), false, func(RestartProgress) {})
+		if err == nil {
+			t.Fatal("Restart() = nil, want the daemon's error")
+		}
+		if !strings.Contains(err.Error(), sentence) {
+			t.Errorf("Restart() error = %q, want it to carry %q", err, sentence)
+		}
+	})
+
+	t.Run("the status", func(t *testing.T) {
+		const sentence = "the daemon is stopping"
+
+		socket := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": sentence})
+		}))
+
+		err := NewClient(socket).Restart(context.Background(), false, func(RestartProgress) {})
+		if err == nil {
+			t.Fatal("Restart() = nil, want a refusal")
+		}
+		if !strings.Contains(err.Error(), sentence) {
+			t.Errorf("Restart() error = %q, want it to carry %q", err, sentence)
+		}
+		if !strings.Contains(err.Error(), "409") {
+			t.Errorf("Restart() error = %q, want it to name the status", err)
+		}
+	})
+}
+
+// TestRestartWithdrawsOnCancel: the answer waits on the daemon's sweeps, so
+// giving up has to withdraw the request rather than leave it running.
+func TestRestartWithdrawsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ended := make(chan struct{})
+	socket := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+		close(ended)
+	}))
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	if err := NewClient(socket).Restart(ctx, false, func(RestartProgress) {}); err == nil {
+		t.Fatal("a cancelled restart returned nil")
+	} else if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Restart() error = %v, want a cancellation", err)
+	}
+
+	select {
+	case <-ended:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the server never saw its request context end")
+	}
+}
+
+// TestRestartSendsNow: the body says whether the sweeps are skipped.
+func TestRestartSendsNow(t *testing.T) {
+	requests := make(chan *http.Request, 1)
+	bodies := make(chan string, 1)
+
+	socket := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		requests <- r
+		bodies <- string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"restarting":true,"version":"2.0.0"}`+"\n")
+	}))
+
+	if err := NewClient(socket).Restart(context.Background(), true, func(RestartProgress) {}); err != nil {
+		t.Fatalf("Restart(): %v", err)
+	}
+
+	req := <-requests
+	if req.Method != http.MethodPost {
+		t.Errorf("method = %q, want POST", req.Method)
+	}
+	if req.URL.Path != daemonRestartPath {
+		t.Errorf("path = %q, want %s", req.URL.Path, daemonRestartPath)
+	}
+	if got := req.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+
+	if raw := <-bodies; raw != `{"now":true}` {
+		t.Errorf("body = %q, want %q", raw, `{"now":true}`)
+	}
+}

@@ -254,12 +254,13 @@ class _ProjectBuilder {
 
 /// What a project's row calls it: its directory's name.
 ///
-/// `/home/alec/marshal` is `marshal`; a root with no name of its own — `/` —
-/// is named as it is, so the row is never blank.
+/// `/home/alec/marshal` is `marshal`; a root with no name of its own — `/`,
+/// `//` or an empty one — is named as the filesystem's root, so the row is
+/// never blank.
 String projectName(String root) {
   final parts = [
     for (final part in root.split('/'))
       if (part.isNotEmpty) part,
   ];
-  return parts.isEmpty ? root : parts.last;
+  return parts.isEmpty ? '/' : parts.last;
 }

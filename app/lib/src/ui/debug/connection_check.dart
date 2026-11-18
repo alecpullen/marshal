@@ -92,6 +92,8 @@ class ConnectionCheck extends StatelessWidget {
             retry: _retry('Try again'),
           ),
         ];
+      case StateKind.unauthorized:
+        return const [StateMessage.unauthorized()];
       case StateKind.unavailable:
         final first = hosts.isEmpty ? null : hosts.first;
         return [

@@ -105,7 +105,7 @@ void main() {
           store: fixture.store,
           inbox: inboxModel,
           threadStore: (thread) => StackStore.seeded(_snapshot(thread.id)),
-          newWorkFor: (thread) => NewWorkModel.forProject(
+          newWorkFor: (host, root) => NewWorkModel.forProject(
             project('/home/u/marshal'),
             fixture.clientFor('local'),
             host: 'local',
@@ -148,10 +148,58 @@ void main() {
     expect(posted.body, contains('Fix the login redirect'));
     expect(posted.body, contains('"project":"/home/u/marshal"'));
 
-    // …and the dialog closed onto the thread it started
-    // (`onThreadStarted` in ui/shell/shell.dart), not the one it opened from.
+    // …and the dialog closed onto the thread it started (the Studio's
+    // `_openNewWork` in ui/shell/shell.dart), not the one it opened from.
     expect(find.text('Start a new agent'), findsNothing);
     expect(find.text('Step in the new thread'), findsOneWidget);
     expect(find.text('Step in the first thread'), findsNothing);
+  });
+
+  testWidgets('the Overview’s New opens the same dialog', (tester) async {
+    final fixture = await tester.runAsync(
+      () => ModelFixture.start([
+        FixtureHost(
+          name: 'local',
+          projects: [project('/home/u/marshal')],
+          agents: [agent(id: 'a-1', project: '/home/u/marshal')],
+        ),
+      ], now: now),
+    );
+    final bridge = fixture!.bridges['local']!;
+    await tester.runAsync(() => fixture.refresh());
+    bridge
+      ..reply('GET', '/api/prompts/recent', const FakeReply(200, body: '{}'))
+      ..reply('GET', '/api/recipes', const FakeReply(200, body: '[]'));
+
+    final inboxModel = inbox.InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+    );
+    addTearDown(inboxModel.dispose);
+
+    // The window opens on the Overview (the default place), and the page's
+    // header carries the one primary action: start work (design.md, "Starting
+    // work", and the mock's `Btn('New', primary: true, icon: plus)`).
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inboxModel,
+          newWorkFor: (host, root) => NewWorkModel.forProject(
+            project('/home/u/marshal'),
+            fixture.clientFor('local'),
+            host: 'local',
+          ),
+        ),
+      ),
+    );
+    await settleIo(tester);
+
+    final button = find.widgetWithText(Btn, 'New');
+    expect(button, findsOneWidget);
+    await tester.tap(button);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('Start a new agent'), findsOneWidget);
   });
 }

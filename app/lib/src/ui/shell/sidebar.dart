@@ -21,6 +21,8 @@ class Sidebar extends StatefulWidget {
     required this.onSelect,
     this.host,
     this.onHost,
+    this.onConnectRepo,
+    this.onNew,
     this.now,
     this.inPanel = false,
   });
@@ -35,6 +37,14 @@ class Sidebar extends StatefulWidget {
   /// The host whose work the tree shows, or null for every host.
   final String? host;
   final void Function(String? host)? onHost;
+
+  /// Connects a repository (F9 B1): the plus beside *Projects*. Null leaves
+  /// the control out, so a host that wires no bridge offers no sheet.
+  final VoidCallback? onConnectRepo;
+
+  /// The place-level New (F9 B3): the plus beside the search field. Null leaves
+  /// it out — there is no project to start work in.
+  final VoidCallback? onNew;
 
   /// What a host's age is measured against.
   final DateTime? now;
@@ -81,14 +91,27 @@ class _SidebarState extends State<Sidebar> {
               ),
               const SizedBox(height: Space.s8),
               // Search arrives in a later phase; the field is drawn where it
-              // will live and says so rather than pretending to search.
-              const Tip(
-                message: 'Search arrives in a later phase',
-                child: Field(
-                  label: 'Search',
-                  hint: 'Search or jump to',
-                  enabled: false,
-                ),
+              // will live and says so rather than pretending to search. The
+              // plus beside it starts work, the way a page header's New does
+              // (F9 B3).
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  const Expanded(
+                    child: Tip(
+                      message: 'Search arrives in a later phase',
+                      child: Field(
+                        label: 'Search',
+                        hint: 'Search or jump to',
+                        enabled: false,
+                      ),
+                    ),
+                  ),
+                  if (widget.onNew != null) ...[
+                    const SizedBox(width: Space.s8),
+                    IconBtn(Glyphs.plus, tooltip: 'New', onTap: widget.onNew),
+                  ],
+                ],
               ),
             ],
           ),
@@ -102,14 +125,24 @@ class _SidebarState extends State<Sidebar> {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(Space.s8, 0, Space.s8, Space.s8),
             children: [
-              const Padding(
-                padding: EdgeInsets.fromLTRB(
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
                   Space.s8,
                   Space.s6,
                   Space.s8,
                   Space.s4,
                 ),
-                child: Label('Projects'),
+                child: Row(
+                  children: [
+                    const Expanded(child: Label('Projects')),
+                    if (widget.onConnectRepo != null)
+                      IconBtn(
+                        Glyphs.plus,
+                        tooltip: 'Connect a repository',
+                        onTap: widget.onConnectRepo,
+                      ),
+                  ],
+                ),
               ),
               for (final project in tree) ..._project(project),
             ],

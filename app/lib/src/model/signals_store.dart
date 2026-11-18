@@ -176,13 +176,34 @@ class SignalsStore extends ChangeNotifier {
   }
 
   /// Follows the registry: a host the app learns of while it is reading is read
-  /// at once, and every host is read again on the interval.
+  /// at once, every host is read again on the interval, and a host the registry
+  /// has forgotten is dropped (spec D9).
   void _hostsChanged() {
     if (_disposed) return;
+    var forgotten = false;
+    final listed = {for (final owner in _hosts.hosts) owner.name};
+    for (final name in _known.toList(growable: false)) {
+      if (listed.contains(name)) continue;
+      _known.remove(name);
+      _again.remove(name);
+      _watches.remove(name);
+      // The blocks and the drafts it handed the inbox are emptied: an ask for
+      // a host that is gone has nothing left to answer, and the inbox is told
+      // so rather than left holding them.
+      inbox
+        ..showPendingBlocks(name, const [])
+        ..showHeldDrafts(name, const []);
+      forgotten = true;
+    }
     for (final owner in _hosts.hosts) {
       if (!_known.add(owner.name)) continue;
       if (_started) unawaited(refresh(owner.name));
     }
+    if (!forgotten) return;
+    // The tick that would read the fleet is dropped and the cycle set again for
+    // the hosts that remain: a read still due for the host that is gone is not
+    // one to keep.
+    if (_started) _schedule(interval);
   }
 
   @override

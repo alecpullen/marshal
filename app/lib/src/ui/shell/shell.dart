@@ -159,6 +159,14 @@ class _ShellState extends State<Shell> {
 
   @override
   Widget build(BuildContext context) {
+    // A scope naming a host the fleet no longer lists reads as All hosts (see
+    // [placeHost]); it is cleared here, before anything is drawn, so the
+    // switcher's anchor and the places that read a host agree on the one they
+    // show from this frame on.
+    final host = _host;
+    if (host != null && !widget.hosts.any((each) => each.name == host)) {
+      _host = null;
+    }
     final narrow = MediaQuery.sizeOf(context).width < Layout.narrow;
     if (!narrow) {
       return Row(

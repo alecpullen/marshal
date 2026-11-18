@@ -490,18 +490,23 @@ class _Row extends StatelessWidget {
       case 'completion':
         final completion = node.completion;
         if (completion == null || compact) return const SizedBox.shrink();
-        final line = [
-          completion.label,
-          completion.outcome,
+        // A finished job is a notice: its label and outcome lead, its summary
+        // keeps its place beside them, and the error it carries, when it
+        // carries one, is the second line, folded — otherwise a failure reads
+        // exactly like a finish (design-system.md §5; spec: reports and
+        // errors are distinct).
+        final head = [
+          '${completion.label} ${completion.outcome}',
           if (completion.summary != null) completion.summary!,
-          // A failed completion says why: otherwise it reads exactly like one
-          // that finished (spec: reports and errors are distinct).
-          if ((completion.error ?? '').isNotEmpty) completion.error!,
         ].join(' · ');
+        final text = [
+          head,
+          if ((completion.error ?? '').isNotEmpty) completion.error!,
+        ].join('\n');
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Narration(text: line),
+            Notice(text: text),
             if (full && (completion.output ?? '').isNotEmpty)
               OutputBlock(
                 text: completion.output!,
@@ -511,16 +516,19 @@ class _Row extends StatelessWidget {
         );
       case 'thinking':
         final thinking = node.thinking;
-        if (thinking == null) return const SizedBox.shrink();
-        return Narration(text: thinking.text);
+        if (thinking == null || compact) return const SizedBox.shrink();
+        // Thinking names itself on its first line and starts folded, so it
+        // never reads as the agent's reply (design-system.md §5).
+        return Notice(text: 'Thinking\n${thinking.text}');
       case 'runEvent':
         final event = node.runEvent;
         if (event == null) return const SizedBox.shrink();
-        // The kind leads the row, so a run event does not read as the agent
-        // narrating its own steps. Title, body (full density only) and detail
-        // keep their order beneath it.
+        // The kind, led by a capital, opens the notice, so a run event does
+        // not read as the agent narrating its own steps. Title, body (full
+        // density only) and detail keep their order beneath it.
+        final kind = _capitalize(event.kind.trim());
         final head = [
-          if (event.kind.trim().isNotEmpty) event.kind,
+          if (kind.isNotEmpty) kind,
           if (event.title != null) event.title!,
         ].join(' · ');
         final text = [
@@ -528,25 +536,35 @@ class _Row extends StatelessWidget {
           if (full && event.body != null) event.body!,
           if (event.detail != null) event.detail!,
         ].join('\n');
-        return Narration(text: text);
+        return Notice(text: text);
       case 'plan':
         final plan = node.plan;
         if (plan == null) return const SizedBox.shrink();
+        // How far the plan has got leads, always: the active task is the
+        // addition to the count, not a replacement for it (spec finding 3).
+        final active = plan.activeText;
         return LiveRow(
-          headline: plan.activeText ?? '${plan.done} of ${plan.total} done',
+          headline:
+              '${plan.done} of ${plan.total}'
+              '${active != null && active.isNotEmpty ? ' · $active' : ''}',
           failed: false,
         );
       case 'receipt':
         final receipt = node.receipt;
         if (receipt == null || compact) return const SizedBox.shrink();
-        return Text(
-          [
-            '${receipt.steps} steps',
-            '${receipt.tools} calls',
-            '${receipt.files} files',
-            if (receipt.usage != null) receipt.usage!,
-          ].join(' · '),
-          style: Ember.of(context).monoSmall.tint(Ember.of(context).muted),
+        // The receipt closes the turn, so it stands apart from the rows above
+        // it and from the ask pinned beneath it (spec finding 4).
+        return Padding(
+          padding: const EdgeInsets.only(top: Space.s8, bottom: Space.s12),
+          child: Text(
+            [
+              '${receipt.steps} steps',
+              '${receipt.tools} calls',
+              '${receipt.files} files',
+              if (receipt.usage != null) receipt.usage!,
+            ].join(' · '),
+            style: Ember.of(context).monoSmall.tint(Ember.of(context).muted),
+          ),
         );
       default:
         final text = store.plainText(nodeId);
@@ -554,6 +572,10 @@ class _Row extends StatelessWidget {
         return Narration(text: text);
     }
   }
+
+  /// The kind with its first letter in capitals: a notice's leading word.
+  static String _capitalize(String text) =>
+      text.isEmpty ? text : '${text[0].toUpperCase()}${text.substring(1)}';
 
   /// A step's duration, as the header prints it: seconds under a minute, then
   /// minutes and seconds.

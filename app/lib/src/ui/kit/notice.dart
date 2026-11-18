@@ -3,11 +3,12 @@ import 'package:flutter/widgets.dart';
 import '../tokens.dart';
 import 'press.dart';
 
-/// Something the harness said in a conversation, not the agent
-/// (design-system.md §5): a snapshot warning, a rollback, a compaction.
+/// Something in a conversation that is not the agent talking to the person
+/// (design-system.md §5): a harness notice, the agent's thinking, a run event,
+/// a finished job.
 ///
 /// It is one quiet line — its first, in `small` tinted `muted`, wrapping but
-/// never truncated — and whatever the harness went on to say is folded
+/// never truncated — and whatever it went on to say is folded
 /// behind *Details*, so six lines of paths never read as six lines of the
 /// agent's prose. No icon, fill or border: a notice is quieter than a row,
 /// not louder than one.

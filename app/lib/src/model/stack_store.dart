@@ -471,7 +471,9 @@ class StackStore extends ChangeNotifier {
   ///
   /// It is the projection the rows draw, never a re-derivation of the tree:
   /// a step row is its headline and narration, a tool row is what each call
-  /// said, a message row is its content.
+  /// said, a message row is its content. A row that names itself keeps that
+  /// name here too — a thinking row's `Thinking` leads its text — so every
+  /// line a row draws is found in the text a selection copies.
   String plainText(String nodeId) {
     final node = _nodes[nodeId];
     if (node == null) return '';
@@ -524,7 +526,13 @@ class StackStore extends ChangeNotifier {
       add(completion.error);
     }
     final thinking = node.thinking;
-    if (thinking != null) add(thinking.text);
+    if (thinking != null) {
+      // The row names itself on its first drawn line (design-system.md §5), so
+      // the copy keeps that lead: a projection without it would put every
+      // drawn line's offsets a word short of where they really are.
+      add('Thinking');
+      add(thinking.text);
+    }
     final runEvent = node.runEvent;
     if (runEvent != null) {
       add(runEvent.title);

@@ -7,9 +7,11 @@ import 'package:marshal_app/src/model/thread_view_state.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/thread/review_head.dart';
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
+import 'package:marshal_app/src/ui/thread/transcript.dart';
 
 import '../../support/kit.dart';
 import '../../support/pulls.dart';
+import '../thread/support.dart' show fixtureStore;
 
 /// The review head (F5 decision 13): a ready thread opens with its pull
 /// request's checks by name, its reviews, the report and the four actions; a
@@ -19,9 +21,11 @@ void main() {
   final now = DateTime.utc(2026, 11, 17, 12);
 
   /// A thread screen over an empty transcript: the head is what these tests
-  /// are about.
+  /// are about. A test that needs the conversation under the head seeds
+  /// [store].
   Widget thread({
     required PullView pull,
+    StackStore? store,
     InspectorState? inspector,
     VoidCallback? onSendBack,
     VoidCallback? onMerge,
@@ -29,14 +33,16 @@ void main() {
     PrActions? pullActions,
   }) => ThreadScreen(
     thread: threadRef(),
-    store: StackStore.seeded(
-      const contract.StackSnapshot(
-        sessionID: 's-1',
-        rev: 1,
-        roots: [],
-        nodes: [],
-      ),
-    ),
+    store:
+        store ??
+        StackStore.seeded(
+          const contract.StackSnapshot(
+            sessionID: 's-1',
+            rev: 1,
+            roots: [],
+            nodes: [],
+          ),
+        ),
     view: ThreadViewState(),
     inspector: inspector,
     now: now,
@@ -89,6 +95,24 @@ void main() {
     expect(find.text('Engineer’s report'), findsNothing);
   });
 
+  testWidgets('the review head is as wide as the reading column', (
+    tester,
+  ) async {
+    await pumpKit(
+      tester,
+      thread(pull: pullView(), store: fixtureStore()),
+      width: 1440,
+      height: 1000,
+    );
+
+    // A wide window: the head is the transcript's width, centred over it,
+    // rather than spanning the page edge to edge.
+    final head = tester.getRect(find.byType(ReviewHead));
+    final transcript = tester.getRect(find.byType(Transcript));
+    expect(head.width, Layout.reading);
+    expect(head.center.dx, moreOrLessEquals(transcript.center.dx));
+  });
+
   testWidgets('review changes expands the inspector on Changes', (
     tester,
   ) async {
@@ -130,12 +154,16 @@ void main() {
         ),
         pullActions: PrActions(fix: () => fixed++),
       ),
-      width: 900,
+      width: 1440,
       height: 1000,
     );
 
     expect(find.byType(PrCard), findsOneWidget);
     expect(find.byType(ReviewHead), findsNothing);
+    // The failing card is the head's second consumer of the reading-column
+    // cap: on a wide window it is as wide as the conversation under it, not
+    // the page.
+    expect(tester.getSize(find.byType(PrCard)).width, Layout.reading);
     expect(find.text('1 failing: unit'), findsOneWidget);
     expect(
       find.text('--- FAIL: TestScriptedRecorderQuietMode (4.21s)'),

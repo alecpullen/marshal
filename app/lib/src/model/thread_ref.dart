@@ -27,6 +27,7 @@ class ThreadRef {
     required this.lastActive,
     this.planning = false,
     this.closed = false,
+    this.messageCount,
   });
 
   /// The host whose fleet reported it.
@@ -43,6 +44,11 @@ class ThreadRef {
 
   /// A closed session: stored, with no runtime on its daemon.
   final bool closed;
+
+  /// How many messages a session's transcript holds, when the index said: a
+  /// project page's row counts them (P7 decision 8). Null for a thread that is
+  /// not a session, and for a session whose index entry carried no count.
+  final int? messageCount;
 
   /// The project root it works in.
   final String project;
@@ -67,6 +73,7 @@ class ThreadRef {
       other.id == id &&
       other.planning == planning &&
       other.closed == closed &&
+      other.messageCount == messageCount &&
       other.project == project &&
       other.title == title &&
       other.kind == kind &&
@@ -80,6 +87,7 @@ class ThreadRef {
     id,
     planning,
     closed,
+    messageCount,
     project,
     title,
     kind,
@@ -174,6 +182,7 @@ ThreadRef threadOfSession(String host, String root, SessionRow row) =>
         isUtc: true,
       ),
       closed: !row.open,
+      messageCount: row.messageCount,
     );
 
 /// What a session is called: its own title, or its short id when it has none.

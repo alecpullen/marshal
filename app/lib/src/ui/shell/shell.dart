@@ -47,10 +47,17 @@ import 'sidebar.dart';
 /// Builds the handoff review for a plan (F6 decision 8), bound to the frozen
 /// capture the review was opened from when the caller has one.
 ///
+/// It names the host, the project and the title rather than a thread, because
+/// a plan is handed off from two places: a planning thread, and the new-work
+/// dialog's "Work item", which a project page or the Overview can open
+/// without any thread of its own.
+///
 /// It is asynchronous because what the review inherits is the project's own
 /// settings, read when the person hands the plan off (F6 decision 12).
 typedef HandoffBuilder = Future<HandoffModel> Function(
-  model.ThreadRef thread,
+  String host,
+  String project,
+  String title,
   String plan,
   String spec, {
   String? plannerID,
@@ -431,9 +438,14 @@ class Studio extends StatefulWidget {
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
 
-  /// Builds the new-work dialog's model for a thread's project. Null leaves
-  /// `⌘N` without a dialog.
-  final NewWorkModel Function(model.ThreadRef thread)? newWorkFor;
+  /// Builds the new-work dialog's model for one host and project root. Null
+  /// leaves `⌘N` and every "New" without a dialog.
+  ///
+  /// It is keyed by the project, not by a thread: the Overview and a project
+  /// page start work too, and neither has a thread to start it from. Those
+  /// entry points are the design's (design.md, "Starting work", and the mock's
+  /// `Btn('New', primary: true, icon: plus)` in both page headers).
+  final NewWorkModel Function(String host, String project)? newWorkFor;
 
   /// Builds a planning thread's model, for a planner a person started (F6
   /// decision 8). Null leaves the planning place unbuilt rather than drawing
@@ -622,6 +634,14 @@ class _StudioState extends State<Studio> {
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
+        // The Overview's "New" (design.md, "Starting work"): it starts in the
+        // first project the fleet lists, and the dialog's Project chip offers
+        // the rest, so the default is a starting point rather than a limit.
+        onNewWork: switch (_firstProject()) {
+          (final host, final project) => () =>
+            unawaited(_openNewWork(navigation, host, project)),
+          null => null,
+        },
       );
     }
     if (place.kind == PlaceKind.inbox) {
@@ -697,6 +717,9 @@ class _StudioState extends State<Studio> {
         onOpenRun: (run) => _openRun(navigation, host, run),
         onOpenAutomations: () =>
             navigation.go(const Place(PlaceKind.automations)),
+        onNewWork: widget.newWorkFor == null
+            ? null
+            : () => unawaited(_openNewWork(navigation, host, root)),
       );
     }
     if (place.kind == PlaceKind.thread) {
@@ -758,18 +781,11 @@ class _StudioState extends State<Studio> {
           thread: thread,
           buildStore: build,
           composerFor: widget.composerFor,
-          newWorkFor: widget.newWorkFor,
-          onThreadStarted: (id) =>
-              navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
-          handoffFor: widget.handoffFor,
-          onOpenItem: (id) =>
-              navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
-          onPlannerStarted: (planner) {
-            _rememberPlanner(thread.host, thread.project, planner);
-            navigation.go(
-              Place(PlaceKind.thread, host: thread.host, id: planner.id),
-            );
-          },
+          onNewWork: widget.newWorkFor == null
+              ? null
+              : () => unawaited(
+                  _openNewWork(navigation, thread.host, thread.project),
+                ),
           asks: [
             for (final ask in widget.inbox.asks)
               if (ask.thread?.host == thread.host &&
@@ -867,6 +883,97 @@ class _StudioState extends State<Studio> {
     return hosts.isEmpty ? 'local' : hosts.first.name;
   }
 
+  /// A project to start new work in when the place names none: the first the
+  /// fleet lists, with the host that lists it.
+  ///
+  /// The Overview is every host's, so it has no project of its own. The
+  /// dialog's Project chip then offers the rest of that host's projects, which
+  /// makes this a starting point rather than a restriction. Null means no host
+  /// reports a project, and a spawn would have nowhere to run.
+  (String, String)? _firstProject() {
+    for (final host in widget.store.hosts) {
+      final projects = widget.store.projects(host: host.name);
+      if (projects.isEmpty) continue;
+      return (host.name, projects.first.root);
+    }
+    return null;
+  }
+
+  /// Opens the Studio's one new-work dialog for one project, and the place the
+  /// answer names (design.md, "Starting work").
+  ///
+  /// A thread's `⌘N`, the Overview's "New" and a project page's "New" all come
+  /// here: an agent opens its thread, "Plan first" opens the planning thread
+  /// ([_rememberPlanner] is what lets its place resolve), and "Work item" opens
+  /// the handoff review.
+  Future<void> _openNewWork(
+    PlaceNavigation navigation,
+    String host,
+    String project,
+  ) async {
+    final build = widget.newWorkFor;
+    if (build == null) return;
+    final model = build(host, project);
+    await Sheet.show<void>(
+      context,
+      newWorkDialog(
+        model,
+        onCancel: () => Navigator.maybePop(context),
+        onStarted: (agentId) {
+          Navigator.maybePop(context);
+          navigation.go(Place(PlaceKind.thread, host: host, id: agentId));
+        },
+        onPlanned: (planner) {
+          Navigator.maybePop(context);
+          _rememberPlanner(host, project, planner);
+          navigation.go(Place(PlaceKind.thread, host: host, id: planner.id));
+        },
+        onWorkItem: (prompt) {
+          Navigator.maybePop(context);
+          unawaited(_openNewWorkItem(navigation, host, project, prompt));
+        },
+      ),
+    );
+    model.dispose();
+  }
+
+  /// Opens the handoff review with [prompt] as the plan's starting text, and
+  /// the item approving it creates (F6 decision 9).
+  ///
+  /// The dialog's "Work item" is the same review a planning thread hands off
+  /// to, opened without a capture: the text the person typed is the plan, and
+  /// nothing has frozen it.
+  Future<void> _openNewWorkItem(
+    PlaceNavigation navigation,
+    String host,
+    String project,
+    String prompt,
+  ) async {
+    final build = widget.handoffFor;
+    if (build == null) return;
+    final model = await build(host, project, _titleOf(prompt), prompt, '');
+    // The project's settings are read before the sheet opens, so the place may
+    // be gone by now; the review is disposed rather than opened on a dead
+    // context.
+    if (!mounted) {
+      model.dispose();
+      return;
+    }
+    final item = await showHandoffSheet(context, model);
+    model.dispose();
+    if (item != null) {
+      navigation.go(Place(PlaceKind.thread, host: host, id: item));
+    }
+  }
+
+  /// The title a work item started from a prompt takes: its first line, so the
+  /// board reads as the person wrote it rather than as "Work item" repeated.
+  static String _titleOf(String prompt) {
+    final line = prompt.trim().split('\n').first.trim();
+    if (line.isEmpty) return 'Work item';
+    return line.length <= 72 ? line : '${line.substring(0, 71)}…';
+  }
+
   /// Opens a run a project page listed (F6 decision 12): remembers it as a
   /// plan-run thread and the digest the list carried, so its place draws the
   /// run's lanes rather than the agent's transcript.
@@ -897,11 +1004,7 @@ class _ThreadPlace extends StatefulWidget {
     required this.thread,
     required this.buildStore,
     this.composerFor,
-    this.newWorkFor,
-    this.onThreadStarted,
-    this.onPlannerStarted,
-    this.handoffFor,
-    this.onOpenItem,
+    this.onNewWork,
     this.asks = const [],
     this.onAnswer,
     this.now,
@@ -913,17 +1016,11 @@ class _ThreadPlace extends StatefulWidget {
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
 
-  /// Builds the new-work dialog's model for a thread's project. Null leaves
-  /// `⌘N` without a dialog.
-  final NewWorkModel Function(model.ThreadRef thread)? newWorkFor;
-  final void Function(String agentId)? onThreadStarted;
+  /// Opens the Studio's one new-work dialog for this thread's project: `⌘N`,
+  /// and the empty transcript's "Start an agent". Null leaves both without a
+  /// dialog.
+  final VoidCallback? onNewWork;
 
-  /// Opens the planning thread a "Plan first" started (F6 decision 8).
-  final void Function(StartedPlanner planner)? onPlannerStarted;
-
-  /// The handoff review's model, and where an approved item opens.
-  final HandoffBuilder? handoffFor;
-  final void Function(String itemID)? onOpenItem;
   final List<inbox.Ask> asks;
   final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
   final DateTime? now;
@@ -979,53 +1076,10 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
   }
 
   /// Opens the new-work dialog, and the thread it starts.
-  Future<void> _openNewWork(BuildContext context) async {
-    final build = widget.newWorkFor;
-    if (build == null) return;
-    final model = build(widget.thread);
-    await Sheet.show<void>(
-      context,
-      newWorkDialog(
-        model,
-        onCancel: () => Navigator.maybePop(context),
-        onStarted: (agentId) {
-          Navigator.maybePop(context);
-          widget.onThreadStarted?.call(agentId);
-        },
-        onPlanned: (planner) {
-          Navigator.maybePop(context);
-          widget.onPlannerStarted?.call(planner);
-        },
-        onWorkItem: (prompt) {
-          Navigator.maybePop(context);
-          unawaited(_openHandoff(context, prompt, ''));
-        },
-      ),
-    );
-    model.dispose();
-  }
-
-  /// Opens the handoff review for [plan], and the item it creates.
-  Future<void> _openHandoff(
-    BuildContext context,
-    String plan,
-    String spec,
-  ) async {
-    final build = widget.handoffFor;
-    if (build == null) return;
-    final model = await build(widget.thread, plan, spec);
-    // The project's settings are read before the sheet opens, so the place may
-    // be gone by now; the review is disposed rather than opened on a dead
-    // context.
-    if (!context.mounted) {
-      model.dispose();
-      return;
-    }
-    final item = await showHandoffSheet(context, model);
-    model.dispose();
-    if (item != null) widget.onOpenItem?.call(item);
-  }
-
+  ///
+  /// The Studio opens it (it owns the navigation the dialog's answers land
+  /// on), so this place only asks for it: `⌘N` and the empty transcript's one
+  /// action are the same call.
   @override
   Widget build(BuildContext context) {
     final composer = _composer;
@@ -1042,7 +1096,7 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
       onSendBack: _pull == null || widget.pulls == null
           ? null
           : () => _sendBack(context),
-      onNewWork: widget.newWorkFor == null ? null : () => _openNewWork(context),
+      onNewWork: widget.onNewWork,
       composer: composer == null
           ? null
           : ThreadComposer(model: composer, view: _view),
@@ -1338,7 +1392,9 @@ Future<HandoffModel> reviewForPlanner(
   model.ThreadRef thread,
   PlanningModel plan,
 ) => build(
-  thread,
+  thread.host,
+  thread.project,
+  thread.title,
   plan.latest?.plan ?? '',
   plan.latest?.spec ?? '',
   plannerID: plan.plannerID,
@@ -1429,6 +1485,7 @@ class _ProjectPlace extends StatefulWidget {
     this.onOpenAgent,
     this.onOpenRun,
     this.onOpenAutomations,
+    this.onNewWork,
   });
 
   final String root;
@@ -1442,6 +1499,9 @@ class _ProjectPlace extends StatefulWidget {
   final void Function(model.ThreadRef agent)? onOpenAgent;
   final void Function(ProjectRun run)? onOpenRun;
   final VoidCallback? onOpenAutomations;
+
+  /// Opens the Studio's new-work dialog for this project: the page's "New".
+  final VoidCallback? onNewWork;
 
   @override
   State<_ProjectPlace> createState() => _ProjectPlaceState();
@@ -1518,6 +1578,7 @@ class _ProjectPlaceState extends State<_ProjectPlace> {
       onOpenAgent: widget.onOpenAgent,
       onOpenRun: widget.onOpenRun,
       onOpenAutomations: widget.onOpenAutomations,
+      onNewWork: widget.onNewWork,
       observedChecks:
           factory?.observedChecks(
             projectRoot: widget.root,

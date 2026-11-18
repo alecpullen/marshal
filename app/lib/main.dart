@@ -138,20 +138,25 @@ Future<void> main() async {
             thread.id,
             view: view,
           ),
-          newWorkFor: (thread) => NewWorkModel.forProject(
+          // The Studio's one way into the new-work dialog (F3 task 7, F6
+          // decisions 8 and 9): a thread's `⌘N`, the Overview's "New" and a
+          // project page's "New" all name a host and a project, and the dialog
+          // starts an agent, a planner, or the handoff review a work item
+          // comes from.
+          newWorkFor: (host, project) => NewWorkModel.forProject(
             store
-                .projects(host: thread.host)
+                .projects(host: host)
                 .firstWhere(
-                  (project) => project.root == thread.project,
+                  (status) => status.root == project,
                   orElse: () => ProjectStatus(
-                    root: thread.project,
+                    root: project,
                     available: true,
                     trust: TrustState.trustNA,
                     isolation: 'available',
                   ),
                 ),
-            hosts.hosts.firstWhere((host) => host.name == thread.host).client,
-            host: thread.host,
+            hosts.hosts.firstWhere((owner) => owner.name == host).client,
+            host: host,
           ),
           // A planning thread reads its planner's journal on the client that
           // reaches its host, and captures the plan for review (F6 decision 8).
@@ -186,47 +191,48 @@ Future<void> main() async {
           // posted through the snapshot's handoff route, so the bridge's frozen
           // bytes and verified hashes are what the item is built from. The
           // new-work dialog passes no capture and keeps the create route.
-          handoffFor: (thread, plan, spec, {plannerID, snapshot}) async {
-            final client = hosts.hosts
-                .firstWhere((owner) => owner.name == thread.host)
-                .client;
-            var defaults = ProjectDefaults(hostID: thread.host);
-            try {
-              final settings = await client.projectSettings(thread.project);
-              defaults = ProjectDefaults.fromSettings(
-                settings.settings,
-                hostID: thread.host,
-              );
-            } catch (_) {
-              // The sheet opens on the host alone, stating what the project
-              // does not; a settings read must not leave the plan unhanded.
-            }
-            // The version this review is bound to: the combined one the
-            // bridge composes, so a settings change made while the review
-            // is open is noticed at approval rather than frozen unread. A
-            // read that fails leaves the review unbound, never blocked.
-            String? version;
-            try {
-              version = await client.factorySettingsVersion(thread.project);
-            } catch (_) {
-              version = null;
-            }
-            return HandoffModel(
-              defaults: defaults,
-              projectRoot: thread.project,
-              title: thread.title,
-              plan: plan,
-              spec: spec,
-              settingsVersion: version,
-              readSettingsVersion: (root) =>
-                  client.factorySettingsVersion(root),
-              create: (draft) => factory.create(thread.host, draft),
-              reviewedSnapshot: snapshot,
-              plannerID: plannerID,
-              handoffSnapshot: (planner, snapshotID, request) =>
-                  factory.handoff(thread.host, planner, snapshotID, request),
-            );
-          },
+          handoffFor:
+              (host, project, title, plan, spec, {plannerID, snapshot}) async {
+                final client = hosts.hosts
+                    .firstWhere((owner) => owner.name == host)
+                    .client;
+                var defaults = ProjectDefaults(hostID: host);
+                try {
+                  final settings = await client.projectSettings(project);
+                  defaults = ProjectDefaults.fromSettings(
+                    settings.settings,
+                    hostID: host,
+                  );
+                } catch (_) {
+                  // The sheet opens on the host alone, stating what the project
+                  // does not; a settings read must not leave the plan unhanded.
+                }
+                // The version this review is bound to: the combined one the
+                // bridge composes, so a settings change made while the review
+                // is open is noticed at approval rather than frozen unread. A
+                // read that fails leaves the review unbound, never blocked.
+                String? version;
+                try {
+                  version = await client.factorySettingsVersion(project);
+                } catch (_) {
+                  version = null;
+                }
+                return HandoffModel(
+                  defaults: defaults,
+                  projectRoot: project,
+                  title: title,
+                  plan: plan,
+                  spec: spec,
+                  settingsVersion: version,
+                  readSettingsVersion: (root) =>
+                      client.factorySettingsVersion(root),
+                  create: (draft) => factory.create(host, draft),
+                  reviewedSnapshot: snapshot,
+                  plannerID: plannerID,
+                  handoffSnapshot: (planner, snapshotID, request) =>
+                      factory.handoff(host, planner, snapshotID, request),
+                );
+              },
           // Answers a plan run's question, for a run opened from a project
           // page's list (F6 decision 12).
           answerRunFor: (host, agentID, answer) => hosts.hosts

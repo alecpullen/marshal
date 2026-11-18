@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'src/client/bridge_client.dart';
 import 'src/client/contract.g.dart';
+import 'src/client/fleet_profiles.dart';
 import 'src/client/host.dart';
 import 'src/client/host_discovery_stub.dart'
     if (dart.library.io) 'src/client/host_discovery_io.dart';
@@ -344,8 +345,12 @@ class _Sections {
       dispose: (models) => models.dispose(),
     );
     _settings = PerHost<_Settings>(
-      (host) =>
-          _Settings(_clientFor(host)!, store: store, preferences: preferences),
+      (host) => _Settings(
+        _clientFor(host)!,
+        store: store,
+        preferences: preferences,
+        registry: hosts,
+      ),
       dispose: (models) => models.dispose(),
     );
     // A host whose profile was removed is forgotten from all three (spec D9).
@@ -583,7 +588,14 @@ class _Settings {
     BridgeClient client, {
     required this.store,
     required this.preferences,
-  }) : hosts = HostsModel(() => store.hosts),
+    required HostRegistry registry,
+  }) : hosts = HostsModel(
+         () => store.hosts,
+         profiles: fleetProfiles(),
+         rediscover: registry.discover,
+         forget: registry.forget,
+         retry: registry.retry,
+       ),
        environments = EnvironmentsModel(client),
        connections = ConnectionsModel(client),
        models = ModelsModel(client),

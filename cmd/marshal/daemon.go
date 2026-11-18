@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/charmbracelet/x/term"
 
 	"marshal/internal/app"
 	"marshal/internal/app/config"
@@ -74,7 +77,7 @@ var daemonStartTimeout = 5 * time.Second
 // stderr) so main.go's dispatch is uniform and tests can substitute streams.
 func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("marshal daemon: a subcommand is required (install|start|stop|status|pin|unpin|spawn|uninstall)")
+		return errors.New("marshal daemon: a subcommand is required (install|start|stop|status|join-token|token|pin|unpin|spawn|uninstall)")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -84,6 +87,10 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return runDaemonService(ctx, sub, rest, stdout, stderr)
 	case "status":
 		return runDaemonStatus(ctx, rest, stdout, stderr)
+	case "join-token":
+		return runDaemonJoinToken(ctx, rest, stdin, stdout, stderr)
+	case "token":
+		return runDaemonToken(rest, stdout)
 	case "pin":
 		return runDaemonPin(ctx, rest, true, stdout, stderr)
 	case "unpin":
@@ -93,7 +100,7 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	case "refresh":
 		return runDaemonRefresh(ctx, rest, stderr)
 	default:
-		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|pin|unpin|spawn|uninstall)", sub)
+		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|join-token|token|pin|unpin|spawn|uninstall)", sub)
 	}
 }
 
@@ -262,6 +269,12 @@ func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 	if err != nil {
 		return daemon.UnitSpec{}, err
 	}
+	// The join is read from the same user config, for the same reason: a
+	// project must not point this machine's daemon at a relay.
+	join, err := daemonJoin(cfg.Daemon)
+	if err != nil {
+		return daemon.UnitSpec{}, err
+	}
 	return daemon.UnitSpec{
 		Webbridge:          webbridge,
 		Marshal:            marshal,
@@ -269,6 +282,29 @@ func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 		Env:                daemonEnv(),
 		IdleSessionTimeout: cfg.Daemon.IdleSessionTimeout,
 		StudioAddr:         studioAddr,
+		Join:               join,
+	}, nil
+}
+
+// daemonJoin translates daemon.join_url, join_name and join_ca_file into the
+// relay the unit joins, or nil when the config names none (P8 D12).
+//
+// A join without a name is refused here rather than at the relay: the name is
+// what the fleet's reader uses to tell this daemon from the relay's own
+// agents, so an unnamed join would join and be unreadable.
+func daemonJoin(cfg config.DaemonConfig) (*daemon.Join, error) {
+	url := strings.TrimSpace(cfg.JoinURL)
+	if url == "" {
+		return nil, nil
+	}
+	name := strings.TrimSpace(cfg.JoinName)
+	if name == "" {
+		return nil, fmt.Errorf("daemon.join_url is set but daemon.join_name is empty: name the daemon that joins %s", url)
+	}
+	return &daemon.Join{
+		URL:    url,
+		Name:   name,
+		CAFile: strings.TrimSpace(cfg.JoinCAFile),
 	}, nil
 }
 
@@ -444,6 +480,125 @@ func daemonAnswers(ctx context.Context, socket string) bool {
 }
 
 // ---------------------------------------------------------------------------
+// join-token, token
+// ---------------------------------------------------------------------------
+
+// runDaemonJoinToken implements `marshal daemon join-token`: it reads the
+// secret this daemon joins its relay with and stores it 0600 under the daemon
+// directory, where the unit's --join-token-file points (P8 D12).
+//
+// The secret lives in a file of its own rather than in the config: the config
+// is a document a user shares and edits, and this is a credential the daemon
+// reads at start, exactly where the Studio's token lives.
+func runDaemonJoinToken(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if len(args) != 0 {
+		return fmt.Errorf("marshal daemon join-token: unexpected argument %q", args[0])
+	}
+	home, err := daemonHome()
+	if err != nil {
+		return err
+	}
+	secret, err := readDaemonJoinSecret(stdin, stderr)
+	if err != nil {
+		return err
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	paths := daemon.PathsFor(home)
+	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
+		return fmt.Errorf("marshal daemon join-token: create %s: %w", paths.Dir, err)
+	}
+	if err := daemonWritePrivate(paths.JoinToken, secret); err != nil {
+		return fmt.Errorf("marshal daemon join-token: %w", err)
+	}
+	fmt.Fprintln(stdout, "Stored the join secret. Run marshal daemon install to apply it.")
+	return nil
+}
+
+// runDaemonToken implements `marshal daemon token`: it writes the credential
+// the daemon's listener answers on — the Studio's token when one is served,
+// the join's secret otherwise — and a newline to stdout, for a program to
+// read. It refuses a terminal, as `marshal fleet token` does, so a credential
+// never reaches scrollback.
+func runDaemonToken(args []string, stdout io.Writer) error {
+	if len(args) != 0 {
+		return fmt.Errorf("marshal daemon token: unexpected argument %q", args[0])
+	}
+	if fleetStdoutIsTerminal(stdout) {
+		return errors.New("marshal daemon token: a token is not printed to a terminal; pipe it, as in marshal daemon token | pbcopy")
+	}
+	home, err := daemonHome()
+	if err != nil {
+		return err
+	}
+	path := daemon.PathsFor(home).Token
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return errors.New("marshal daemon token: the daemon has no token yet: set daemon.studio_addr or daemon.join_url and run marshal daemon install")
+	}
+	if err != nil {
+		return fmt.Errorf("marshal daemon token: read %s: %w", path, err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return fmt.Errorf("marshal daemon token: %s is empty: run marshal daemon install", path)
+	}
+	if _, err := fmt.Fprintln(stdout, token); err != nil {
+		return fmt.Errorf("marshal daemon token: %w", err)
+	}
+	return nil
+}
+
+// readDaemonJoinSecret reads the join secret the way readFleetToken reads a
+// fleet token: without echo and behind a prompt on a terminal, else one line
+// from stdin, so a password manager can pipe it in.
+func readDaemonJoinSecret(stdin io.Reader, stderr io.Writer) (string, error) {
+	var raw []byte
+	if f, ok := stdin.(*os.File); ok && term.IsTerminal(f.Fd()) {
+		fmt.Fprint(stderr, "Join secret: ")
+		b, err := term.ReadPassword(f.Fd())
+		fmt.Fprintln(stderr)
+		if err != nil {
+			return "", fmt.Errorf("marshal daemon join-token: read the secret: %w", err)
+		}
+		raw = b
+	} else {
+		line, err := bufio.NewReader(stdin).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", fmt.Errorf("marshal daemon join-token: read the secret: %w", err)
+		}
+		raw = []byte(line)
+	}
+	secret := strings.TrimSpace(string(raw))
+	if secret == "" {
+		return "", errors.New("marshal daemon join-token: the secret is empty")
+	}
+	return secret, nil
+}
+
+// daemonWritePrivate writes body to path with a newline, at 0600, replacing
+// any file there — including one whose mode was loosened since — so a secret
+// is never left readable by anyone but its owner.
+func daemonWritePrivate(path, body string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if _, err := f.WriteString(body + "\n"); err != nil {
+		f.Close()
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // status
 // ---------------------------------------------------------------------------
 
@@ -452,10 +607,11 @@ func daemonAnswers(ctx context.Context, socket string) bool {
 //
 // Text mode prints the service state, the linger line where the platform has
 // one, the socket and whether it answered, and — for an answering daemon —
-// its version against this marshal's, its start time, its refresh helper, its
-// projects and each project child. It exits non-zero when the socket does not
-// answer, but only after printing what it found: a service that is loaded and
-// silent is exactly the case the user is running `status` for.
+// its version against this marshal's, its start time, its refresh helper, the
+// relay it joins when it joins one, its projects and each project child. It
+// exits non-zero when the socket does not answer, but only after printing what
+// it found: a service that is loaded and silent is exactly the case the user
+// is running `status` for.
 //
 // With --json it exits 0 whenever it wrote the document: the answer to
 // "is the daemon answering" is in the document, so a machine consumer must
@@ -519,6 +675,9 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 	marshalVersion := daemonVersion()
 	fmt.Fprintln(stdout, daemonInfoLine(info, marshalVersion))
 	fmt.Fprintln(stdout, daemonRefreshLine(info))
+	if line, ok := daemonJoinLine(info); ok {
+		fmt.Fprintln(stdout, line)
+	}
 	for _, child := range info.Children {
 		fmt.Fprintln(stdout, daemonChildLine(child, marshalVersion))
 		if warning := strings.TrimSpace(child.EnvWarning); warning != "" {
@@ -644,6 +803,26 @@ func daemonRefreshLine(info daemon.Info) string {
 		line += fmt.Sprintf(", restarted %d %s", info.Refresh.Restarts, restartCount(info.Refresh.Restarts))
 	}
 	return line
+}
+
+// daemonJoinLine renders the relay the daemon joins (P8 D12): where it joined
+// and under what name, and — when it is not connected — its last error, which
+// is why the reader consulted this line.
+//
+// A daemon that joins no relay reports no line at all: there is nothing to say
+// about a join that does not exist, and the absence is the answer.
+func daemonJoinLine(info daemon.Info) (string, bool) {
+	if info.Join == nil {
+		return "", false
+	}
+	if info.Join.Connected {
+		return fmt.Sprintf("relay: joined %s as %s", info.Join.URL, info.Join.Name), true
+	}
+	line := fmt.Sprintf("relay: %s as %s, not connected", info.Join.URL, info.Join.Name)
+	if lastErr := strings.TrimSpace(info.Join.LastError); lastErr != "" {
+		line += " (" + lastErr + ")"
+	}
+	return line, true
 }
 
 // restartCount is the noun for n restarts.

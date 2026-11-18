@@ -87,6 +87,7 @@ class Shell extends StatefulWidget {
     this.unsaved,
     this.notice,
     this.onConnectRepo,
+    this.onNew,
   });
 
   final NavModel nav;
@@ -127,6 +128,11 @@ class Shell extends StatefulWidget {
   /// the control out; the sheet is the Studio's, so the shell only offers the
   /// way into it.
   final VoidCallback? onConnectRepo;
+
+  /// The place-level New (F9 B3): the narrow app bar's plus and the sidebar's
+  /// plus both call it, so they start work the way the page headers do. Null
+  /// leaves both out — there is no project to start work in.
+  final VoidCallback? onNew;
 
   @override
   State<Shell> createState() => _ShellState();
@@ -174,6 +180,7 @@ class _ShellState extends State<Shell> {
     }),
     onSelect: (place) => _leave(() => widget.onSelect(place)),
     onConnectRepo: widget.onConnectRepo,
+    onNew: widget.onNew,
     now: widget.now,
     inPanel: inPanel,
   );
@@ -230,6 +237,10 @@ class _ShellState extends State<Shell> {
                     style: e.bodyStrong,
                   ),
                 ),
+                if (widget.onNew != null) ...[
+                  IconBtn(Glyphs.plus, tooltip: 'New', onTap: widget.onNew),
+                  const SizedBox(width: Space.s6),
+                ],
                 IconBtn(
                   Glyphs.tray,
                   tooltip: 'Inbox',
@@ -618,6 +629,10 @@ class _StudioState extends State<Studio> {
           onConnectRepo: widget.connectRepoFor == null
               ? null
               : () => unawaited(_openConnectRepo(context)),
+          // The place-level New (F9 B3): the narrow app bar and the sidebar
+          // start work the way the page headers do, through the same
+          // resolution `⌘N` uses.
+          onNew: _firstProject() == null ? null : _newWorkFromKeys,
         );
         // The shell's keys (f9-parity decision 6): one Shortcuts above the
         // place, so `⌘N` and `⌘1/⌘2/⌘3` work wherever a person is rather than

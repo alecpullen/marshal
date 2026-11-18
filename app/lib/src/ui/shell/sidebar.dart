@@ -22,6 +22,7 @@ class Sidebar extends StatefulWidget {
     this.host,
     this.onHost,
     this.onConnectRepo,
+    this.onNew,
     this.now,
     this.inPanel = false,
   });
@@ -40,6 +41,10 @@ class Sidebar extends StatefulWidget {
   /// Connects a repository (F9 B1): the plus beside *Projects*. Null leaves
   /// the control out, so a host that wires no bridge offers no sheet.
   final VoidCallback? onConnectRepo;
+
+  /// The place-level New (F9 B3): the plus beside the search field. Null leaves
+  /// it out — there is no project to start work in.
+  final VoidCallback? onNew;
 
   /// What a host's age is measured against.
   final DateTime? now;
@@ -86,14 +91,27 @@ class _SidebarState extends State<Sidebar> {
               ),
               const SizedBox(height: Space.s8),
               // Search arrives in a later phase; the field is drawn where it
-              // will live and says so rather than pretending to search.
-              const Tip(
-                message: 'Search arrives in a later phase',
-                child: Field(
-                  label: 'Search',
-                  hint: 'Search or jump to',
-                  enabled: false,
-                ),
+              // will live and says so rather than pretending to search. The
+              // plus beside it starts work, the way a page header's New does
+              // (F9 B3).
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  const Expanded(
+                    child: Tip(
+                      message: 'Search arrives in a later phase',
+                      child: Field(
+                        label: 'Search',
+                        hint: 'Search or jump to',
+                        enabled: false,
+                      ),
+                    ),
+                  ),
+                  if (widget.onNew != null) ...[
+                    const SizedBox(width: Space.s8),
+                    IconBtn(Glyphs.plus, tooltip: 'New', onTap: widget.onNew),
+                  ],
+                ],
               ),
             ],
           ),

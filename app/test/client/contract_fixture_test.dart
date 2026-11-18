@@ -32,6 +32,7 @@ const _fixtures = [
   'projectsettings',
   'projects',
   'recipes',
+  'relay',
   'runs',
   'schedules',
   'secrets',
@@ -396,6 +397,9 @@ final _codecs = <String, _Codec>{
       StatusLinkCreate.fromJson(_object(json)).toJson(),
   'StatusLinkCreated': (json) =>
       StatusLinkCreated.fromJson(_object(json)).toJson(),
+  // relay.json — a relay's hosts and the join a bridge makes into one.
+  'RelayHosts': (json) => RelayHosts.fromJson(_object(json)).toJson(),
+  'RelayHost': (json) => RelayHost.fromJson(_object(json)).toJson(),
 };
 
 void main() {

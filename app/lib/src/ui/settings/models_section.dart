@@ -26,6 +26,12 @@ class ModelsSection extends StatelessWidget {
       state: state,
       emptyMessage: 'No provider is configured yet.',
       header: const [_GlobalConfigNote()],
+      group: (row) => switch (row.kind) {
+        ModelRowKind.role => 'Roles',
+        ModelRowKind.preset => 'Presets',
+        ModelRowKind.key => 'Keys',
+        ModelRowKind.capAmount || ModelRowKind.capBehaviour => 'Spending',
+      },
       row: (row, onTap) => RowItem(
         name: row.name,
         description: row.description,

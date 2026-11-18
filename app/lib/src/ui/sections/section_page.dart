@@ -17,6 +17,7 @@ class SectionPage<T> extends StatelessWidget {
     required this.model,
     required this.row,
     required this.detail,
+    this.group,
     this.subtitle,
     this.actions = const [],
     this.tabs,
@@ -52,6 +53,13 @@ class SectionPage<T> extends StatelessWidget {
   /// The detail's body: the edit itself. Save and Cancel are added around
   /// it, and the bridge's refusal is drawn above it.
   final Widget Function(BuildContext context, T item) detail;
+
+  /// The label a run of consecutive rows sits under; unset draws one list.
+  ///
+  /// The model lists its rows in the order they belong in, so grouping here
+  /// only finds the runs of neighbours that answer the same label: it never
+  /// reorders anything.
+  final String Function(T item)? group;
 
   /// The one primary action a section may add to its page header.
   final List<Widget> actions;
@@ -206,9 +214,40 @@ class SectionPage<T> extends StatelessWidget {
     return StateAction('Read the section again', onTap: model.load);
   }
 
-  Widget _rows(BuildContext context) => Rows([
-    for (final item in model.items) row(item, () => _open(context, item)),
-  ]);
+  /// The rows, or — when the section names them — each run of neighbours
+  /// under its group's [Label]. A stale list draws the same last-known rows
+  /// under the same labels.
+  Widget _rows(BuildContext context) {
+    final group = this.group;
+    if (group == null) {
+      return Rows([
+        for (final item in model.items) row(item, () => _open(context, item)),
+      ]);
+    }
+    final runs = <(String, List<T>)>[];
+    for (final item in model.items) {
+      final name = group(item);
+      if (runs.isNotEmpty && runs.last.$1 == name) {
+        runs.last.$2.add(item);
+      } else {
+        runs.add((name, [item]));
+      }
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var i = 0; i < runs.length; i++) ...[
+          if (i > 0) const SizedBox(height: Space.s20),
+          Label(runs[i].$1),
+          const SizedBox(height: Space.s8),
+          Rows([
+            for (final item in runs[i].$2)
+              row(item, () => _open(context, item)),
+          ]),
+        ],
+      ],
+    );
+  }
 
   /// Opens the detail the way every section does (F7 decision 2).
   void _open(BuildContext context, T item) {

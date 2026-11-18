@@ -47,6 +47,7 @@ Future<void> _pump(
   double width = 1000,
   String? createLabel,
   String Function()? blank,
+  String Function(String item)? group,
 }) async {
   tester.view.physicalSize = Size(width, 900);
   tester.view.devicePixelRatio = 1;
@@ -59,6 +60,7 @@ Future<void> _pump(
         model: model,
         createLabel: createLabel,
         blank: blank,
+        group: group,
         row: (item, onTap) => RowItem(
           name: item,
           description: 'The nightly gate, on a cron',
@@ -303,6 +305,53 @@ void main() {
     await tester.tap(find.text('Read the section again'));
     await tester.pumpAndSettle();
     expect(model.reads, reads + 1);
+  });
+
+  testWidgets('grouped rows sit under their labels', (tester) async {
+    final model = _Section(['nightly', 'weekly', 'hourly']);
+    await model.load();
+    await _pump(
+      tester,
+      model,
+      group: (item) => item == 'hourly' ? 'Later' : 'Earlier',
+    );
+
+    // One label per run of neighbours, and each run in one list of its own.
+    expect(find.text('EARLIER'), findsOneWidget);
+    expect(find.text('LATER'), findsOneWidget);
+    expect(find.byType(Rows), findsNWidgets(2));
+
+    final firstRun = find.byType(Rows).first;
+    final secondRun = find.byType(Rows).last;
+    expect(
+      find.descendant(of: firstRun, matching: find.text('nightly')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: secondRun, matching: find.text('hourly')),
+      findsOneWidget,
+    );
+    // A run's rows are its own: the other group's row is not in it.
+    expect(
+      find.descendant(of: firstRun, matching: find.text('hourly')),
+      findsNothing,
+    );
+
+    // The label sits above its rows, s8 between, and the next group's label
+    // clears the last group's rows by s20.
+    final labels = find.byType(Label);
+    expect(
+      tester.getTopLeft(firstRun).dy,
+      tester.getBottomLeft(labels.first).dy + Space.s8,
+    );
+    expect(
+      tester.getTopLeft(labels.last).dy,
+      tester.getBottomLeft(firstRun).dy + Space.s20,
+    );
+    expect(
+      tester.getTopLeft(find.text('hourly')).dy,
+      greaterThan(tester.getTopLeft(labels.last).dy),
+    );
   });
 }
 

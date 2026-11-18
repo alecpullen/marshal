@@ -45,6 +45,14 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 		pid, restarts := s.refresh.State()
 		out.Refresh = &DaemonRefresh{PID: pid, Restarts: restarts}
 	}
+	// The join is read per request, as the children are: a bridge that is joined
+	// to a relay reports where, and one that is not reports nothing at all
+	// (D17).
+	out.Join = nil
+	if j := s.joiner(); j != nil {
+		join := j.Report()
+		out.Join = &join
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

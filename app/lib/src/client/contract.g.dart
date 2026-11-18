@@ -15,10 +15,13 @@ T? _objectOrNull<T>(
   T Function(Map<String, dynamic> json) fromJson,
 ) => json == null ? null : fromJson(json as Map<String, dynamic>);
 
-/// The array [json] names, each element decoded by [convert].
-List<T> _list<T>(Object? json, T Function(Object? value) convert) => [
-  for (final value in json as List<dynamic>) convert(value),
-];
+/// The array [json] names, each element decoded by [convert], or an empty
+/// list when it is absent. Go writes a nil slice as `null`, so a required
+/// array can arrive null and means empty.
+List<T> _list<T>(Object? json, T Function(Object? value) convert) =>
+    json == null
+    ? <T>[]
+    : [for (final value in json as List<dynamic>) convert(value)];
 
 /// The array [json] names, or null when it is absent, each element
 /// decoded by [convert].
@@ -27,11 +30,16 @@ List<T>? _listOrNull<T>(Object? json, T Function(Object? value) convert) =>
     ? null
     : [for (final value in json as List<dynamic>) convert(value)];
 
-/// The object [json] names, each value decoded by [convert].
-Map<String, T> _map<T>(Object? json, T Function(Object? value) convert) => {
-  for (final entry in (json as Map<String, dynamic>).entries)
-    entry.key: convert(entry.value),
-};
+/// The object [json] names, each value decoded by [convert], or an empty
+/// map when it is absent. Go writes a nil map as `null`, so a required
+/// object can arrive null and means empty.
+Map<String, T> _map<T>(Object? json, T Function(Object? value) convert) =>
+    json == null
+    ? <String, T>{}
+    : {
+        for (final entry in (json as Map<String, dynamic>).entries)
+          entry.key: convert(entry.value),
+      };
 
 /// The object [json] names, or null when it is absent, each value
 /// decoded by [convert].
@@ -138,6 +146,7 @@ class AgentStatus {
     required this.id,
     required this.project,
     this.name,
+    this.title,
     this.ownerID,
     this.origin,
     this.clientID,
@@ -167,6 +176,11 @@ class AgentStatus {
   final String id;
   final String project;
   final String? name;
+  /// Title is what the agent was asked, in one line: the first non-blank
+  /// line of its spawn prompt, runs of whitespace collapsed to one space,
+  /// at most 80 runes, ending in "…" when cut. Empty when it was spawned
+  /// with no prompt.
+  final String? title;
   /// OwnerID, Origin and ClientID mirror Agent.OwnerID, Agent.Origin and
   /// Agent.ClientID in workspace.go.
   final String? ownerID;
@@ -233,6 +247,7 @@ class AgentStatus {
       id: json['id'] as String,
       project: json['project'] as String,
       name: json['name'] as String?,
+      title: json['title'] as String?,
       ownerID: json['ownerId'] as String?,
       origin: json['origin'] as String?,
       clientID: json['clientId'] as String?,
@@ -278,6 +293,9 @@ class AgentStatus {
     json['project'] = project;
     if (name != null) {
       json['name'] = name;
+    }
+    if (title != null) {
+      json['title'] = title;
     }
     if (ownerID != null) {
       json['ownerId'] = ownerID;
@@ -354,6 +372,7 @@ class PendingRequest {
     required this.kind,
     required this.id,
     this.params,
+    this.at,
     this.rawEnums = const {},
   });
 
@@ -363,6 +382,9 @@ class PendingRequest {
   final String id;
   /// Params is the original request payload, verbatim.
   final Object? params;
+  /// At is when the bridge first saw the request parked, in Unix
+  /// milliseconds. Zero (absent) when it did not see it arrive.
+  final int? at;
 
   /// The wire text of each enum field this build has no value
   /// for, keyed by JSON name, so a round trip keeps it.
@@ -379,6 +401,7 @@ class PendingRequest {
       kind: kind,
       id: json['id'] as String,
       params: json['params'],
+      at: (json['at'] as num?)?.toInt(),
       rawEnums: rawEnums,
     );
   }
@@ -389,6 +412,9 @@ class PendingRequest {
     json['id'] = id;
     if (params != null) {
       json['params'] = params;
+    }
+    if (at != null) {
+      json['at'] = at;
     }
     return json;
   }

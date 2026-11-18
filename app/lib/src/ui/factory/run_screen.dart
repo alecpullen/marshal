@@ -319,8 +319,8 @@ class _RunScreenState extends State<RunScreen> {
   Widget _roles(RunModel model) {
     if (!model.canReadRoster) return const SizedBox.shrink();
     final e = Ember.of(context);
-    final failure = model.rosterFailure;
-    if (failure != null) {
+    final rosterFailure = model.rosterFailure;
+    if (rosterFailure != null) {
       return Padding(
         padding: const EdgeInsets.fromLTRB(
           Space.s16,
@@ -329,7 +329,7 @@ class _RunScreenState extends State<RunScreen> {
           Space.s12,
         ),
         child: Text(
-          'The roles could not be read: $failure',
+          'The roles could not be read: $rosterFailure',
           style: e.small.tint(e.err),
         ),
       );

@@ -30,7 +30,9 @@ class NavPlace {
   final PlaceKind kind;
   final String label;
 
-  /// What the row shows beside its label: the Inbox's queue length.
+  /// What the row shows beside its label: the Inbox's queue length. Null when
+  /// there is nothing to say — an empty inbox, no pull request waiting — so
+  /// the row draws no count at all.
   final int? count;
 
   /// This place is where the person is.
@@ -82,7 +84,8 @@ class NavProject {
   /// How many earlier threads it has.
   int get earlier => earlierThreads.length;
 
-  /// A thread of this project, or the project itself, is open.
+  /// The project's own page is open. A project whose thread is open is not
+  /// filled: the thread's row is where the person is, and one place is lit.
   final bool active;
 
   @override
@@ -140,13 +143,13 @@ NavModel buildNavModel(
     NavPlace(
       kind: PlaceKind.inbox,
       label: 'Inbox',
-      count: inboxCount,
+      count: _countOrNull(inboxCount),
       active: place.kind == PlaceKind.inbox,
     ),
     NavPlace(
       kind: PlaceKind.pulls,
       label: _label(PlaceKind.pulls),
-      count: pullsReady,
+      count: _countOrNull(pullsReady),
       active: place.kind == PlaceKind.pulls,
     ),
     for (final kind in const [
@@ -208,6 +211,11 @@ NavModel buildNavModel(
   return NavModel(fixed: List.unmodifiable(fixed), projects: projects);
 }
 
+/// A count as a row draws it: zero is nothing to wait on, so it is no count
+/// at all rather than a `0` beside the label (design-system.md §2: faint never
+/// carries information).
+int? _countOrNull(int count) => count == 0 ? null : count;
+
 /// What each fixed place is called.
 String _label(PlaceKind kind) => switch (kind) {
   PlaceKind.overview => 'Overview',
@@ -238,10 +246,7 @@ class _ProjectBuilder {
       for (final thread in _threads)
         if (isEarlier(thread, now)) thread,
     ]..sort(_mostRecentFirst);
-    final active =
-        (place.kind == PlaceKind.project && place.id == root) ||
-        (place.kind == PlaceKind.thread &&
-            current.any((thread) => _isOpen(place, thread)));
+    final active = place.kind == PlaceKind.project && place.id == root;
     return NavProject(
       id: root,
       name: projectName(root),
@@ -257,9 +262,6 @@ class _ProjectBuilder {
     final byTime = b.lastActive.compareTo(a.lastActive);
     return byTime != 0 ? byTime : a.id.compareTo(b.id);
   }
-
-  static bool _isOpen(Place place, ThreadRef thread) =>
-      place.id == thread.id && place.host == thread.host;
 }
 
 /// What a project's row calls it: its directory's name.

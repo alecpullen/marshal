@@ -10,7 +10,9 @@ import 'package:re_highlight/languages/yaml.dart';
 import 'package:re_highlight/re_highlight.dart';
 
 import '../../model/files_model.dart';
+import '../../model/fleet_store.dart' show describeFailure;
 import '../kit/kit.dart';
+import 'inspector.dart';
 
 /// The Files tab (f4-inspector.md decision 8): a lazily loaded tree of the
 /// agent's workspace, each file this thread changed marked, and a read-only
@@ -60,7 +62,7 @@ class _FilesTabState extends State<FilesTab> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _failure = '$error';
+        _failure = describeFailure(error);
         _loading = false;
       });
     }
@@ -77,8 +79,9 @@ class _FilesTabState extends State<FilesTab> {
     );
   }
 
-  /// The five states every screen that shows data has (§7).
-  Widget _stateOnly(StateKind state) => switch (state) {
+  /// The five states every screen that shows data has (§7), inset as the
+  /// ready content is.
+  Widget _stateOnly(StateKind state) => TabMessage(switch (state) {
     StateKind.loading => const StateMessage.loading(lines: 6),
     StateKind.empty => StateMessage.empty(
       message: 'The workspace has no files to show.',
@@ -111,7 +114,7 @@ class _FilesTabState extends State<FilesTab> {
       name: 'Editing a file',
       note: 'This viewer is read-only',
     ),
-  };
+  });
 
   Widget _body(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -127,12 +130,14 @@ class _FilesTabState extends State<FilesTab> {
     final rows = _rows();
     if (rows.isEmpty) {
       return model.errorFor('') == null
-          ? const StateMessage.loading(lines: 4)
-          : StateMessage.error(
-              message: model.errorFor('')!,
-              retry: StateAction(
-                'Try again',
-                onTap: () => unawaited(model.expand('')),
+          ? const TabMessage(StateMessage.loading(lines: 4))
+          : TabMessage(
+              StateMessage.error(
+                message: model.errorFor('')!,
+                retry: StateAction(
+                  'Try again',
+                  onTap: () => unawaited(model.expand('')),
+                ),
               ),
             );
     }

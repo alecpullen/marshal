@@ -325,7 +325,7 @@ void main() {
       final factorySource = overview.sources.singleWhere(
         (source) => source.kind == SourceKind.factory,
       );
-      expect(factorySource.failure, 'offline');
+      expect(factorySource.failureWords, 'offline');
       expect(factorySource.healthy, isFalse);
       // The factory never answered at all, so it holds no snapshot to be
       // stale: it is unavailable, and says so.

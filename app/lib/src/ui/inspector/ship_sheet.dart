@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 
 import '../../model/changes_model.dart';
+import '../../model/fleet_store.dart' show describeFailure;
 import '../kit/kit.dart';
 
 /// Opens the ship flow in a Sheet (f4-inspector.md decision 6).
@@ -88,7 +89,7 @@ class _ShipState extends State<_Ship> {
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _failure = '$error';
+        _failure = describeFailure(error);
       });
     }
   }

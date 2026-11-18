@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../client/contract.g.dart';
+import 'fleet_store.dart' show describeFailure;
 
 // The digest and the routes are passed in, so their fields stay private: Dart
 // has no private named parameter.
@@ -442,7 +443,7 @@ class RunModel extends ChangeNotifier {
       _rosterValue = await read();
       _rosterRead = true;
     } catch (error) {
-      _rosterFailure = '$error';
+      _rosterFailure = describeFailure(error);
     } finally {
       _readingRoster = false;
       notifyListeners();
@@ -507,7 +508,7 @@ class RunModel extends ChangeNotifier {
     try {
       await post(words);
     } catch (error) {
-      _failure = '$error';
+      _failure = describeFailure(error);
     }
     _answering = false;
     notifyListeners();

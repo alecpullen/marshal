@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
+import 'fleet_store.dart' show describeFailure;
 
 /// The status link a thread's Share mints: the one URL the bridge gives out,
 /// and the revoke that stops it working.
@@ -55,7 +56,7 @@ class ShareModel extends ChangeNotifier {
       _made = await _client.createStatusLink(agentId, ttlHours: hours);
     } catch (error) {
       _made = null;
-      _failure = '$error';
+      _failure = describeFailure(error);
     } finally {
       _busy = false;
       _notify();
@@ -75,7 +76,7 @@ class ShareModel extends ChangeNotifier {
       await _client.revokeStatusLink(made.id);
       _made = null;
     } catch (error) {
-      _failure = '$error';
+      _failure = describeFailure(error);
     } finally {
       _busy = false;
       _notify();

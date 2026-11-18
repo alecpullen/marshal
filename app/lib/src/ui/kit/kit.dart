@@ -52,6 +52,7 @@ export 'menu.dart';
 export 'nav_row.dart';
 export 'meter.dart';
 export 'narration.dart';
+export 'notice.dart';
 export 'output_block.dart';
 export 'page_body.dart';
 export 'pill.dart';

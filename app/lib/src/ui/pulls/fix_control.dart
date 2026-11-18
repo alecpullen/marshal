@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../../model/fleet_store.dart' show describeFailure;
 import '../../model/pulls_model.dart';
 import '../kit/kit.dart';
 import 'merge_control.dart';
@@ -126,7 +127,7 @@ Future<void> _autoFix(
       context,
       Sheet(
         title: 'The setting did not change',
-        child: Text('$error', style: e.body.tint(e.err)),
+        child: Text(describeFailure(error), style: e.body.tint(e.err)),
       ),
     );
     return;

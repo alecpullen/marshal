@@ -1,7 +1,9 @@
 import 'dart:async';
 
+import '../../model/fleet_store.dart' show describeFailure;
 import '../../model/terminal_session.dart';
 import '../kit/kit.dart';
+import 'inspector.dart';
 import 'terminal_view.dart';
 
 /// The Terminal tab (f4-inspector.md decision 9): a shell in the agent's
@@ -58,8 +60,9 @@ class _TerminalTabState extends State<TerminalTab> {
     );
   }
 
-  /// The five states every screen that shows data has (§7).
-  Widget _stateOnly(StateKind state) => switch (state) {
+  /// The five states every screen that shows data has (§7), inset as the
+  /// ready content is.
+  Widget _stateOnly(StateKind state) => TabMessage(switch (state) {
     StateKind.loading => const StateMessage.loading(lines: 6),
     StateKind.empty => StateMessage.empty(
       message: 'This agent has no shell open.',
@@ -92,7 +95,7 @@ class _TerminalTabState extends State<TerminalTab> {
       name: 'A command’s replay',
       note: 'Showing a finished command above the live shell is not built yet',
     ),
-  };
+  });
 
   Widget _body(BuildContext context) {
     // The bridge names why a shell never started on the chunk that ends its
@@ -100,11 +103,15 @@ class _TerminalTabState extends State<TerminalTab> {
     // for a shell that failed before it could print anything.
     final error = widget.session.error;
     if (error != null) {
-      return StateMessage.error(
-        message: 'The shell could not be opened: $error',
-        retry: StateAction(
-          'Try again',
-          onTap: () => unawaited(widget.session.reopen()),
+      return TabMessage(
+        StateMessage.error(
+          message:
+              'The shell could not be opened: '
+              '${describeFailure(error)}',
+          retry: StateAction(
+            'Try again',
+            onTap: () => unawaited(widget.session.reopen()),
+          ),
         ),
       );
     }

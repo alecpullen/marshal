@@ -461,6 +461,14 @@ class Overview extends StatelessWidget {
         message: 'The fleet could not be read.',
         retry: retry,
       ),
+      // Name the host that refused the token: it is the one to sign in to.
+      StateKind.unauthorized => StateMessage.unauthorized(
+        host: hosts.isEmpty
+            ? 'The daemon'
+            : hosts
+                  .firstWhere((host) => host.refused, orElse: () => hosts.first)
+                  .name,
+      ),
       StateKind.unavailable => StateMessage.unavailable(
         host: hosts.isEmpty ? 'The daemon' : hosts.first.name,
         // No read has made a snapshot, so there is no age to give; when one

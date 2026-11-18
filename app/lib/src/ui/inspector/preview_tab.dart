@@ -60,6 +60,7 @@ class _PreviewTabState extends State<PreviewTab> {
       message: 'The preview could not be opened.',
       retry: StateAction('Try again', onTap: () => setState(() {})),
     ),
+    StateKind.unauthorized => const StateMessage.unauthorized(),
     StateKind.unavailable => StateMessage.unavailable(
       host: 'The bridge',
       lastSeen: '4m',

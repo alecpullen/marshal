@@ -317,6 +317,11 @@ class _ShellState extends State<Shell> {
         lastSeen: _oldestContact(),
         action: retry,
       ),
+      // A refused token is why nothing is here, and no retry clears one: the
+      // state names the host that refused and how to sign in again.
+      StateKind.unauthorized => StateMessage.unauthorized(
+        host: _refusingHost(),
+      ),
       StateKind.stale => StateMessage.stale(age: _oldestContact()),
       StateKind.planned => StateMessage.planned(
         name: placeTitle(widget.place, widget.nav),
@@ -335,6 +340,39 @@ class _ShellState extends State<Shell> {
     }
     return relativeAge(oldest ?? _now, _now);
   }
+
+  /// The host that refused this page's token, for the state that says so.
+  String _refusingHost() {
+    for (final host in widget.hosts) {
+      if (host.refused) return host.name;
+    }
+    return widget.hosts.isEmpty ? 'The daemon' : widget.hosts.first.name;
+  }
+}
+
+/// The shell's state, from what the fleet holds (§7).
+///
+/// A host whose token the bridge refused is `unauthorized`, never
+/// `unavailable`: the two look the same from the page — nothing arrives — but
+/// only one of them is about reachability, and sending a reader to check the
+/// network when they need to sign in is the wrong answer to give.
+StateKind? fleetStateKind({
+  required bool read,
+  required bool failed,
+  required bool anyAgents,
+  required List<HostView> hosts,
+}) {
+  if (!read) return StateKind.loading;
+  if (hosts.isEmpty) return failed ? StateKind.error : StateKind.empty;
+  if (!anyAgents && hosts.every((host) => !host.live)) {
+    // Nothing is showing, so the page says why. A refusal is the one cause a
+    // reader can act on, so it is named ahead of the silence beside it.
+    return hosts.any((host) => host.refused)
+        ? StateKind.unauthorized
+        : StateKind.unavailable;
+  }
+  if (hosts.any((host) => !host.live)) return StateKind.stale;
+  return null;
 }
 
 /// The Studio: what the fleet holds, drawn at one place.
@@ -560,17 +598,12 @@ class _StudioState extends State<Studio> {
   }
 
   /// The shell's state, from what the store holds.
-  StateKind? _state(FleetStore store) {
-    if (!_read) return StateKind.loading;
-    if (store.hosts.isEmpty) {
-      return _failure == null ? StateKind.empty : StateKind.error;
-    }
-    if (store.agents().isEmpty && store.hosts.every((host) => !host.live)) {
-      return StateKind.unavailable;
-    }
-    if (store.hosts.any((host) => !host.live)) return StateKind.stale;
-    return null;
-  }
+  StateKind? _state(FleetStore store) => fleetStateKind(
+    read: _read,
+    failed: _failure != null,
+    anyAgents: store.agents().isNotEmpty,
+    hosts: store.hosts,
+  );
 
   /// What the place draws. A place whose screen a later step of F2 brings
   /// says so (design-system.md §7).

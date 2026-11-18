@@ -1209,3 +1209,50 @@ func TestPauseResumeKeepsAGitSourcedAgentWorking(t *testing.T) {
 		t.Fatalf("resumed agent has no live runtime: %v", err)
 	}
 }
+
+// TestAgentTitle: a Title is one line of the spawn prompt — its first
+// non-blank line, runs of whitespace collapsed, cut at 80 runes with an
+// ellipsis marking the cut.
+func TestAgentTitle(t *testing.T) {
+	eighty := strings.Repeat("a", 80)
+	// Counted in runes, not bytes: 81 three-byte characters are 243 bytes
+	// but only 81 runes, so the cut lands after the eightieth.
+	multibyte := strings.Repeat("日", 81)
+	cases := []struct {
+		name, prompt, want string
+	}{
+		{"an empty prompt has no title", "", ""},
+		{"blank lines before the text", "\n\n   \n\t\nfix the parser\nand then run it", "fix the parser"},
+		{"internal whitespace runs collapse", "fix   the\tbug\nsecond line", "fix the bug"},
+		{"exactly 80 runes is not cut", eighty, eighty},
+		{"81 runes is cut at 80", eighty + "b", eighty + "…"},
+		{"multibyte runes count as one each", multibyte, strings.Repeat("日", 80) + "…"},
+		{"a prompt of blanks has no title", " \n\t\n ", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentTitle(tc.prompt); got != tc.want {
+				t.Fatalf("agentTitle(%q) = %q, want %q", tc.prompt, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSnapshotTitlesAnAgentByItsPrompt: an agent's thread is named by what it
+// was asked, not only by its id, and the title is the prompt's first line.
+func TestSnapshotTitlesAnAgentByItsPrompt(t *testing.T) {
+	f := testFleet(t)
+	ctx, cancel := testContext(t)
+	defer cancel()
+	id, err := f.Spawn(ctx, "/home/u/a", SpawnOptions{
+		Name:   "agent one",
+		Mode:   "edit",
+		Prompt: "Fix the failing parser test\nThen run the whole suite",
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if got := agentStatus(t, f, id).Title; got != "Fix the failing parser test" {
+		t.Fatalf("Title = %q, want the prompt's first line", got)
+	}
+}

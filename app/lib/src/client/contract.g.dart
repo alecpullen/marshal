@@ -146,6 +146,7 @@ class AgentStatus {
     required this.id,
     required this.project,
     this.name,
+    this.title,
     this.ownerID,
     this.origin,
     this.clientID,
@@ -175,6 +176,11 @@ class AgentStatus {
   final String id;
   final String project;
   final String? name;
+  /// Title is what the agent was asked, in one line: the first non-blank
+  /// line of its spawn prompt, runs of whitespace collapsed to one space,
+  /// at most 80 runes, ending in "…" when cut. Empty when it was spawned
+  /// with no prompt.
+  final String? title;
   /// OwnerID, Origin and ClientID mirror Agent.OwnerID, Agent.Origin and
   /// Agent.ClientID in workspace.go.
   final String? ownerID;
@@ -241,6 +247,7 @@ class AgentStatus {
       id: json['id'] as String,
       project: json['project'] as String,
       name: json['name'] as String?,
+      title: json['title'] as String?,
       ownerID: json['ownerId'] as String?,
       origin: json['origin'] as String?,
       clientID: json['clientId'] as String?,
@@ -286,6 +293,9 @@ class AgentStatus {
     json['project'] = project;
     if (name != null) {
       json['name'] = name;
+    }
+    if (title != null) {
+      json['title'] = title;
     }
     if (ownerID != null) {
       json['ownerId'] = ownerID;
@@ -362,6 +372,7 @@ class PendingRequest {
     required this.kind,
     required this.id,
     this.params,
+    this.at,
     this.rawEnums = const {},
   });
 
@@ -371,6 +382,9 @@ class PendingRequest {
   final String id;
   /// Params is the original request payload, verbatim.
   final Object? params;
+  /// At is when the bridge first saw the request parked, in Unix
+  /// milliseconds. Zero (absent) when it did not see it arrive.
+  final int? at;
 
   /// The wire text of each enum field this build has no value
   /// for, keyed by JSON name, so a round trip keeps it.
@@ -387,6 +401,7 @@ class PendingRequest {
       kind: kind,
       id: json['id'] as String,
       params: json['params'],
+      at: (json['at'] as num?)?.toInt(),
       rawEnums: rawEnums,
     );
   }
@@ -397,6 +412,9 @@ class PendingRequest {
     json['id'] = id;
     if (params != null) {
       json['params'] = params;
+    }
+    if (at != null) {
+      json['at'] = at;
     }
     return json;
   }

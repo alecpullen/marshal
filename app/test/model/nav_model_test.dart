@@ -173,6 +173,12 @@ void main() {
       [for (final thread in row.current) thread.id],
       ['recent', 'edge', 'failed'],
     );
+    // The earlier threads are the ones left, in the same order: most recently
+    // active first.
+    expect(
+      [for (final thread in row.earlierThreads) thread.id],
+      ['old', 'older'],
+    );
   });
 
   test(
@@ -364,6 +370,10 @@ void main() {
     expect(
       [for (final thread in row.current) thread.id],
       ['sess_ffffffffffffffff'],
+    );
+    expect(
+      [for (final thread in row.earlierThreads) thread.id],
+      ['sess_0123456789abcdef'],
     );
   });
 

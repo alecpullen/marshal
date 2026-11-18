@@ -62,6 +62,10 @@ class _SidebarState extends State<Sidebar> {
   /// is what the sidebar is for.
   final _closed = <String>{};
 
+  /// The projects whose earlier threads are shown. A project's earlier work
+  /// starts closed: it is there to be found, not to be read.
+  final _openEarlier = <String>{};
+
   @override
   Widget build(BuildContext context) {
     final now = widget.now ?? DateTime.now();
@@ -163,7 +167,8 @@ class _SidebarState extends State<Sidebar> {
     if (host == null) return widget.nav.projects;
     return [
       for (final project in widget.nav.projects)
-        if (project.current.any((thread) => thread.host == host))
+        if (project.current.any((thread) => thread.host == host) ||
+            project.earlierThreads.any((thread) => thread.host == host))
           NavProject(
             id: project.id,
             name: project.name,
@@ -171,7 +176,10 @@ class _SidebarState extends State<Sidebar> {
               for (final thread in project.current)
                 if (thread.host == host) thread,
             ],
-            earlier: project.earlier,
+            earlierThreads: [
+              for (final thread in project.earlierThreads)
+                if (thread.host == host) thread,
+            ],
             active: project.active,
           ),
     ];
@@ -179,6 +187,10 @@ class _SidebarState extends State<Sidebar> {
 
   List<Widget> _project(NavProject project) {
     final open = !_closed.contains(project.id);
+    final earlier = project.earlier > 0;
+    final earlierOpen =
+        _openEarlier.contains(project.id) ||
+        project.earlierThreads.any(_isOpen);
     return [
       NavRow(
         label: project.name,
@@ -193,32 +205,45 @@ class _SidebarState extends State<Sidebar> {
         for (final thread in project.current)
           Padding(
             padding: const EdgeInsets.only(left: Space.s16),
-            child: ThreadRow(
-              status: _status(thread.status),
-              title: thread.title,
-              kind: _kind(thread.kind),
-              selected: _isOpen(thread),
-              onTap: () => widget.onSelect(
-                Place(PlaceKind.thread, host: thread.host, id: thread.id),
+            child: _threadRow(thread),
+          ),
+        if (earlier) ...[
+          NavRow(
+            label: 'Earlier',
+            count: project.earlier,
+            indent: true,
+            expanded: earlierOpen,
+            onToggle: () => _toggleEarlier(project.id),
+            onTap: () => _toggleEarlier(project.id),
+          ),
+          if (earlierOpen)
+            for (final thread in project.earlierThreads)
+              Padding(
+                padding: const EdgeInsets.only(left: Space.s32),
+                child: _threadRow(thread),
               ),
-            ),
-          ),
-        if (project.earlier > 0)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(
-              Space.s32,
-              Space.s2,
-              Space.s8,
-              Space.s8,
-            ),
-            child: Text(
-              'Earlier · ${project.earlier}',
-              style: Ember.of(context).small.tint(Ember.of(context).faint),
-            ),
-          ),
+        ],
       ],
     ];
   }
+
+  /// One of a project's threads as the tree draws it: a thread opens itself.
+  Widget _threadRow(model.ThreadRef thread) => ThreadRow(
+    status: _status(thread.status),
+    title: thread.title,
+    kind: _kind(thread.kind),
+    selected: _isOpen(thread),
+    onTap: () => widget.onSelect(
+      Place(PlaceKind.thread, host: thread.host, id: thread.id),
+    ),
+  );
+
+  /// Opens and closes a project's earlier threads. A group holding the open
+  /// thread is drawn open whatever this set says: the row being read is
+  /// always visible.
+  void _toggleEarlier(String id) => setState(() {
+    _openEarlier.contains(id) ? _openEarlier.remove(id) : _openEarlier.add(id);
+  });
 
   bool _isOpen(model.ThreadRef thread) =>
       widget.place.kind == PlaceKind.thread &&

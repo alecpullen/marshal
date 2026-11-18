@@ -13,12 +13,15 @@ import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_view_state.dart' show Density;
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
 import 'package:marshal_app/src/model/inbox_model.dart';
+import 'package:marshal_app/src/model/nav_model.dart';
 import 'package:marshal_app/src/model/place.dart';
+import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/sections/unsaved_guard.dart';
 import 'package:marshal_app/src/ui/shell/host_switcher.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
+import 'package:marshal_app/src/ui/shell/sidebar.dart';
 
 import '../model/support.dart';
 import '../support/fake_bridge.dart';
@@ -30,20 +33,23 @@ import '../support/screens.dart';
 /// time it was last seen.
 /// The session a thread place opens: one row of the fleet's index, with the
 /// title the thread is called by.
-SessionRow _sessionRow() => const SessionRow(
+SessionRow _sessionRow({bool open = true}) => SessionRow(
   sessionID: 'sess_1',
   title: 'Fix the login bug',
   updatedAt: 1763300000000,
   messageCount: 3,
-  open: true,
+  open: open,
   viewers: 0,
   busy: false,
 );
 
 /// One host listing [_sessionRow], read through the real client: the shell's
 /// session place resolves against the fleet's index, not against a fixture it
-/// is handed.
-Future<ModelFixture> _fixtureListingSession(WidgetTester tester) async {
+/// is handed. A closed row is the project's earlier work.
+Future<ModelFixture> _fixtureListingSession(
+  WidgetTester tester, {
+  bool open = true,
+}) async {
   final fixture = (await tester.runAsync(
     () => ModelFixture.start([
       FixtureHost(
@@ -60,7 +66,10 @@ Future<ModelFixture> _fixtureListingSession(WidgetTester tester) async {
     '/api/sessions/all',
     SessionIndex(
       projects: [
-        ProjectSessions(root: '/home/u/marshal', sessions: [_sessionRow()]),
+        ProjectSessions(
+          root: '/home/u/marshal',
+          sessions: [_sessionRow(open: open)],
+        ),
       ],
     ),
   );
@@ -339,6 +348,119 @@ void main() {
     await tester.pump();
 
     expect(opened, [const Place(PlaceKind.thread, host: 'local', id: 'a-1')]);
+  });
+
+  testWidgets('Earlier opens its threads and a thread opens', (tester) async {
+    final (shell, opened) = shellAt(const Place.overview());
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    // The earlier threads start closed: a project shows the work in flight.
+    expect(find.text('Retire the old bridge'), findsNothing);
+
+    await tester.tap(find.text('Earlier'));
+    await tester.pump();
+
+    await tester.tap(find.text('Retire the old bridge'));
+    await tester.pump();
+
+    expect(opened, [const Place(PlaceKind.thread, host: 'local', id: 'a-4')]);
+  });
+
+  testWidgets('an open earlier thread shows its group open', (tester) async {
+    // The place is one of the project's earlier threads: its group is drawn
+    // open without a tap, so the row being read is always visible.
+    final fixture = await _fixtureListingSession(tester, open: false);
+    await _pumpSessionPlace(tester, fixture, storeFor: _emptyStore);
+
+    final earlier = tester
+        .widgetList<NavRow>(find.byType(NavRow))
+        .firstWhere((row) => row.label == 'Earlier');
+    expect(earlier.expanded, isTrue);
+    expect(earlier.count, 1);
+
+    final row = tester.widget<ThreadRow>(
+      find.widgetWithText(ThreadRow, 'Fix the login bug'),
+    );
+    expect(row.selected, isTrue);
+  });
+
+  testWidgets('a chosen host keeps its own earlier threads', (tester) async {
+    // The host scope filters the earlier rows as it filters the current ones,
+    // and a project whose only work on that host is earlier still has a row.
+    tester.view.physicalSize = const Size(1200, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    model.ThreadRef thread(String host, String id, String title) =>
+        model.ThreadRef(
+          host: host,
+          id: id,
+          project: '/home/u/alpha',
+          title: title,
+          kind: model.ThreadKind.agent,
+          status: model.ThreadStatus.idle,
+          headline: '',
+          lastActive: shellNow,
+        );
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Sidebar(
+          nav: NavModel(
+            fixed: shellNavFor(const Place.overview()).fixed,
+            projects: [
+              NavProject(
+                id: '/home/u/alpha',
+                name: 'alpha',
+                current: [
+                  thread('local', 'a-1', 'Local work'),
+                  thread('studio', 's-1', 'Studio work'),
+                ],
+                earlierThreads: [
+                  thread('local', 'a-2', 'Local and quiet'),
+                  thread('studio', 's-2', 'Studio and quiet'),
+                ],
+              ),
+              NavProject(
+                id: '/srv/beta',
+                name: 'beta',
+                current: [thread('local', 'b-1', 'Beta work')],
+                earlierThreads: [thread('studio', 's-3', 'Beta and quiet')],
+              ),
+            ],
+          ),
+          hosts: shellHosts,
+          place: const Place.overview(),
+          host: 'studio',
+          now: shellNow,
+          onSelect: (_) {},
+        ),
+      ),
+    );
+
+    // The chosen host's project whose only threads there are earlier is
+    // still listed, and every Earlier count is that host's alone.
+    expect(find.text('alpha'), findsOneWidget);
+    expect(find.text('beta'), findsOneWidget);
+    expect(find.text('Studio work'), findsOneWidget);
+    expect(find.text('Local work'), findsNothing);
+    final rows = tester
+        .widgetList<NavRow>(find.byType(NavRow))
+        .where((row) => row.label == 'Earlier')
+        .toList();
+    expect([for (final row in rows) row.count], [1, 1]);
+
+    await tester.tap(find.text('Earlier').first);
+    await tester.pump();
+
+    expect(find.text('Studio and quiet'), findsOneWidget);
+    expect(find.text('Local and quiet'), findsNothing);
+
+    await tester.tap(find.text('Earlier').last);
+    await tester.pump();
+
+    expect(find.text('Beta and quiet'), findsOneWidget);
   });
 
   testWidgets('drawer below 760', (tester) async {

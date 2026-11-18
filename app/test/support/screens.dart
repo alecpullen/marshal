@@ -259,7 +259,14 @@ NavModel shellNavFor(Place place) => NavModel(
         _shellThread('a-2', 'Web studio contract', model.ThreadStatus.needsYou),
         _shellThread('a-3', 'Bump the gate', model.ThreadStatus.ready),
       ],
-      earlier: 12,
+      earlierThreads: [
+        _shellThread('a-4', 'Retire the old bridge', model.ThreadStatus.idle),
+        _shellThread(
+          'a-5',
+          'Sort out the token sweep',
+          model.ThreadStatus.idle,
+        ),
+      ],
       active: place.kind == PlaceKind.thread && place.id == 'a-1',
     ),
   ],

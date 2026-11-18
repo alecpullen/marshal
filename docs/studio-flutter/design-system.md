@@ -213,7 +213,9 @@ Cupertino**. If the kit lacks a piece, see §10.
 Added in F2: `NavRow`, the sidebar's row (an icon or a disclosure chevron, a
 label, an optional count; the selected row is filled and its icon is
 `accent`). A thread is never a `NavRow`: it is a `ThreadRow`, which carries
-its status.
+its status. A project's `Earlier` row is a `NavRow` with a disclosure chevron
+and the count of the threads it holds, and the threads it opens are
+`ThreadRow`s.
 
 Added in F4: `DiffView` and `GateList`, the inspector's two read-only views of
 a change. Both are reused by the work item's inspector (F6), so neither knows

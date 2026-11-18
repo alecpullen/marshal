@@ -119,12 +119,17 @@ class SignalsStore extends ChangeNotifier {
   /// Reads [host]'s three routes. Each keeps its own failure: a route that
   /// fails leaves that host's last value in place rather than handing an empty
   /// one over.
+  /// Whether [host] is still one the registry lists. A read that answers
+  /// after the host was forgotten must not put its data back (spec D9).
+  bool _listed(String host) => _hosts.hosts.any((owner) => owner.name == host);
+
   Future<void> _read(String host) async {
     final client = _clientOf(host);
     if (client == null) return;
 
     try {
       final watches = await client.watches();
+      if (!_listed(host)) return;
       _watches[host] = List.unmodifiable(watches);
     } catch (_) {
       // Keep the last tripped watches this host reported.
@@ -132,6 +137,7 @@ class SignalsStore extends ChangeNotifier {
 
     try {
       final blocks = await client.networkPending();
+      if (!_listed(host)) return;
       inbox.showPendingBlocks(host, blocks);
     } catch (_) {
       // Keep the inbox's last hand-over for this host.
@@ -139,6 +145,7 @@ class SignalsStore extends ChangeNotifier {
 
     try {
       final drafts = await client.reviewDrafts(status: 'draft');
+      if (!_listed(host)) return;
       inbox.showHeldDrafts(host, drafts);
     } catch (_) {
       // Keep the inbox's last hand-over for this host.
@@ -176,13 +183,34 @@ class SignalsStore extends ChangeNotifier {
   }
 
   /// Follows the registry: a host the app learns of while it is reading is read
-  /// at once, and every host is read again on the interval.
+  /// at once, every host is read again on the interval, and a host the registry
+  /// has forgotten is dropped (spec D9).
   void _hostsChanged() {
     if (_disposed) return;
+    var forgotten = false;
+    final listed = {for (final owner in _hosts.hosts) owner.name};
+    for (final name in _known.toList(growable: false)) {
+      if (listed.contains(name)) continue;
+      _known.remove(name);
+      _again.remove(name);
+      _watches.remove(name);
+      // The blocks and the drafts it handed the inbox are emptied: an ask for
+      // a host that is gone has nothing left to answer, and the inbox is told
+      // so rather than left holding them.
+      inbox
+        ..showPendingBlocks(name, const [])
+        ..showHeldDrafts(name, const []);
+      forgotten = true;
+    }
     for (final owner in _hosts.hosts) {
       if (!_known.add(owner.name)) continue;
       if (_started) unawaited(refresh(owner.name));
     }
+    if (!forgotten) return;
+    // The tick that would read the fleet is dropped and the cycle set again for
+    // the hosts that remain: a read still due for the host that is gone is not
+    // one to keep.
+    if (_started) _schedule(interval);
   }
 
   @override

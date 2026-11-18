@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart' show DaemonInfo;
+import 'package:marshal_app/src/client/fleet_profiles.dart';
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/general_model.dart';
@@ -10,10 +11,41 @@ import 'package:marshal_app/src/ui/settings/hosts_section.dart';
 import 'package:marshal_app/src/ui/settings/settings_place.dart';
 import 'package:marshal_app/src/ui/thread/thread_screen.dart' show threadKeys;
 
+/// The `marshal fleet` commands as a test scripts them: every one is recorded,
+/// in the order it ran, and none runs anything real.
+class _Runner implements FleetProfiles {
+  _Runner({this.failAdd});
+
+  /// The words `add` refuses with, when the test asks for a failure.
+  final String? failAdd;
+
+  @override
+  bool get supported => true;
+
+  final calls = <String>[];
+
+  @override
+  Future<void> add(String name, Uri url, {String? caFile}) async {
+    calls.add('add $name');
+    final words = failAdd;
+    if (words != null) throw FleetProfileFailure(words);
+  }
+
+  @override
+  Future<void> login(String name, String token) async {
+    calls.add('login $name');
+  }
+
+  @override
+  Future<void> remove(String name) async {
+    calls.add('remove $name');
+  }
+}
+
 /// Settings' frame, its Hosts section and its General section (F7 decision
 /// 7): the ten sections in the design's order, a host that is away marked
-/// with when it was last seen, adding a host planned, and appearance taking
-/// effect.
+/// with when it was last seen, a host added where the build can add one, and
+/// appearance taking effect.
 void main() {
   final now = DateTime.utc(2026, 11, 17, 4, 12);
 
@@ -50,6 +82,8 @@ void main() {
     int section = 0,
     GeneralPreferences? preferences,
     StateKind? state,
+    List<HostView>? listing,
+    FleetProfiles? profiles,
   }) {
     final prefs = preferences ?? GeneralPreferences();
     return SettingsPlace(
@@ -58,7 +92,7 @@ void main() {
       state: state,
       sections: {
         SettingsSectionKind.hosts: (state) => HostsSection(
-          model: HostsModel.fixture(hosts),
+          model: HostsModel.fixture(listing ?? hosts, profiles: profiles),
           state: state,
           now: now,
         ),
@@ -116,7 +150,7 @@ void main() {
     expect(find.text('live'), findsOneWidget);
   });
 
-  testWidgets('add a host is planned', (tester) async {
+  testWidgets('the add row is planned in a browser', (tester) async {
     await pump(tester, place());
 
     final planned = tester.widgetList<StateMessage>(find.byType(StateMessage));
@@ -128,6 +162,103 @@ void main() {
       ),
       hasLength(1),
     );
+  });
+
+  testWidgets('the add row is real where hosts can be added', (tester) async {
+    await pump(tester, place(profiles: _Runner()));
+
+    await tester.tap(find.text('Add a host'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Name'), findsOneWidget);
+    expect(find.text('URL'), findsOneWidget);
+    expect(find.text('CA file'), findsOneWidget);
+    expect(find.text('Token'), findsOneWidget);
+  });
+
+  testWidgets('a failed add shows its words and keeps the fields', (
+    tester,
+  ) async {
+    final runner = _Runner(failAdd: 'studio is already in fleet.toml');
+    await pump(tester, place(profiles: runner));
+
+    await tester.tap(find.text('Add a host'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(EditableText).at(0), 'studio');
+    await tester.enterText(
+      find.byType(EditableText).at(1),
+      'https://127.0.0.1:7700',
+    );
+    await tester.tap(find.widgetWithText(Btn, 'Add'));
+    await tester.pumpAndSettle();
+
+    // The runner's words sit under the fields, and the fields keep what was
+    // typed, so the name can be corrected rather than retyped.
+    expect(find.text('studio is already in fleet.toml'), findsOneWidget);
+    expect(
+      tester
+          .widget<EditableText>(find.byType(EditableText).at(0))
+          .controller
+          .text,
+      'studio',
+    );
+    expect(runner.calls, ['add studio']);
+  });
+
+  testWidgets('the local daemon cannot be removed', (tester) async {
+    final runner = _Runner();
+    await pump(tester, place(profiles: runner));
+
+    await tester.tap(find.text('local'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Remove…'), findsNothing);
+    expect(find.text('Sign in'), findsNothing);
+    expect(runner.calls, isEmpty);
+  });
+
+  testWidgets('remove asks first', (tester) async {
+    final runner = _Runner();
+    await pump(tester, place(profiles: runner));
+
+    await tester.tap(find.text('studio'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remove…'));
+    await tester.pumpAndSettle();
+
+    // Nothing is removed until the confirmation says what is lost.
+    expect(runner.calls, isEmpty);
+    expect(find.textContaining('stops showing it'), findsOneWidget);
+    expect(find.textContaining('Its daemon keeps running'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(Btn, 'Remove'));
+    await tester.pumpAndSettle();
+
+    expect(runner.calls, ['remove studio']);
+  });
+
+  testWidgets('an unauthorized host offers sign in', (tester) async {
+    await pump(
+      tester,
+      place(
+        profiles: _Runner(),
+        listing: [
+          hosts.first,
+          HostView(
+            name: 'studio',
+            kind: HostKind.server,
+            reach: HostReach.unauthorized,
+            lastContact: now.subtract(const Duration(minutes: 4)),
+          ),
+        ],
+      ),
+    );
+
+    await tester.tap(find.text('studio'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Sign in'), findsOneWidget);
+    expect(find.text('Token'), findsOneWidget);
   });
 
   testWidgets('appearance changes the theme', (tester) async {

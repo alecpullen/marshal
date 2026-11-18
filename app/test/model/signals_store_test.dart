@@ -295,4 +295,41 @@ void main() {
       reason: 'the interval reads every host again',
     );
   });
+
+  test("a forgotten host's asks leave the inbox", () async {
+    final (:fixture, :inbox, :signals) = await start();
+    serveEmpty(fixture, 'local');
+    fixture.serve('local', '/api/watches', [
+      watchJson(
+        agentID: 'a-1',
+        id: 'w-1',
+        lastFiredAt: now
+            .subtract(const Duration(minutes: 4))
+            .millisecondsSinceEpoch,
+      ),
+    ]);
+    fixture.serve('local', '/api/network/pending', {
+      'pending': [blockJson(agentID: 'a-1', host: 'api.example.com')],
+    });
+    fixture.serve('local', '/api/automations/review/drafts', [
+      draftJson(id: 'd-1', agentID: 'a-1'),
+    ]);
+
+    await signals.refresh('local');
+    expect(signals.tripped, hasLength(1));
+    expect(
+      inbox.asks.where((ask) => ask.kind == AskKind.network),
+      hasLength(1),
+    );
+    expect(
+      inbox.asks.where((ask) => ask.kind == AskKind.reviewDraft),
+      hasLength(1),
+    );
+
+    fixture.registry.forget('local');
+    await settle();
+
+    expect(signals.tripped, isEmpty);
+    expect(inbox.asks, isEmpty);
+  });
 }

@@ -50,7 +50,7 @@ import '../../support/kit.dart';
       'Base branch': 'The project default branch; F6 brings the choice',
       'Environment': 'A local spawn; F6 brings the choice',
       'Model': 'The project default; F6 brings the models by role',
-      'Host': 'The thread runs here; F7 lists hosts',
+      'Host': 'The only host that answers with a project',
     },
   );
   return (model: model, spawns: spawns);
@@ -71,6 +71,18 @@ NewWorkModel _empty({required bool issuesFromRepo}) => NewWorkModel(
   recipes: () async => const [],
   spawn: (request) async => const SpawnResult(agentID: 'a-9'),
   issuesFromRepo: issuesFromRepo,
+);
+
+/// One host's routes for a dialog that may start on several, named by the
+/// agent it would start (P8 plan 2, decision 6).
+NewWorkRoutes _routesFor(String host) => NewWorkRoutes(
+  project: '/home/u/marshal',
+  recentPrompts: () async =>
+      const RecentPrompts(prompts: ['Clean up the fixtures']),
+  issues: (project) async => const [],
+  recipes: () async => const [],
+  spawn: (request) async => SpawnResult(agentID: 'a-$host'),
+  projects: () async => const ['/home/u/marshal'],
 );
 
 void main() {
@@ -197,5 +209,34 @@ void main() {
     expect(find.text('No issues for this project'), findsOneWidget);
     expect(find.text('No registered repo for this project'), findsNothing);
     asked.dispose();
+  });
+
+  testWidgets('the host chip is a menu with two hosts', (tester) async {
+    final model = NewWorkModel.forHosts(
+      host: 'local',
+      routes: {'local': _routesFor('local'), 'studio': _routesFor('studio')},
+      project: const ProjectStatus(
+        root: '/home/u/marshal',
+        available: true,
+        trust: TrustState.trustTrusted,
+        isolation: 'available',
+      ),
+    );
+    await pumpKit(tester, newWorkDialog(model), height: 900);
+
+    // The chip names the host the dialog starts on, and opens a menu of every
+    // host it may start on (spec D10).
+    expect(find.textContaining('Host: local'), findsOneWidget);
+    await tester.tap(find.textContaining('Host: local'));
+    await tester.pumpAndSettle();
+    expect(find.text('local'), findsOneWidget);
+    expect(find.text('studio'), findsOneWidget);
+
+    await tester.tap(find.text('studio'));
+    await tester.pumpAndSettle();
+
+    expect(model.host, 'studio');
+    expect(find.textContaining('Host: studio'), findsOneWidget);
+    model.dispose();
   });
 }

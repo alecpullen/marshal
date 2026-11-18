@@ -147,6 +147,35 @@ class HostRegistry extends ChangeNotifier {
     if (added) notifyListeners();
   }
 
+  /// Stops, disposes and drops [name], and notifies (spec D9).
+  ///
+  /// It is the one way a host leaves the fleet: discovery never forgets one,
+  /// however long it stays down (decision 8), so a host whose profile was
+  /// removed is dropped here and nowhere else. A name this fleet does not list
+  /// does nothing.
+  void forget(String name) {
+    final at = _hosts.indexWhere((host) => host.name == name);
+    if (at < 0) return;
+    final host = _hosts.removeAt(at);
+    host.dispose();
+    notifyListeners();
+  }
+
+  /// Stops [name]'s stream and starts it again, after its token changed.
+  ///
+  /// A refused token is terminal (decision 6): the stream is stopped rather
+  /// than retried, so a host that has just been signed in to is asked to try
+  /// once more instead of waited on. A name this fleet does not list does
+  /// nothing.
+  void retry(String name) {
+    for (final host in _hosts) {
+      if (host.name != name) continue;
+      host.stop();
+      host.start();
+      return;
+    }
+  }
+
   @override
   void dispose() {
     for (final host in _hosts) {

@@ -379,7 +379,7 @@ tree and every place treat it as any other host.
 | A place under All hosts, no host live | The first host is read; its unreachable state names it with its last contact (§7) |
 | A signals read fails | That host's last answer is kept; a host never answered contributes nothing |
 | `fleet add`: the name is taken, the URL is bad, the file is not private | Refused with the reason (`checkURL`'s and `Load`'s words); the form shows it and keeps the fields |
-| `fleet login` fails after `fleet add` succeeded | The host is added without a token. The form says "Added NAME, but its token was not stored: …", and the host reads "token refused" until it is signed in |
+| `fleet login` fails after `fleet add` succeeded | The host is added without a token and the form closes (plan 2's decision 5). The host's detail shows the CLI's words beside Sign in, and the host reads "token refused" until it is signed in |
 | `fleet remove` on a server defined inline or by dotted keys | Refused, naming the file to edit by hand |
 | The chosen new-work host stops answering before Start | The spawn fails with the bridge's words and the draft is kept, as today |
 | A join names an unknown host, or the wrong secret | 401; the joiner logs it once per change and retries every 30 s |
@@ -600,7 +600,109 @@ decision 5 and this spec's Testing section both say the row names its host.
 
 ### Plan 2
 
-Not started.
+Written on `p8-2-hosts`, stacked on Plan 1.
+
+**What landed.** `internal/fleetprofile/edit.go` holds the app's only writers
+of `fleet.toml`: `AddServer` and `RemoveServer`, which keep the file's
+comments and order, check the result through `decode` before writing, write
+atomically at `0600`, and take the privacy check first. A server's table is
+`[servers.NAME]` or `[servers."NAME"]`; removal deletes to the next header or
+the end of the file, and refuses a name defined any other way. `RemoveServer`
+deletes the keychain entry after the file is written, and reports a keychain
+it cannot open without undoing the file. `marshal fleet add NAME URL
+[--ca-file PATH] [--no-notify]` and `marshal fleet remove NAME` are those two
+functions with a command line, and `AGENTS.md` says so.
+
+The Studio drives them through `FleetProfiles` (`_io` runner, `_stub` in a
+browser): the token reaches `fleet login` on stdin only, a missing binary is
+`MarshalMissingException`, and any other exit is `FleetProfileFailure` carrying
+the last stderr line, or `marshal exited <code>` when there is none.
+
+Settings › Hosts is writable in a native build: a real "Add a host" row and
+sheet, Remove behind the confirmation Access's Revoke uses, and Sign in for a
+host that is `unauthorized` or whose last login failed. In a browser the row
+stays planned.
+
+`HostRegistry.forget` and `retry` are the seam every store now follows:
+`FleetStore` cancels a forgotten host's wiring and drops its state,
+`FactoryStore` its items and read metadata, `PullsStore` its state and stream,
+`SignalsStore` its timer and the Inbox's blocks and drafts for it. `_Sections`
+forgets the three `PerHost` caches, and the shell clears a `_host` that names
+nothing listed.
+
+New work bundles one host's routes in `NewWorkRoutes`; `forHosts` opens on the
+thread's host, and the Host chip switches routes and reloads that host's
+lists. The thread a run starts opens on the host it started on.
+
+**Decisions the executor had to make.** Task 4's mutation check could not
+fail as written: `forget` disposes the host, whose `fleet.stop()` ends its
+stream, so no delta is parsed afterwards whether or not the wiring was
+dropped. The test was strengthened instead — after forgetting, the host is
+listed again (`end()`, reopen, `discover()`) and a delta is sent, which a
+leaked wiring swallows because `_follow` early-returns on the name. The
+mutation then fails as the plan asked.
+
+Task 5 tracks the form through a new `HostsModel.draftChanged`, because the
+shell's guard needs `hasUnsavedEdits` while the form is open and there was no
+setter. `HostForm` and `HostDetail` are public so a `ScreenCase` can pump them
+first-frame (a `Sheet` cannot be pushed inside `ready`), and `HostForm` takes
+`initialFailure` for the add screen's failure state. `HostsModel`'s four
+dependencies are public fields, because a private named parameter cannot be an
+initializing formal and the analyzer requires one; `_remove` captures
+`Navigator.of(context)` before its await, which keeps
+`use_build_context_synchronously` quiet now that the confirmation is
+asynchronous.
+
+Task 6 added `NewWorkRoutes.forProject` so `forProject` and `main.dart` build a
+route set through one path, and `forHosts` falls back to the first route when
+the host it is given holds none. The one-host note is now "The only host that
+answers with a project", replacing the F6-era "F7" note two tests asserted.
+
+Task 6's middle tier — "then the shell's scope host" — is not plumbed:
+`newWorkFor` receives no scope, so it opens on the first live host, which is
+what All hosts reads. A scope naming a later host still opens on the first live
+one; the comment in `main.dart` says so rather than claiming the tier.
+
+Task 2's `runFleet` flag loop refused every unknown flag before dispatch, so
+`add`'s `--ca-file` and `--no-notify` could never reach it; that loop now
+passes them through for `add`, and `runFleetAdd` validates them.
+
+**Mutation checks.** All six ran, failed the test the plan named, and passed
+after restore: `RemoveServer` stopping at the end of the file
+(`TestRemoveServerDeletesOnlyItsTable`); `--no-notify` dropped
+(`TestFleetAddTakesACAFileAndNoNotify`); the token moved into argv (`login
+writes the token to stdin and never to argv`); the wiring left behind on
+forget (the strengthened `a forgotten host's agents and projects go`);
+`rediscover` before `login` (`add runs add, login, then discovery`); and the
+routes left unswitched (`start posts on the chosen host`).
+
+**The run.** Done as a temp-dir equivalent — this box has no desktop and no OS
+keyring — with a built `marshal` and `HOME`/`XDG_CONFIG_HOME` pointed at a
+throwaway directory:
+- `fleet add studio https://127.0.0.1:7700` appended `[servers.studio]` and
+  kept the file's `# servers I keep` comment and another table's
+  `notify = false   # quiet` trailing comment; the mode stayed `600`.
+- `fleet servers --json` listed `local-hub` and `studio`, neither with a
+  token.
+- `fleet remove studio` deleted the table, left the remaining comment and
+  table byte-identical, and then reported `removed studio from <path>, but
+  its token: … no OS keyring backend available` — file first, keychain
+  second, as decided.
+- A `fleet.toml` at mode `0644` was refused with `run chmod 600 <path>`
+  before anything was written.
+- `fleet login` could not be exercised, since there is no keyring here; the
+  stdin-only path is pinned by `login writes the token to stdin and never to
+  argv`.
+- The Studio's own steps (Add in Settings › Hosts, then new work on it from a
+  `local` thread, then Remove) were not driven by hand, for want of a
+  desktop. They rest on the tests the task names, and on the screens
+  `'settings · hosts · add'` and `'settings · hosts · sign in'`.
+
+**Full verification.** `go test ./...` passes apart from `TestNoteCallBudget`,
+a 10 ms laptop-latency budget measured at 10.049 ms on a loaded box, which
+passes on three consecutive reruns and which CI excludes. `go vet ./...` and
+`gofmt -l .` are clean, `cd app && flutter analyze` is clean, and `flutter
+test` has 3933 passing.
 
 ### Plan 3
 

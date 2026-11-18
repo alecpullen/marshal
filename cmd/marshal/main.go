@@ -288,6 +288,15 @@ func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			if server == "" {
 				return fmt.Errorf("marshal fleet: --server requires a server name")
 			}
+		case len(rest) > 0 && rest[0] == "add" &&
+			(args[i] == "--ca-file" || strings.HasPrefix(args[i], "--ca-file=") || args[i] == "--no-notify"):
+			// add is the one subcommand with flags of its own, and they follow
+			// the name, so they are handed to runFleetAdd rather than read here.
+			rest = append(rest, args[i])
+			if args[i] == "--ca-file" && i+1 < len(args) {
+				rest = append(rest, args[i+1])
+				i++
+			}
 		case strings.HasPrefix(args[i], "-"):
 			return fmt.Errorf("marshal fleet: unexpected flag %q", args[i])
 		default:
@@ -316,6 +325,22 @@ func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 				return fmt.Errorf("marshal fleet: --server cannot be combined with servers: servers lists them")
 			}
 			return runFleetServers(ctx, rest[1:], stdout, home, jsonOut)
+		case "add":
+			if server != "" {
+				return fmt.Errorf("marshal fleet: --server cannot be combined with add: add writes the file")
+			}
+			if jsonOut {
+				return fmt.Errorf("marshal fleet: --json is only for servers")
+			}
+			return runFleetAdd(ctx, rest[1:], stderr, home)
+		case "remove":
+			if server != "" {
+				return fmt.Errorf("marshal fleet: --server cannot be combined with remove: remove names its server")
+			}
+			if jsonOut {
+				return fmt.Errorf("marshal fleet: --json is only for servers")
+			}
+			return runFleetRemove(ctx, rest[1:], stderr, home)
 		case "token":
 			if server != "" {
 				return fmt.Errorf("marshal fleet: --server cannot be combined with token: token names its server")
@@ -409,6 +434,91 @@ func runFleetServers(ctx context.Context, args []string, stdout io.Writer, home 
 	if err := enc.Encode(doc); err != nil {
 		return fmt.Errorf("marshal fleet servers: %w", err)
 	}
+	return nil
+}
+
+// runFleetAdd is `marshal fleet add NAME URL [--ca-file PATH] [--no-notify]`:
+// it writes the profile to the fleet file, which keeps its comments, and says
+// how to store the token that profile now needs.
+func runFleetAdd(ctx context.Context, args []string, stderr io.Writer, home string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	var name, rawURL, caFile string
+	notify := true
+	// A path may follow --ca-file, so the flags are read by position and the
+	// rest are the name and the url.
+	positionals := make([]string, 0, 2)
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--ca-file":
+			if i+1 >= len(args) || args[i+1] == "" ||
+				strings.HasPrefix(args[i+1], "-") {
+				return fmt.Errorf("marshal fleet add: --ca-file requires a path")
+			}
+			if caFile != "" {
+				return fmt.Errorf("marshal fleet add: --ca-file given more than once")
+			}
+			caFile = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--ca-file="):
+			if caFile != "" {
+				return fmt.Errorf("marshal fleet add: --ca-file given more than once")
+			}
+			caFile = strings.TrimPrefix(args[i], "--ca-file=")
+			if caFile == "" {
+				return fmt.Errorf("marshal fleet add: --ca-file requires a path")
+			}
+		case args[i] == "--no-notify":
+			notify = false
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("marshal fleet add: unexpected flag %q", args[i])
+		default:
+			positionals = append(positionals, args[i])
+		}
+	}
+	switch {
+	case len(positionals) == 0:
+		return fmt.Errorf("marshal fleet add: a server name and a url are required")
+	case len(positionals) == 1:
+		return fmt.Errorf("marshal fleet add: a url is required for %s", positionals[0])
+	case len(positionals) > 2:
+		return fmt.Errorf("marshal fleet add: unexpected argument %q", positionals[2])
+	}
+	name, rawURL = positionals[0], positionals[1]
+
+	// Notify is a bool that reads as on when the file omits it, so the absent
+	// flag writes nothing and --no-notify writes notify = false.
+	srv := fleetprofile.Server{Name: name, URL: rawURL, CAFile: caFile, Notify: notify}
+	if err := fleetprofile.AddServer(fleetprofile.Path(home), srv); err != nil {
+		return fmt.Errorf("marshal fleet add: %w", err)
+	}
+	fmt.Fprintf(stderr, "Added %s. Store its token with `marshal fleet login %s`.\n", name, name)
+	return nil
+}
+
+// runFleetRemove is `marshal fleet remove NAME`: it deletes the profile's table
+// from the fleet file, keeping the file's comments, and the token the keychain
+// holds for it.
+func runFleetRemove(ctx context.Context, args []string, stderr io.Writer, home string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	switch {
+	case len(args) == 0:
+		return fmt.Errorf("marshal fleet remove: a server name is required")
+	case len(args) > 1:
+		return fmt.Errorf("marshal fleet remove: at most one server name")
+	case strings.HasPrefix(args[0], "-"):
+		return fmt.Errorf("marshal fleet remove: unexpected flag %q", args[0])
+	}
+	name := args[0]
+
+	if err := fleetprofile.RemoveServer(fleetprofile.Path(home), name, fleetLoginStore); err != nil {
+		return fmt.Errorf("marshal fleet remove: %w", err)
+	}
+	fmt.Fprintf(stderr, "Removed %s.\n", name)
 	return nil
 }
 

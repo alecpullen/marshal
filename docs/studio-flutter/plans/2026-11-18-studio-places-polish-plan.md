@@ -10,7 +10,8 @@ spec.
 - **Runs after**: the [visual fixes](2026-11-18-studio-visual-fixes-plan.md)
   plan (both edit `inbox_model.dart`, `nav_row.dart`'s users and the gallery
   goldens) and the [dead controls](2026-11-18-studio-dead-controls-plan.md)
-  plan (both edit `settings_place.dart` and the ask cards).
+  plan (both edit `settings_place.dart` and the ask cards). Task 9 replaces
+  the `Earlier · N` text the visual fixes plan tints `muted`.
 - **Executed as**: one commit per task, `studio-places: task N — <title>`.
 - **Verification runs on Linux**, where the gallery goldens are pinned.
 
@@ -66,6 +67,15 @@ spec.
     (`app/lib/src/model/planning_model.dart:559-562`), while every other
     question card's title is the question itself. The card already says
     `Question` in its kind line.
+12. **Earlier threads cannot be reached from the sidebar.** A project's
+    threads that are closed, or idle for more than a day (`isEarlier`,
+    `app/lib/src/model/nav_model.dart:108-111`), are counted and dropped:
+    `NavProject` keeps only the count (`nav_model.dart:237`), and the sidebar
+    draws `Earlier · N` as plain text (`app/lib/src/ui/shell/sidebar.dart:207-218`).
+    With a host chosen in the switcher, the count is every host's
+    (`sidebar.dart:174`), and a project whose only threads on that host are
+    earlier disappears (`sidebar.dart:166`). An earlier thread opened from
+    elsewhere is never shown as the open row.
 
 ## Non-goals
 
@@ -77,7 +87,33 @@ spec.
 
 ## Contracts
 
-None: every task changes one file's behaviour behind its existing API.
+```dart
+// app/lib/src/model/nav_model.dart — NavProject, after task 9
+class NavProject {
+  const NavProject({
+    required this.id,
+    required this.name,
+    required this.current,
+    this.earlierThreads = const [],
+    this.active = false,
+  });
+
+  final String id;
+  final String name;
+  final List<ThreadRef> current;
+
+  /// Its threads that are closed, or idle for more than a day, most recently
+  /// active first.
+  final List<ThreadRef> earlierThreads;
+
+  /// How many earlier threads it has.
+  int get earlier => earlierThreads.length;
+
+  final bool active;
+}
+```
+
+Every other task changes one file's behaviour behind its existing API.
 
 ## Task 1: An ask names the thread that asked
 
@@ -244,6 +280,58 @@ empty.
 3. Test `'a planner’s question is its card’s title'`.
 
 **Verify.** `cd app && flutter test test/model/planning_model_test.dart test/ui/factory/planning_test.dart`
+passes.
+
+## Task 9: Earlier threads open from the sidebar
+
+**Goal.** `Earlier · N` is a disclosure row: it shows the project's earlier
+threads beneath it, each opening its thread, and it is open whenever one of
+them is the open thread.
+
+**Files.** `docs/studio-flutter/design-system.md`, `app/lib/src/model/nav_model.dart`,
+`app/lib/src/ui/shell/sidebar.dart`, `app/test/support/screens.dart`,
+`app/test/model/nav_model_test.dart`, `app/test/ui/shell_test.dart`
+
+**Steps.**
+1. `NavProject` becomes as Contracts declares: `earlier` is a getter over
+   the new `earlierThreads`. In `_ProjectBuilder.build`
+   (`nav_model.dart:228`), collect the threads `isEarlier` keeps out of
+   `current`, sorted as `current` is (most recently active, then id), and
+   pass them as `earlierThreads`. Update `NavProject.toString` (`:86`).
+2. `Sidebar._tree` (`sidebar.dart:161`): under a chosen host, filter
+   `earlierThreads` to that host as `current` is, and keep a project when
+   either list has one of the host's threads.
+3. Replace the `Earlier · N` text (`sidebar.dart:207-218`) with a `NavRow`:
+   label `Earlier`, `count` the number of earlier threads, `indent: true`,
+   `expanded` whether the group is open, and both `onToggle` and `onTap`
+   toggling it. The sidebar's state holds the open groups as a set of
+   project ids, like `_closed` (`sidebar.dart:63`), and starts empty. A
+   group is also drawn open while one of its threads is the open place
+   (`_isOpen`, `:223`), so the open row is always visible.
+4. When the group is open, draw each earlier thread beneath it as the
+   current threads are drawn — a `ThreadRow` that opens its thread, marked
+   selected when it is open — with left padding `Space.s32`, one step deeper
+   than the current threads, since they sit under the `Earlier` row.
+5. design-system.md, the F2 `NavRow` paragraph: a project's `Earlier` row
+   is a `NavRow` with a disclosure chevron and the count of the threads it
+   holds, and the threads it opens are `ThreadRow`s.
+6. `screens.dart:250-263`: the shell fixture's project replaces `earlier: 12`
+   with two earlier threads made by `_shellThread`, idle, so the shell
+   screen still draws the row.
+7. Tests:
+   - `nav_model_test.dart`: in `'earlier counts idle agents older than a
+     day'` (`:136`) also assert the two threads' ids, most recent first; in
+     `'a closed session counts toward earlier'` (`:340`) assert the closed
+     session is in `earlierThreads`.
+   - `shell_test.dart`: `'Earlier opens its threads and a thread opens'`
+     (tap `Earlier`, then an earlier thread's title: the place is that
+     thread); `'an open earlier thread shows its group open'` (a `Studio`
+     opened on an earlier thread draws its row without a tap);
+     `'a chosen host keeps its own earlier threads'` (with two hosts, the
+     count and the rows are only the chosen host's, and a project whose
+     only threads there are earlier is still listed).
+
+**Verify.** `cd app && flutter test test/model/nav_model_test.dart test/ui/shell_test.dart test/tooltips_test.dart test/overflow_test.dart test/states_test.dart`
 passes.
 
 ## Final verification

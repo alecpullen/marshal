@@ -50,5 +50,10 @@
   "ProjectRemovedDelta": {
     "kind": "project_removed",
     "project": "/home/u/src/marshal"
+  },
+  "DeltaSessions": "sessions",
+  "SessionsDelta": {
+    "kind": "sessions",
+    "project": "/home/u/src/marshal"
   }
 }

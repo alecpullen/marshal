@@ -152,9 +152,13 @@ class SignalsStore extends ChangeNotifier {
   void _schedule(Duration delay) {
     _timer?.cancel();
     if (_disposed) return;
-    _timer = Timer(delay, () async {
-      await _readEveryHost();
+    _timer = Timer(delay, () {
       if (_disposed) return;
+      // The cycle is timed from this tick, not from the reads it starts: one
+      // host's slow bridge must not hold every other host's next read back.
+      // The per-host guard in [refresh] already keeps a host from overlapping
+      // itself, so a read still in flight is coalesced rather than doubled.
+      unawaited(_readEveryHost());
       _schedule(interval);
     });
   }

@@ -325,10 +325,11 @@ class _ShellState extends State<Shell> {
       _ => null,
     };
     if (build == null) return null;
-    // No host is known only while the fleet lists none, and then there is
-    // nothing to switch between: the place is drawn as a null build is.
+    // No host is known only while the fleet lists none, and that is a fleet
+    // state of its own (§7): the place is drawn as it was before the scope
+    // reached it, without a switcher over an empty list.
     final host = placeHost(widget.hosts, _host);
-    if (host == null) return plannedPlace(widget.place, widget.nav);
+    if (host == null) return null;
     // A builder that answers nothing for this host leaves the place to the
     // content builder, which is what drew it before the scope reached it.
     final place =
@@ -337,8 +338,8 @@ class _ShellState extends State<Shell> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          // The inset the sidebar's own switcher takes, set at the content
-          // area's sides rather than the sidebar's.
+          // The place's own page inset, so the switcher sits on the title's
+          // left edge, with the vertical spacing the sidebar's switcher takes.
           padding: const EdgeInsets.fromLTRB(
             Layout.pageSide,
             Space.s12,
@@ -357,7 +358,6 @@ class _ShellState extends State<Shell> {
             ),
           ),
         ),
-        const SizedBox(height: Space.s8),
         Expanded(child: place),
       ],
     );

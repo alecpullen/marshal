@@ -557,7 +557,7 @@ supplies its content was never mounted and the guard never watched its edit.
 `_hostPlace()` now answers null when no builder is wired and falls back to the
 content builder when the builder answers nothing — decision 2 above.
 
-**Verification.** `flutter analyze` is clean; `flutter test` has 3765 passing
+**Verification.** `flutter analyze` is clean; `flutter test` has 3766 passing
 and 0 failing (3737 before this plan); `dart format --output=none
 --set-exit-if-changed lib test` reports 347 files unchanged. No kit piece was
 added and the gallery is untouched: `test/gallery_test.dart` passed as part of
@@ -574,6 +574,29 @@ reaching the Inbox and the card (`signals_store_test.dart`,
 (`bots_test.dart`, `watches_test.dart`). Switching hosts over an unsaved edit
 and tripping a watch on the second host remain for the first person with that
 setup to confirm.
+
+**Branch review.** Two reviewers read the branch, one for correctness and one
+against the design system. Neither found a blocker or a major. These changes
+followed:
+
+- `WatchesModel.create` reports the write as soon as the bridge has accepted
+  it, before the list read, so a list read that fails cannot suppress the
+  re-read of that host's signals.
+- `SignalsStore` times its next cycle from the tick rather than from the reads
+  it starts, so one host's slow bridge cannot hold every other host's read
+  back; the per-host guard still coalesces a read asked while one is in
+  flight.
+- The switcher's inset comment now names the place's own page inset rather
+  than a sidebar inset it does not take; the doubled gap below the switcher is
+  gone; and `_hostPlace()` hands a fleet that lists no host to the content
+  builder, which the fleet state's own page replaces anyway, instead of drawing
+  a promise for a place that is built.
+- A narrow-width shell test now pumps a per-host place, so the top line is
+  covered below 760 as design-system §4 asks.
+
+Declined: moving the host from the row's name into its description. The design
+review called it a judgment call rather than a violation, and the plan's
+decision 5 and this spec's Testing section both say the row names its host.
 
 ### Plan 2
 

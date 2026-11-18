@@ -182,8 +182,10 @@ class WatchesModel extends SectionModel<WatchInfo> {
   /// row is the bridge's own report of it rather than what this model guessed.
   Future<WatchStarted> create(WatchCreate request) async {
     final started = await _requireBridge().createWatch(request);
-    await load();
+    // The watch is started: the host's signals changed, so they are read again
+    // whether or not the list read below answers (spec D4).
     onWrote?.call();
+    await load();
     return started;
   }
 

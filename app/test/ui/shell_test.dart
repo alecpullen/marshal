@@ -174,6 +174,30 @@ void main() {
     expect(find.text('Settings at studio'), findsOneWidget);
   });
 
+  testWidgets('a per-host place keeps its switcher below 760', (tester) async {
+    // The top line is drawn in the content area, which the narrow layout
+    // fills: it must sit under the app bar, name its host, and not overflow.
+    tester.view.physicalSize = const Size(390, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final (shell, recorded) = hostShellAt(const Place(PlaceKind.automations));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+    await tester.pump();
+
+    // The sidebar is behind the app bar's button, so the one switcher on
+    // screen is the place's own top line.
+    expect(find.byType(HostSwitcher), findsOneWidget);
+    expect(
+      find.descendant(of: topSwitcher(), matching: find.text('local')),
+      findsOneWidget,
+    );
+    expect(recorded.last, 'local');
+    expect(find.text('Automations at local'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('selecting a row changes the place', (tester) async {
     final (shell, opened) = shellAt(const Place.overview());
     await tester.pumpWidget(

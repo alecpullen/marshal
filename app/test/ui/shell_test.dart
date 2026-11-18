@@ -642,7 +642,7 @@ void main() {
             id: project.id,
             name: project.name,
             current: project.current,
-            earlier: project.earlier,
+            earlierThreads: project.earlierThreads,
           ),
       ],
     );

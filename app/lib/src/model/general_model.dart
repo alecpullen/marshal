@@ -1,3 +1,7 @@
+// [GeneralPreferences]'s parameters are named as its callers read them and its
+// fields stay private, so `save` cannot be an initializing formal.
+// ignore_for_file: prefer_initializing_formals
+
 import 'package:flutter/foundation.dart';
 
 import '../client/contract.g.dart' show DaemonInfo;

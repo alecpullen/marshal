@@ -17,7 +17,8 @@ class AutomationsTabs {
   final ValueChanged<int> onChanged;
 
   /// The place's own control, drawn at the end of the tab row (F9 B4): the one
-  /// New automation, beside the tabs whose kinds it can start.
+  /// New automation, and only on the tabs whose kinds it can start — a tab
+  /// with a create of its own draws that instead.
   final Widget? trailing;
 }
 

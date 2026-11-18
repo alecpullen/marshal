@@ -655,7 +655,9 @@ class PlanningModel extends ChangeNotifier {
   }
 
   /// A question request in one line: the first question's text, else the
-  /// message the payload carried.
+  /// message the payload carried, else empty. Empty is a real answer here: a
+  /// payload that asks nothing gets the card's own wording rather than a
+  /// question nobody asked.
   static String _questionLine(Map<String, Object?> payload) {
     final asked = _questionTexts(payload);
     if (asked.isNotEmpty) return asked.first;
@@ -663,7 +665,7 @@ class PlanningModel extends ChangeNotifier {
       final text = _str(payload[key]);
       if (text.isNotEmpty) return text;
     }
-    return 'The planner is waiting for an answer.';
+    return '';
   }
 
   /// Every question text a payload asks, in its own order.

@@ -133,13 +133,18 @@ void main() {
         'method': 'session/request_permission',
         'params': {'toolName': 'shell.run', 'command': 'go test ./...'},
       }),
+      _event(4, 'turn.question', {
+        'requestId': 'req-4',
+        'method': 'session/request_question',
+        'params': <String, Object?>{},
+      }),
     ];
     final model = routes.model();
     addTearDown(model.dispose);
 
     await model.refresh();
 
-    final [asked, messaged, permission] = model.requests;
+    final [asked, messaged, permission, silent] = model.requests;
     // The question is the card's title; its body is empty, so the question is
     // not written twice.
     expect(asked.title, 'Which inspector tab comes first?');
@@ -152,6 +157,10 @@ void main() {
     // command is the body.
     expect(permission.title, 'Permission requested');
     expect(permission.detail, 'tool: shell.run · command: go test ./...');
+    // A payload that asks nothing is named as what it is, rather than titled
+    // with a sentence the planner never said.
+    expect(silent.title, 'Question from the planner');
+    expect(silent.detail, isEmpty);
   });
 
   test('a permission request is a permission card', () async {

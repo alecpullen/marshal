@@ -214,9 +214,10 @@ void main() {
 
     final card = tester.widget<AskCard>(find.byType(AskCard));
     expect(card.kind, AskKind.question);
-    // The question is the card's title; its body is empty.
+    // The question is the card's title; it has no body, so the card draws no
+    // empty line under it.
     expect(card.title, 'Which tab comes first?');
-    expect(card.body, isEmpty);
+    expect(card.body, isNull);
     expect(find.text('Which tab comes first?'), findsWidgets);
   });
 

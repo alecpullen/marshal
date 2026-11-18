@@ -356,7 +356,9 @@ class _PlanningScreenState extends State<PlanningScreen> {
   Widget _requestCard(PlanningModel model, PlannerRequest request) => AskCard(
     kind: request.permission ? AskKind.approval : AskKind.question,
     title: request.title,
-    body: request.detail,
+    // A question's title is the question, so its body is null rather than an
+    // empty line the card would draw a gap for.
+    body: request.detail.isEmpty ? null : request.detail,
     waiting: relativeAge(_askedAt(), _now),
     placement: AskPlacement.thread,
     actions: request.permission
@@ -401,7 +403,9 @@ class _PlanningScreenState extends State<PlanningScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Field.multiline(
-              label: request.detail,
+              // The question is the card's title behind this sheet, so the
+              // field names what it takes rather than repeating it.
+              label: 'Your answer',
               controller: controller,
               hint: 'What the planner should do',
             ),

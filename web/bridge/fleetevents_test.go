@@ -208,6 +208,49 @@ func TestClassifyTelemetryDecodesEngineShape(t *testing.T) {
 	}
 }
 
+func TestTelemetryCarriesSteps(t *testing.T) {
+	live := newLiveState()
+	d, ok := classifyNotification("session/update", json.RawMessage(
+		`{"sessionId":"s1","update":{"kind":"session_telemetry","steps":{"done":3}}}`))
+	if !ok || d.Kind != "telemetry" {
+		t.Fatalf("telemetry was dropped: %+v ok=%v", d, ok)
+	}
+	if d.StepsDone == nil || *d.StepsDone != 3 {
+		t.Fatalf("StepsDone = %v, want 3", d.StepsDone)
+	}
+	live.apply(d)
+	if got := live.get("s1").stepsDone; got != 3 {
+		t.Fatalf("live stepsDone = %d, want 3", got)
+	}
+}
+
+// A missing field is not a zero: a telemetry payload with no steps key must
+// not claim the turn has taken none.
+func TestTelemetryWithoutStepsOmitsTheCount(t *testing.T) {
+	live := newLiveState()
+	d, ok := classifyNotification("session/update", json.RawMessage(
+		`{"sessionId":"s1","update":{"kind":"session_telemetry","changedFiles":[]}}`))
+	if !ok || d.Kind != "telemetry" {
+		t.Fatalf("telemetry was dropped: %+v ok=%v", d, ok)
+	}
+	if d.StepsDone != nil {
+		t.Fatalf("StepsDone = %v, want nil for a payload with no steps key", *d.StepsDone)
+	}
+	out, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(out, &m)
+	if v, present := m["stepsDone"]; present {
+		t.Fatalf("a keyless telemetry delta carries stepsDone = %v", v)
+	}
+	live.apply(d)
+	if got := live.get("s1").stepsDone; got != 0 {
+		t.Fatalf("live stepsDone = %d, want the untouched zero", got)
+	}
+}
+
 func TestClassifyTelemetryWithNoChangesStillCounts(t *testing.T) {
 	d, ok := classifyNotification("session/update", json.RawMessage(
 		`{"sessionId":"s1","update":{"kind":"session_telemetry","changedFiles":[],"toolStats":[],"rules":[]}}`))

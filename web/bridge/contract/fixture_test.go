@@ -137,6 +137,9 @@ var fixtureTypes = map[string]reflect.Type{
 	"SpawnResult":         reflect.TypeOf(SpawnResult{}),
 	"SessionSummary":      reflect.TypeOf(SessionSummary{}),
 	"SessionList":         reflect.TypeOf(SessionList{}),
+	"SessionIndex":        reflect.TypeOf(SessionIndex{}),
+	"ProjectSessions":     reflect.TypeOf(ProjectSessions{}),
+	"SessionRow":          reflect.TypeOf(SessionRow{}),
 	"PromptRequest":       reflect.TypeOf(PromptRequest{}),
 	"SteerRequest":        reflect.TypeOf(SteerRequest{}),
 	"ModeRequest":         reflect.TypeOf(ModeRequest{}),
@@ -166,6 +169,8 @@ var fixtureTypes = map[string]reflect.Type{
 	"DeltaKind":           reflect.TypeOf(DeltaKind("")),
 	"FleetDelta":          reflect.TypeOf(FleetDelta{}),
 	"ProjectRemovedDelta": reflect.TypeOf(ProjectRemovedDelta{}),
+	"DeltaSessions":       reflect.TypeOf(DeltaKind("")),
+	"SessionsDelta":       reflect.TypeOf(SessionsDelta{}),
 	// automations.go — the review bot and the CI fixer.
 	"Automations":            reflect.TypeOf(Automations{}),
 	"CIFixerSettings":        reflect.TypeOf(CIFixerSettings{}),

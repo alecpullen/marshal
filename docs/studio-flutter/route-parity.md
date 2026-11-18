@@ -165,6 +165,7 @@ issues, and so does a route the client issues that has no row.
 | GET | `/api/secrets/status` | secretsStatus |  |
 | GET | `/api/sessions` | — | dropped: the app starts work through spawn; the web client’s own session create and list have no caller |
 | POST | `/api/sessions` | — | dropped: the app starts work through spawn; the web client’s own session create and list have no caller |
+| GET | `/api/sessions/all` | — | dropped: the Studio reads it from P7 plan 2 |
 | DELETE | `/api/sessions/X` | — | dropped: ending a session is not built; the app cancels a turn |
 | GET | `/api/sessions/X/access` | access |  |
 | PATCH | `/api/sessions/X/access` | — | dropped: the PATCH that changes access has no caller; a session’s access is answered through the asks |

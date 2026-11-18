@@ -2577,6 +2577,13 @@ func TestPromptTurnEmitsSessionTelemetryExactlyOnce(t *testing.T) {
 	if !ok || footer.Turns != 1 {
 		t.Fatalf("sessionFooter = %+v (ok=%v), want Turns=1", calls[0]["sessionFooter"], ok)
 	}
+	steps, ok := calls[0]["steps"].(map[string]any)
+	if !ok {
+		t.Fatalf("steps = %+v (ok=%v), want the steps section", calls[0]["steps"], ok)
+	}
+	if done, ok := steps["done"].(int); !ok || done != 0 {
+		t.Fatalf("steps = %+v, want done 0", steps)
+	}
 }
 
 func TestSDDStartEmitsSessionTelemetryEvenOnGate(t *testing.T) {

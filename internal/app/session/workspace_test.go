@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -216,6 +217,113 @@ func TestResumeFallsBackWithNoticeWhenWorktreeGone(t *testing.T) {
 	}
 	if row.ActiveRoot != "" {
 		t.Fatalf("stale ActiveRoot %q was not cleared", row.ActiveRoot)
+	}
+}
+
+func TestEnsureWorkspaceRootLeavesALiveWorktreeAlone(t *testing.T) {
+	root := t.TempDir()
+	s := New(config.Default(), root, time.Unix(100, 0), Persistence{})
+	wt := filepath.Join(root, ".marshal", "worktrees", "feat-x")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x"})
+	before := len(s.Messages())
+
+	ws := s.EnsureWorkspaceRoot()
+	if ws.ActiveRoot != wt || ws.Branch != "feat/x" {
+		t.Fatalf("EnsureWorkspaceRoot() = %+v, want the worktree unchanged", ws)
+	}
+	if got := len(s.Messages()); got != before {
+		t.Fatalf("messages = %d, want %d (no notice for a live worktree)", got, before)
+	}
+}
+
+func TestEnsureWorkspaceRootRecoversFromARemovedWorktree(t *testing.T) {
+	s, d, sid, root := newPersistedState(t)
+	wt := filepath.Join(root, ".marshal", "worktrees", "feat-x")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x", TargetBranch: "main", BaseSha: "abc123"})
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+
+	ws := s.EnsureWorkspaceRoot()
+	if ws.ActiveRoot != root || ws.Branch != "" || ws.BaseSha != "" || ws.TargetBranch != "" {
+		t.Fatalf("EnsureWorkspaceRoot() = %+v, want the project root with an empty branch", ws)
+	}
+	msgs := s.Messages()
+	last := msgs[len(msgs)-1]
+	if last.Role != RoleSystem || !strings.Contains(last.Content, wt) {
+		t.Fatalf("last message = %v %q, want a system notice naming %q", last.Role, last.Content, wt)
+	}
+	// The cleared row is what stops the next resume warning a second time.
+	row, err := d.GetSession(sid)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if row.ActiveRoot != "" || row.WorktreeBranch != "" {
+		t.Fatalf("row still records ActiveRoot %q / branch %q", row.ActiveRoot, row.WorktreeBranch)
+	}
+}
+
+func TestEnsureWorkspaceRootWritesOneNoticeForConcurrentCallers(t *testing.T) {
+	root := t.TempDir()
+	s := New(config.Default(), root, time.Unix(100, 0), Persistence{})
+	wt := filepath.Join(root, ".marshal", "worktrees", "feat-x")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x"})
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if ws := s.EnsureWorkspaceRoot(); ws.ActiveRoot != root {
+				t.Errorf("EnsureWorkspaceRoot() = %+v, want %q", ws, root)
+			}
+		}()
+	}
+	wg.Wait()
+
+	notices := 0
+	for _, m := range s.Messages() {
+		if m.Role == RoleSystem && strings.Contains(m.Content, "no longer exists") {
+			notices++
+		}
+	}
+	if notices != 1 {
+		t.Fatalf("system notices = %d, want 1", notices)
+	}
+}
+
+func TestEnsureWorkspaceRootStaysPutWhenTheProjectRootIsAlsoGone(t *testing.T) {
+	root := t.TempDir()
+	s := New(config.Default(), root, time.Unix(100, 0), Persistence{})
+	wt := filepath.Join(root, ".marshal", "worktrees", "feat-x")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x"})
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("remove project: %v", err)
+	}
+
+	ws := s.EnsureWorkspaceRoot()
+	if ws.ActiveRoot != wt {
+		t.Fatalf("EnsureWorkspaceRoot() = %+v, want the root left alone with nowhere to land", ws)
+	}
+	for _, m := range s.Messages() {
+		if m.Role == RoleSystem && strings.Contains(m.Content, "no longer exists") {
+			t.Fatal("a notice was written although the session could not move")
+		}
 	}
 }
 

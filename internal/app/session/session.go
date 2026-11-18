@@ -251,7 +251,11 @@ type State struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu         sync.Mutex
+	mu sync.Mutex
+	// rootMu serializes stale-active-root recovery; see EnsureWorkspaceRoot.
+	// Lock order: rootMu → accessMu (owner) → mu, so nothing may take rootMu
+	// while holding either of the others.
+	rootMu     sync.Mutex
 	todoMu     sync.Mutex    // serializes todo reconciliation and persistence
 	hold       bool          // guarded by mu; see hold.go
 	holdCh     chan struct{} // closed and cleared on release; guarded by mu

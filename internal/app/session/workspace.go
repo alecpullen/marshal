@@ -107,13 +107,73 @@ func (s *State) SetWorkspaceBroker(b *pubsub.Broker[WorkspaceEvent]) {
 	s.workspaceBroker = b
 }
 
+// staleWorktreeNotice is the one sentence a session writes when it lands back
+// at the project root because the directory it was working in is gone. The
+// load-time restore (restoreWorkspace) and the mid-session recovery
+// (EnsureWorkspaceRoot) reach the same landing, so they say the same thing.
+func staleWorktreeNotice(root string) string {
+	return fmt.Sprintf("System notice: the worktree this session was working in (%s) no longer exists; the session has been returned to the project root.", root)
+}
+
+// unusedWorktreeRoot reports whether the session is isolated in a directory it
+// can no longer work in: a worktree removed underneath a running session, or
+// one replaced by something that is not a directory. It is the predicate
+// restoreWorkspace applies to a resumed session.
+func unusedWorktreeRoot(ws Workspace) bool {
+	if ws.ActiveRoot == "" || ws.ActiveRoot == ws.ProjectRoot {
+		return false
+	}
+	info, err := os.Stat(ws.ActiveRoot)
+	return err != nil || !info.IsDir()
+}
+
+// EnsureWorkspaceRoot returns the workspace tools should operate in, first
+// recovering from an active root that has disappeared.
+//
+// A worktree can be removed by anything outside the session: a merged pull
+// request cleaned up from another terminal, a `git worktree remove`, a deleted
+// temporary directory. Before this check the path stayed recorded until the
+// process exited, and every tool call failed in the sandbox with "working
+// directory ... does not exist" — a stop with no way out, because
+// workspace.worktree's only exit is a branch argument that a model does not
+// reach for when the error names a path.
+//
+// The recovery lands where restoreWorkspace lands a session that resumes into
+// a gone worktree: the project root, the stale row cleared, one system notice.
+// It runs once however many callers race for it, so a parent and its subagents
+// write one notice between them.
+//
+// A project root that is also gone is not recovered: there is nowhere to land,
+// and the sandbox reports the truth about the directory the tool asked for.
+func (s *State) EnsureWorkspaceRoot() Workspace {
+	ws := s.Workspace()
+	if !unusedWorktreeRoot(ws) {
+		return ws
+	}
+	s.rootMu.Lock()
+	defer s.rootMu.Unlock()
+	// Re-read under the lock: a concurrent caller may already have recovered
+	// while this one waited, and a second notice is the thing to avoid.
+	ws = s.Workspace()
+	if !unusedWorktreeRoot(ws) {
+		return ws
+	}
+	if info, err := os.Stat(ws.ProjectRoot); err != nil || !info.IsDir() {
+		return ws
+	}
+	s.SetWorkspace(Workspace{ProjectRoot: ws.ProjectRoot, ActiveRoot: ws.ProjectRoot})
+	s.AddMessage(RoleSystem, staleWorktreeNotice(ws.ActiveRoot), ContentTypePlain)
+	return s.Workspace()
+}
+
 // restoreWorkspace rebinds the session to the workspace recorded on its
 // session row. Called once from New, after loadFromDB. If the recorded
 // worktree no longer exists, the session stays at the project root, the
 // stale record is cleared, and a system notice is written into the
 // transcript — silently landing in the main checkout while the restored
 // transcript shows worktree work is the failure this feature exists to
-// prevent.
+// prevent. The sentence it writes is shared with EnsureWorkspaceRoot, which
+// reaches the same landing mid-session.
 //
 // WorkingDir is the source of truth for ProjectRoot (spec §1: it is
 // immutable for the session's lifetime, so using it here is correct
@@ -136,7 +196,5 @@ func (s *State) restoreWorkspace() {
 	if err := s.db.UpdateSessionWorkspace(s.sessionID, "", "", "", ""); err != nil {
 		s.logger.Warn("clear stale workspace", "error", err)
 	}
-	s.AddMessage(RoleSystem, fmt.Sprintf(
-		"System notice: the worktree this session was working in (%s) no longer exists; the session has been returned to the project root.",
-		row.ActiveRoot), ContentTypePlain)
+	s.AddMessage(RoleSystem, staleWorktreeNotice(row.ActiveRoot), ContentTypePlain)
 }

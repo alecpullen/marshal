@@ -43,6 +43,7 @@ import '../new_work/new_work_dialog.dart';
 import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
 import 'connect_repo_sheet.dart';
+import 'keys.dart';
 import 'placeholder.dart';
 import 'sidebar.dart';
 
@@ -603,18 +604,13 @@ class _StudioState extends State<Studio> {
           pullsReady: widget.pulls?.readyCount ?? 0,
           factory: widget.factory,
         );
-        return Shell(
+        final shell = Shell(
           nav: nav,
           hosts: store.hosts,
           place: place,
           state: _state(store),
           content: (navigation) => _content(place, nav, navigation),
-          onSelect: (next) => setState(() {
-            // The notice was about the link that opened the screen, not about
-            // the place the person has chosen since.
-            _notice = null;
-            _place = next;
-          }),
+          onSelect: _go,
           onRetry: _reread,
           now: store.now,
           unsaved: _unsaved,
@@ -623,8 +619,55 @@ class _StudioState extends State<Studio> {
               ? null
               : () => unawaited(_openConnectRepo(context)),
         );
+        // The shell's keys (f9-parity decision 6): one Shortcuts above the
+        // place, so `⌘N` and `⌘1/⌘2/⌘3` work wherever a person is rather than
+        // only inside a thread. Nothing below gains keyboard policy.
+        return Shortcuts(
+          shortcuts: shellShortcuts,
+          child: Actions(
+            actions: {
+              NewWorkIntent: CallbackAction<NewWorkIntent>(
+                onInvoke: (_) {
+                  _newWorkFromKeys();
+                  return null;
+                },
+              ),
+              GoOverviewIntent: CallbackAction<GoOverviewIntent>(
+                onInvoke: (_) {
+                  _go(const Place.overview());
+                  return null;
+                },
+              ),
+              GoInboxIntent: CallbackAction<GoInboxIntent>(
+                onInvoke: (_) {
+                  _go(const Place(PlaceKind.inbox));
+                  return null;
+                },
+              ),
+              GoPullsIntent: CallbackAction<GoPullsIntent>(
+                onInvoke: (_) {
+                  _go(const Place(PlaceKind.pulls));
+                  return null;
+                },
+              ),
+            },
+            child: Focus(autofocus: true, child: shell),
+          ),
+        );
       },
     );
+  }
+
+  /// Opens [next] as the screen's place, whether a row, a control or a key
+  /// asked for it: one path, so every entry point clears the notice and sets
+  /// the place the same way (f9-parity decision 6).
+  void _go(Place next) {
+    setState(() {
+      // The notice was about the link that opened the screen, not about the
+      // place the person has chosen since.
+      _notice = null;
+      _place = next;
+    });
   }
 
   /// The shell's state, from what the store holds.
@@ -800,11 +843,10 @@ class _StudioState extends State<Studio> {
           thread: thread,
           buildStore: build,
           composerFor: widget.composerFor,
-          onNewWork: widget.newWorkFor == null
-              ? null
-              : () => unawaited(
-                  _openNewWork(navigation, thread.host, thread.project),
-                ),
+          // The thread's own ⌘N resolves to the shell's one call, so it obeys
+          // the same rule about a composer that has the keyboard (F9 decision
+          // 6).
+          onNewWork: widget.newWorkFor == null ? null : _newWorkFromKeys,
           asks: [
             for (final ask in widget.inbox.asks)
               if (ask.thread?.host == thread.host &&
@@ -947,6 +989,45 @@ class _StudioState extends State<Studio> {
     final model = build(host);
     await showConnectRepoSheet(context, model);
     model.dispose();
+  }
+
+  /// ⌘N from anywhere (f9-parity decision 6): it opens the new-work dialog for
+  /// the project in view — the thread's, the project place's, else the first
+  /// the fleet lists — and does nothing at all while a text field has the
+  /// keyboard, so typing a `⌘N` into a composer is not a key press.
+  void _newWorkFromKeys() {
+    // A text field keeps its own keys. In this Flutter the field's focus node
+    // is attached by a Focus widget inside EditableText, so the field is an
+    // ancestor of the focused context rather than that context's own widget.
+    final focused = FocusManager.instance.primaryFocus?.context;
+    if (focused != null &&
+        focused.findAncestorWidgetOfExactType<EditableText>() != null) {
+      return;
+    }
+    final place = _place;
+    String? host;
+    String? project;
+    if (place.kind == PlaceKind.thread) {
+      final thread = _threadRef(place);
+      host = thread?.host;
+      project = thread?.project;
+    } else if (place.kind == PlaceKind.project) {
+      final root = place.id;
+      if (root != null) {
+        host = _hostOfProject(root);
+        project = root;
+      }
+    }
+    if (host == null || project == null) {
+      final first = _firstProject();
+      // A dialog with no project to belong to is not opened at all.
+      if (first == null) return;
+      host = first.$1;
+      project = first.$2;
+    }
+    unawaited(
+      _openNewWork(PlaceNavigation(go: _go, unsaved: _unsaved), host, project),
+    );
   }
 
   /// Opens the Studio's one new-work dialog for one project, and the place the

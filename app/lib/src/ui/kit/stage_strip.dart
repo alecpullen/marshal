@@ -45,20 +45,27 @@ class StageStrip extends StatelessWidget {
       children: [
         Segments(done: current, total: labels.length, status: status),
         const SizedBox(height: Space.s6),
-        Wrap(
-          spacing: Space.s12,
-          runSpacing: Space.s4,
-          crossAxisAlignment: WrapCrossAlignment.center,
+        // One word per segment, with the same gaps the bar draws, so a stage
+        // is named under the segment it is.
+        Row(
           children: [
-            for (final (index, label) in labels.indexed)
-              Text(
-                label,
-                style: index == current ? e.bodyStrong : e.small.tint(e.faint),
+            for (final (index, label) in labels.indexed) ...[
+              if (index > 0) const SizedBox(width: Space.s4),
+              Expanded(
+                child: Text(
+                  label,
+                  style: index == current
+                      ? e.bodyStrong
+                      : e.small.tint(e.faint),
+                ),
               ),
-            if (end != null && end.isNotEmpty)
-              Text(end, style: e.label.tint(e.muted)),
+            ],
           ],
         ),
+        if (end != null && end.isNotEmpty) ...[
+          const SizedBox(height: Space.s6),
+          Text(end, style: e.label.tint(e.muted)),
+        ],
       ],
     );
   }

@@ -94,6 +94,31 @@ void main() {
     expect(action.note, isNull, reason: 'there is nothing to explain');
   });
 
+  testWidgets('one repair round is singular in its cell', (tester) async {
+    final digest = stopped();
+    digest['tasks'] = [
+      {
+        'n': 1,
+        'title': 'Read the item',
+        'dependsOn': <int>[],
+        'status': 'active',
+        'startedAt': 1763351900000,
+        'fixRounds': 1,
+        'stages': [
+          {'name': 'implement', 'state': 'done'},
+          {'name': 'review', 'state': 'failed'},
+        ],
+      },
+    ];
+    final model = RunModel.fromDigest('a-run', digest);
+    addTearDown(model.dispose);
+    await pump(tester, model);
+
+    // One round is "1 round": the cell's note counts rounds, not a plural.
+    expect(find.text('1 round'), findsOneWidget);
+    expect(find.text('1 rounds'), findsNothing);
+  });
+
   testWidgets('a run without the seam says why it cannot be answered', (
     tester,
   ) async {

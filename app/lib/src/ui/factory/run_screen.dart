@@ -377,7 +377,8 @@ class _RunScreenState extends State<RunScreen> {
     final cell = task.cell(lane);
     final note = [
       if (cell.detail.isNotEmpty) cell.detail,
-      if (cell.fixRounds > 0) '${cell.fixRounds} rounds',
+      if (cell.fixRounds > 0)
+        cell.fixRounds == 1 ? '1 round' : '${cell.fixRounds} rounds',
       if (cell.commit.isNotEmpty) cell.commit,
     ].join(' · ');
     return LaneCell(

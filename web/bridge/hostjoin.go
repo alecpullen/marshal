@@ -43,9 +43,6 @@ const (
 	joinBackoffMax = 30 * time.Second
 	// joinKeepAlive is each joined connection's TCP keep-alive (D14).
 	joinKeepAlive = 15 * time.Second
-	// joinReadHeaderTimeout is the joiner's server's header deadline, which is
-	// the one cmd/webbridge/main.go's listeners set.
-	joinReadHeaderTimeout = 10 * time.Second
 	// relayedStudioPrefix is the Studio's own surface. A relayed request must
 	// not reach it: minting a sign-in code and handing over a token are what a
 	// connection to this machine alone may ask for (D15).
@@ -77,10 +74,19 @@ type Joiner struct {
 	name     string
 	secret   string
 	instance string
-	// handler serves a joined connection, and listener is where the joined
-	// connections wait for it.
+	// handler serves a joined connection, listener is where the joined
+	// connections wait for it, and srv serves them.
+	//
+	// srv carries no ReadHeaderTimeout, unlike cmd/webbridge's listeners: a
+	// spare connection is idle by design and can wait minutes for its first
+	// request, so any header deadline closes it. The pool then redials for
+	// ever, and the relay's queue fills with connections it has already been
+	// sent a FIN on (the plan 3 record's run by hand). Only the relay writes
+	// to a joined connection, and it is trusted as much as the daemons that
+	// join it (D15), so the deadline buys nothing.
 	handler  http.Handler
 	listener *joinListener
+	srv      *http.Server
 
 	// spare, cap, backoffMin, backoffMax and keepAlive are the joiner's limits
 	// (decision 3).
@@ -148,6 +154,10 @@ func NewJoiner(cfg JoinConfig, h http.Handler) (*Joiner, error) {
 		j.tls = tlsConfig
 	}
 	j.listener = newJoinListener(j)
+	// No ReadHeaderTimeout: see the srv field's comment. A spare connection's
+	// first request may be minutes away, and only the trusted relay writes to
+	// one.
+	j.srv = &http.Server{Handler: h}
 	return j, nil
 }
 
@@ -257,7 +267,7 @@ func (j *Joiner) Run(ctx context.Context) error {
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
-	srv := &http.Server{Handler: j.handler, ReadHeaderTimeout: joinReadHeaderTimeout}
+	srv := j.srv
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(j.listener) }()
 	pooled := make(chan struct{})

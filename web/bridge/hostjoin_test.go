@@ -142,6 +142,51 @@ func TestAJoinerKeepsTwoSpareConnections(t *testing.T) {
 	}
 }
 
+// TestTheSparesOutliveAnIdleWait is what the plan 3 run by hand found: a spare
+// connection is idle until the relay sends a request down it, which may be
+// minutes later. A joiner whose server carries a header deadline closes every
+// spare when the deadline expires and redials for ever, and the relay's queue
+// fills with connections it has already been sent a FIN on — so a forward
+// takes a corpse and answers 502.
+func TestTheSparesOutliveAnIdleWait(t *testing.T) {
+	_, relay, ts := relayServer(t)
+	j := joinerFor(t, ts, "alpha", "alpha-secret", joinerAnswer())
+	joinerRun(t, j)
+
+	waitFor(t, 5*time.Second, "the two spare connections to join", func() bool {
+		return queuedCount(relay.hostFor("alpha")) == 2
+	})
+	before := joinerSpares(j)
+	time.Sleep(1500 * time.Millisecond)
+	after := joinerSpares(j)
+	if len(after) != len(before) {
+		t.Fatalf("%d joined connections held after an idle wait, want the same %d", len(after), len(before))
+	}
+	for _, c := range after {
+		found := false
+		for _, was := range before {
+			if c == was {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("a joined connection was replaced while idle; nothing was sent down either one")
+		}
+	}
+	if got := queuedCount(relay.hostFor("alpha")); got != 2 {
+		t.Fatalf("%d spare connections queued after an idle wait, want 2", got)
+	}
+	if got := j.openCount(); got != 2 {
+		t.Fatalf("%d joined connections open after an idle wait, want 2", got)
+	}
+	// The deadline itself is the bug: no interval is long enough, because a
+	// spare's first request has no bound.
+	if got := j.srv.ReadHeaderTimeout; got != 0 {
+		t.Fatalf("the joined server's ReadHeaderTimeout = %s, want none: it closes every idle spare", got)
+	}
+}
+
 // TestAConsumedConnectionIsReplaced is decision 5: the connection that carries
 // the relay's first request is replaced, while it is still open.
 func TestAConsumedConnectionIsReplaced(t *testing.T) {

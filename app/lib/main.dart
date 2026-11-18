@@ -39,6 +39,7 @@ import 'src/model/route_translation.dart';
 import 'src/model/schedules_model.dart';
 import 'src/model/secrets_model.dart';
 import 'src/model/section_model.dart';
+import 'src/model/signals_store.dart';
 import 'src/model/stack_store.dart';
 import 'src/model/usage_model.dart';
 import 'src/model/watches_model.dart';
@@ -91,12 +92,19 @@ Future<void> main() async {
   // This window's appearance and transcript density: Settings' General
   // section sets them, and the sections F7 built read them back.
   final preferences = GeneralPreferences();
+  // Every host's tripped watches, blocked requests and held drafts (spec D4).
+  // It is built after the inbox so an answer can ask for a re-read of the host
+  // it answered on, and its reads are what the Overview's card and the inbox's
+  // network and draft asks come from.
+  late final SignalsStore signals;
   final inbox = InboxModel(
     store,
     client: (name) =>
         hosts.hosts.firstWhere((host) => host.name == name).client,
     factory: factory,
+    onAnswered: (host) => signals.refresh(host),
   );
+  signals = SignalsStore(hosts, inbox: inbox, now: () => DateTime.now());
   // The pull requests read the same hosts, follow the same fleet streams, and
   // post through the same clients (F5).
   final pulls = PullsModel(
@@ -129,6 +137,7 @@ Future<void> main() async {
           automationsFor: sections.automations,
           libraryFor: sections.library,
           settingsFor: sections.settings,
+          signals: signals,
           // A thread place opens its own session's transcript on the client
           // that reaches its host (F3): the same client the inbox answers with.
           threadStore: (thread) => StackStore(
@@ -270,6 +279,7 @@ Future<void> main() async {
     ),
   );
   factory.start();
+  signals.start();
   await startTray();
 }
 
@@ -313,6 +323,7 @@ class _Sections {
       (host) => _Automations(
         _clientFor(host)!,
         project: _projectFor(host),
+        host: host,
         now: store.now,
       ),
       dispose: (models) => models.dispose(),
@@ -459,11 +470,12 @@ class _Automations {
   _Automations(
     BridgeClient client, {
     required String project,
+    required String host,
     required DateTime now,
   }) : project = project,
        bots = BotsModel(client, project: project, now: now),
        schedules = SchedulesModel(client),
-       watches = WatchesModel(client, now: now),
+       watches = WatchesModel(client, host: host, now: now),
        recipes = RecipesModel(client) {
     for (final model in <SectionModel<Object>>[
       bots,

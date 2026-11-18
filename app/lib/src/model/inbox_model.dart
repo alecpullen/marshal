@@ -311,7 +311,12 @@ class Ask {
 /// writes no fleet state: the store is still the only writer, and an ask
 /// leaves when the stream stops reporting it.
 class InboxModel extends ChangeNotifier {
-  InboxModel(this._store, {required this.client, this.factory}) {
+  InboxModel(
+    this._store, {
+    required this.client,
+    this.factory,
+    this.onAnswered,
+  }) {
     _store.addListener(_rebuild);
     factory?.addListener(_rebuild);
     _rebuild();
@@ -323,6 +328,11 @@ class InboxModel extends ChangeNotifier {
   /// draft or a decision is never waiting with nothing showing it (F6
   /// decision 5). Null leaves the inbox to the fleet alone.
   final FactoryStore? factory;
+
+  /// Called with the ask's host after a network or draft answer posts
+  /// successfully, so that host's signals are read again (spec D4). A failed
+  /// post calls nothing: it changed nothing on the bridge.
+  final void Function(String host)? onAnswered;
 
   /// The client that reaches a host, for the answer an ask posts.
   final BridgeClient Function(String host) client;
@@ -454,6 +464,13 @@ class InboxModel extends ChangeNotifier {
       return;
     }
     // Posted: it stays sending until the store says it is gone.
+    //
+    // A network or draft answer changed what its host reports, so that host's
+    // signals are read again (spec D4). Every other kind's answer is a fleet
+    // change the stream carries, so it asks for nothing here.
+    if (ask.kind == AskKind.network || ask.kind == AskKind.reviewDraft) {
+      onAnswered?.call(ask.host);
+    }
   }
 
   /// The body a question's answer posts: exactly one [Answer] per question,

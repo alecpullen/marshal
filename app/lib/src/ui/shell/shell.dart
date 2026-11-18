@@ -17,6 +17,7 @@ import '../../model/place_host.dart' show placeHost;
 import '../../model/planning_model.dart';
 import '../../model/project_model.dart';
 import '../../model/route_translation.dart';
+import '../../model/signals_store.dart';
 import '../../model/source_state.dart';
 import '../../model/pulls_model.dart';
 import '../../model/revision_model.dart';
@@ -90,6 +91,7 @@ class Shell extends StatefulWidget {
     this.automationsFor,
     this.libraryFor,
     this.settingsFor,
+    this.signals,
   });
 
   final NavModel nav;
@@ -136,6 +138,11 @@ class Shell extends StatefulWidget {
 
   /// Builds the Settings place for the resolved host (F7 decision 7).
   final HostPlaceBuilder? settingsFor;
+
+  /// Every host's tripped watches, blocked requests and held drafts (spec D4).
+  /// Null leaves the Overview's Automations card with nothing to list, so a
+  /// test or an embedded host that supplies none still builds.
+  final SignalsStore? signals;
 
   @override
   State<Shell> createState() => _ShellState();
@@ -490,6 +497,7 @@ class Studio extends StatefulWidget {
     this.automationsFor,
     this.libraryFor,
     this.settingsFor,
+    this.signals,
     this.initialPlace = const Place.overview(),
     this.startPage,
   });
@@ -570,6 +578,11 @@ class Studio extends StatefulWidget {
   /// Builds the Settings place for one host at one of its sections (F7
   /// decision 7).
   final HostPlaceBuilder? settingsFor;
+
+  /// Every host's tripped watches, blocked requests and held drafts (spec D4).
+  /// Null leaves the Overview's Automations card with nothing to list, so a
+  /// test or an embedded host that supplies none still builds.
+  final SignalsStore? signals;
 
   /// The place a deep link names.
   final Place initialPlace;
@@ -658,7 +671,11 @@ class _StudioState extends State<Studio> {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: Listenable.merge([widget.store, widget.inbox]),
+      animation: Listenable.merge([
+        widget.store,
+        widget.inbox,
+        if (widget.signals != null) widget.signals!,
+      ]),
       builder: (context, _) {
         final store = widget.store;
         final place = _place;
@@ -687,6 +704,7 @@ class _StudioState extends State<Studio> {
           automationsFor: widget.automationsFor,
           libraryFor: widget.libraryFor,
           settingsFor: widget.settingsFor,
+          signals: widget.signals,
         );
       },
     );
@@ -712,6 +730,8 @@ class _StudioState extends State<Studio> {
         overview: buildOverview(widget.store, widget.inbox),
         now: widget.store.now,
         hosts: widget.store.hosts,
+        automations: widget.signals?.tripped ?? const [],
+        manyHosts: widget.signals?.manyHosts ?? false,
         pulls: widget.pulls?.views ?? const [],
         state: _state(widget.store),
         onSelect: navigation.go,

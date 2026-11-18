@@ -24,6 +24,7 @@ class Overview extends StatelessWidget {
     required this.now,
     this.hosts = const [],
     this.automations = const [],
+    this.manyHosts = false,
     this.pulls = const [],
     this.state,
     this.onSelect,
@@ -42,6 +43,10 @@ class Overview extends StatelessWidget {
   /// The watches that tripped, newest first: the Automations card, and
   /// nothing when none has (F7 plan 1, Task 3).
   final List<TrippedWatch> automations;
+
+  /// Whether more than one host is known, so a tripped watch's row names its
+  /// host before its name (spec D4, decision 5).
+  final bool manyHosts;
 
   /// The pull requests that need a person: the ready and the failing ones
   /// (F5 decision 14). They sit directly under Needs you, and the place is one
@@ -194,7 +199,7 @@ class Overview extends StatelessWidget {
       Rows([
         for (final watch in automations)
           RowItem(
-            name: watch.name,
+            name: manyHosts ? '${watch.host} · ${watch.name}' : watch.name,
             description: '${watch.agent} · ${watch.action}',
             value: watch.age,
             onTap: onSelect == null

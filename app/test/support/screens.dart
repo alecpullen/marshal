@@ -435,12 +435,21 @@ Widget _overview({StateKind? state}) => Overview(
   ],
   automations: [
     TrippedWatch(
+      host: 'local',
       name: 'the gate',
       agent: 'Agent a-1',
       action: 'Reroutes implementer to local',
       age: '4m',
     ),
+    TrippedWatch(
+      host: 'studio',
+      name: 'the queue',
+      agent: 'studio',
+      action: 'Notifies you',
+      age: '12m',
+    ),
   ],
+  manyHosts: true,
   state: state,
   onRetry: () {},
   onSelect: (_) {},
@@ -491,50 +500,54 @@ RecipesModel _recipesFixture() => RecipesModel.fixture(const [
 
 /// The watches the Automations fixture lists: one that tripped with a
 /// reroute, and one watching quietly from the bridge's own session.
-WatchesModel _watchesFixture() => WatchesModel.fixture([
-  WatchInfo(
-    agentID: 'a-1',
-    id: 'w-1',
-    name: 'the gate',
-    kind: 'command',
-    state: 'fired',
-    condition: 'exit != 0',
-    mode: 'interval',
-    intervalMs: 5000,
-    owner: 'a-1',
-    fireCount: 2,
-    lastSample: 'exit 1',
-    createdAt: 1763352000000,
-    lastFiredAt: shellNow.millisecondsSinceEpoch - 4 * 60 * 1000,
-    samples: const [
-      WatchSample(at: 1763352300000, value: 0, tripped: false),
-      WatchSample(at: 1763352600000, value: 1, tripped: true),
-    ],
-    onTrip: const OnTrip(
+WatchesModel _watchesFixture() => WatchesModel.fixture(
+  [
+    WatchInfo(
+      agentID: 'a-1',
+      id: 'w-1',
+      name: 'the gate',
+      kind: 'command',
+      state: 'fired',
+      condition: 'exit != 0',
+      mode: 'interval',
+      intervalMs: 5000,
+      owner: 'a-1',
+      fireCount: 2,
+      lastSample: 'exit 1',
+      createdAt: 1763352000000,
+      lastFiredAt: shellNow.millisecondsSinceEpoch - 4 * 60 * 1000,
+      samples: const [
+        WatchSample(at: 1763352300000, value: 0, tripped: false),
+        WatchSample(at: 1763352600000, value: 1, tripped: true),
+      ],
+      onTrip: const OnTrip(
+        notify: true,
+        resume: false,
+        reroute: RerouteRule(role: 'implementer', preset: 'local'),
+      ),
       notify: true,
       resume: false,
-      reroute: RerouteRule(role: 'implementer', preset: 'local'),
     ),
-    notify: true,
-    resume: false,
-  ),
-  WatchInfo(
-    agentID: 'studio',
-    id: 'w-2',
-    name: 'the queue',
-    kind: 'file',
-    state: 'watching',
-    condition: 'the file appears',
-    mode: 'interval',
-    intervalMs: 60000,
-    fireCount: 0,
-    createdAt: 1763352000000,
-    samples: const [
-      WatchSample(at: 1763352300000, value: 0, tripped: false),
-      WatchSample(at: 1763352600000, value: 0, tripped: false),
-    ],
-  ),
-], now: shellNow);
+    WatchInfo(
+      agentID: 'studio',
+      id: 'w-2',
+      name: 'the queue',
+      kind: 'file',
+      state: 'watching',
+      condition: 'the file appears',
+      mode: 'interval',
+      intervalMs: 60000,
+      fireCount: 0,
+      createdAt: 1763352000000,
+      samples: const [
+        WatchSample(at: 1763352300000, value: 0, tripped: false),
+        WatchSample(at: 1763352600000, value: 0, tripped: false),
+      ],
+    ),
+  ],
+  now: shellNow,
+  host: 'local',
+);
 
 /// The bots the Automations fixture lists: the review bot with one held
 /// review, and the CI fixer with one recent run.

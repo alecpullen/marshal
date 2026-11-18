@@ -87,7 +87,11 @@ void main() {
         ]),
       ),
     });
-    final model = WatchesModel(BridgeClient(transport), now: now);
+    final model = WatchesModel(
+      BridgeClient(transport),
+      now: now,
+      host: 'local',
+    );
     addTearDown(model.dispose);
     await model.load();
 
@@ -113,7 +117,11 @@ void main() {
         ]),
       ),
     });
-    final model = WatchesModel(BridgeClient(transport), now: now);
+    final model = WatchesModel(
+      BridgeClient(transport),
+      now: now,
+      host: 'local',
+    );
     addTearDown(model.dispose);
     await model.load();
 
@@ -144,7 +152,11 @@ void main() {
       ),
       'POST /api/reroutes/rr-1/undo': const Response(status: 200, body: '{}'),
     });
-    final model = WatchesModel(BridgeClient(transport), now: now);
+    final model = WatchesModel(
+      BridgeClient(transport),
+      now: now,
+      host: 'local',
+    );
     addTearDown(model.dispose);
     await model.load();
 
@@ -195,7 +207,11 @@ void main() {
         ]),
       ),
     });
-    final model = WatchesModel(BridgeClient(transport), now: now);
+    final model = WatchesModel(
+      BridgeClient(transport),
+      now: now,
+      host: 'local',
+    );
     addTearDown(model.dispose);
     await model.load();
 
@@ -227,7 +243,11 @@ void main() {
       'GET /api/watches': const Response(status: 200, body: '[]'),
       'POST /api/reroutes/rr-1/undo': const Response(status: 200, body: '{}'),
     });
-    final model = WatchesModel(BridgeClient(transport), now: now);
+    final model = WatchesModel(
+      BridgeClient(transport),
+      now: now,
+      host: 'local',
+    );
     addTearDown(model.dispose);
     await model.undoReroute('rr-1');
     expect(
@@ -248,6 +268,7 @@ void main() {
         }),
       ),
       now: now,
+      host: 'local',
     );
     addTearDown(model.dispose);
 
@@ -267,6 +288,7 @@ void main() {
         automations: model.tripped.isEmpty
             ? const [
                 TrippedWatch(
+                  host: 'local',
                   name: 'the gate',
                   agent: 'Agent a-1',
                   action: 'Reroutes implementer to local',

@@ -200,6 +200,33 @@ class FactoryStore extends ChangeNotifier {
     return item;
   }
 
+  /// Creates a work item from a reviewed capture and keeps it: the bridge's
+  /// frozen plan, specification and verified files are what the draft is built
+  /// from, so the evidence the person reviewed is the evidence the item runs
+  /// on.
+  ///
+  /// It answers the item the bridge made, including the item a replayed
+  /// request already made, and folds it into the list exactly as [create]
+  /// does, so the work item's thread opens from the same data every other item
+  /// comes from.
+  Future<FactoryItem> handoff(
+    String host,
+    String plannerID,
+    String snapshotID,
+    FactoryCreate draft,
+  ) async {
+    final owner = _ownerOf(host);
+    if (owner == null) throw StateError('no host named $host');
+    final item = await owner.client.handoffPlannerSnapshot(
+      plannerID,
+      snapshotID,
+      draft,
+    );
+    _apply(host, item);
+    notifyListeners();
+    return item;
+  }
+
   // The commands a screen sends (F6 decision 5). Each names what the person
   // decided, never a wire payload: `ui/` reads `model/` and never touches
   // `client/` (F1's boundary), and a command is built here where the wire is.

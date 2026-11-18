@@ -60,7 +60,7 @@ void main() {
     final latest = planner.latest;
     expect(latest, isNotNull);
 
-    ThreadRef? seenThread;
+    (String, String, String)? seen;
     String? seenPlan;
     String? seenSpec;
     String? seenPlanner;
@@ -68,21 +68,23 @@ void main() {
     final built = <HandoffModel>[];
 
     Future<HandoffModel> build(
-      ThreadRef thread,
+      String host,
+      String project,
+      String title,
       String plan,
       String spec, {
       String? plannerID,
       PlannerSnapshot? snapshot,
     }) async {
-      seenThread = thread;
+      seen = (host, project, title);
       seenPlan = plan;
       seenSpec = spec;
       seenPlanner = plannerID;
       seenSnapshot = snapshot;
       final review = HandoffModel(
         defaults: const ProjectDefaults(repoID: 'repo-1'),
-        projectRoot: thread.project,
-        title: thread.title,
+        projectRoot: project,
+        title: title,
         plan: plan,
         spec: spec,
         reviewedSnapshot: snapshot,
@@ -100,9 +102,9 @@ void main() {
       addTearDown(each.dispose);
     }
 
-    // The thread and the frozen bytes travel, and the capture is the same one
+    // The project the plan belongs to travels, and the capture is the same one
     // the model holds, not a copy or a null.
-    expect(seenThread, _thread);
+    expect(seen, (_thread.host, _thread.project, _thread.title));
     expect(seenPlan, '## Task 1\nFrozen plan.\n');
     expect(seenSpec, 'Frozen specification.');
     expect(seenPlanner, 'planner-7');

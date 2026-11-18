@@ -224,6 +224,9 @@ class NewWorkModel extends ChangeNotifier {
         }
       },
       spawn: (request) => client.spawn(request),
+      // "Plan first" starts a planner through the bridge's own route (F6
+      // decision 8).
+      plan: (request) => client.createPlanner(request),
       issuesFromRepo: fromRepo,
       // What a menu can offer this phase, from data that exists: the two
       // permission modes the session's mode route takes, the two workspaces

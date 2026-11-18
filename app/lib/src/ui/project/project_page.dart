@@ -43,6 +43,7 @@ class ProjectPage extends StatefulWidget {
     this.onOpenAgent,
     this.onOpenRun,
     this.onOpenAutomations,
+    this.onNewWork,
     this.observedChecks = const <ObservedCheck>[],
   });
 
@@ -74,6 +75,11 @@ class ProjectPage extends StatefulWidget {
 
   /// Opens the Automations place. Null leaves the summary without its link.
   final VoidCallback? onOpenAutomations;
+
+  /// Opens the Studio's new-work dialog for this project: the page's one
+  /// primary action, "New" (design.md, "Starting work"). Null leaves the header
+  /// without one rather than drawing a button that opens nothing.
+  final VoidCallback? onNewWork;
 
   /// The checks this project's recorded work has observed: the evidence the
   /// Defaults tab may offer beside the editor, never a requirement.
@@ -179,17 +185,24 @@ class _ProjectPageState extends State<ProjectPage> {
     );
   }
 
-  /// The page's one action: Save while the Defaults tab holds an edit. It is
-  /// the only primary, and it comes first (§5).
+  /// The page's actions: New, which starts work in this project, and — while
+  /// the Defaults tab holds an edit — Save.
+  ///
+  /// New is the page's one primary, and it comes first (§5). Save is plain:
+  /// the page is for the project's work, and its settings document is edited
+  /// on one tab of it.
   List<Widget> _actions() {
-    if (_tab != 2) return const [];
     final model = widget.model;
+    final newWork = widget.onNewWork;
     final saving = model.saveState == SaveState.saving;
     return [
-      Btn.primary(
-        saving ? 'Saving…' : 'Save',
-        onTap: model.dirty && !saving ? () => unawaited(model.save()) : null,
-      ),
+      if (newWork != null)
+        Btn.primary('New', icon: Glyphs.plus, onTap: newWork),
+      if (_tab == 2)
+        Btn(
+          saving ? 'Saving…' : 'Save',
+          onTap: model.dirty && !saving ? () => unawaited(model.save()) : null,
+        ),
     ];
   }
 

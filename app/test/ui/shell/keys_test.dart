@@ -419,12 +419,12 @@ void main() {
       of: find.byType(Sidebar),
       matching: find.byType(EditableText),
     );
-    expect(tester.widget<EditableText>(search).focusNode?.hasFocus, isFalse);
+    expect(tester.widget<EditableText>(search).focusNode.hasFocus, isFalse);
 
     await sendMeta(tester, LogicalKeyboardKey.keyK);
 
     // `⌘K` is the search's own key wherever a person is (f9-parity decision 6).
-    expect(tester.widget<EditableText>(search).focusNode?.hasFocus, isTrue);
+    expect(tester.widget<EditableText>(search).focusNode.hasFocus, isTrue);
   });
 
   testWidgets('⌘K from the composer focuses search', (tester) async {
@@ -473,7 +473,7 @@ void main() {
     await tester.pump();
     await tester.enterText(composer, 'half a thought');
     await tester.pump();
-    expect(tester.widget<EditableText>(composer).focusNode?.hasFocus, isTrue);
+    expect(tester.widget<EditableText>(composer).focusNode.hasFocus, isTrue);
 
     await sendMeta(tester, LogicalKeyboardKey.keyK);
 
@@ -484,8 +484,8 @@ void main() {
       of: find.byType(Sidebar),
       matching: find.byType(EditableText),
     );
-    expect(tester.widget<EditableText>(search).focusNode?.hasFocus, isTrue);
-    expect(tester.widget<EditableText>(composer).focusNode?.hasFocus, isFalse);
+    expect(tester.widget<EditableText>(search).focusNode.hasFocus, isTrue);
+    expect(tester.widget<EditableText>(composer).focusNode.hasFocus, isFalse);
     expect(find.text('half a thought'), findsOneWidget);
   });
 

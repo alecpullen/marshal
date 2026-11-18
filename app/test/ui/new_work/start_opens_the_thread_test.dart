@@ -107,7 +107,7 @@ void main() {
           store: fixture.store,
           inbox: inboxModel,
           threadStore: (thread) => StackStore.seeded(_snapshot(thread.id)),
-          newWorkFor: (thread) => NewWorkModel.forProject(
+          newWorkFor: (host, root) => NewWorkModel.forProject(
             project('/home/u/marshal'),
             fixture.clientFor('local'),
             host: 'local',
@@ -221,8 +221,8 @@ void main() {
           threadStore: (thread) => StackStore.seeded(_snapshot(thread.id)),
           // Both hosts answer with a project, so the dialog may start on
           // either (spec D10, P8 plan 2 decision 6).
-          newWorkFor: (thread) => NewWorkModel.forHosts(
-            host: thread.host,
+          newWorkFor: (host, root) => NewWorkModel.forHosts(
+            host: host,
             routes: {
               'local': NewWorkRoutes.forProject(
                 project('/home/u/marshal'),
@@ -233,7 +233,7 @@ void main() {
                 fixture.clientFor('studio'),
               ),
             },
-            project: thread.host == 'studio'
+            project: host == 'studio'
                 ? project('/home/u/studio')
                 : project('/home/u/marshal'),
           ),

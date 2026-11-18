@@ -200,6 +200,9 @@ class NewWorkRoutes {
         }
       },
       spawn: (request) => client.spawn(request),
+      // "Plan first" starts a planner through the bridge's own route (F6
+      // decision 8).
+      plan: (request) => client.createPlanner(request),
       repoID: repoId,
       projects: () async => [for (final p in await client.projects()) p.root],
     );

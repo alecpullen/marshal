@@ -4,6 +4,7 @@ import 'package:flutter/services.dart' show SystemNavigator;
 
 import '../../model/age.dart';
 import '../../model/composer_model.dart';
+import '../../model/connect_repo_model.dart';
 import '../../model/factory_store.dart';
 import '../../model/handoff_model.dart';
 import '../../model/new_work_model.dart';
@@ -43,17 +44,26 @@ import '../sections/unsaved_guard.dart';
 import '../new_work/new_work_dialog.dart';
 import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
+import 'connect_repo_sheet.dart';
 import 'host_switcher.dart';
+import 'keys.dart';
 import 'placeholder.dart';
 import 'sidebar.dart';
 
 /// Builds the handoff review for a plan (F6 decision 8), bound to the frozen
 /// capture the review was opened from when the caller has one.
 ///
+/// It names the host, the project and the title rather than a thread, because
+/// a plan is handed off from two places: a planning thread, and the new-work
+/// dialog's "Work item", which a project page or the Overview can open
+/// without any thread of its own.
+///
 /// It is asynchronous because what the review inherits is the project's own
 /// settings, read when the person hands the plan off (F6 decision 12).
 typedef HandoffBuilder = Future<HandoffModel> Function(
-  model.ThreadRef thread,
+  String host,
+  String project,
+  String title,
   String plan,
   String spec, {
   String? plannerID,
@@ -92,6 +102,8 @@ class Shell extends StatefulWidget {
     this.libraryFor,
     this.settingsFor,
     this.signals,
+    this.onConnectRepo,
+    this.onNew,
   });
 
   final NavModel nav;
@@ -144,6 +156,16 @@ class Shell extends StatefulWidget {
   /// test or an embedded host that supplies none still builds.
   final SignalsStore? signals;
 
+  /// Connects a repository (F9 B1): the plus beside *Projects*. Null leaves
+  /// the control out; the sheet is the Studio's, so the shell only offers the
+  /// way into it.
+  final VoidCallback? onConnectRepo;
+
+  /// The place-level New (F9 B3): the narrow app bar's plus and the sidebar's
+  /// plus both call it, so they start work the way the page headers do. Null
+  /// leaves both out — there is no project to start work in.
+  final VoidCallback? onNew;
+
   @override
   State<Shell> createState() => _ShellState();
 }
@@ -194,6 +216,8 @@ class _ShellState extends State<Shell> {
     host: _host,
     onHost: _setHost,
     onSelect: (place) => _leave(() => widget.onSelect(place)),
+    onConnectRepo: widget.onConnectRepo,
+    onNew: widget.onNew,
     now: widget.now,
     inPanel: inPanel,
   );
@@ -258,6 +282,10 @@ class _ShellState extends State<Shell> {
                     style: e.bodyStrong,
                   ),
                 ),
+                if (widget.onNew != null) ...[
+                  IconBtn(Glyphs.plus, tooltip: 'New', onTap: widget.onNew),
+                  const SizedBox(width: Space.s6),
+                ],
                 IconBtn(
                   Glyphs.tray,
                   tooltip: 'Inbox',
@@ -500,6 +528,7 @@ class Studio extends StatefulWidget {
     this.threadStore,
     this.composerFor,
     this.newWorkFor,
+    this.connectRepoFor,
     this.planningFor,
     this.handoffFor,
     this.runFor,
@@ -541,9 +570,19 @@ class Studio extends StatefulWidget {
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
 
-  /// Builds the new-work dialog's model for a thread's project. Null leaves
-  /// `⌘N` without a dialog.
-  final NewWorkModel Function(model.ThreadRef thread)? newWorkFor;
+  /// Builds the new-work dialog's model for one host and project root. Null
+  /// leaves `⌘N` and every "New" without a dialog.
+  ///
+  /// It is keyed by the project, not by a thread: the Overview and a project
+  /// page start work too, and neither has a thread to start it from. Those
+  /// entry points are the design's (design.md, "Starting work", and the mock's
+  /// `Btn('New', primary: true, icon: plus)` in both page headers).
+  final NewWorkModel Function(String host, String project)? newWorkFor;
+
+  /// Builds the connect-repository sheet's model for one host (F9 B1). Null
+  /// leaves the sidebar's plus out: a host that wires no bridge cannot
+  /// register a repository.
+  final ConnectRepoModel Function(String host)? connectRepoFor;
 
   /// Builds a planning thread's model, for a planner a person started (F6
   /// decision 8). Null leaves the planning place unbuilt rather than drawing
@@ -697,18 +736,13 @@ class _StudioState extends State<Studio> {
           pullsReady: widget.pulls?.readyCount ?? 0,
           factory: widget.factory,
         );
-        return Shell(
+        final shell = Shell(
           nav: nav,
           hosts: store.hosts,
           place: place,
           state: _state(store),
           content: (navigation) => _content(place, nav, navigation),
-          onSelect: (next) => setState(() {
-            // The notice was about the link that opened the screen, not about
-            // the place the person has chosen since.
-            _notice = null;
-            _place = next;
-          }),
+          onSelect: _go,
           onRetry: _reread,
           now: store.now,
           unsaved: _unsaved,
@@ -717,9 +751,69 @@ class _StudioState extends State<Studio> {
           libraryFor: widget.libraryFor,
           settingsFor: widget.settingsFor,
           signals: widget.signals,
+          onConnectRepo: widget.connectRepoFor == null
+              ? null
+              : () => unawaited(_openConnectRepo(context)),
+          // The place-level New (F9 B3): the narrow app bar and the sidebar
+          // start work the way the page headers do, through the same
+          // resolution `⌘N` uses.
+          onNew: _firstProject() == null ? null : _newWorkFromKeys,
+        );
+        // The shell's keys (f9-parity decision 6): one Shortcuts above the
+        // place, so `⌘N` and `⌘1/⌘2/⌘3` work wherever a person is rather than
+        // only inside a thread. Nothing below gains keyboard policy.
+        return Shortcuts(
+          shortcuts: shellShortcuts,
+          child: Actions(
+            actions: {
+              NewWorkIntent: CallbackAction<NewWorkIntent>(
+                onInvoke: (_) {
+                  _newWorkFromKeys();
+                  return null;
+                },
+              ),
+              // A text field keeps its own keys, so `⌘1/⌘2/⌘3` typed into a
+              // composer are text rather than navigation, exactly as `⌘N` is
+              // (f9-parity decision 6). One guard, one spelling.
+              GoOverviewIntent: CallbackAction<GoOverviewIntent>(
+                onInvoke: (_) {
+                  if (_editingText()) return null;
+                  _go(const Place.overview());
+                  return null;
+                },
+              ),
+              GoInboxIntent: CallbackAction<GoInboxIntent>(
+                onInvoke: (_) {
+                  if (_editingText()) return null;
+                  _go(const Place(PlaceKind.inbox));
+                  return null;
+                },
+              ),
+              GoPullsIntent: CallbackAction<GoPullsIntent>(
+                onInvoke: (_) {
+                  if (_editingText()) return null;
+                  _go(const Place(PlaceKind.pulls));
+                  return null;
+                },
+              ),
+            },
+            child: Focus(autofocus: true, child: shell),
+          ),
         );
       },
     );
+  }
+
+  /// Opens [next] as the screen's place, whether a row, a control or a key
+  /// asked for it: one path, so every entry point clears the notice and sets
+  /// the place the same way (f9-parity decision 6).
+  void _go(Place next) {
+    setState(() {
+      // The notice was about the link that opened the screen, not about the
+      // place the person has chosen since.
+      _notice = null;
+      _place = next;
+    });
   }
 
   /// The shell's state, from what the store holds.
@@ -749,6 +843,19 @@ class _StudioState extends State<Studio> {
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
+        // The Overview's "New" (design.md, "Starting work"): it starts in the
+        // first project the fleet lists, and the dialog's Project chip offers
+        // the rest, so the default is a starting point rather than a limit.
+        // A place without a builder draws no button: the same guard the
+        // thread and the project place use.
+        onNewWork: widget.newWorkFor == null
+            ? null
+            : switch (_firstProject()) {
+                (final host, final project) => () => unawaited(
+                  _openNewWork(navigation, host, project),
+                ),
+                null => null,
+              },
       );
     }
     if (place.kind == PlaceKind.inbox) {
@@ -806,6 +913,9 @@ class _StudioState extends State<Studio> {
         onOpenRun: (run) => _openRun(navigation, host, run),
         onOpenAutomations: () =>
             navigation.go(const Place(PlaceKind.automations)),
+        onNewWork: widget.newWorkFor == null
+            ? null
+            : () => unawaited(_openNewWork(navigation, host, root)),
       );
     }
     if (place.kind == PlaceKind.thread) {
@@ -867,7 +977,12 @@ class _StudioState extends State<Studio> {
           thread: thread,
           buildStore: build,
           composerFor: widget.composerFor,
-          newWorkFor: widget.newWorkFor,
+          // The thread's own ⌘N opens the Studio's one dialog, naming the
+          // thread's host and project; the dialog may then move to another
+          // host (spec D10, P8 plan 2 decision 6).
+          newWorkFor: widget.newWorkFor == null
+              ? null
+              : (thread) => widget.newWorkFor!(thread.host, thread.project),
           onThreadStarted: (host, id) =>
               navigation.go(Place(PlaceKind.thread, host: host, id: id)),
           handoffFor: widget.handoffFor,
@@ -978,6 +1093,179 @@ class _StudioState extends State<Studio> {
     }
     final hosts = widget.store.hosts;
     return hosts.isEmpty ? 'local' : hosts.first.name;
+  }
+
+  /// A project to start new work in when the place names none: the first the
+  /// fleet lists, with the host that lists it.
+  ///
+  /// The Overview is every host's, so it has no project of its own. The
+  /// dialog's Project chip then offers the rest of that host's projects, which
+  /// makes this a starting point rather than a restriction. Null means no host
+  /// reports a project, and a spawn would have nowhere to run.
+  (String, String)? _firstProject() {
+    for (final host in widget.store.hosts) {
+      final projects = widget.store.projects(host: host.name);
+      if (projects.isEmpty) continue;
+      return (host.name, projects.first.root);
+    }
+    return null;
+  }
+
+  /// The host a repository connected from the sidebar is registered on: the
+  /// place's own, else the one that lists the first project, else the first
+  /// host there is. Null only when the fleet lists no host at all.
+  String? _hostForConnect() {
+    final place = _place;
+    if (place.kind == PlaceKind.thread) {
+      final thread = _threadRef(place);
+      if (thread != null) return thread.host;
+    }
+    if (place.kind == PlaceKind.project) {
+      final root = place.id;
+      if (root != null) return _hostOfProject(root);
+    }
+    final first = _firstProject();
+    if (first != null) return first.$1;
+    final hosts = widget.store.hosts;
+    return hosts.isEmpty ? null : hosts.first.name;
+  }
+
+  /// Opens the sheet that registers a repository for issue intake (F9 B1), on
+  /// the host the place belongs to.
+  Future<void> _openConnectRepo(BuildContext context) async {
+    final build = widget.connectRepoFor;
+    if (build == null) return;
+    final host = _hostForConnect();
+    if (host == null) return;
+    final model = build(host);
+    await showConnectRepoSheet(context, model);
+    model.dispose();
+  }
+
+  /// Whether a text field has the keyboard, so that a key the shell would
+  /// otherwise act on belongs to the field instead.
+  ///
+  /// A text field keeps its own keys. In this Flutter the field's focus node
+  /// is attached by a Focus widget inside EditableText, so the field is an
+  /// ancestor of the focused context rather than that context's own widget.
+  /// `⌘N` and `⌘1/⌘2/⌘3` all ask here, so a composer that has the keyboard is
+  /// not navigated away from mid-sentence.
+  bool _editingText() {
+    final focused = FocusManager.instance.primaryFocus?.context;
+    return focused != null &&
+        focused.findAncestorWidgetOfExactType<EditableText>() != null;
+  }
+
+  /// ⌘N from anywhere (f9-parity decision 6): it opens the new-work dialog for
+  /// the project in view — the thread's, the project place's, else the first
+  /// the fleet lists — and does nothing at all while a text field has the
+  /// keyboard, so typing a `⌘N` into a composer is not a key press.
+  void _newWorkFromKeys() {
+    if (_editingText()) return;
+    final place = _place;
+    String? host;
+    String? project;
+    if (place.kind == PlaceKind.thread) {
+      final thread = _threadRef(place);
+      host = thread?.host;
+      project = thread?.project;
+    } else if (place.kind == PlaceKind.project) {
+      final root = place.id;
+      if (root != null) {
+        host = _hostOfProject(root);
+        project = root;
+      }
+    }
+    if (host == null || project == null) {
+      final first = _firstProject();
+      // A dialog with no project to belong to is not opened at all.
+      if (first == null) return;
+      host = first.$1;
+      project = first.$2;
+    }
+    unawaited(
+      _openNewWork(PlaceNavigation(go: _go, unsaved: _unsaved), host, project),
+    );
+  }
+
+  /// Opens the Studio's one new-work dialog for one project, and the place the
+  /// answer names (design.md, "Starting work").
+  ///
+  /// A thread's `⌘N`, the Overview's "New" and a project page's "New" all come
+  /// here: an agent opens its thread, "Plan first" opens the planning thread
+  /// ([_rememberPlanner] is what lets its place resolve), and "Work item" opens
+  /// the handoff review.
+  Future<void> _openNewWork(
+    PlaceNavigation navigation,
+    String host,
+    String project,
+  ) async {
+    final build = widget.newWorkFor;
+    if (build == null) return;
+    final model = build(host, project);
+    await Sheet.show<void>(
+      context,
+      newWorkDialog(
+        model,
+        onCancel: () => Navigator.maybePop(context),
+        // The dialog may move to another host after it opens (spec D10), so
+        // every answer lands on the host the model names now, not the one the
+        // sheet opened on.
+        onStarted: (agentId) {
+          Navigator.maybePop(context);
+          navigation.go(Place(PlaceKind.thread, host: model.host, id: agentId));
+        },
+        onPlanned: (planner) {
+          Navigator.maybePop(context);
+          _rememberPlanner(model.host, project, planner);
+          navigation.go(
+            Place(PlaceKind.thread, host: model.host, id: planner.id),
+          );
+        },
+        onWorkItem: (prompt) {
+          Navigator.maybePop(context);
+          unawaited(_openNewWorkItem(navigation, model.host, project, prompt));
+        },
+      ),
+    );
+    model.dispose();
+  }
+
+  /// Opens the handoff review with [prompt] as the plan's starting text, and
+  /// the item approving it creates (F6 decision 9).
+  ///
+  /// The dialog's "Work item" is the same review a planning thread hands off
+  /// to, opened without a capture: the text the person typed is the plan, and
+  /// nothing has frozen it.
+  Future<void> _openNewWorkItem(
+    PlaceNavigation navigation,
+    String host,
+    String project,
+    String prompt,
+  ) async {
+    final build = widget.handoffFor;
+    if (build == null) return;
+    final model = await build(host, project, _titleOf(prompt), prompt, '');
+    // The project's settings are read before the sheet opens, so the place may
+    // be gone by now; the review is disposed rather than opened on a dead
+    // context.
+    if (!mounted) {
+      model.dispose();
+      return;
+    }
+    final item = await showHandoffSheet(context, model);
+    model.dispose();
+    if (item != null) {
+      navigation.go(Place(PlaceKind.thread, host: host, id: item));
+    }
+  }
+
+  /// The title a work item started from a prompt takes: its first line, so the
+  /// board reads as the person wrote it rather than as "Work item" repeated.
+  static String _titleOf(String prompt) {
+    final line = prompt.trim().split('\n').first.trim();
+    if (line.isEmpty) return 'Work item';
+    return line.length <= 72 ? line : '${line.substring(0, 71)}…';
   }
 
   /// Opens a run a project page listed (F6 decision 12): remembers it as a
@@ -1130,7 +1418,16 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
   ) async {
     final build = widget.handoffFor;
     if (build == null) return;
-    final model = await build(widget.thread, plan, spec);
+    // The review names the host and project it belongs to, and takes its
+    // title from the plan's first line (F6 decision 8).
+    final line = plan.trim().split('\n').first.trim();
+    final model = await build(
+      widget.thread.host,
+      widget.thread.project,
+      line.isEmpty ? 'Work item' : line,
+      plan,
+      spec,
+    );
     // The project's settings are read before the sheet opens, so the place may
     // be gone by now; the review is disposed rather than opened on a dead
     // context.
@@ -1455,7 +1752,9 @@ Future<HandoffModel> reviewForPlanner(
   model.ThreadRef thread,
   PlanningModel plan,
 ) => build(
-  thread,
+  thread.host,
+  thread.project,
+  thread.title,
   plan.latest?.plan ?? '',
   plan.latest?.spec ?? '',
   plannerID: plan.plannerID,
@@ -1546,6 +1845,7 @@ class _ProjectPlace extends StatefulWidget {
     this.onOpenAgent,
     this.onOpenRun,
     this.onOpenAutomations,
+    this.onNewWork,
   });
 
   final String root;
@@ -1559,6 +1859,9 @@ class _ProjectPlace extends StatefulWidget {
   final void Function(model.ThreadRef agent)? onOpenAgent;
   final void Function(ProjectRun run)? onOpenRun;
   final VoidCallback? onOpenAutomations;
+
+  /// Opens the Studio's new-work dialog for this project: the page's "New".
+  final VoidCallback? onNewWork;
 
   @override
   State<_ProjectPlace> createState() => _ProjectPlaceState();
@@ -1635,6 +1938,7 @@ class _ProjectPlaceState extends State<_ProjectPlace> {
       onOpenAgent: widget.onOpenAgent,
       onOpenRun: widget.onOpenRun,
       onOpenAutomations: widget.onOpenAutomations,
+      onNewWork: widget.onNewWork,
       observedChecks:
           factory?.observedChecks(
             projectRoot: widget.root,

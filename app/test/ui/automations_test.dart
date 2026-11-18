@@ -4,10 +4,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/client/transport.dart';
+import 'package:marshal_app/src/model/bots_model.dart';
 import 'package:marshal_app/src/model/recipes_model.dart';
 import 'package:marshal_app/src/model/schedules_model.dart';
+import 'package:marshal_app/src/model/section_model.dart';
+import 'package:marshal_app/src/model/watches_model.dart';
+import 'package:marshal_app/src/ui/automations/automations_place.dart';
+import 'package:marshal_app/src/ui/automations/bots_tab.dart';
 import 'package:marshal_app/src/ui/automations/recipes_tab.dart';
 import 'package:marshal_app/src/ui/automations/schedules_tab.dart';
+import 'package:marshal_app/src/ui/automations/watch_form.dart';
+import 'package:marshal_app/src/ui/automations/watches_tab.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 
 /// A transport that answers canned routes and records what was asked, so a
@@ -227,5 +234,232 @@ void main() {
     expect(copies, hasLength(1));
     expect((copies.single.body! as RecipeCopy).name, 'my-gate');
     expect(model.items.map((recipe) => recipe.name), contains('my-gate'));
+  });
+
+  /// The place with every tab's real widget, wired the way `main.dart` wires
+  /// its one New automation (F9 B4).
+  Widget place({
+    required BotsModel bots,
+    required SchedulesModel schedules,
+    required WatchesModel watches,
+    required RecipesModel recipes,
+  }) => AutomationsPlace(
+    bots: (tabs, state) => BotsTab(model: bots, tabs: tabs, state: state),
+    schedules: (tabs, state) =>
+        SchedulesTab(model: schedules, tabs: tabs, state: state),
+    watches: (tabs, state) =>
+        WatchesTab(model: watches, tabs: tabs, state: state),
+    recipes: (tabs, state) =>
+        RecipesTab(model: recipes, tabs: tabs, state: state),
+    onNew: (tab, context) async {
+      switch (tab) {
+        case 1:
+          SchedulesTab.create(context, schedules);
+        case 2:
+          await showWatchForm(context, watches);
+      }
+    },
+  );
+
+  testWidgets('New automation starts a schedule', (tester) async {
+    final now = DateTime.utc(2026, 11, 17, 4);
+    final bots = BotsModel.fixture(
+      const [],
+      project: '/home/u/marshal',
+      now: now,
+    );
+    final schedules = SchedulesModel.fixture(const <Schedule>[]);
+    final watches = WatchesModel.fixture(const [], now: now, host: 'local');
+    final recipes = RecipesModel.fixture(const []);
+    for (final model in <SectionModel<Object>>[
+      bots,
+      schedules,
+      watches,
+      recipes,
+    ]) {
+      addTearDown(model.dispose);
+      await model.load();
+    }
+
+    await pump(
+      tester,
+      place(
+        bots: bots,
+        schedules: schedules,
+        watches: watches,
+        recipes: recipes,
+      ),
+    );
+    await tester.tap(find.text('New automation'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Schedule'));
+    await tester.pumpAndSettle();
+
+    // The form the section page's own New opens, for a blank schedule: the
+    // shared detail with nothing typed and nothing to save yet.
+    expect(find.text('New schedule'), findsOneWidget);
+    expect(schedules.editing?.id, isEmpty);
+    expect(schedules.isCreating, isTrue);
+    expect(tester.widget<Btn>(find.widgetWithText(Btn, 'Save')).onTap, isNull);
+    final fields = tester.widgetList<EditableText>(find.byType(EditableText));
+    expect(fields, hasLength(3));
+    expect(
+      fields.every((field) => field.controller.text.isEmpty),
+      isTrue,
+      reason: 'a new schedule starts blank',
+    );
+  });
+
+  testWidgets('the menu offers only the kinds that can be made', (
+    tester,
+  ) async {
+    final now = DateTime.utc(2026, 11, 17, 4);
+    final bots = BotsModel.fixture(
+      const [],
+      project: '/home/u/marshal',
+      now: now,
+    );
+    final schedules = SchedulesModel.fixture(const <Schedule>[]);
+    final watches = WatchesModel.fixture(const [], now: now, host: 'local');
+    final recipes = RecipesModel.fixture(const [
+      Recipe(
+        name: 'gate',
+        title: 'The gate',
+        kind: 'prompt',
+        prompt: 'Run the gate',
+        builtin: true,
+      ),
+    ]);
+    for (final model in <SectionModel<Object>>[
+      bots,
+      schedules,
+      watches,
+      recipes,
+    ]) {
+      addTearDown(model.dispose);
+      await model.load();
+    }
+
+    await pump(
+      tester,
+      place(
+        bots: bots,
+        schedules: schedules,
+        watches: watches,
+        recipes: recipes,
+      ),
+    );
+    await tester.tap(find.text('New automation'));
+    await tester.pumpAndSettle();
+
+    // Bots is set per project and has no create of its own, so it is not
+    // offered; the three that can be started are.
+    final menu = tester.widget<Menu>(find.byType(Menu));
+    expect(
+      [for (final choice in menu.choices) choice.name],
+      ['Schedule', 'Watch', 'Recipe'],
+    );
+
+    // A recipe is made by copying a built-in, which is what the Recipes tab
+    // offers, so its choice opens that tab rather than a blank form.
+    await tester.tap(find.text('Recipe'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<Tabs>(find.byType(Tabs)).index, 3);
+    expect(find.text('The gate'), findsOneWidget);
+  });
+
+  testWidgets('every tab carries its count', (tester) async {
+    final now = DateTime.utc(2026, 11, 17, 4);
+    final bots = BotsModel.fixture(
+      const [
+        Bot(
+          kind: BotKind.review,
+          enabled: true,
+          repoID: 'acme/widgets',
+          summary: 'On',
+          facts: [],
+        ),
+        Bot(
+          kind: BotKind.fixer,
+          enabled: true,
+          repoID: 'acme/widgets',
+          summary: 'On',
+          facts: [],
+        ),
+      ],
+      project: '/home/u/marshal',
+      now: now,
+    );
+    final schedules = SchedulesModel.fixture([
+      for (var i = 0; i < 3; i++)
+        Schedule(
+          id: 's-$i',
+          name: 'schedule $i',
+          recipe: 'gate',
+          cron: '0 3 * * *',
+          enabled: true,
+          ownerID: 'owner-1',
+        ),
+    ]);
+    final watches = WatchesModel.fixture(
+      const [
+        WatchInfo(
+          agentID: 'studio',
+          id: 'w-1',
+          name: 'the gate',
+          kind: 'command',
+          state: 'watching',
+          mode: 'interval',
+          intervalMs: 60000,
+          fireCount: 0,
+          createdAt: 1763352000000,
+          samples: [],
+        ),
+      ],
+      now: now,
+      host: 'local',
+    );
+    final recipes = RecipesModel.fixture([
+      for (var i = 0; i < 4; i++)
+        Recipe(
+          name: 'recipe-$i',
+          title: 'Recipe $i',
+          kind: 'prompt',
+          prompt: 'Run it',
+        ),
+    ]);
+    for (final model in <SectionModel<Object>>[
+      bots,
+      schedules,
+      watches,
+      recipes,
+    ]) {
+      addTearDown(model.dispose);
+      await model.load();
+    }
+
+    await pump(
+      tester,
+      AutomationsPlace(
+        bots: (tabs, state) => BotsTab(model: bots, tabs: tabs, state: state),
+        schedules: (tabs, state) =>
+            SchedulesTab(model: schedules, tabs: tabs, state: state),
+        watches: (tabs, state) =>
+            WatchesTab(model: watches, tabs: tabs, state: state),
+        recipes: (tabs, state) =>
+            RecipesTab(model: recipes, tabs: tabs, state: state),
+        counts: {
+          0: bots.items.length,
+          1: schedules.items.length,
+          2: watches.items.length,
+          3: recipes.items.length,
+        },
+      ),
+    );
+
+    // Bots, Schedules, Watches and Recipes: the four tabs say how many entries
+    // each one holds, from the model that holds them.
+    final bar = tester.widget<Tabs>(find.byType(Tabs));
+    expect([for (final item in bar.tabs) item.count], [2, 3, 1, 4]);
   });
 }

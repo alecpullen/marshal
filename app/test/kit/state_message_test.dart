@@ -90,6 +90,31 @@ void main() {
     expect(find.byType(Btn), findsNothing);
   });
 
+  testWidgets('planned keeps its pill beside its words in a tall box', (
+    tester,
+  ) async {
+    await pumpKit(
+      tester,
+      const SizedBox(
+        width: 400,
+        height: 800,
+        child: StateMessage.planned(
+          name: 'Signal and Element',
+          note: 'Notifications there are planned.',
+        ),
+      ),
+      width: 400,
+      height: 800,
+    );
+    final nameTop = tester.getTopLeft(find.text('Signal and Element')).dy;
+    final pillTop = tester.getTopLeft(find.byType(Pill)).dy;
+    expect(
+      (pillTop - nameTop).abs(),
+      lessThanOrEqualTo(Space.s8),
+      reason: 'the pill belongs beside the name, not centred down the box',
+    );
+  });
+
   testWidgets('every kind has a constructor', (tester) async {
     final kinds = {
       const StateMessage.loading().kind,

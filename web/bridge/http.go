@@ -59,6 +59,10 @@ type Server struct {
 	// the network listener then answers the join route, and the forward and
 	// hosts routes sit behind the bearer check (hostrelay.go).
 	relay *HostRelay
+	// join, when set, is the relay this bridge joins, reported per request
+	// by GET /api/daemon (see SetJoiner). Like refresh it is set once, at
+	// start, before the listeners serve.
+	join *Joiner
 	// factoryAuth is the one factory policy lock: grant management, client
 	// deletion, project removal, delegation settings and the authorization
 	// guarding a durable factory mutation all take it. It is created with the

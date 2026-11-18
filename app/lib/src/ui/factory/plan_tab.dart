@@ -39,7 +39,7 @@ class PlanTab extends StatelessWidget {
         if (plan.isEmpty)
           Text('No plan text.', style: e.body.tint(e.muted))
         else
-          OutputBlock(text: plan),
+          Narration(text: plan),
         if (spec.isNotEmpty) ...[
           const SizedBox(height: Space.s12),
           const Label('Specification'),

@@ -880,8 +880,10 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
               : () => unawaited(_openConnectRepo(context)),
           // The place-level New (F9 B3): the narrow app bar and the sidebar
           // start work the way the page headers do, through the same
-          // resolution `⌘N` uses.
-          onNew: _firstProject() == null ? null : _newWorkFromKeys,
+          // resolution `⌘N` uses — but unguarded, because a tap does not take
+          // the keyboard from a composer and a button that asked the key path
+          // would do nothing while one held it.
+          onNew: _firstProject() == null ? null : _newWork,
         );
         // The shell's keys (f9-parity decision 6): one Shortcuts above the
         // place, so `⌘N` and `⌘1/⌘2/⌘3` work wherever a person is rather than
@@ -1172,11 +1174,14 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
           // host (spec D10, P8 plan 2 decision 6).
           shareFor: widget.shareFor,
           inspectorFor: widget.inspectorFor,
-          // The thread's own ⌘N is the shell's one call, so it obeys the same
-          // rule about a composer that has the keyboard (F9 decision 6). The
-          // dialog opens on this thread's host and may move to another (spec
-          // D10, P8 plan 2 decision 6).
-          onNewWork: widget.newWorkFor == null ? null : _newWorkFromKeys,
+          // The thread's New buttons open the Studio's one dialog; its own ⌘N
+          // does too, but behind the shell's guard against a composer that has
+          // the keyboard (F9 decision 6). The dialog opens on this thread's
+          // host and may move to another (spec D10, P8 plan 2 decision 6).
+          onNewWork: widget.newWorkFor == null ? null : _newWork,
+          onNewWorkFromKeys: widget.newWorkFor == null
+              ? null
+              : _newWorkFromKeys,
           asks: [
             for (final ask in widget.inbox.asks)
               if (ask.thread?.host == thread.host &&
@@ -1343,12 +1348,22 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
         focused.findAncestorWidgetOfExactType<EditableText>() != null;
   }
 
-  /// ⌘N from anywhere (f9-parity decision 6): it opens the new-work dialog for
-  /// the project in view — the thread's, the project place's, else the first
-  /// the fleet lists — and does nothing at all while a text field has the
-  /// keyboard, so typing a `⌘N` into a composer is not a key press.
+  /// ⌘N from anywhere (f9-parity decision 6): a key press does nothing at all
+  /// while a text field has the keyboard, so typing a `⌘N` into a composer is
+  /// not a key press, and otherwise opens the new-work dialog ([_newWork]).
+  ///
+  /// The guard belongs to the key path alone. A pointer tap does not take the
+  /// keyboard from a composer, so a New button that asked here would be dead
+  /// while a field held the keyboard: every button calls [_newWork] directly.
   void _newWorkFromKeys() {
     if (_editingText()) return;
+    _newWork();
+  }
+
+  /// Opens the new-work dialog for the project in view — the thread's, the
+  /// project place's, else the first the fleet lists — for every caller but
+  /// the key path, which guards a focused text field first.
+  void _newWork() {
     final place = _place;
     String? host;
     String? project;
@@ -1488,6 +1503,7 @@ class _ThreadPlace extends StatefulWidget {
     this.shareFor,
     this.inspectorFor,
     this.onNewWork,
+    this.onNewWorkFromKeys,
     this.asks = const [],
     this.onAnswer,
     this.now,
@@ -1515,9 +1531,14 @@ class _ThreadPlace extends StatefulWidget {
   final InspectorBuilder? inspectorFor;
 
   /// Opens the Studio's one new-work dialog for this thread's host and
-  /// project. Null leaves `⌘N` and the empty transcript's action without a
-  /// dialog.
+  /// project: the thread's empty transcript and outline ask for it. Null
+  /// leaves those actions without a dialog.
   final VoidCallback? onNewWork;
+
+  /// What this thread's own `⌘N` asks for: the same dialog, behind the
+  /// shell's guard against a composer that holds the keyboard (F9 decision 6).
+  /// Null falls back to [onNewWork].
+  final VoidCallback? onNewWorkFromKeys;
   final List<inbox.Ask> asks;
   final AnswerAsk? onAnswer;
   final DateTime? now;
@@ -1614,6 +1635,7 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
           ? null
           : () => _sendBack(context),
       onNewWork: widget.onNewWork,
+      onNewWorkFromKeys: widget.onNewWorkFromKeys,
       // The panel beside the transcript, when a host built one (F9
       // decision 4). Null leaves the screen as it was before F9.
       inspector: _inspector?.state,

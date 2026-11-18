@@ -96,6 +96,7 @@ class ThreadScreen extends StatefulWidget {
     this.onShare,
     this.onStop,
     this.onNewWork,
+    this.onNewWorkFromKeys,
     this.onCopyRow,
     this.selection,
     this.asks = const [],
@@ -145,8 +146,16 @@ class ThreadScreen extends StatefulWidget {
   /// Stops the thread.
   final VoidCallback? onStop;
 
-  /// Opens the new-work dialog (`⌘N`).
+  /// Opens the new-work dialog: what this thread's empty transcript and
+  /// outline ask for. A New button always opens it, because a tap does not
+  /// take the keyboard from a composer (`kit/Press`).
   final VoidCallback? onNewWork;
+
+  /// What this thread's own `⌘N` asks for. The shell guards it against a
+  /// composer that holds the keyboard (F9 decision 6), so it is a separate
+  /// call from [onNewWork]. Null falls back to [onNewWork], which is what a
+  /// caller that supplies only one of them meant.
+  final VoidCallback? onNewWorkFromKeys;
 
   /// Copies the cursor row (`y`). The free selection copies with `⌘C`, which
   /// this screen owns so one instance serves both.
@@ -245,7 +254,9 @@ class _ThreadScreenState extends State<ThreadScreen> {
     final control = HardwareKeyboard.instance.isControlPressed;
 
     if ((meta || control) && key == LogicalKeyboardKey.keyN) {
-      widget.onNewWork?.call();
+      // The key path, not the button path: the shell guards this one against
+      // a composer that holds the keyboard.
+      (widget.onNewWorkFromKeys ?? widget.onNewWork)?.call();
       return KeyEventResult.handled;
     }
     if ((meta || control) && key == LogicalKeyboardKey.keyC) {

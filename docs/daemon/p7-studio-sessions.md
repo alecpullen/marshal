@@ -262,7 +262,8 @@ The thread then says it was closed while idle, and offers Reopen, which calls
 
 ## Phase 2 direction
 
-Phase 1 must not foreclose this. Phase 2's spec settles the rest.
+Phase 1 must not foreclose this. Phase 2's spec,
+[`p8-studio-federation.md`](p8-studio-federation.md), settles the rest.
 
 - **The client is the only place hosts are merged.** Every id on the wire
   stays local to its host, and the app keys everything by host and id, as it

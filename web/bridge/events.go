@@ -69,7 +69,9 @@ type EventLog struct {
 	// disconnect drains that session's pending permission/question waits
 	// instead of leaking them — but only when no client is still
 	// connected, so a duplicate tab or reconnect does not deny pending
-	// requests for active clients.
+	// requests for active clients. A project child's log wires it to
+	// Registry.touch instead: the client was watching that session, so the
+	// idle sweep gives it a full timeout from the disconnect (P4 D7a).
 	OnUnsubscribe func(sessionID string)
 
 	mu       sync.Mutex
@@ -224,6 +226,13 @@ func (l *EventLog) Subscribe(sessionID string) (<-chan Event, func()) {
 		})
 	}
 	return s.ch, unsub
+}
+
+// Subscribers is how many live subscribers sessionID has.
+func (l *EventLog) Subscribers(sessionID string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.subCount[sessionID]
 }
 
 // deliver performs a non-blocking send to one subscriber. When the

@@ -265,6 +265,13 @@ func (f *Fleet) startProjectChildLocked(ctx context.Context, pc *projectChild) (
 		// over to the next generation.
 		pc.log = NewEventLog()
 		reg := pc.reg
+		// An SSE client disconnecting from a session was watching it, so the
+		// disconnect counts as activity: the sweep gives the session a full
+		// timeout from that moment rather than closing one the client saw
+		// (P4 D7a). The callback runs under the log's lock, hence the lock
+		// order: the log's mu, then the registry's. The registry never calls
+		// into the log while holding its own mu.
+		pc.log.OnUnsubscribe = func(sessionID string) { reg.touch(sessionID) }
 		attachSessions(pc.log, child, reg, func(sessionID string) bool {
 			return !reg.tracksClient(sessionID)
 		})

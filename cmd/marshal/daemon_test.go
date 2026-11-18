@@ -1298,6 +1298,37 @@ func daemonWriteUserConfig(t *testing.T, home, body string) {
 	}
 }
 
+// daemonWriteJoinSecret stores the join secret daemonUnitSpec requires when
+// daemon.join_url is set, at the path the unit passes as --join-token-file.
+func daemonWriteJoinSecret(t *testing.T, home string) {
+	t.Helper()
+	path := daemon.PathsFor(home).JoinToken
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("join-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDaemonUnitSpecRefusesAJoinWithoutASecret: a unit installed with a join
+// and no stored secret would come up dead, so the install refuses and names the
+// command that stores one.
+func TestDaemonUnitSpecRefusesAJoinWithoutASecret(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\n"+
+		"join_url = \"https://relay.example.com\"\n"+
+		"join_name = \"box\"\n")
+
+	spec, err := daemonUnitSpec(daemonTestWebbridge(t), home)
+	if err == nil {
+		t.Fatalf("daemonUnitSpec accepted a join with no stored secret: %+v", spec.Join)
+	}
+	if !strings.Contains(err.Error(), "marshal daemon join-token") {
+		t.Errorf("error = %q, want it to name marshal daemon join-token", err)
+	}
+}
+
 // TestDaemonUnitSpecReadsTheJoin pins P8 D12's config: daemon.join_url,
 // join_name and join_ca_file become the unit's join and its arguments, and
 // they are read from the user config alone — as the Studio's address is, so a
@@ -1308,6 +1339,7 @@ func TestDaemonUnitSpecReadsTheJoin(t *testing.T) {
 		"join_url = \"https://relay.example.com\"\n"+
 		"join_name = \"box\"\n"+
 		"join_ca_file = \"/etc/marshal/relay-ca.pem\"\n")
+	daemonWriteJoinSecret(t, home)
 
 	// A project config names another relay; the unit must not pick it up.
 	work := t.TempDir()

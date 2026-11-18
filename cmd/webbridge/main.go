@@ -338,11 +338,12 @@ func applyProfile(cfg *config, given givenSettings) error {
 	if cfg.secrets != "env" {
 		return fmt.Errorf("--secrets %s: the local profile takes secrets from the environment", cfg.secrets)
 	}
-	// A token belongs to the TCP listener, which --addr off does not
-	// open. Refusing beats accepting it and never using it, which is
-	// the rule the rest of this function follows.
-	if cfg.addr == "off" && given.set("token", "WEBBRIDGE_TOKEN", cfg.token) {
-		return fmt.Errorf("--token is for the TCP listener, and --addr off opens none")
+	// A token belongs to the TCP listener, or to the join a bridge makes: D12
+	// names either as a joining bridge's bearer token, because relayed
+	// requests are checked with it. Without a join, --addr off has no use for
+	// one, and refusing beats accepting it and never using it.
+	if cfg.addr == "off" && cfg.join == "" && given.set("token", "WEBBRIDGE_TOKEN", cfg.token) {
+		return fmt.Errorf("--token is for the TCP listener or a join, and neither is set")
 	}
 	if cfg.addr == "off" && cfg.join == "" && given.set("token-file", "WEBBRIDGE_TOKEN_FILE", cfg.tokenFile) {
 		return fmt.Errorf("--token-file is for the TCP listener or a join, and neither is set")
@@ -859,6 +860,21 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		api.SetHostRelay(relay)
 	}
 
+	// A joining bridge dials out to its relay and serves the connections the
+	// relay reverses onto it (D12, D13). It is built and set here, before any
+	// listener serves, so the per-request read in GET /api/daemon cannot race
+	// the field; only Run waits for the signal context below.
+	var joiner *bridge.Joiner
+	if cfg.join != "" {
+		joiner, err = buildJoiner(cfg, api)
+		if err != nil {
+			shutdownFactory()
+			fleet.Close()
+			return err
+		}
+		api.SetJoiner(joiner)
+	}
+
 	// serveErr carries the first listener to stop serving. The socket and
 	// the TCP listener can both exist, so it holds two, and each goroutine
 	// parks its answer here rather than dropping it.
@@ -1011,24 +1027,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	defer stop()
 
 	// A joining bridge dials out to its relay and serves the connections the
-	// relay reverses onto it (D12, D13). It runs on sigCtx, so a shutdown
-	// stops it with the listeners, and run waits for it before it returns. A
-	// joiner that cannot be built is a start failure rather than a bridge
-	// that comes up and joins nothing.
-	if cfg.join != "" {
-		joiner, err := buildJoiner(cfg, api)
-		if err != nil {
-			if socketSrv != nil {
-				_ = socketSrv.Close()
-			}
-			if srv != nil {
-				_ = srv.Close()
-			}
-			shutdownFactory()
-			fleet.Close()
-			return err
-		}
-		api.SetJoiner(joiner)
+	// relay reverses onto it (D12, D13). The joiner itself was built and set
+	// before the listeners started; here it only runs, on sigCtx, so a
+	// shutdown stops it with the listeners and run waits for it before it
+	// returns.
+	if joiner != nil {
 		joined := make(chan struct{})
 		go func() {
 			defer close(joined)

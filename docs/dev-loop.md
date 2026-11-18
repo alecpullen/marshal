@@ -234,15 +234,18 @@ One box can hold both halves of a relay: the Studio on `127.0.0.1:7700` relays,
 and the local daemon joins it as `local`. That is the way to see a relayed host
 without a second machine.
 
-Give the Studio the name it relays and that name's secret, then install:
+Give the Studio the name it relays and that name's secret. Install first: the
+install rewrites `webbridge.env`, so the relay line is appended after it, and
+another `--install` later wipes it and needs the append again.
 
 ```bash
 secret_dir="${MARSHAL_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/marshal}/studio"
+scripts/dev-studio.sh --install
 install -m 0600 /dev/null "$secret_dir/join-local.secret"
 printf '%s\n' 'some-long-secret' > "$secret_dir/join-local.secret"
 printf 'WEBBRIDGE_RELAY_JOIN=local=%s\n' "$secret_dir/join-local.secret" \
   >> "$secret_dir/webbridge.env"
-scripts/dev-studio.sh --install
+scripts/dev-studio.sh --restart
 ```
 
 The unit reads `webbridge.env` as an `EnvironmentFile`, so a plain `--restart`

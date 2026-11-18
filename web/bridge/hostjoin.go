@@ -43,6 +43,12 @@ const (
 	joinBackoffMax = 30 * time.Second
 	// joinKeepAlive is each joined connection's TCP keep-alive (D14).
 	joinKeepAlive = 15 * time.Second
+	// joinExchange bounds a join: the dial, the upgrade and the answer. It is
+	// not a limit on a joined connection's traffic, which is idle by design,
+	// but on the exchange that makes one: a relay that accepts and then says
+	// nothing must fail rather than wedge the pool, which is one goroutine
+	// (D14's backoff is what recovers from it).
+	joinExchange = 10 * time.Second
 	// relayedStudioPrefix is the Studio's own surface. A relayed request must
 	// not reach it: minting a sign-in code and handing over a token are what a
 	// connection to this machine alone may ask for (D15).
@@ -88,13 +94,14 @@ type Joiner struct {
 	listener *joinListener
 	srv      *http.Server
 
-	// spare, cap, backoffMin, backoffMax and keepAlive are the joiner's limits
-	// (decision 3).
+	// spare, cap, backoffMin, backoffMax, keepAlive and exchange are the
+	// joiner's limits (decision 3).
 	spare      int
 	cap        int
 	backoffMin time.Duration
 	backoffMax time.Duration
 	keepAlive  time.Duration
+	exchange   time.Duration
 
 	// wake is signalled when a connection joins, is consumed or ends, so the
 	// pool looks at its counts without polling.
@@ -143,6 +150,7 @@ func NewJoiner(cfg JoinConfig, h http.Handler) (*Joiner, error) {
 		backoffMin: joinBackoffMin,
 		backoffMax: joinBackoffMax,
 		keepAlive:  joinKeepAlive,
+		exchange:   joinExchange,
 		wake:       make(chan struct{}, 1),
 		conns:      make(map[*joinedConn]struct{}, joinCap),
 	}
@@ -411,7 +419,7 @@ func (j *Joiner) failed(err error, backoff time.Duration) time.Duration {
 // join dials the relay and asks it to reverse the connection onto this bridge
 // (D13). The connection it answers is ready for the server to serve requests on.
 func (j *Joiner) join(ctx context.Context) (*joinedConn, error) {
-	dialer := &net.Dialer{KeepAlive: j.keepAlive}
+	dialer := &net.Dialer{KeepAlive: j.keepAlive, Timeout: j.exchange}
 	var (
 		conn net.Conn
 		err  error
@@ -425,7 +433,18 @@ func (j *Joiner) join(ctx context.Context) (*joinedConn, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The exchange is bounded, because the pool is one goroutine: a relay that
+	// accepts the connection and then says nothing would otherwise hold it for
+	// ever, with no retry, no backoff and no report. The deadline is cleared
+	// before the connection is handed on, so a served spare is idle with no
+	// bound at all — which is what it is for, and why the server has no header
+	// deadline either (the srv field's comment).
+	if err := conn.SetDeadline(time.Now().Add(j.exchange)); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("join %s: set the exchange deadline: %w", j.url, err)
+	}
 	joined, err := j.upgrade(conn)
+	_ = conn.SetDeadline(time.Time{})
 	if err != nil {
 		_ = conn.Close()
 		return nil, err

@@ -278,8 +278,8 @@ is read at start. A name follows `fleet.toml`'s name rule
 `RelayHosts{hosts: [RelayHost{name, connected, since, lastContact}]}`: every
 name the relay names, connected or not, sorted by name. `since` is when the
 current instance joined, and `lastContact` is the last response forwarded or
-join accepted. A bridge that relays nothing answers `{"hosts": []}`; an older
-bridge answers 404.
+join accepted. A bridge without `--relay-join` serves no hosts route at all, so
+it answers 404 exactly as a bridge older than this plan does.
 
 **D17. A joiner reports its join and hands over its token.**
 - `GET /api/daemon` (`DaemonInfo`) gains an optional `join`:
@@ -506,7 +506,8 @@ Not started.
 
 ### Plan 3
 
-Landed as six commits, one per task, on `p8-3-relay` (stacked on this branch):
+Landed as seven commits, one per task, on `p8-3-relay` (stacked on this
+branch), plus one for the defect the run by hand found below:
 the wire types and their fixture, with the regenerated Dart contract; the
 relay's table, join route and newest-instance takeover (`hostrelay.go`); the
 forward and hosts routes; the joiner and its pool (`hostjoin.go`); `webbridge`'s
@@ -537,21 +538,35 @@ Decisions the executor made:
   `SetRefreshHelper` is. It was first kept in a package-global map keyed by
   `*Server` — the shape AGENTS.md forbids — because `Server`'s fields live in
   `http.go`, which task 3 owned at the time.
-- **The plan's task 6 file list is five files short** in total: the three config
-  files above, plus nothing else outside a task's list except that one field.
+- **The plan's file lists were short in two places.** Task 6 named
+  `internal/app/config/types.go` alone, but `[daemon]` decodes into
+  `fileDaemon`, is copied key by key in `merge.go`, and is rendered in
+  `save.go`: without those lines the three keys reach nothing, `daemonUnitSpec`
+  never sees a join, and a config save erases one. Task 1 named the contract
+  fixture but not the daemon document's wire recording,
+  `web/bridge/testdata/contract/DaemonInfo.json`, which `TestTheWireIsUnchanged`
+  holds to the Go type. Both added.
+- **D16's last sentence said a bridge that relays nothing answers
+  `{"hosts": []}`.** The plan's task 3 says the opposite — no relay, no route,
+  so 404 — and that is what the code and `TestTheRelayListsItsHosts` do; D16 now
+  says it too.
+- **A non-POST join answers 405 with `Allow`, not the plan's 400.** The plan's
+  words ("`POST` only") do not fix a status for another method, and 405 is the
+  answer the rest of the bridge gives; `TestAJoinMustBeTheUpgrade` pins it.
 
-Mutation checks: all six ran and each failed the test the plan names before its
-line was restored — the secret compared against the first name's (another
-name's secret), the caller's `Authorization` forwarded instead of the host's
-token, a replacement dialled on accept rather than on the first read, `--join`
-dropped from the `--token-file` rule, and `--token-file` written only with a
-Studio address. Each restored by inverse edit, since the work was uncommitted.
+Mutation checks: all five the plan names ran and each failed the test the plan
+names before its line was restored — the secret compared against the first
+name's (another name's secret), the caller's `Authorization` forwarded instead
+of the host's token, a replacement dialled on accept rather than on the first
+read, `--join` dropped from the `--token-file` rule, and `--token-file` written
+only with a Studio address. Each restored by inverse edit, since the work was
+uncommitted.
 
 The run by hand used a temporary home, data dir and state dirs with the built
 binaries, and two `webbridge` processes: a relay on `127.0.0.1:7711` naming
 `local`, and a joining bridge on `127.0.0.1:7712`. It did not reconfigure this
 box's development daemon and Studio, which would have rewritten the user's own
-config; the same two binaries and flags are what `scripts/dev-loop.md`'s recipe
+config; the same two binaries and flags are what `docs/dev-loop.md`'s recipe
 gives a developer.
 
 | Step | Answer |
@@ -568,6 +583,28 @@ Not done: no daemon was installed, so the `relay:` line of `marshal daemon
 status` is covered by `TestDaemonStatusPrintsTheJoin` alone, and `join-token`
 and `token` were exercised by their tests rather than against a running unit.
 A relayed agent attach, and relay chains, are out of scope by the plan.
+
+A branch review then changed seven things, each recorded above or here:
+
+- the join exchange is bounded (a dial timeout and a socket deadline cleared
+  before the connection is served), because the pool is one goroutine and a
+  relay that accepts and then says nothing used to wedge it and the shutdown;
+- the joiner is built and set on the server before any listener serves, as the
+  relay is, so `GET /api/daemon` cannot race the field;
+- `--token` is accepted under `--addr off` when the bridge joins, as D12 says;
+- `marshal daemon install` refuses a join whose secret was never stored,
+  naming `marshal daemon join-token`, instead of installing a unit that dies at
+  start;
+- a takeover is logged, because two processes fighting over one name is
+  otherwise invisible from the relay;
+- the join route answers 400 to an HTTP/2 request, which cannot be hijacked;
+- `docs/dev-loop.md`'s recipe installs before appending the relay line, since
+  `--install` rewrites `webbridge.env`.
+
+Known and accepted: the secret file's mode is checked but not its owner (D11
+asks for both; the owner check is not portable), and the pre-bearer-check join
+route is not rate-limited — its secrets are generated, long, and compare in
+constant time.
 
 ### Plan 4
 

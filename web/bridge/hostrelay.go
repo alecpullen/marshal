@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -132,7 +133,10 @@ type relayHost struct {
 	// queue holds joined connections no request has taken yet.
 	queue []net.Conn
 	// open counts the joined connections that are still open, which is what
-	// the hosts route reports as connected (D16).
+	// the hosts route reports as connected (D16). It is optimistic: a joiner
+	// that closes its last connection while nothing is being forwarded is only
+	// noticed when a forward next takes one, so "connected" means "had a joined
+	// connection the last time the relay looked".
 	open int
 	// fresh is signalled when a connection joins the queue, so a dial waiting
 	// for one wakes without polling.
@@ -147,6 +151,14 @@ func (s *Server) relayJoin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "a join is a POST"})
+		return
+	}
+	// A reversed connection is an HTTP/1.1 upgrade: HTTP/2 has no hijack, so an
+	// answer here could only be a malformed 101. The joiner offers only
+	// http/1.1, but this route answers before the bearer check, so say no
+	// plainly to anyone else.
+	if r.ProtoMajor != 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a join is an HTTP/1.1 upgrade"})
 		return
 	}
 	// The upgrade is what makes the connection reversible, so a request
@@ -203,8 +215,10 @@ func (s *Server) relayJoin(w http.ResponseWriter, r *http.Request) {
 func (h *relayHost) join(instance string, conn net.Conn) {
 	h.mu.Lock()
 	var superseded []net.Conn
+	var previous string
 	var took bool
 	if h.instance != instance {
+		previous = h.instance
 		h.instance = instance
 		h.since = time.Now()
 		superseded, h.queue = h.queue, nil
@@ -221,6 +235,12 @@ func (h *relayHost) join(instance string, conn net.Conn) {
 	h.mu.Unlock()
 
 	if took {
+		// A name changing hands is the one relay event a reader cannot see
+		// from the outside: two live daemons with one name flap it between
+		// them, and every flip looks like a fresh join. Say so, once per
+		// takeover (D14).
+		slog.Default().Warn("bridge: a relayed host was taken over",
+			"host", h.name, "instance", instance, "previous", previous)
 		for _, c := range superseded {
 			_ = c.Close()
 		}

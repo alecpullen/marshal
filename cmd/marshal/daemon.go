@@ -275,10 +275,22 @@ func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 	if err != nil {
 		return daemon.UnitSpec{}, err
 	}
+	paths := daemon.PathsFor(home)
+	// A join with no stored secret would install a unit that dies at start, so
+	// refuse here, where the user can act on it (D12: `marshal daemon
+	// join-token` is what stores it).
+	if join != nil {
+		if _, err := os.Stat(paths.JoinToken); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return daemon.UnitSpec{}, fmt.Errorf("daemon.join_url is set but %s is missing: run marshal daemon join-token first", paths.JoinToken)
+			}
+			return daemon.UnitSpec{}, fmt.Errorf("read the join secret: %w", err)
+		}
+	}
 	return daemon.UnitSpec{
 		Webbridge:          webbridge,
 		Marshal:            marshal,
-		Paths:              daemon.PathsFor(home),
+		Paths:              paths,
 		Env:                daemonEnv(),
 		IdleSessionTimeout: cfg.Daemon.IdleSessionTimeout,
 		StudioAddr:         studioAddr,

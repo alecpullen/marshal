@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -355,5 +356,60 @@ func TestARestartedJoinerTakesItsNameBack(t *testing.T) {
 	// The restarted instance holds the name with spares of its own.
 	waitFor(t, 5*time.Second, "the restarted joiner's spare connections", func() bool {
 		return queuedCount(relay.hostFor("alpha")) == 2
+	})
+}
+
+// TestAStalledJoinDoesNotWedge is the branch review's finding: the pool is one
+// goroutine, so a relay that accepts the connection and then says nothing must
+// fail that exchange within its bound. Without one, the pool sits in the read
+// for ever — no retry, no report, and Run never stops, so the bridge cannot
+// shut down either.
+func TestAStalledJoinDoesNotWedge(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var mu sync.Mutex
+	var held []net.Conn
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Accepted and never answered: a relay that stalls after the
+			// TCP handshake.
+			mu.Lock()
+			held = append(held, conn)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, conn := range held {
+			_ = conn.Close()
+		}
+	})
+
+	j, err := NewJoiner(JoinConfig{
+		URL:    "http://" + ln.Addr().String(),
+		Name:   "alpha",
+		Secret: "alpha-secret",
+	}, joinerAnswer())
+	if err != nil {
+		t.Fatalf("NewJoiner: %v", err)
+	}
+	j.exchange = 150 * time.Millisecond
+	j.backoffMin = 10 * time.Millisecond
+	j.backoffMax = 20 * time.Millisecond
+	joinerRun(t, j)
+
+	// The exchange times out, the report says why, and the pool keeps trying
+	// instead of holding the connection for ever. joinerRun's cleanup is what
+	// proves Run still returns.
+	waitFor(t, 5*time.Second, "the stalled join to be reported", func() bool {
+		return j.Report().LastError != ""
 	})
 }

@@ -54,6 +54,43 @@ List<TranscriptRow> flattenRows(StackStore store, ThreadViewState view) {
   return rows;
 }
 
+/// The place [nodeId] holds among its parent's children whose kind is `step`:
+/// 1 for the first step, 2 for the second, whatever rows the tree puts between
+/// them.
+///
+/// A step is numbered among steps, never among the rows drawn before it, so
+/// the prompt above it does not make the first one read 2. The store has no
+/// parent accessor, so the parent is found by walking the same tree
+/// [flattenRows] walks. A node it cannot place — one the tree does not hold,
+/// or one that is not a step — is 0 rather than an error: a row draws on
+/// whatever tree it is handed.
+int stepOrdinal(StackStore store, String nodeId) {
+  if (store.node(nodeId)?.kind != 'step') return 0;
+  // A step at the top of the tree is placed among the roots.
+  var siblings = store.roots;
+  if (!siblings.contains(nodeId)) {
+    siblings = const <String>[];
+    final stack = <String>[...store.roots];
+    final seen = <String>{};
+    while (stack.isNotEmpty) {
+      final id = stack.removeLast();
+      if (!seen.add(id)) continue;
+      final children = store.node(id)?.children ?? const <String>[];
+      if (children.contains(nodeId)) {
+        siblings = children;
+        break;
+      }
+      stack.addAll(children);
+    }
+  }
+  var ordinal = 0;
+  for (final id in siblings) {
+    if (store.node(id)?.kind == 'step') ordinal++;
+    if (id == nodeId) break;
+  }
+  return ordinal;
+}
+
 /// The transcript (design-system.md §5): a lazily built list over the store's
 /// tree, drawing each node with the row for its kind at the view's density.
 ///
@@ -273,7 +310,6 @@ class _TranscriptState extends State<Transcript> {
                                 nodeId: row.id,
                                 child: _Row(
                                   nodeId: row.id,
-                                  index: index,
                                   depth: row.depth,
                                   store: widget.store,
                                   view: widget.view,
@@ -355,7 +391,6 @@ class _PinnedAsk extends StatelessWidget {
 class _Row extends StatelessWidget {
   const _Row({
     required this.nodeId,
-    required this.index,
     required this.depth,
     required this.store,
     required this.view,
@@ -363,7 +398,6 @@ class _Row extends StatelessWidget {
   });
 
   final String nodeId;
-  final int index;
   final int depth;
   final StackStore store;
   final ThreadViewState view;
@@ -413,7 +447,7 @@ class _Row extends StatelessWidget {
         if (step == null) return const SizedBox.shrink();
         final foldable = (node.children ?? const <String>[]).isNotEmpty;
         return StepHeader(
-          number: '${index + 1}',
+          number: '${stepOrdinal(store, nodeId)}',
           headline: step.headline,
           took: _took(step),
           live: node.live ?? false,

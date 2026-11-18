@@ -115,9 +115,7 @@ class ThreadHeader extends StatelessWidget {
             ),
           IconBtn(
             Glyphs.share,
-            tooltip: onShare == null
-                ? 'Share a read-only status link: arrives in F7'
-                : 'Share a read-only status link',
+            tooltip: 'Share a read-only status link',
             onTap: onShare,
           ),
           // `onHold` is null everywhere today because no route holds an agent

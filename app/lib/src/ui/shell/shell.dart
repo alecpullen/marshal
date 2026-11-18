@@ -20,6 +20,7 @@ import '../../model/source_state.dart';
 import '../../model/pulls_model.dart';
 import '../../model/revision_model.dart';
 import '../../model/run_model.dart';
+import '../../model/share_model.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
@@ -39,6 +40,7 @@ import '../pulls/merge_control.dart';
 import '../pulls/pulls_place.dart';
 import '../sections/unsaved_guard.dart';
 import '../new_work/new_work_dialog.dart';
+import '../thread/share_sheet.dart';
 import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
 import 'placeholder.dart';
@@ -391,6 +393,7 @@ class Studio extends StatefulWidget {
     this.threadStore,
     this.composerFor,
     this.newWorkFor,
+    this.shareFor,
     this.planningFor,
     this.handoffFor,
     this.runFor,
@@ -434,6 +437,11 @@ class Studio extends StatefulWidget {
   /// Builds the new-work dialog's model for a thread's project. Null leaves
   /// `⌘N` without a dialog.
   final NewWorkModel Function(model.ThreadRef thread)? newWorkFor;
+
+  /// Builds a thread's Share model, from the host's client (F7 decision 7).
+  /// Null leaves the header's Share disabled: a control that cannot work is
+  /// shown as unavailable, never as working.
+  final ShareModel Function(String host, String agentId)? shareFor;
 
   /// Builds a planning thread's model, for a planner a person started (F6
   /// decision 8). Null leaves the planning place unbuilt rather than drawing
@@ -759,6 +767,7 @@ class _StudioState extends State<Studio> {
           buildStore: build,
           composerFor: widget.composerFor,
           newWorkFor: widget.newWorkFor,
+          shareFor: widget.shareFor,
           onThreadStarted: (id) =>
               navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
           handoffFor: widget.handoffFor,
@@ -898,6 +907,7 @@ class _ThreadPlace extends StatefulWidget {
     required this.buildStore,
     this.composerFor,
     this.newWorkFor,
+    this.shareFor,
     this.onThreadStarted,
     this.onPlannerStarted,
     this.handoffFor,
@@ -916,6 +926,10 @@ class _ThreadPlace extends StatefulWidget {
   /// Builds the new-work dialog's model for a thread's project. Null leaves
   /// `⌘N` without a dialog.
   final NewWorkModel Function(model.ThreadRef thread)? newWorkFor;
+
+  /// Builds this thread's Share model, once, when the place opens. Null
+  /// leaves the header's Share disabled.
+  final ShareModel Function(String host, String agentId)? shareFor;
   final void Function(String agentId)? onThreadStarted;
 
   /// Opens the planning thread a "Plan first" started (F6 decision 8).
@@ -940,12 +954,14 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
   late final StackStore _store = widget.buildStore(widget.thread);
   late final ThreadViewState _view = ThreadViewState();
   ComposerModel? _composer;
+  ShareModel? _share;
 
   @override
   void initState() {
     super.initState();
     _store.start();
     _composer = widget.composerFor?.call(widget.thread, _view);
+    _share = widget.shareFor?.call(widget.thread.host, widget.thread.id);
     // A thread opened while its agent is mid-turn offers Steer and Stop from
     // the first frame, from the fleet's own report of the agent.
     _composer?.setRunning(_turnRunning);
@@ -975,6 +991,7 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
       ..dispose();
     _view.dispose();
     _composer?.dispose();
+    _share?.dispose();
     super.dispose();
   }
 
@@ -1043,6 +1060,11 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
           ? null
           : () => _sendBack(context),
       onNewWork: widget.newWorkFor == null ? null : () => _openNewWork(context),
+      // Share mints this thread's status link on the host's client. Null
+      // leaves the header's Share disabled (F7 decision 7).
+      onShare: _share == null
+          ? null
+          : () => unawaited(showShareSheet(context, _share!)),
       // Stop ends the turn through the composer's own route. Hold is not
       // passed: no bridge route holds an agent, so the header would offer an
       // item that cannot work (f9-parity.md decision 2).

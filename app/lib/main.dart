@@ -38,6 +38,7 @@ import 'src/model/route_translation.dart';
 import 'src/model/schedules_model.dart';
 import 'src/model/secrets_model.dart';
 import 'src/model/section_model.dart';
+import 'src/model/share_model.dart';
 import 'src/model/stack_store.dart';
 import 'src/model/usage_model.dart';
 import 'src/model/watches_model.dart';
@@ -152,6 +153,13 @@ Future<void> main() async {
                 ),
             hosts.hosts.firstWhere((host) => host.name == thread.host).client,
             host: thread.host,
+          ),
+          // A thread's Share mints a read-only status link for its agent on
+          // the client that reaches its host (F7 decision 7): a running
+          // thread's id is its agent id, which the route takes.
+          shareFor: (host, agentId) => ShareModel(
+            hosts.hosts.firstWhere((owner) => owner.name == host).client,
+            agentId: agentId,
           ),
           // A planning thread reads its planner's journal on the client that
           // reaches its host, and captures the plan for review (F6 decision 8).

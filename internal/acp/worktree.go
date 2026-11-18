@@ -234,8 +234,10 @@ func (w *WorktreeManager) isolated(sessionID string) (*WorktreeRuntime, session.
 // parseNumstat turns `git diff --numstat` output into DiffFiles. Binary
 // files report "-" for both counts and are kept with zero counts rather
 // than dropped — the operator still needs to see that they changed.
+// The result is never nil, even for a diff with no lines: the wire writes
+// a nil slice as null, and clients decode Files as a list.
 func parseNumstat(out string) []DiffFile {
-	var files []DiffFile
+	files := []DiffFile{}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue

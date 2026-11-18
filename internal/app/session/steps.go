@@ -142,6 +142,16 @@ func (s *State) TurnSteps() int {
 		return 0
 	}
 	turn := steps[len(steps)-1].TurnMsgID
+	// A step belongs to the user message that opened its turn (BeginStep). A
+	// turn that settles before its first step — a gate-only settle, a denied
+	// permission, a cancel — leaves the newest user message newer than every
+	// step, so nothing has begun in it. Counting the trailing run by its turn
+	// message alone would report the previous turn's total. A step whose
+	// TurnMsgID is 0 is bound to no user message at all, so it counts as
+	// nothing too.
+	if turn == 0 || turn != s.latestUserTurnID() {
+		return 0
+	}
 	n := 0
 	for i := len(steps) - 1; i >= 0; i-- {
 		if steps[i].TurnMsgID != turn {
@@ -150,6 +160,20 @@ func (s *State) TurnSteps() int {
 		n++
 	}
 	return n
+}
+
+// latestUserTurnID is the in-memory ID of the newest user-turn message on the
+// active branch, or 0 when none opened a turn: exactly the message BeginStep
+// binds a new step to. Messages() is the active branch, oldest first, so no
+// second branch rule is needed here.
+func (s *State) latestUserTurnID() int64 {
+	messages := s.Messages()
+	for i := len(messages) - 1; i >= 0; i-- {
+		if IsUserTurnMessage(&messages[i]) {
+			return messages[i].ID
+		}
+	}
+	return 0
 }
 
 // Step looks up a step by ID, on any branch.

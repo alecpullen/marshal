@@ -342,12 +342,14 @@ void main() {
     final inbox = InboxModel(fixture.store, client: fixture.clientFor);
     addTearDown(inbox.dispose);
 
-    // The bridge answers newest first, so the model keeps the order it was
-    // handed and drops the tail past the cap rather than re-sorting.
+    // The bridge answers oldest first (/api/audit is the audit tail, which
+    // reads oldest first), so event 0 is the oldest and event 9 the newest.
+    // The card is the newest six of them, drawn newest first: the last event
+    // the bridge sent leads, and the window's oldest six are dropped.
     final audit = [
       for (var i = 0; i < 10; i++)
         AuditEvent(
-          ts: now.subtract(Duration(minutes: i)).toIso8601String(),
+          ts: now.subtract(Duration(minutes: 9 - i)).toIso8601String(),
           event: 'agent.spawn',
           detail: 'event $i',
         ),
@@ -356,13 +358,17 @@ void main() {
 
     expect(overview.activity, hasLength(overviewActivity));
     expect([for (final event in overview.activity) event.detail], [
-      'event 0',
-      'event 1',
-      'event 2',
-      'event 3',
-      'event 4',
+      'event 9',
+      'event 8',
+      'event 7',
+      'event 6',
       'event 5',
+      'event 4',
     ]);
+    // Pinned as order, not just length: the last event sent is the first row,
+    // and the rows run newest to oldest.
+    expect(overview.activity.first.detail, audit.last.detail);
+    expect(overview.activity.last.detail, audit[audit.length - overviewActivity].detail);
   });
 
   test('a project\'s pulls are counted by state', () async {

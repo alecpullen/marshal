@@ -50,7 +50,10 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 			// ChangedFiles holds objects ({path, added, removed}); only the
 			// count is used here, so entries stay undecoded.
 			ChangedFiles []json.RawMessage `json:"changedFiles"`
-			Steps        struct {
+			// Steps is a pointer so a payload that carries no steps key is
+			// distinguishable from one that reports zero: a missing field
+			// is not a zero.
+			Steps *struct {
 				Done int `json:"done"`
 			} `json:"steps"`
 			ToolStats json.RawMessage `json:"toolStats"`
@@ -87,8 +90,14 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 	case "session_telemetry":
 		pct := contextPct(p.Update.Context.UsedPct, p.Update.Context.PackTokens, p.Update.Context.PackMaxTokens)
 		changed := len(p.Update.ChangedFiles)
-		done := p.Update.Steps.Done
-		d.Kind, d.ChangedFiles, d.ContextPct, d.StepsDone = "telemetry", &changed, &pct, &done
+		d.Kind, d.ChangedFiles, d.ContextPct = "telemetry", &changed, &pct
+		// Only a payload that carried steps says how many the turn has taken;
+		// the rest leave the count alone, so a keyless delta never reads as a
+		// turn that went back three steps.
+		if p.Update.Steps != nil {
+			done := p.Update.Steps.Done
+			d.StepsDone = &done
+		}
 		d.ToolStats, d.Rules = p.Update.ToolStats, p.Update.Rules
 		d.usage = p.Update.Usage
 	case "watch":

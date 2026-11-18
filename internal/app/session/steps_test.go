@@ -133,6 +133,29 @@ func TestTurnStepsIsZeroBeforeAnyStep(t *testing.T) {
 	}
 }
 
+func TestTurnStepsIsZeroWhenTheNewestTurnHasNoSteps(t *testing.T) {
+	s := plainState()
+	s.AddMessage(RoleUser, "first", ContentTypePlain)
+	a := s.BeginStep(Actor{})
+	s.EndStep(a)
+	// A turn that settles before its first step — a gate-only settle, a denied
+	// permission, a cancel — leaves the user message newer than every step.
+	// The count belongs to that turn, not to the one the last step was in.
+	s.AddMessage(RoleUser, "second", ContentTypePlain)
+	if got := s.TurnSteps(); got != 0 {
+		t.Fatalf("TurnSteps = %d, want 0: no step has begun since the last user message", got)
+	}
+
+	// A step no user message opened belongs to no turn.
+	unturned := plainState()
+	if id := unturned.BeginStep(Actor{}); id == 0 {
+		t.Fatal("BeginStep returned no id")
+	}
+	if got := unturned.TurnSteps(); got != 0 {
+		t.Fatalf("TurnSteps = %d, want 0 for a step with no turn message", got)
+	}
+}
+
 func TestTurnStepsIgnoresAnotherBranchsTurn(t *testing.T) {
 	s := plainState()
 	s.AddMessage(RoleUser, "one", ContentTypePlain)

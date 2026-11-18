@@ -233,10 +233,12 @@ OverviewModel buildOverview(
     projects: List.unmodifiable(summaries),
     capacity: List.unmodifiable(capacity),
     spend: _spend(store),
-    // The bridge answers newest first, so the head of the list is the head of
-    // the card. No event is filtered: a feed that hides kinds is a second,
-    // wrong feed.
-    activity: List.unmodifiable(audit.take(overviewActivity)),
+    // The bridge answers oldest first (web/bridge/audit.go: Tail returns the
+    // most recent records oldest first, and /api/audit hands them on as read),
+    // so the card is the tail of the feed reversed: the newest event leads.
+    // Taking its head would draw the oldest events of the window. No event is
+    // filtered: a feed that hides kinds is a second, wrong feed.
+    activity: List.unmodifiable(audit.reversed.take(overviewActivity)),
     // The bridge answers the day series oldest first, which is the direction
     // a spark reads; the roles are ranked here, largest first, because the
     // split names the biggest.

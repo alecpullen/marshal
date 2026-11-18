@@ -242,13 +242,10 @@ OverviewModel buildOverview(
     // The bridge answers the day series oldest first, which is the direction
     // a spark reads; the roles are ranked here, largest first, because the
     // split names the biggest.
-    spendDays: List.unmodifiable(
-      usageByDay?.series ?? const <UsagePoint>[],
-    ),
+    spendDays: List.unmodifiable(usageByDay?.series ?? const <UsagePoint>[]),
     spendByRole: List.unmodifiable(
-      [
-        for (final role in usageByRole?.series ?? const <UsagePoint>[]) role,
-      ]..sort((a, b) => b.costUSD.compareTo(a.costUSD)),
+      [for (final role in usageByRole?.series ?? const <UsagePoint>[]) role]
+        ..sort((a, b) => b.costUSD.compareTo(a.costUSD)),
     ),
     // Every pull request the two cards do not show: being fixed, in progress,
     // or with checks the bridge cannot read.

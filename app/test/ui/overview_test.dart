@@ -587,10 +587,7 @@ void main() {
     // The thread total moved into the description, and the value carries what
     // the bridge answered: CI first, then the week's spend.
     expect(find.text('3 threads · 1 running · 2 idle'), findsOneWidget);
-    expect(
-      find.text('3 ready · 1 failing · \$5.92 this week'),
-      findsOneWidget,
-    );
+    expect(find.text('3 ready · 1 failing · \$5.92 this week'), findsOneWidget);
     // A project with nothing to report draws an em dash, never a blank slot.
     expect(find.text('2 threads · 2 idle'), findsOneWidget);
     expect(find.text('—'), findsOneWidget);

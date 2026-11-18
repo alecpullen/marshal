@@ -302,7 +302,9 @@ class Overview extends StatelessWidget {
         Label(
           'Pull requests',
           count: shown.length,
-          link: open == null ? null : LabelLink('Open pull requests', onTap: open),
+          link: open == null
+              ? null
+              : LabelLink('Open pull requests', onTap: open),
         ),
         const SizedBox(height: Space.s12),
         for (final pull in shown)
@@ -487,10 +489,9 @@ class Overview extends StatelessWidget {
           // not a table (the spark says nothing about values).
           if (overview.spendDays.isNotEmpty) ...[
             const SizedBox(height: Space.s8),
-            Spark(
-              [for (final point in overview.spendDays) point.costUSD],
-              semanticLabel: 'Daily spend',
-            ),
+            Spark([
+              for (final point in overview.spendDays) point.costUSD,
+            ], semanticLabel: 'Daily spend'),
           ],
           if (split != null) ...[
             const SizedBox(height: Space.s8),

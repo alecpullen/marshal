@@ -713,10 +713,10 @@ void main() {
 
     await model.load();
 
-    expect([for (final schedule in model.automationSchedules) schedule.id], [
-      's-1',
-      's-2',
-    ]);
+    expect(
+      [for (final schedule in model.automationSchedules) schedule.id],
+      ['s-1', 's-2'],
+    );
     // A watch belongs to the project its agent belongs to, not to whoever
     // asked for the list.
     expect([for (final watch in model.automationWatches) watch.id], ['w-1']);

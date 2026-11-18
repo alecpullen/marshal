@@ -757,10 +757,7 @@ class _StudioState extends State<Studio> {
         onOpenAutomations: (tab) => navigation.go(
           tab == null
               ? const Place(PlaceKind.automations)
-              : Place(
-                  PlaceKind.automations,
-                  section: automationsSections[tab],
-                ),
+              : Place(PlaceKind.automations, section: automationsSections[tab]),
         ),
       );
     }

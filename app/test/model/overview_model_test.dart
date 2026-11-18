@@ -357,18 +357,17 @@ void main() {
     final overview = buildOverview(fixture.store, inbox, audit: audit);
 
     expect(overview.activity, hasLength(overviewActivity));
-    expect([for (final event in overview.activity) event.detail], [
-      'event 9',
-      'event 8',
-      'event 7',
-      'event 6',
-      'event 5',
-      'event 4',
-    ]);
+    expect(
+      [for (final event in overview.activity) event.detail],
+      ['event 9', 'event 8', 'event 7', 'event 6', 'event 5', 'event 4'],
+    );
     // Pinned as order, not just length: the last event sent is the first row,
     // and the rows run newest to oldest.
     expect(overview.activity.first.detail, audit.last.detail);
-    expect(overview.activity.last.detail, audit[audit.length - overviewActivity].detail);
+    expect(
+      overview.activity.last.detail,
+      audit[audit.length - overviewActivity].detail,
+    );
   });
 
   test('a project\'s pulls are counted by state', () async {
@@ -441,7 +440,8 @@ void main() {
     // series is joined the way the pulls are. A project the ledger does not
     // name spent nothing it can vouch for.
     expect(
-      overview.projects.firstWhere((row) => row.id == '/home/u/marshal')
+      overview.projects
+          .firstWhere((row) => row.id == '/home/u/marshal')
           .spendUSD,
       5.92,
     );

@@ -41,13 +41,17 @@ class _Runner implements FleetProfiles {
   }
 }
 
-HostView _host(String name, {HostReach reach = HostReach.unreachable}) =>
-    HostView(
-      name: name,
-      kind: HostKind.server,
-      reach: reach,
-      lastContact: DateTime.utc(2026, 11, 17, 4, 8),
-    );
+HostView _host(
+  String name, {
+  HostReach reach = HostReach.unreachable,
+  String? via,
+}) => HostView(
+  name: name,
+  kind: HostKind.server,
+  reach: reach,
+  lastContact: DateTime.utc(2026, 11, 17, 4, 8),
+  via: via,
+);
 
 void main() {
   test('add runs add, login, then discovery', () async {
@@ -164,6 +168,64 @@ void main() {
     expect(runner.calls, ['login studio']);
     expect(retried, ['studio']);
     expect(model.loginFailure('studio'), isNull);
+  });
+
+  test('sign in stores through the callback, then retries', () async {
+    // A browser keeps a host's token itself, so the sign-in is the callback's
+    // write rather than `fleet login` (decision 6).
+    final stored = <String>[];
+    final retried = <String>[];
+    final model = HostsModel(
+      () => [_host('laptop', via: 'hub')],
+      storeToken: (host, token) async => stored.add('$host: $token'),
+      retry: retried.add,
+    );
+
+    await model.signIn('laptop', 'a-fresh-token');
+
+    expect(stored, ['laptop: a-fresh-token']);
+    expect(retried, ['laptop'], reason: 'a stored token is asked to try again');
+  });
+
+  test('sign out clears, then retries', () async {
+    final cleared = <String>[];
+    final retried = <String>[];
+    final model = HostsModel.fixture(
+      [_host('laptop', via: 'hub')],
+      clearToken: cleared.add,
+      retry: retried.add,
+    );
+
+    await model.signOut('laptop');
+
+    // Cleared first, so the retry reads "token refused" again.
+    expect(cleared, ['laptop']);
+    expect(retried, ['laptop']);
+  });
+
+  test('only a relayed host can sign out', () async {
+    final cleared = <String>[];
+    final model = HostsModel.fixture(
+      [_host('laptop', via: 'hub'), _host('studio')],
+      profiles: _Runner(),
+      clearToken: cleared.add,
+    );
+
+    expect(model.canSignOut(model.items.first), isTrue, reason: 'laptop');
+    expect(
+      model.canSignOut(model.items.last),
+      isFalse,
+      reason: 'a host reached directly carries the page’s own token',
+    );
+
+    // A native build keeps no token of its own: `marshal fleet token` reads one
+    // when a request needs it, so there is nothing for it to clear.
+    final native = HostsModel.fixture([
+      _host('laptop', via: 'hub'),
+    ], profiles: _Runner());
+    expect(native.canSignOut(native.items.single), isFalse);
+    await native.signOut('laptop');
+    expect(cleared, isEmpty);
   });
 
   test('a browser cannot add', () async {

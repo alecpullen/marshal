@@ -18,6 +18,7 @@ type DaemonInfo struct {
 	Pinned      []string       `json:"pinned"`            // filled per request
 	Children    []DaemonChild  `json:"children"`          // filled per request
 	Refresh     *DaemonRefresh `json:"refresh,omitempty"` // filled per request
+	Join        *DaemonJoin    `json:"join,omitempty"`    // filled per request
 }
 
 // DaemonRefresh is the refresh helper as GET /api/daemon reports it.

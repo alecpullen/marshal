@@ -36,6 +36,7 @@ var fixtureFiles = []string{
 	"projectsettings.json",
 	"projects.json",
 	"recipes.json",
+	"relay.json",
 	"review.json",
 	"runs.json",
 	"schedules.json",
@@ -372,6 +373,9 @@ var fixtureTypes = map[string]reflect.Type{
 	"DiscoveryGap":             reflect.TypeOf(DiscoveryGap{}),
 	"DiscoveryWorktree":        reflect.TypeOf(DiscoveryWorktree{}),
 	"DiscoveryReport":          reflect.TypeOf(DiscoveryReport{}),
+	// relay.go — a relay's hosts and the join a bridge makes into one.
+	"RelayHosts": reflect.TypeOf(RelayHosts{}),
+	"RelayHost":  reflect.TypeOf(RelayHost{}),
 }
 
 // TestContractFixturesRoundTrip holds the contract types to the shared

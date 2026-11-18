@@ -1,0 +1,22 @@
+{
+  "RelayHosts": {
+    "hosts": [
+      {
+        "name": "studio",
+        "connected": true,
+        "since": 1763355600000,
+        "lastContact": 1763355660000
+      },
+      {
+        "name": "workshop",
+        "connected": false
+      }
+    ]
+  },
+  "RelayHost": {
+    "name": "studio",
+    "connected": true,
+    "since": 1763355600000,
+    "lastContact": 1763355660000
+  }
+}

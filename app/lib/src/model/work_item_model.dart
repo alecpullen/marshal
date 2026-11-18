@@ -1,4 +1,5 @@
 import '../client/contract.g.dart';
+import 'attention.dart';
 import 'inbox_model.dart';
 import 'merge_target.dart';
 import 'thread_ref.dart';
@@ -176,7 +177,9 @@ class ActivityEntry {
   /// Anything the entry carried beyond its message, or null.
   final String? detail;
 
-  final DateTime at;
+  /// When it happened, or null when the timestamp is absent or unreadable:
+  /// an unknown time is shown as unknown, never as a fabricated date.
+  final DateTime? at;
 
   @override
   String toString() => 'ActivityEntry($who, $text, $at)';
@@ -200,11 +203,17 @@ List<ActivityEntry> activityOf(FactoryItem item) {
         who: whoActed(item, event),
         text: event.message.trim().isEmpty ? event.kind : event.message.trim(),
         detail: event.kind,
-        at:
-            DateTime.tryParse(event.at) ??
-            DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+        at: DateTime.tryParse(event.at),
       ),
   ]);
+}
+
+/// An exact time for the tooltip behind a relative one (design-system.md §8).
+String exactTimeLabel(DateTime at) {
+  final utc = at.toUtc();
+  String two(int value) => value.toString().padLeft(2, '0');
+  return '${utc.year}-${two(utc.month)}-${two(utc.day)} '
+      '${two(utc.hour)}:${two(utc.minute)} UTC';
 }
 
 /// Who a history entry is attributed to, in words (F6 decision 4).
@@ -258,6 +267,9 @@ List<Ask> asksOf(String host, FactoryItem item) {
           AskAction('Propose a change', kind: AskActionKind.reply),
         ],
         since: created,
+        source: AskSource.factory,
+        project: item.projectRoot,
+        scope: AskScope.projectWide,
       ),
     );
   }
@@ -278,6 +290,9 @@ List<Ask> asksOf(String host, FactoryItem item) {
           AskAction('Answer', primary: true, kind: AskActionKind.reply),
         ],
         since: DateTime.tryParse(decision.createdAt) ?? since,
+        source: AskSource.factory,
+        project: item.projectRoot,
+        scope: AskScope.projectWide,
       ),
     );
   }
@@ -296,6 +311,9 @@ List<Ask> asksOf(String host, FactoryItem item) {
           AskAction('Start fresh', kind: AskActionKind.reply),
         ],
         since: since,
+        source: AskSource.factory,
+        project: item.projectRoot,
+        scope: AskScope.projectWide,
       ),
     );
   }
@@ -317,6 +335,9 @@ List<Ask> asksOf(String host, FactoryItem item) {
           AskAction('Reopen', kind: AskActionKind.reply),
         ],
         since: since,
+        source: AskSource.factory,
+        project: item.projectRoot,
+        scope: AskScope.projectWide,
       ),
     );
   }
@@ -369,6 +390,34 @@ String completionDetail(FactoryItem item) {
   ].join(' · ');
 }
 
+/// What a work item can confirm about one worker's session (F6 decision 6).
+///
+/// A parked worker is not running; a worker whose effect this build cannot
+/// read is unknown, never running. `prepared` and `uncertain` are not proof
+/// that a worker is working.
+enum WorkerState { working, finished, failed, parked, unknown }
+
+/// The state [worker]'s own record supports, from the item's effects.
+WorkerState workerStateOf(FactoryItem item, FactoryWorker worker) {
+  if (worker.parked) return WorkerState.parked;
+  for (final effect in item.effects) {
+    if (effect.id != worker.spawnEffectID) continue;
+    // The bridge journals prepared, dispatched, completed and uncertain;
+    // 'done' is kept for older records and fixtures. A failure normally
+    // arrives as the outcome's error, so the report check is defensive.
+    return switch (effect.status) {
+      'done' || 'completed' =>
+        (effect.outcome?.error ?? '').isNotEmpty ||
+                effect.outcome?.report?.outcome == 'failed'
+            ? WorkerState.failed
+            : WorkerState.finished,
+      'dispatched' => WorkerState.working,
+      _ => WorkerState.unknown,
+    };
+  }
+  return WorkerState.unknown;
+}
+
 /// One worker as a work item's screen draws it.
 class WorkItemWorker {
   const WorkItemWorker({
@@ -376,6 +425,7 @@ class WorkItemWorker {
     required this.sessionID,
     required this.role,
     required this.parked,
+    required this.state,
   });
 
   final String agentID;
@@ -388,8 +438,20 @@ class WorkItemWorker {
 
   final bool parked;
 
+  /// What the item's own record confirms about this worker.
+  final WorkerState state;
+
   /// The role in the design system's words.
   String get words => roleWords(role);
+
+  /// The state in the design system's words.
+  String get stateWords => switch (state) {
+    WorkerState.working => 'Working',
+    WorkerState.finished => 'Finished',
+    WorkerState.failed => 'Failed',
+    WorkerState.parked => 'Parked',
+    WorkerState.unknown => 'Unknown',
+  };
 }
 
 /// One CI check as a work item's screen draws it (F6 decision 6).
@@ -483,6 +545,7 @@ class WorkItemView {
             sessionID: worker.sessionID,
             role: worker.role,
             parked: worker.parked,
+            state: workerStateOf(item, worker),
           ),
       ],
       checks: [

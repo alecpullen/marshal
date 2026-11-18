@@ -5,9 +5,8 @@
 #
 # The studio is the SPA embedded in webbridge (`web/bridge/static`, baked in
 # with //go:embed) talking to a webbridge over HTTP. It runs as its own unit,
-# `marshal-studio.service`, on 127.0.0.1:7700 — the address Vite's dev proxy
-# already targets — with the *server* profile. Two reasons it is not the local
-# daemon the TUI uses:
+# `marshal-studio.service`, on 127.0.0.1:7700, with the *server* profile. Two
+# reasons it is not the local daemon the TUI uses:
 #
 #   - the local profile is socket-only (`daemon install` pins `--addr off`) and
 #     refuses egress, secret backends and containers, which is most of what
@@ -16,12 +15,17 @@
 #     fleets, separate restarts.
 #
 # The loop is the daemon's: the unit pins binary *paths*, so rebuild in place
-# and restart. A change under web/ui is invisible until the SPA is rebuilt and
-# the binary relinked, which is what the default run does; `--ui` skips both
-# and runs Vite for hot reload against the running studio.
+# and restart. A change under app/ is invisible until `flutter build web`
+# rewrites web/bridge/static and webbridge is relinked, because //go:embed bakes
+# those files into it — which is what the default run does.
+#
+# There is no hot-reload mode. F8's cutover retired the Svelte studio, its Vite
+# dev server and the proxy that made one possible: the browser client is
+# same-origin only (`WebTransport` with no base, app/lib/src/client), so a page
+# served by a dev server on another port would send every /api request to that
+# dev server instead of the bridge. Edit, run this script, reload.
 #
 #   scripts/dev-studio.sh                 # build SPA + binaries, restart, print status
-#   scripts/dev-studio.sh --ui            # Vite dev server on :5173 (HMR), no rebuild
 #   scripts/dev-studio.sh --no-build      # restart the binaries already on disk
 #   scripts/dev-studio.sh --no-spa        # rebuild Go only; keep the embedded SPA
 #   scripts/dev-studio.sh --no-restart    # build only; the running studio keeps the old binary
@@ -97,7 +101,6 @@ spa=1
 restart=1
 install=0
 force=0
-ui=0
 status=0
 print_token=0
 agent_image=0
@@ -125,14 +128,6 @@ while [ $# -gt 0 ]; do
 	--no-spa) spa=0 ;;
 	--no-restart) restart=0 ;;
 	--install) install=1 ;;
-	--ui)
-		ui=1
-		# Vite serves the sources; building or restarting first would be slow
-		# and would bounce the studio the user is about to browse.
-		build=0
-		spa=0
-		restart=0
-		;;
 	--status)
 		build=0
 		spa=0
@@ -384,24 +379,32 @@ print_status() {
 
 # ---------------------------------------------------------------- build ----
 
-# npm_ready installs the UI's dependencies the first time. `npm ci` needs the
-# lockfile, which the repo keeps.
-npm_ready() {
-	if ! command -v npm >/dev/null 2>&1; then
-		echo "dev-studio.sh: npm is missing, so the SPA cannot be built" >&2
-		echo "dev-studio.sh: install Node, or pass --no-spa to rebuild Go only" >&2
+# flutter_ready names the toolchain the SPA build needs. F8's cutover retired
+# the Svelte studio with its Node toolchain, so the build is `flutter build web`
+# run from app/ — there is no npm step and no web/ui to install into.
+flutter_ready() {
+	if ! command -v flutter >/dev/null 2>&1; then
+		echo "dev-studio.sh: flutter is missing, so the SPA cannot be built" >&2
+		echo "dev-studio.sh: install Flutter 3.50+, or pass --no-spa to rebuild Go only" >&2
 		exit 1
 	fi
-	if [ ! -d web/ui/node_modules ]; then
-		echo "installing web/ui dependencies (first run)"
-		npm --prefix web/ui ci
+	if [ ! -f app/pubspec.yaml ]; then
+		echo "dev-studio.sh: app/pubspec.yaml is missing, so this checkout has no Studio to build" >&2
+		exit 1
 	fi
 }
 
 if [ "$spa" -eq 1 ]; then
-	npm_ready
+	flutter_ready
+	# --base-href / is where the bridge serves the SPA (an old /next/ link
+	# redirects there), and --no-web-resources-cdn is not optional: without it
+	# the build fetches the CanvasKit engine from gstatic, and a private network
+	# that cannot reach that CDN never starts the Studio. --output is relative to
+	# app/, which is where the command runs. This overwrites the tracked
+	# placeholder web/bridge/static/index.html — that file is not to be
+	# committed; CI builds the SPA the same way and embeds it.
 	echo "building the SPA into web/bridge/static"
-	npm --prefix web/ui run build
+	(cd app && flutter build web --base-href / --no-web-resources-cdn --output ../web/bridge/static)
 fi
 
 if [ "$build" -eq 1 ]; then
@@ -449,8 +452,9 @@ build_dev_image() {
 		echo "note: building on ${base}; if the agent reports 'GLIBC_2.x not found'," >&2
 		echo "note: rebuild with --build-arg BASE_IMAGE=<an image matching this host>" >&2
 	fi
-	# The repository root as a build context would hand web/ui/node_modules and
-	# .marshal/worktrees to the runtime; the image needs the one binary.
+	# The repository root as a build context would hand app/build, the Flutter
+	# tree's own artifacts, and .marshal/worktrees to the runtime; the image
+	# needs the one binary.
 	ctx=$(mktemp -d)
 	cp ./marshal "$ctx/marshal"
 	# The label records which ./marshal went in, so --status can tell a stale
@@ -481,20 +485,6 @@ if [ "$agent_image" -eq 1 ]; then
 	# step: it compiles marshal inside the image, on the release base.
 	echo "building the agent image (slow; the agent binary is baked in)"
 	"$runtime" build -f build/Dockerfile -t "$agent_image_ref" .
-fi
-
-if [ "$ui" -eq 1 ]; then
-	# Vite proxies /api to the studio; start one if this is the first run, but
-	# never restart it behind the user's back.
-	if ! wait_ready 2>/dev/null; then
-		echo "dev-studio.sh: no studio answering on $base; run this script once without --ui" >&2
-		exit 1
-	fi
-	npm_ready
-	# Vite binds localhost (and ::1), not 127.0.0.1, so name the URL it serves.
-	printf 'vite dev server: http://localhost:5173 (proxying /api to %s)\n' "$base"
-	printf 'token: %s\n' "$(read_token)"
-	exec npm --prefix web/ui run dev
 fi
 
 if [ "$print_token" -eq 1 ]; then

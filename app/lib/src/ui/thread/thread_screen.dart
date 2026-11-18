@@ -67,6 +67,18 @@ String threadKeyTip(String key) {
 /// It is an embeddable widget: it takes the thread's store and view state and
 /// draws them, so F6 can put it beside an inspector and a test can pump it
 /// with fixture data. It never fetches; the store does.
+///
+/// **Integration point for child context.** Only a parent's conversation is
+/// shown today: the host always hands this screen the parent's [store]
+/// (`StackStore(subagentId: 0)`), and [asks] are the parent's asks. When the
+/// worker-subagent plan lands, the child's context belongs here: the
+/// breadcrumb naming the child its conversation is, and the back action to
+/// its parent, go above the transcript in `_thread`'s column, under the
+/// [ThreadHeader]; that plan's shared child views and steering replace the
+/// drill-in the shell has now. Until then this screen draws no child status,
+/// no breadcrumb value and no back or steer control, because no adapter it
+/// talks to offers one — reporting an unsupported operation as done is worse
+/// than not offering it.
 class ThreadScreen extends StatefulWidget {
   const ThreadScreen({
     super.key,
@@ -451,7 +463,10 @@ class _ThreadScreenState extends State<ThreadScreen> {
     children: [
       _pullHeader(),
       Expanded(
-        child: _rowsOf(store).isEmpty
+        // An empty transcript with something waiting on the person is not
+        // empty: the transcript still draws, so its pinned-ask path shows
+        // what the Inbox holds. Only a thread with neither says so.
+        child: _rowsOf(store).isEmpty && !_hasVisibleAsks
             ? StateMessage.empty(
                 message: 'Nothing has happened in this thread yet.',
                 action: StateAction(
@@ -472,6 +487,14 @@ class _ThreadScreenState extends State<ThreadScreen> {
       _composer(),
     ],
   );
+
+  /// Whether an ask is waiting as of the screen's clock. The transcript
+  /// filters its asks by the same rule, so the empty message is shown only
+  /// when there is truly nothing to draw.
+  bool get _hasVisibleAsks {
+    final now = widget.now ?? DateTime.now();
+    return widget.asks.any((ask) => ask.since.isBefore(now));
+  }
 
   /// The conversation narrowed to step headlines, what an expanded inspector
   /// leaves beside it (decision 3). Selecting one inspects it.

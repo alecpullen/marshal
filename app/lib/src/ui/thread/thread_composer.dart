@@ -75,38 +75,55 @@ class _ThreadComposerState extends State<ThreadComposer> {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: Listenable.merge([widget.model, widget.view]),
-      builder: (context, _) {
-        final model = widget.model;
-        final failure = model.failure;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Composer(
-              controller: _text,
-              hint: model.running ? 'Steer the agent…' : 'Reply to the agent…',
-              running: model.running,
-              readOnly: model.readOnly,
-              readOnlyReason: model.readOnlyReason,
-              mode: model.permissionMode,
-              model: model.model,
-              onSend: model.readOnly ? null : () => model.send(_text.text),
-              onStop: model.running ? model.stop : null,
-              onMode: widget.onMode,
-              onModel: widget.onModel,
-            ),
-            if (failure != null)
-              Padding(
-                padding: const EdgeInsets.only(top: Space.s4),
-                child: Text(
-                  failure,
-                  style: Ember.of(context).small.tint(Ember.of(context).err),
-                ),
+    // An on-screen keyboard takes the bottom of the window, so the composer
+    // pads itself by that inset: the field and Send stay visible above it on a
+    // phone-sized viewport.
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: AnimatedBuilder(
+        animation: Listenable.merge([widget.model, widget.view]),
+        builder: (context, _) {
+          final e = Ember.of(context);
+          final model = widget.model;
+          final failure = model.failure;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Composer(
+                controller: _text,
+                hint: model.running
+                    ? 'Steer the agent…'
+                    : 'Reply to the agent…',
+                running: model.running,
+                readOnly: model.readOnly,
+                readOnlyReason: model.readOnlyReason,
+                mode: model.permissionMode,
+                model: model.model,
+                onSend: model.readOnly ? null : () => model.send(_text.text),
+                onStop: model.running ? model.stop : null,
+                onMode: widget.onMode,
+                onModel: widget.onModel,
               ),
-          ],
-        );
-      },
+              // A stop is a request: the session has not said the turn ended
+              // yet, so the composer says what it is waiting for rather than
+              // claiming the turn stopped.
+              if (model.cancellationRequested && model.running)
+                Padding(
+                  padding: const EdgeInsets.only(top: Space.s4),
+                  child: Text(
+                    'Cancellation requested — waiting for the session to stop.',
+                    style: e.small.tint(e.muted),
+                  ),
+                ),
+              if (failure != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: Space.s4),
+                  child: Text(failure, style: e.small.tint(e.err)),
+                ),
+            ],
+          );
+        },
+      ),
     );
   }
 }

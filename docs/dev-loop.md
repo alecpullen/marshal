@@ -58,16 +58,23 @@ script wraps.
 A Go change needs `--dev-image` for agents spawned by the studio, because the
 agent's `marshal` comes from the **container image**, not from the bridge's
 `--marshal-bin` (that only reaches host-process agents, which the server
-profile does not use while a container runtime is on `PATH`). A `web/ui` change
-needs the SPA rebuild, which is part of the studio's default run.
+profile does not use while a container runtime is on `PATH`). A change under
+`app/` needs the SPA rebuilt with `flutter build web`, which is part of the
+studio's default run: `//go:embed` bakes `web/bridge/static/` into `webbridge`,
+so the binary has to be relinked as well as the SPA rewritten.
 
 ### Artifacts
 
 | Artifact | Produced by | Refreshed when |
 |---|---|---|
 | `./marshal`, `./webbridge` | either script | Go code changes |
-| `web/bridge/static/` (embedded SPA) | `dev-studio.sh` | `web/ui` changes |
+| `web/bridge/static/` (embedded SPA) | `dev-studio.sh` (`flutter build web`) | `app/` changes |
 | `ghcr.io/marshal/agent:latest` | `dev-studio.sh --dev-image` | Go code changes, for studio-spawned agents |
+
+`web/bridge/static/index.html` is tracked as a placeholder so a Go-only
+checkout still serves a landing page, and the SPA build overwrites it: expect
+that file to show as modified after every run, and do not commit it. CI builds
+the SPA the same way before it builds `webbridge`.
 
 ### Common invocations
 
@@ -79,7 +86,6 @@ needs the SPA rebuild, which is part of the studio's default run.
 ./scripts/dev-daemon.sh --status         # query only
 
 # studio
-./scripts/dev-studio.sh --ui             # Vite HMR on http://localhost:5173, proxying /api to :7700
 ./scripts/dev-studio.sh --no-spa         # Go only, keep the embedded SPA
 ./scripts/dev-studio.sh --no-build       # restart only
 ./scripts/dev-studio.sh --no-restart     # build (and optionally --dev-image) only
@@ -89,9 +95,15 @@ needs the SPA rebuild, which is part of the studio's default run.
 ./scripts/dev-studio.sh --agent-image    # slow: compile marshal inside the image (release-shaped)
 ```
 
-`--ui` and `--token` are queries: they never build, restart, or rewrite
-anything. `--ui` prints `localhost:5173`, not `127.0.0.1`, because Vite binds
-`localhost`/`::1` and the dev proxy forwards the token.
+`--status` and `--token` are queries: they never build, restart, or rewrite
+anything.
+
+Editing the Studio has no hot-reload mode. F8's cutover removed the Svelte
+studio together with the Vite dev server and the dev proxy that let its page
+reach the bridge on `:7700`. The Flutter client is same-origin only
+(`WebTransport` with no base, `app/lib/src/client/`), so a page served from
+another port would send every `/api` request to that port instead of to the
+bridge. The loop is: edit, run `./scripts/dev-studio.sh`, reload the tab.
 
 ## The agent image
 
@@ -245,9 +257,10 @@ mid-flight.
 
 ## Recreating this setup from a bare checkout
 
-1. **Prerequisites.** Go 1.26+ and a C toolchain (cgo). Node/npm for the SPA.
-   podman or docker for containerized agents. systemd (Linux) or launchd
-   (macOS) for the daemon; the studio helper is Linux-only (it writes a
+1. **Prerequisites.** Go 1.26+ and a C toolchain (cgo). Flutter 3.50+ for the
+   Studio's web build (`flutter build web` from `app/`; there is no Node step
+   any more). podman or docker for containerized agents. systemd (Linux) or
+   launchd (macOS) for the daemon; the studio helper is Linux-only (it writes a
    systemd user unit — elsewhere run `webbridge --profile server` yourself).
 2. **Build and install the daemon.**
 
@@ -266,9 +279,9 @@ mid-flight.
    ./scripts/dev-studio.sh --status
    ```
 
-   The first run installs `web/ui` dependencies if needed, builds the SPA,
-   builds both binaries, writes the unit and token, enables and starts the
-   unit. `--install` implies a restart; no separate `start` is needed.
+   The first run builds the SPA with `flutter build web`, builds both binaries,
+   writes the unit and token, enables and starts the unit. `--install` implies
+   a restart; no separate `start` is needed.
 4. **Add the fleet profile** (previous section) and confirm both services:
 
    ```bash
@@ -291,4 +304,5 @@ mid-flight.
 | Agent exits with `GLIBC_2.x not found` | The dev image's base is older than the host's libc; rebuild with `--build-arg BASE_IMAGE=<host-matching image>`. |
 | `--install` refuses to write a unit | `MARSHAL_CONFIG_DIR`/`MARSHAL_DATA_DIR`/`XDG_*` point outside `$HOME`. The unit bakes those paths, so it would outlive a temp dir. Unset them, or pass `--force` deliberately. |
 | Version line unchanged after a rebuild | Two `+dirty` builds of one commit share a version; compare the start time. |
-| `--dev-image` says the build context is wrong | The script copies only `./marshal` into a temp context on purpose: the repo root would hand `web/ui/node_modules` and `.marshal/worktrees` to the runtime. |
+| `--dev-image` says the build context is wrong | The script copies only `./marshal` into a temp context on purpose: the repo root would hand `app/build` and `.marshal/worktrees` to the runtime. |
+| `dev-studio.sh` says flutter is missing | The SPA build is `flutter build web` from `app/` and needs Flutter 3.50+; the Node toolchain left with F8. Install Flutter, or pass `--no-spa` to rebuild Go only. |

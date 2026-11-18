@@ -23,6 +23,28 @@ void main() {
     }
   });
 
+  test('a project root that needs encoding round trips', () {
+    const roots = [
+      '/home/u/alpha beta', // a space
+      '/home/u/alpha#beta', // a fragment character
+      '/home/u/alpha:beta', // a colon
+      '/home/u/alpha+beta', // a plus
+      '/home/u/ünïcode', // non-ASCII
+      '/home/u/alpha/', // a trailing slash
+      '/', // the filesystem's root, all slash
+    ];
+    for (final root in roots) {
+      final place = Place(PlaceKind.project, id: root);
+      final path = formatPlace(place);
+      expect(parsePlace(path), place, reason: path);
+    }
+    // The encoding that keeps the root one segment, whatever it holds.
+    expect(
+      formatPlace(const Place(PlaceKind.project, id: '/srv/old one #2/')),
+      '/project/%2Fsrv%2Fold%20one%20%232%2F',
+    );
+  });
+
   test('the paths are the ones the design names', () {
     expect(formatPlace(const Place.overview()), '/');
     expect(formatPlace(const Place(PlaceKind.inbox)), '/inbox');

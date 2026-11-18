@@ -253,11 +253,12 @@ class _SidebarState extends State<Sidebar> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(Space.s8, 0, Space.s8, Space.s8),
       children: [
-        NavRow(
-          label: 'Back',
-          icon: Glyphs.chevron_left,
-          onTap: widget.onLeaveSettings ?? () {},
-        ),
+        if (widget.onLeaveSettings != null)
+          NavRow(
+            label: 'Back',
+            icon: Glyphs.chevron_left,
+            onTap: widget.onLeaveSettings!,
+          ),
         const _GroupLabel('Settings'),
         for (final (index, kind) in SettingsSectionKind.values.indexed)
           NavRow(

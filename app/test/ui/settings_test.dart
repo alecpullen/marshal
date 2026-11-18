@@ -43,9 +43,8 @@ class _Runner implements FleetProfiles {
 }
 
 /// Settings' frame, its Hosts section and its General section (F7 decision
-/// 7): the ten sections in the design's order, a host that is away marked
-/// with when it was last seen, a host added where the build can add one, and
-/// appearance taking effect.
+/// 7): a host that is away marked with when it was last seen, a host added
+/// where the build can add one, and appearance taking effect.
 void main() {
   final now = DateTime.utc(2026, 11, 17, 4, 12);
 

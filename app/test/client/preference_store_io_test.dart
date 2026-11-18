@@ -47,4 +47,30 @@ void main() {
       'appearance': 'dark',
     });
   });
+
+  test('the config directory is the one Marshal uses', () {
+    // The same rule as internal/app/config/locations.go, so the Studio's
+    // preferences sit beside config.toml.
+    expect(
+      configDirectoryFor({
+        'MARSHAL_CONFIG_DIR': '/custom',
+        'XDG_CONFIG_HOME': '/xdg',
+        'HOME': '/home/u',
+      }),
+      '/custom',
+    );
+    expect(
+      configDirectoryFor({'XDG_CONFIG_HOME': '/xdg', 'HOME': '/home/u'}),
+      '/xdg/marshal',
+    );
+    expect(configDirectoryFor({'HOME': '/home/u'}), '/home/u/.config/marshal');
+    // Empty values are not a directory.
+    expect(
+      configDirectoryFor({'MARSHAL_CONFIG_DIR': '', 'HOME': '/home/u'}),
+      '/home/u/.config/marshal',
+    );
+    // No home is no store.
+    expect(configDirectoryFor({'XDG_CONFIG_HOME': ''}), isNull);
+    expect(configDirectoryFor({}), isNull);
+  });
 }

@@ -168,6 +168,7 @@ void main() {
         onSelect: opened.add,
         onNew: onNew,
         onConnectRepo: onConnectRepo,
+        onLeaveSettings: () {},
         unsaved: unsaved,
         settingsFor: settingsFor,
         content: (_) => plannedPlace(place, nav),
@@ -492,6 +493,35 @@ void main() {
           .where((row) => row.selected)
           .map((row) => row.label),
       ['Overview'],
+    );
+
+    // Back returns wherever the person came from, not only where the Studio
+    // opened: from the Inbox, it goes back to the Inbox.
+    await tester.tap(
+      find.descendant(of: find.byType(Sidebar), matching: find.text('Inbox')),
+    );
+    await tester.pump();
+    await tester.tap(
+      find.descendant(
+        of: find.byType(Sidebar),
+        matching: find.text('Settings'),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.text('Back'));
+    await tester.pump();
+
+    expect(
+      tester
+          .widgetList<NavRow>(
+            find.descendant(
+              of: find.byType(Sidebar),
+              matching: find.byType(NavRow),
+            ),
+          )
+          .where((row) => row.selected)
+          .map((row) => row.label),
+      ['Inbox'],
     );
   });
 

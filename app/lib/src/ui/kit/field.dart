@@ -110,6 +110,17 @@ class _FieldState extends State<Field> {
   }
 
   @override
+  void didUpdateWidget(Field oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A field rebuilt with a different node listens to the new one: a given
+    // node belongs to the caller, so the old listener is only removed.
+    if (oldWidget.focusNode != widget.focusNode) {
+      (oldWidget.focusNode ?? _own).removeListener(_onFocusChanged);
+      _focus.addListener(_onFocusChanged);
+    }
+  }
+
+  @override
   void dispose() {
     _focus.removeListener(_onFocusChanged);
     _own.dispose();

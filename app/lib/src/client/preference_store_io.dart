@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import 'preference_store.dart';
 
 // A desktop has no page to keep anything in, so the Studio's preferences are a
@@ -18,14 +20,16 @@ const preferenceFileName = 'studio.json';
 /// rule `internal/app/config/locations.go` applies, so the Studio keeps its
 /// preferences beside `config.toml` rather than in a directory of its own.
 PreferenceStore? openPreferenceStore() {
-  final directory = _configDirectory(Platform.environment);
+  final directory = configDirectoryFor(Platform.environment);
   if (directory == null) return null;
   return IoPreferenceStore(directory);
 }
 
 /// Marshal's user config directory for [environment], or null when it names
-/// no home to build one under.
-String? _configDirectory(Map<String, String> environment) {
+/// no home to build one under. Exposed so the rule itself can be tested
+/// without a real environment.
+@visibleForTesting
+String? configDirectoryFor(Map<String, String> environment) {
   final override = environment['MARSHAL_CONFIG_DIR'];
   if (override != null && override.isNotEmpty) return override;
   final xdg = environment['XDG_CONFIG_HOME'];

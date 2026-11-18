@@ -876,6 +876,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		params["cursor"] = cursor
 	}
 	var reg *Registry
+	var child *Child
 	if s.fleet != nil {
 		rt, err := s.fleet.runtimeForRoot(cwd)
 		if err != nil {
@@ -888,7 +889,10 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, err)
 				return
 			}
-			reg, err = s.fleet.controlRegistryForRoot(r.Context(), cwd)
+			// The control child is asked directly. Building a Registry
+			// over it would install that Registry's hooks on a child the
+			// bridge already owns.
+			child, err = s.fleet.controlChild(r.Context())
 			if err != nil {
 				writeErr(w, err)
 				return
@@ -905,7 +909,10 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	} else {
 		reg = s.reg
 	}
-	res, err := reg.child.Request(r.Context(), "session/list", params)
+	if child == nil {
+		child = reg.child
+	}
+	res, err := child.Request(r.Context(), "session/list", params)
 	if err != nil {
 		writeErr(w, err)
 		return

@@ -331,15 +331,12 @@ func (f *Fleet) projectSession(ctx context.Context, root string) (string, error)
 	return sid, nil
 }
 
-// controlRegistryForRoot returns a Registry whose child is the control
-// agent, for a project root that has no live agent runtime. The control
-// agent opens one session per project root, so session/list can be
-// answered for a project the bridge manages but has not used yet.
+// controlChild is the control agent's child, started if needed.
 //
-// The returned Registry is a thin view: it carries the control child and
-// the root, and is not tracked anywhere, so it must not be used for
-// anything that expects a project agent's own runtime.
-func (f *Fleet) controlRegistryForRoot(ctx context.Context, root string) (*Registry, error) {
+// It is the live child itself, not a Registry over it: a caller that builds
+// a Registry here would install its hooks on a child other code already
+// owns, and a second call would replace them again.
+func (f *Fleet) controlChild(ctx context.Context) (*Child, error) {
 	c, err := f.control(ctx)
 	if err != nil {
 		return nil, err
@@ -350,9 +347,7 @@ func (f *Fleet) controlRegistryForRoot(ctx context.Context, root string) (*Regis
 	if child == nil {
 		return nil, fmt.Errorf("bridge: control agent is not running")
 	}
-	reg := NewRegistry(child)
-	reg.RootCwd = root
-	return reg, nil
+	return child, nil
 }
 
 // underAny reports whether path is one of roots or lies beneath one, on

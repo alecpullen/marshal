@@ -505,10 +505,13 @@ T? _objectOrNull<T>(
   T Function(Map<String, dynamic> json) fromJson,
 ) => json == null ? null : fromJson(json as Map<String, dynamic>);
 `},
-	{"_list", `/// The array [json] names, each element decoded by [convert].
-List<T> _list<T>(Object? json, T Function(Object? value) convert) => [
-  for (final value in json as List<dynamic>) convert(value),
-];
+	{"_list", `/// The array [json] names, each element decoded by [convert], or an empty
+/// list when it is absent. Go writes a nil slice as ` + "`null`" + `, so a required
+/// array can arrive null and means empty.
+List<T> _list<T>(Object? json, T Function(Object? value) convert) =>
+    json == null
+    ? <T>[]
+    : [for (final value in json as List<dynamic>) convert(value)];
 `},
 	{"_listOrNull", `/// The array [json] names, or null when it is absent, each element
 /// decoded by [convert].
@@ -517,11 +520,16 @@ List<T>? _listOrNull<T>(Object? json, T Function(Object? value) convert) =>
     ? null
     : [for (final value in json as List<dynamic>) convert(value)];
 `},
-	{"_map", `/// The object [json] names, each value decoded by [convert].
-Map<String, T> _map<T>(Object? json, T Function(Object? value) convert) => {
-  for (final entry in (json as Map<String, dynamic>).entries)
-    entry.key: convert(entry.value),
-};
+	{"_map", `/// The object [json] names, each value decoded by [convert], or an empty
+/// map when it is absent. Go writes a nil map as ` + "`null`" + `, so a required
+/// object can arrive null and means empty.
+Map<String, T> _map<T>(Object? json, T Function(Object? value) convert) =>
+    json == null
+    ? <String, T>{}
+    : {
+        for (final entry in (json as Map<String, dynamic>).entries)
+          entry.key: convert(entry.value),
+      };
 `},
 	{"_mapOrNull", `/// The object [json] names, or null when it is absent, each value
 /// decoded by [convert].
@@ -648,7 +656,9 @@ func (f *field) text() string {
 }
 
 // required reports whether the constructor takes the field as `required`:
-// absent from the wire only when the field is present, and never null.
+// the wire always sends it. That does not promise a non-null value — Go
+// writes a nil slice or map as `null`, so a required list or map can arrive
+// null, and `_list` and `_map` decode that as empty.
 func (f *field) required() bool {
 	return !f.omitempty && !f.desc.nullable
 }

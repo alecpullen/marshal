@@ -95,7 +95,8 @@ class Overview extends StatelessWidget {
                 ..._needsYou(context),
                 const SizedBox(height: Space.s24),
                 ..._pullRequests(context),
-                if (pulls.isNotEmpty) const SizedBox(height: Space.s24),
+                if (pulls.isNotEmpty || overview.moreInProgress > 0)
+                  const SizedBox(height: Space.s24),
                 ..._running(context),
                 const SizedBox(height: Space.s24),
                 ..._projects(context),
@@ -293,24 +294,33 @@ class Overview extends StatelessWidget {
         if (pull.group == PullGroup.ready || pull.group == PullGroup.failing)
           pull,
     ];
-    if (shown.isEmpty) return const [];
     final open = _open(const Place(PlaceKind.pulls));
+    final more = overview.moreInProgress;
+    if (shown.isEmpty && more == 0) return const [];
     return [
-      Label(
-        'Pull requests',
-        count: shown.length,
-        link: open == null
-            ? null
-            : LabelLink('Open pull requests', onTap: open),
-      ),
-      const SizedBox(height: Space.s12),
-      for (final pull in shown)
-        Padding(
-          padding: const EdgeInsets.only(bottom: Space.s8),
-          child: PrCard(
-            pull: pullFactsOf(pull, now: now),
-            actions: PrActions(openSource: _pullSource(pull)),
+      if (shown.isNotEmpty) ...[
+        Label(
+          'Pull requests',
+          count: shown.length,
+          link: open == null ? null : LabelLink('Open pull requests', onTap: open),
+        ),
+        const SizedBox(height: Space.s12),
+        for (final pull in shown)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Space.s8),
+            child: PrCard(
+              pull: pullFactsOf(pull, now: now),
+              actions: PrActions(openSource: _pullSource(pull)),
+            ),
           ),
+      ],
+      // What the two cards leave out, in the mock's words: it is still work in
+      // flight, so it is one line beneath them and never a card of its own
+      // (F9 decision 7).
+      if (more > 0)
+        Text(
+          '$more more in progress with checks passing or running',
+          style: Ember.of(context).small.tint(Ember.of(context).muted),
         ),
     ];
   }
@@ -400,14 +410,43 @@ class Overview extends StatelessWidget {
           for (final project in projects)
             RowItem(
               name: project.name,
-              description: _counts(project),
-              value: '${project.threads}',
+              description: _projectDetail(project),
+              value: _projectWorth(project),
               onTap: onSelect == null
                   ? null
                   : () => onSelect!(Place(PlaceKind.project, id: project.id)),
             ),
         ]),
     ];
+  }
+
+  /// A project row's description: its thread total, then the counts it breaks
+  /// into. The total is what the row's value used to carry; the value now
+  /// belongs to what the bridge answered about the project (F9 decision 7).
+  static String _projectDetail(ProjectSummary project) {
+    final counts = _counts(project);
+    if (project.threads == 0) return counts;
+    final threads = project.threads == 1
+        ? '1 thread'
+        : '${project.threads} threads';
+    return '$threads · $counts';
+  }
+
+  /// A project row's value: its pull requests' state, then what it spent over
+  /// the usage window. Only the parts that are not zero are named, and a row
+  /// with nothing to name draws an em dash rather than an empty slot.
+  static String _projectWorth(ProjectSummary project) {
+    final ci = [
+      if (project.ciReady > 0) '${project.ciReady} ready',
+      if (project.ciFailing > 0) '${project.ciFailing} failing',
+    ].join(' · ');
+    final spend = project.spendUSD > 0
+        ? '\$${project.spendUSD.toStringAsFixed(2)} this week'
+        : '';
+    return [
+      if (ci.isNotEmpty) ci else if (spend.isEmpty) '—',
+      if (spend.isNotEmpty) spend,
+    ].join(' · ');
   }
 
   /// The side rail: what each host is carrying, and the day's spend.

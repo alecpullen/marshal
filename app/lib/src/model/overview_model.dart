@@ -5,6 +5,7 @@ import '../client/host.dart';
 import 'fleet_store.dart';
 import 'inbox_model.dart';
 import 'nav_model.dart' show projectName;
+import 'pulls_model.dart' show PullGroup, PullView;
 import 'source_state.dart';
 import 'thread_ref.dart';
 
@@ -31,6 +32,9 @@ class ProjectSummary {
     required this.ready,
     required this.failed,
     required this.idle,
+    this.ciReady = 0,
+    this.ciFailing = 0,
+    this.spendUSD = 0,
   });
 
   /// The project's root, as its threads name it.
@@ -44,6 +48,13 @@ class ProjectSummary {
   final int ready;
   final int failed;
   final int idle;
+
+  /// Ready pull requests from this project, and failing ones.
+  final int ciReady;
+  final int ciFailing;
+
+  /// What this project's agents spent over the usage window, in dollars.
+  final double spendUSD;
 
   /// Every thread it has.
   int get threads => needsYou + running + ready + failed + idle;
@@ -117,6 +128,7 @@ class OverviewModel {
     this.activity = const [],
     this.spendDays = const [],
     this.spendByRole = const [],
+    this.moreInProgress = 0,
   });
 
   /// The oldest asks, at most [overviewAsks] of them.
@@ -149,6 +161,9 @@ class OverviewModel {
 
   /// The window's spend by role, largest first: what the split names.
   final List<UsagePoint> spendByRole;
+
+  /// Pull requests in progress beyond the ready and failing ones on screen.
+  final int moreInProgress;
 }
 
 /// The Overview for what [store] holds and what [inbox] counts as waiting.
@@ -159,6 +174,8 @@ OverviewModel buildOverview(
   FleetStore store,
   InboxModel inbox, {
   List<AuditEvent> audit = const [],
+  List<PullView> pulls = const [],
+  UsageReport? usageByProject,
   UsageReport? usageByDay,
   UsageReport? usageByRole,
 }) {
@@ -194,12 +211,18 @@ OverviewModel buildOverview(
     return byTime != 0 ? byTime : a.id.compareTo(b.id);
   });
 
+  // The pulls and the usage ledger are read by the Studio, not here (F9
+  // decision 7): this joins them on the project root each one names.
+  final spend = <String, double>{
+    for (final point in usageByProject?.series ?? const <UsagePoint>[])
+      point.key: point.costUSD,
+  };
   final summaries = [
     for (final MapEntry(key: id, value: threads) in _byName(
       store,
       projects,
     ).entries)
-      _summary(id, threads),
+      _summary(id, threads, pulls: pulls, spendUSD: spend[id] ?? 0),
   ];
 
   return OverviewModel(
@@ -225,6 +248,14 @@ OverviewModel buildOverview(
         for (final role in usageByRole?.series ?? const <UsagePoint>[]) role,
       ]..sort((a, b) => b.costUSD.compareTo(a.costUSD)),
     ),
+    // Every pull request the two cards do not show: being fixed, in progress,
+    // or with checks the bridge cannot read.
+    moreInProgress: pulls
+        .where(
+          (pull) =>
+              pull.group != PullGroup.ready && pull.group != PullGroup.failing,
+        )
+        .length,
   );
 }
 
@@ -247,9 +278,17 @@ Map<String, List<ThreadRef>> _byName(
   return {for (final id in ids) id: grouped[id]!};
 }
 
-ProjectSummary _summary(String id, List<ThreadRef> threads) {
+ProjectSummary _summary(
+  String id,
+  List<ThreadRef> threads, {
+  List<PullView> pulls = const [],
+  double spendUSD = 0,
+}) {
   int count(ThreadStatus status) =>
       threads.where((thread) => thread.status == status).length;
+  int countPulls(PullGroup group) => pulls
+      .where((pull) => pull.projectRoot == id && pull.group == group)
+      .length;
   return ProjectSummary(
     id: id,
     name: projectName(id),
@@ -258,6 +297,9 @@ ProjectSummary _summary(String id, List<ThreadRef> threads) {
     ready: count(ThreadStatus.ready),
     failed: count(ThreadStatus.failed),
     idle: count(ThreadStatus.idle),
+    ciReady: countPulls(PullGroup.ready),
+    ciFailing: countPulls(PullGroup.failing),
+    spendUSD: spendUSD,
   );
 }
 

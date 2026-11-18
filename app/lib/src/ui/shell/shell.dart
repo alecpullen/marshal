@@ -522,6 +522,10 @@ class _StudioState extends State<Studio> {
   UsageReport? _spendByDay;
   UsageReport? _spendByRole;
 
+  /// The usage ledger read by project: what the projects table joins for its
+  /// spend column. Null when no read has succeeded.
+  UsageReport? _spendByProject;
+
   /// The one guard every place leaving this screen consults: the shell asks
   /// it, and a place that edits watches the models it holds (F7 decision 3).
   final _unsaved = UnsavedGuard();
@@ -594,11 +598,13 @@ class _StudioState extends State<Studio> {
     final readUsage = widget.readUsage;
     if (readUsage != null) {
       try {
+        _spendByProject = await readUsage(by: 'project');
         _spendByDay = await readUsage(by: 'day');
         _spendByRole = await readUsage(by: 'role');
       } catch (_) {
-        // The rail keeps today's spend; the trend and the split say nothing
-        // rather than something untrue.
+        // The rail keeps today's spend; the table's column, the trend and the
+        // split say nothing rather than something untrue.
+        _spendByProject = null;
         _spendByDay = null;
         _spendByRole = null;
       }
@@ -662,6 +668,8 @@ class _StudioState extends State<Studio> {
           widget.store,
           widget.inbox,
           audit: _audit,
+          pulls: widget.pulls?.views ?? const [],
+          usageByProject: _spendByProject,
           usageByDay: _spendByDay,
           usageByRole: _spendByRole,
         ),

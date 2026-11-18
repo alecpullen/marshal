@@ -315,7 +315,7 @@ void main() {
     expect(find.textContaining('offline'), findsOneWidget);
     // A dead feed does not replace the page: the projects stay.
     expect(find.text('marshal'), findsOneWidget);
-    expect(find.text('2 needs you · 1 running'), findsOneWidget);
+    expect(find.text('3 threads · 2 needs you · 1 running'), findsOneWidget);
   });
 
   testWidgets('a loaded factory is not hidden by an unreachable fleet', (
@@ -538,5 +538,102 @@ void main() {
 
     expect(find.text('Reading internal/acp'), findsOneWidget);
     expect(find.textContaining('step'), findsNothing);
+  });
+
+  testWidgets('the projects table names CI and spend', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [
+        ProjectSummary(
+          id: '/home/u/marshal',
+          name: 'marshal',
+          needsYou: 0,
+          running: 1,
+          ready: 0,
+          failed: 0,
+          idle: 2,
+          ciReady: 3,
+          ciFailing: 1,
+          spendUSD: 5.92,
+        ),
+        ProjectSummary(
+          id: '/home/u/ledger',
+          name: 'ledger',
+          needsYou: 1,
+          running: 0,
+          ready: 0,
+          failed: 0,
+          idle: 0,
+          spendUSD: 2.5,
+        ),
+        ProjectSummary(
+          id: '/home/u/quiet',
+          name: 'quiet',
+          needsYou: 0,
+          running: 0,
+          ready: 0,
+          failed: 0,
+          idle: 2,
+        ),
+      ],
+      capacity: const [],
+      spend: null,
+    );
+    await tester.pumpWidget(show(overview));
+
+    // The thread total moved into the description, and the value carries what
+    // the bridge answered: CI first, then the week's spend.
+    expect(find.text('3 threads · 1 running · 2 idle'), findsOneWidget);
+    expect(
+      find.text('3 ready · 1 failing · \$5.92 this week'),
+      findsOneWidget,
+    );
+    // A project with nothing to report draws an em dash, never a blank slot.
+    expect(find.text('2 threads · 2 idle'), findsOneWidget);
+    expect(find.text('—'), findsOneWidget);
+    // Only the parts that are not zero are named.
+    expect(
+      find.text('1 thread · 1 needs you').evaluate().length +
+          find.text('\$2.50 this week').evaluate().length,
+      2,
+    );
+  });
+
+  testWidgets('more in progress is one line', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: null,
+      moreInProgress: 2,
+    );
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Overview(
+          overview: overview,
+          now: shellNow,
+          hosts: shellHosts,
+          pulls: [
+            pullView(number: 133, group: PullGroup.inProgress),
+            pullView(number: 134, group: PullGroup.beingFixed),
+          ],
+          onRetry: () {},
+        ),
+      ),
+    );
+
+    // Neither is a card: they are one line, in the mock's words.
+    expect(find.byType(PrCard), findsNothing);
+    expect(
+      find.text('2 more in progress with checks passing or running'),
+      findsOneWidget,
+    );
   });
 }

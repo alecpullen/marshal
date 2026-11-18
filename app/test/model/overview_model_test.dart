@@ -4,10 +4,12 @@ import 'package:marshal_app/src/client/host.dart';
 import 'package:marshal_app/src/model/factory_store.dart';
 import 'package:marshal_app/src/model/inbox_model.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
+import 'package:marshal_app/src/model/pulls_model.dart';
 import 'package:marshal_app/src/model/source_state.dart';
 import 'package:marshal_app/src/model/thread_ref.dart';
 
 import '../support/fake_bridge.dart';
+import '../support/pulls.dart';
 import 'support.dart';
 
 /// The Overview is a projection (F2 decision 8): every section is a count of
@@ -361,5 +363,85 @@ void main() {
       'event 4',
       'event 5',
     ]);
+  });
+
+  test('a project\'s pulls are counted by state', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/marshal')],
+        agents: [agent(id: 'a-1', project: '/home/u/marshal')],
+      ),
+    ], now: now);
+    await fixture.refresh();
+    final inbox = InboxModel(fixture.store, client: fixture.clientFor);
+    addTearDown(inbox.dispose);
+
+    final overview = buildOverview(
+      fixture.store,
+      inbox,
+      pulls: [
+        pullView(number: 131, group: PullGroup.ready),
+        pullView(number: 132, group: PullGroup.ready),
+        pullView(number: 133, group: PullGroup.failing),
+        pullView(number: 134, group: PullGroup.inProgress),
+        pullView(number: 135, group: PullGroup.beingFixed),
+      ],
+    );
+
+    // The row counts the two states its value names, joined on the project the
+    // pull request came from.
+    final row = overview.projects.single;
+    expect([row.ciReady, row.ciFailing], [2, 1]);
+    // Everything neither ready nor failing is in progress, and is one line
+    // rather than a third column.
+    expect(overview.moreInProgress, 2);
+  });
+
+  test('the project\'s spend comes from its usage point', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/marshal'), project('/home/u/other')],
+        agents: [
+          agent(id: 'a-1', project: '/home/u/marshal'),
+          agent(id: 'a-2', project: '/home/u/other'),
+        ],
+      ),
+    ], now: now);
+    await fixture.refresh();
+    final inbox = InboxModel(fixture.store, client: fixture.clientFor);
+    addTearDown(inbox.dispose);
+
+    final overview = buildOverview(
+      fixture.store,
+      inbox,
+      usageByProject: const UsageReport(
+        range: '7d',
+        totals: UsageTotals(
+          costUSD: 5.92,
+          promptTokens: 1200,
+          completionTokens: 800,
+          agentHours: 0.4,
+          pRsShipped: 0,
+        ),
+        series: [
+          UsagePoint(key: '/home/u/marshal', costUSD: 5.92, tokens: 2000),
+        ],
+      ),
+    );
+
+    // `key` is the project root when the report was read by=project, so the
+    // series is joined the way the pulls are. A project the ledger does not
+    // name spent nothing it can vouch for.
+    expect(
+      overview.projects.firstWhere((row) => row.id == '/home/u/marshal')
+          .spendUSD,
+      5.92,
+    );
+    expect(
+      overview.projects.firstWhere((row) => row.id == '/home/u/other').spendUSD,
+      0,
+    );
   });
 }

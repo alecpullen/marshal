@@ -326,11 +326,19 @@ class _Sections {
     return projects.isEmpty ? '' : projects.first.root;
   }
 
-  Widget? automations(int section, StateKind? state) {
-    final host = _host;
-    if (host == null) return null;
+  /// The three places, each built for [host] — the host the Studio's switcher
+  /// names, or the first live host under "All hosts" (spec D1).
+  ///
+  /// For now each still builds from this window's one set of models: the host
+  /// is read and ignored, so every host draws the same bridge. The next task
+  /// makes them per host.
+  Widget? automations(String host, int section, StateKind? state) {
+    // The host the place is asked for is read and ignored for now: each of
+    // these still builds from this window's one set of models.
+    final bridge = _host;
+    if (bridge == null) return null;
     final models = _automations ??= _Automations(
-      host.client,
+      bridge.client,
       project: _project,
       now: store.now,
     );
@@ -355,11 +363,11 @@ class _Sections {
     );
   }
 
-  Widget? library(int section, StateKind? state) {
-    final host = _host;
-    if (host == null) return null;
+  Widget? library(String host, int section, StateKind? state) {
+    final bridge = _host;
+    if (bridge == null) return null;
     final models = _library ??= _Library(
-      host.client,
+      bridge.client,
       project: _project,
       projects: [
         for (final host in hosts.hosts)
@@ -386,11 +394,11 @@ class _Sections {
     );
   }
 
-  Widget? settings(int section, StateKind? state) {
-    final host = _host;
-    if (host == null) return null;
+  Widget? settings(String host, int section, StateKind? state) {
+    final bridge = _host;
+    if (bridge == null) return null;
     final models = _settings ??= _Settings(
-      host.client,
+      bridge.client,
       store: store,
       preferences: preferences,
     );
@@ -408,7 +416,7 @@ class _Sections {
             model: EnvironmentModel(
               name: row.name,
               source: models.environments.loadedOf(row.name)?.source ?? '',
-              client: host.client,
+              client: bridge.client,
               published: row.version,
             ),
             state: state,

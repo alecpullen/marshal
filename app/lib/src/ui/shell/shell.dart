@@ -13,6 +13,7 @@ import '../../model/inbox_model.dart' as inbox;
 import '../../model/nav_model.dart';
 import '../../model/overview_model.dart' show buildOverview;
 import '../../model/place.dart';
+import '../../model/place_host.dart' show placeHost;
 import '../../model/planning_model.dart';
 import '../../model/project_model.dart';
 import '../../model/route_translation.dart';
@@ -41,6 +42,7 @@ import '../sections/unsaved_guard.dart';
 import '../new_work/new_work_dialog.dart';
 import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
+import 'host_switcher.dart';
 import 'placeholder.dart';
 import 'sidebar.dart';
 
@@ -56,6 +58,15 @@ typedef HandoffBuilder = Future<HandoffModel> Function(
   String? plannerID,
   PlannerSnapshot? snapshot,
 });
+
+/// Builds a per-host place for [host] (spec D1): Automations, Library and
+/// Settings each read one bridge, so each is built from the host the
+/// switcher's scope resolves to.
+typedef HostPlaceBuilder = Widget? Function(
+  String host,
+  int section,
+  StateKind? state,
+);
 
 /// The Studio's frame (design-system.md §4): the sidebar, and the place's
 /// content beside it. Below 760 the navigation becomes a panel over the
@@ -76,6 +87,9 @@ class Shell extends StatefulWidget {
     this.onRetry,
     this.unsaved,
     this.notice,
+    this.automationsFor,
+    this.libraryFor,
+    this.settingsFor,
   });
 
   final NavModel nav;
@@ -111,6 +125,17 @@ class Shell extends StatefulWidget {
   /// this build knows (F8 decision 2): one line, and never a state of its
   /// own.
   final String? notice;
+
+  /// Builds the Automations place for the host the switcher's scope resolves
+  /// to (F7 decision 4, D1). Null leaves the place planned, so a host that
+  /// wires no bridge never draws a section whose read could only fail.
+  final HostPlaceBuilder? automationsFor;
+
+  /// Builds the Library place for the resolved host (F7 decision 5).
+  final HostPlaceBuilder? libraryFor;
+
+  /// Builds the Settings place for the resolved host (F7 decision 7).
+  final HostPlaceBuilder? settingsFor;
 
   @override
   State<Shell> createState() => _ShellState();
@@ -152,10 +177,7 @@ class _ShellState extends State<Shell> {
     hosts: widget.hosts,
     place: widget.place,
     host: _host,
-    onHost: (host) => setState(() {
-      _host = host;
-      _panel = false;
-    }),
+    onHost: _setHost,
     onSelect: (place) => _leave(() => widget.onSelect(place)),
     now: widget.now,
     inPanel: inPanel,
@@ -170,6 +192,14 @@ class _ShellState extends State<Shell> {
       unsaved: widget.unsaved,
     ),
   );
+
+  /// Narrows the tree — and the host a per-host place reads — to [host], or
+  /// to every host when it is null.
+  ///
+  /// The switcher is a way of leaving the place as much as the sidebar is, so
+  /// it goes through [_leave] too (design-system.md §9, decision 3): a place
+  /// holding an unsaved edit is asked about before the host changes under it.
+  void _setHost(String? host) => _leave(() => setState(() => _host = host));
 
   /// Opens [place], after asking about an unsaved edit when there is one:
   /// the shell is where "leaving" happens, so it is where the one guard is
@@ -262,9 +292,69 @@ class _ShellState extends State<Shell> {
     );
   }
 
+  /// The three places F7 built read one bridge each, so each is built for the
+  /// host the switcher's scope resolves to rather than for every host at once
+  /// (spec D1).
+  static const _perHost = {
+    PlaceKind.automations,
+    PlaceKind.library,
+    PlaceKind.settings,
+  };
+
+  /// The place when it is one the shell builds per host: the switcher above
+  /// it, naming the host it read, and the place itself — the builder's, or the
+  /// promise when there is no builder for that host or it answers nothing.
+  ///
+  /// Every other place answers null, and [_body] draws it as it did.
+  Widget? _hostPlace() {
+    final kind = widget.place.kind;
+    if (!_perHost.contains(kind)) return null;
+    final build = switch (kind) {
+      PlaceKind.automations => widget.automationsFor,
+      PlaceKind.library => widget.libraryFor,
+      PlaceKind.settings => widget.settingsFor,
+      _ => null,
+    };
+    // No host is known only while the fleet lists none, and then there is
+    // nothing to switch between: the place is drawn as a null build is.
+    final host = placeHost(widget.hosts, _host);
+    if (host == null) return plannedPlace(widget.place, widget.nav);
+    final place =
+        build?.call(host, sectionIndex(widget.place), widget.state) ??
+        plannedPlace(widget.place, widget.nav);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          // The inset the sidebar's own switcher takes, set at the content
+          // area's sides rather than the sidebar's.
+          padding: const EdgeInsets.fromLTRB(
+            Layout.pageSide,
+            Space.s12,
+            Layout.pageSide,
+            Space.s8,
+          ),
+          // Aligned left rather than stretched: the switcher is as wide as its
+          // label, as it is in the sidebar.
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: HostSwitcher(
+              hosts: widget.hosts,
+              selected: host,
+              onSelect: _setHost,
+              now: _now,
+            ),
+          ),
+        ),
+        const SizedBox(height: Space.s8),
+        Expanded(child: place),
+      ],
+    );
+  }
+
   /// The place's content, without the notice.
   Widget _body() {
-    final content = _place();
+    final content = _hostPlace() ?? _place();
     final state = widget.state;
     if (state == null) return content;
     if (state == StateKind.stale) {
@@ -467,17 +557,19 @@ class Studio extends StatefulWidget {
   /// never draws an editor that cannot save.
   final ProjectModel Function(String host, String root)? projectFor;
 
-  /// Builds the Automations place at one of its sections (F7 decision 4).
-  /// Null leaves the place planned, so a host that wires no bridge never
-  /// draws a section whose read could only fail; the builder itself answers
-  /// null while no host has answered yet.
-  final Widget? Function(int section, StateKind? state)? automationsFor;
+  /// Builds the Automations place for one host at one of its sections (F7
+  /// decision 4, D1). Null leaves the place planned, so a host that wires no
+  /// bridge never draws a section whose read could only fail; the builder
+  /// itself answers null while no host has answered yet.
+  final HostPlaceBuilder? automationsFor;
 
-  /// Builds the Library place at one of its sections (F7 decision 5).
-  final Widget? Function(int section, StateKind? state)? libraryFor;
+  /// Builds the Library place for one host at one of its sections (F7
+  /// decision 5).
+  final HostPlaceBuilder? libraryFor;
 
-  /// Builds the Settings place at one of its sections (F7 decision 7).
-  final Widget? Function(int section, StateKind? state)? settingsFor;
+  /// Builds the Settings place for one host at one of its sections (F7
+  /// decision 7).
+  final HostPlaceBuilder? settingsFor;
 
   /// The place a deep link names.
   final Place initialPlace;
@@ -592,6 +684,9 @@ class _StudioState extends State<Studio> {
           now: store.now,
           unsaved: _unsaved,
           notice: _notice,
+          automationsFor: widget.automationsFor,
+          libraryFor: widget.libraryFor,
+          settingsFor: widget.settingsFor,
         );
       },
     );
@@ -655,24 +750,6 @@ class _StudioState extends State<Studio> {
           openSource: _openThread(navigation, pull),
         ),
       );
-    }
-    if (place.kind == PlaceKind.automations) {
-      final build = widget.automationsFor;
-      if (build == null) return plannedPlace(place, nav);
-      final built = build(sectionIndex(place), _state(widget.store));
-      return built ?? plannedPlace(place, nav);
-    }
-    if (place.kind == PlaceKind.library) {
-      final build = widget.libraryFor;
-      if (build == null) return plannedPlace(place, nav);
-      final built = build(sectionIndex(place), _state(widget.store));
-      return built ?? plannedPlace(place, nav);
-    }
-    if (place.kind == PlaceKind.settings) {
-      final build = widget.settingsFor;
-      if (build == null) return plannedPlace(place, nav);
-      final built = build(sectionIndex(place), _state(widget.store));
-      return built ?? plannedPlace(place, nav);
     }
     if (place.kind == PlaceKind.project) {
       final root = place.id;

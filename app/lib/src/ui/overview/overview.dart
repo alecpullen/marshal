@@ -366,10 +366,11 @@ class Overview extends StatelessWidget {
                           ),
                         ],
                       ),
-                      if (thread.headline.isNotEmpty) ...[
+                      if (thread.headline.isNotEmpty ||
+                          thread.stepsDone != null) ...[
                         const SizedBox(height: Space.s4),
                         Text(
-                          thread.headline,
+                          _detail(thread),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: Ember.of(context).small
@@ -511,6 +512,18 @@ class Overview extends StatelessWidget {
   String _eventAge(String ts) {
     final at = DateTime.tryParse(ts);
     return at == null ? '' : relativeAge(at, now);
+  }
+
+  /// A running tile's one detail line: which step the turn is on, and what
+  /// the agent is doing. A step is a number and never a fraction: a turn's
+  /// steps are discovered as the model narrates, so there is no total to name
+  /// (F9 decision 3).
+  static String _detail(model.ThreadRef thread) {
+    final step = thread.stepsDone;
+    return [
+      if (step != null) 'step $step',
+      if (thread.headline.isNotEmpty) thread.headline,
+    ].join(' · ');
   }
 
   /// The window's spend by role, largest first, as shares of the whole: at

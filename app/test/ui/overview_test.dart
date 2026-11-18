@@ -42,16 +42,18 @@ void main() {
     scope: scope,
   );
 
-  model.ThreadRef thread(String id, String title) => model.ThreadRef(
-    host: 'local',
-    id: id,
-    project: '/home/u/marshal',
-    title: title,
-    kind: model.ThreadKind.agent,
-    status: model.ThreadStatus.running,
-    headline: 'Reading internal/acp',
-    lastActive: shellNow.subtract(const Duration(minutes: 3)),
-  );
+  model.ThreadRef thread(String id, String title, {int? stepsDone}) =>
+      model.ThreadRef(
+        host: 'local',
+        id: id,
+        project: '/home/u/marshal',
+        title: title,
+        kind: model.ThreadKind.agent,
+        status: model.ThreadStatus.running,
+        headline: 'Reading internal/acp',
+        stepsDone: stepsDone,
+        lastActive: shellNow.subtract(const Duration(minutes: 3)),
+      );
 
   Widget show(
     OverviewModel overview, {
@@ -503,5 +505,38 @@ void main() {
       find.text('Implementer 61% · reviewer 24% · planner 15%'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('a running tile names its step', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: [thread('a-1', 'Reliable session recovery', stepsDone: 3)],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: null,
+    );
+    await tester.pumpWidget(show(overview));
+
+    // A step is a number, never a fraction: the turn's total is not known
+    // while it runs (F9 decision 3).
+    expect(find.text('step 3 · Reading internal/acp'), findsOneWidget);
+  });
+
+  testWidgets('a thread with no step reports nothing', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: [thread('a-1', 'Reliable session recovery')],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: null,
+    );
+    await tester.pumpWidget(show(overview));
+
+    expect(find.text('Reading internal/acp'), findsOneWidget);
+    expect(find.textContaining('step'), findsNothing);
   });
 }

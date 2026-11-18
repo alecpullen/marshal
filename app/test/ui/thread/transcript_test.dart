@@ -114,7 +114,10 @@ void main() {
 
     expect(find.byType(TurnPrompt), findsOneWidget);
     expect(find.text('Do the thing'), findsOneWidget);
-    expect(find.byType(Narration), findsNWidgets(4));
+    // The agent's reply is the only narration here: thinking, a run event and
+    // a finished job are notices, not the agent talking to the person.
+    expect(find.byType(Narration), findsOneWidget);
+    expect(find.byType(Notice), findsNWidgets(3));
     expect(find.text('Doing it now'), findsOneWidget);
     expect(find.byType(StepHeader), findsOneWidget);
     expect(find.text('Mapped the fixtures'), findsOneWidget);
@@ -253,7 +256,7 @@ void main() {
     view.dispose();
   });
 
-  testWidgets('a completion shows its error only when it carries one', (
+  testWidgets('a finished job is a notice with its error second', (
     tester,
   ) async {
     final store = StackStore.seeded(
@@ -292,16 +295,34 @@ void main() {
     final view = ThreadViewState();
     await pumpThread(tester, store: store, view: view);
 
+    // A finished job is not the agent talking: it is a notice, one per job.
+    expect(find.byType(Narration), findsNothing);
+    expect(find.byType(Notice), findsNWidgets(2));
+    // The label and the outcome lead the line.
+    expect(find.text('shell.run done'), findsOneWidget);
+    expect(find.text('shell.run failed'), findsOneWidget);
+    // A failed one says why on the second line, folded, and one that
+    // finished says nothing about failing at all.
+    expect(find.textContaining('the suite failed'), findsNothing);
+    final notices = [
+      for (final element in find.byType(Notice).evaluate())
+        (element.widget as Notice).text,
+    ];
+    expect(notices.last.split('\n'), [
+      'shell.run failed',
+      'the suite failed at stack_test.go:41',
+    ]);
+    expect(notices.first, 'shell.run done');
+
+    await tester.tap(find.text('Details').last);
+    await tester.pumpAndSettle();
     expect(find.textContaining('the suite failed'), findsOneWidget);
-    // The completion that finished says nothing about failing.
-    expect(find.textContaining('shell.run · done'), findsOneWidget);
-    expect(find.textContaining('shell.run · failed'), findsOneWidget);
 
     store.dispose();
     view.dispose();
   });
 
-  testWidgets('a run event leads with its kind', (tester) async {
+  testWidgets('a run event leads with its kind as a notice', (tester) async {
     final store = StackStore.seeded(
       StackSnapshot(
         sessionID: 's-1',
@@ -326,20 +347,88 @@ void main() {
     final view = ThreadViewState();
     await pumpThread(tester, store: store, view: view);
 
-    expect(find.byType(Narration), findsOneWidget);
-    // The kind is the row's leading word, so a run event does not read as the
-    // agent narrating its own steps.
-    expect(find.textContaining('review · Reviewed task 3'), findsOneWidget);
-    expect(find.textContaining('task 3 of 4'), findsOneWidget);
+    // A run event is not the agent narrating its steps: it is a notice.
+    expect(find.byType(Narration), findsNothing);
+    expect(find.byType(Notice), findsOneWidget);
+    // The kind, led by a capital, is the notice's leading word, the title
+    // stays beside it, and the detail follows the body in the order the
+    // event holds them — folded, so one line is read, not four.
+    final notice = tester.widget<Notice>(find.byType(Notice)).text;
+    expect(notice.split('\n').first, 'Review · Reviewed task 3');
+    expect(notice.split('\n').last, 'task 3 of 4');
+    expect(find.text('Review · Reviewed task 3'), findsOneWidget);
+    expect(find.textContaining('task 3 of 4'), findsNothing);
     // Body stays the full-density addition it was.
     expect(find.textContaining('The reviewer read four files.'), findsNothing);
 
     view.density = Density.full;
     await tester.pumpAndSettle();
     expect(
+      tester.widget<Notice>(find.byType(Notice)).text,
+      contains('The reviewer read four files.'),
+    );
+    expect(find.textContaining('The reviewer read four files.'), findsNothing);
+
+    // Details unfolds what the event went on to say, body first.
+    await tester.tap(find.text('Details'));
+    await tester.pumpAndSettle();
+    expect(
       find.textContaining('The reviewer read four files.'),
       findsOneWidget,
     );
+    expect(find.textContaining('task 3 of 4'), findsOneWidget);
+
+    store.dispose();
+    view.dispose();
+  });
+
+  testWidgets('thinking is a folded notice', (tester) async {
+    final store = StackStore.seeded(
+      StackSnapshot(
+        sessionID: 's-1',
+        rev: 1,
+        roots: const ['turn:1'],
+        nodes: const [
+          WireNode(id: 'turn:1', kind: 'turn', children: ['think:1']),
+          WireNode(
+            id: 'think:1',
+            kind: 'thinking',
+            parent: 'turn:1',
+            thinking: WireThinking(
+              text:
+                  'The parser is the first stop.\n'
+                  'The fixtures it reads matter more than the rest.',
+            ),
+          ),
+        ],
+      ),
+    );
+    final view = ThreadViewState();
+    await pumpThread(tester, store: store, view: view);
+
+    // Thinking is not the agent's reply: it names itself and starts folded,
+    // so one quiet line is read and the rest waits behind Details.
+    expect(find.byType(Narration), findsNothing);
+    expect(find.byType(Notice), findsOneWidget);
+    expect(find.text('Thinking'), findsOneWidget);
+    expect(find.textContaining('The parser is the first stop.'), findsNothing);
+
+    await tester.tap(find.text('Details'));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('The parser is the first stop.'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('The fixtures it reads matter more'),
+      findsOneWidget,
+    );
+
+    // Outline density is headlines only, so thinking is not drawn at all.
+    view.density = Density.outline;
+    await tester.pumpAndSettle();
+    expect(find.byType(Notice), findsNothing);
+    expect(find.textContaining('The parser is the first stop.'), findsNothing);
 
     store.dispose();
     view.dispose();

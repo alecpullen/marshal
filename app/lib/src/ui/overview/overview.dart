@@ -4,6 +4,7 @@ import '../../model/inbox_model.dart' as model;
 import '../../model/overview_model.dart';
 import '../../model/place.dart';
 import '../../model/pulls_model.dart';
+import '../../model/source_state.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/watches_model.dart' show TrippedWatch;
 import '../kit/kit.dart';
@@ -70,19 +71,20 @@ class Overview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = this.state;
-    if (state != null && state != StateKind.stale) {
+    // A state that would replace the page yields to any source that answered:
+    // a dead feed must not hide the projects and asks a healthy one reported.
+    final anyLoaded = overview.sources.any((source) => source.loaded);
+    if (state != null && state != StateKind.stale && !anyLoaded) {
       return PageBody(title: 'Overview', children: [_stateMessage(state)]);
     }
+    final freshness = _freshness();
     return PageBody(
       title: 'Overview',
       subtitle: _subtitle(),
       width: PageWidth.full,
       children: [
-        if (state == StateKind.stale) ...[
-          StateMessage.stale(
-            age: _oldestContact(),
-            detail: 'The fleet has not answered; this is what it last said.',
-          ),
+        if (freshness.isNotEmpty) ...[
+          ...freshness,
           const SizedBox(height: Space.s16),
         ],
         LayoutBuilder(
@@ -128,6 +130,61 @@ class Overview extends StatelessWidget {
     );
   }
 
+  /// One row per source that is not well: what is held, how old it is, and
+  /// what did not arrive (§8). A healthy source says nothing here, and one
+  /// still making its first attempt says nothing either.
+  List<Widget> _freshness() {
+    final retry = StateAction('Read again', onTap: onRetry ?? () {});
+    final rows = [
+      for (final source in overview.sources)
+        if (source.stale || source.unavailable)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Space.s12),
+            child: _freshnessRow(source, retry),
+          ),
+    ];
+    // A screen the shell calls stale whose sources all count as healthy (a
+    // stream that stopped without a failed read) still marks the age: §7
+    // never presents old data as current.
+    if (rows.isEmpty && state == StateKind.stale) {
+      return [
+        StateMessage.stale(
+          age: _oldestSeen() ?? 'now',
+          detail: 'The fleet has not answered; this is what it last said.',
+        ),
+      ];
+    }
+    return rows;
+  }
+
+  /// The age of the oldest snapshot any source holds, in the design system's
+  /// words, or null when nothing has been read yet.
+  String? _oldestSeen() {
+    DateTime? oldest;
+    for (final source in overview.sources) {
+      final read = source.lastRead;
+      if (read == null) continue;
+      if (oldest == null || read.isBefore(oldest)) oldest = read;
+    }
+    return oldest == null ? null : relativeAge(oldest, now);
+  }
+
+  /// One source's row, in that source's own words.
+  ///
+  /// A stale source holds a snapshot, so its age is the age of the read that
+  /// made it; a source that never answered holds nothing, so it says so
+  /// rather than carrying an age that would be a guess.
+  Widget _freshnessRow(SourceState source, StateAction retry) {
+    final lastRead = source.lastRead;
+    if (source.stale && lastRead != null) {
+      return StateMessage.stale(
+        age: relativeAge(lastRead, now),
+        detail: source.words(now),
+      );
+    }
+    return StateMessage.error(message: source.words(now), retry: retry);
+  }
+
   /// The watches that tripped, newest first, and what each did when it did
   /// (F7 plan 1, Task 3). It opens the Automations place.
   List<Widget> _automations(BuildContext context) {
@@ -148,16 +205,15 @@ class Overview extends StatelessWidget {
     ];
   }
 
-  /// What is waiting, oldest first: at most three, and the Inbox one link
-  /// away.
+  /// What is waiting: the cards the model hands over, the true total beside
+  /// them, and the Inbox one link away.
   List<Widget> _needsYou(BuildContext context) {
-    // The three oldest, whatever the model hands over: the rest are the
-    // Inbox's, one link away.
-    final asks = overview.needsYou.take(overviewAsks).toList();
+    final asks = overview.needsYou;
+    final more = overview.needsYouTotal - asks.length;
     return [
       Label(
         'Needs you',
-        count: asks.length,
+        count: overview.needsYouTotal,
         link: LabelLink(
           'Open inbox',
           onTap: _open(const Place(PlaceKind.inbox)) ?? () {},
@@ -180,12 +236,23 @@ class Overview extends StatelessWidget {
             body: ask.body.isEmpty ? null : ask.body,
             waiting: relativeAge(ask.since, now),
             waitingSince: ask.since.toLocal().toString(),
-            source: ask.thread == null
-                ? null
-                : '${ask.thread!.project.split('/').last} › ${ask.thread!.title}',
+            source: ask.provenance,
             onOpenSource: ask.thread == null ? null : _thread(ask.thread!),
             placement: AskPlacement.overview,
-            actions: ask.questions.length > 1
+            actions: ask.answeredInThread
+                // A work item's asks carry its version and reviewed identity,
+                // so they are answered in the item's own thread: the card
+                // opens it and offers nothing that would post nothing here.
+                ? [
+                    AskAction(
+                      'Open in the factory',
+                      onTap: ask.thread == null ? null : _thread(ask.thread!),
+                      note: ask.thread == null
+                          ? 'This ask names no work item to open.'
+                          : null,
+                    ),
+                  ]
+                : ask.questions.length > 1
                 // Several questions need an answer for each, and the
                 // Overview has no room to collect them: the card sends the
                 // person to the Inbox, which draws every question of the
@@ -209,6 +276,11 @@ class Overview extends StatelessWidget {
           ),
           const SizedBox(height: Space.s8),
         ],
+      if (more > 0)
+        Text(
+          '$more more in the inbox.',
+          style: Ember.of(context).small.tint(Ember.of(context).muted),
+        ),
     ];
   }
 
@@ -339,7 +411,6 @@ class Overview extends StatelessWidget {
 
   /// The side rail: what each host is carrying, and the day's spend.
   Widget _rail(BuildContext context) {
-    final e = Ember.of(context);
     final spend = overview.spend;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -372,11 +443,6 @@ class Overview extends StatelessWidget {
                 : 'Today’s spend against the daily cap',
           ),
         ],
-        const SizedBox(height: Space.s12),
-        Text(
-          'Activity arrives with the thread screen in F3.',
-          style: e.small.tint(e.muted),
-        ),
       ],
     );
   }
@@ -397,10 +463,14 @@ class Overview extends StatelessWidget {
       ),
       StateKind.unavailable => StateMessage.unavailable(
         host: hosts.isEmpty ? 'The daemon' : hosts.first.name,
-        lastSeen: _oldestContact(),
+        // No read has made a snapshot, so there is no age to give; when one
+        // has, its own age is the honest one.
+        lastSeen: _oldestSeen(),
         action: retry,
       ),
-      StateKind.stale => StateMessage.stale(age: _oldestContact()),
+      // Unreachable: a stale screen keeps its content and draws each source's
+      // own row (`_freshness`), never a whole-page message.
+      StateKind.stale => const SizedBox.shrink(),
       StateKind.planned => const StateMessage.planned(
         name: 'Overview',
         note: 'Not built yet',
@@ -411,7 +481,7 @@ class Overview extends StatelessWidget {
   /// The line under the title: how much is running and how much waits.
   String _subtitle() {
     final running = overview.running.length;
-    final waiting = overview.needsYou.length;
+    final waiting = overview.needsYouTotal;
     final threads = running == 1 ? '1 turn running' : '$running turns running';
     if (waiting == 0) return threads;
     return '$threads · ${waiting == 1 ? '1 waiting on you' : '$waiting waiting on you'}';
@@ -464,17 +534,6 @@ class Overview extends StatelessWidget {
       total += other.threads;
     }
     return total == 0 ? 0 : host.threads / total;
-  }
-
-  /// How long ago the fleet last said anything.
-  String _oldestContact() {
-    DateTime? oldest;
-    for (final host in hosts) {
-      final contact = host.lastContact;
-      if (contact == null) continue;
-      if (oldest == null || contact.isBefore(oldest)) oldest = contact;
-    }
-    return relativeAge(oldest ?? now, now);
   }
 
   /// Opening a thread by the place that names it.

@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/model/composer_model.dart';
+import 'package:marshal_app/src/model/attention.dart' as ask;
 import 'package:marshal_app/src/model/inbox_model.dart' as ask;
 import 'package:marshal_app/src/model/thread_view_state.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
@@ -37,6 +38,8 @@ void main() {
     final view = ThreadViewState();
     final sent = <String>[];
     final answered = <String>[];
+    ask.Ask? answeredAsk;
+    ask.AskAction? answeredAction;
     final composer = ComposerModel(
       prompt: (text) async => sent.add('prompt:$text'),
       steer: (text) async => sent.add('steer:$text'),
@@ -62,6 +65,8 @@ void main() {
         ask.AskAction('Deny'),
       ],
       since: DateTime.utc(2026, 11, 17, 4, 10),
+      source: ask.AskSource.fleet,
+      scope: ask.AskScope.everyone,
       step: '1',
     );
 
@@ -71,8 +76,11 @@ void main() {
       view: view,
       asks: [askToAnswer],
       now: DateTime.utc(2026, 11, 17, 4, 20),
-      onAnswer: (theAsk, action) =>
-          answered.add('${theAsk.id}:${action.label}'),
+      onAnswer: (theAsk, action) {
+        answered.add('${theAsk.id}:${action.label}');
+        answeredAsk = theAsk;
+        answeredAction = action;
+      },
       composer: ThreadComposer(model: composer, view: view),
     );
 
@@ -96,10 +104,26 @@ void main() {
     await tester.pumpAndSettle();
     expect(sent.last, 'steer:Keep the legacy ones');
 
-    // The approval is answered where it was raised.
+    // The approval is answered where it was raised, while the turn is still
+    // running and the composer still holds the field.
+    expect(composer.running, isTrue);
+    expect(find.byType(ThreadComposer), findsOneWidget);
     await tester.tap(find.text('Approve once'));
     await tester.pumpAndSettle();
     expect(answered, ['call-1:Approve once']);
+
+    // The exact request and the exact action: the id an answer is posted to,
+    // the step it was pinned at, and the action's own label and primacy.
+    expect(
+      identical(answeredAsk, askToAnswer),
+      isTrue,
+      reason: 'the screen answers with the Ask the Inbox holds, not a copy',
+    );
+    expect(answeredAsk?.id, 'call-1');
+    expect(answeredAsk?.kind, ask.AskKind.approval);
+    expect(answeredAsk?.step, '1');
+    expect(answeredAction?.label, 'Approve once');
+    expect(answeredAction?.primary, isTrue);
 
     // The transcript the screen shows is the session's own projection: every
     // row's plain text, in order, is what selecting all copies.

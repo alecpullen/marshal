@@ -57,10 +57,13 @@ class StateMessage extends StatelessWidget {
        lines = 0;
 
   /// The host is unreachable: names it and when it was last seen.
+  ///
+  /// [lastSeen] is null when no read ever made a snapshot, so there is no age
+  /// to give: the row says "Not seen yet" rather than printing "unknown ago".
   const StateMessage.unavailable({
     super.key,
     required String host,
-    required String lastSeen,
+    String? lastSeen,
     this.action,
   }) : kind = StateKind.unavailable,
        message = host,
@@ -146,7 +149,7 @@ class StateMessage extends StatelessWidget {
         Glyphs.wifi_slash,
         e.muted,
         '$message is unreachable',
-        'Last seen $detail ago',
+        detail == null ? 'Not seen yet' : 'Last seen $detail ago',
       ),
       StateKind.planned => Padding(
         padding: const EdgeInsets.symmetric(

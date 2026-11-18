@@ -24,6 +24,37 @@ enum DraftConflict {
   deletedElsewhere,
 }
 
+/// Where the text on screen stands, persistence-wise: whether the bridge has
+/// it, and therefore whether another device can see it (design-system.md §2,
+/// §7: a state is words first, never colour alone).
+///
+/// Nothing here claims the text survives a reload: this editor keeps no copy
+/// of its own, and the bridge is the only place a draft is stored.
+enum DraftPersistence {
+  /// Content is queued for the autosave and the bridge has not acknowledged
+  /// it: another device still sees the last version the bridge saved, if any.
+  localEdits,
+
+  /// A write is in flight; the bridge has not answered yet.
+  saving,
+
+  /// The bridge holds the version on screen, so another device that opens the
+  /// draft sees it.
+  saved,
+
+  /// The last write did not reach the bridge. The text is still here, and
+  /// nothing was sent again automatically.
+  failed,
+
+  /// The bridge refused the write because the draft changed or was deleted
+  /// elsewhere; [DraftsModel.conflict] names which.
+  conflict,
+
+  /// The draft is no longer `editing` (it is converting, converted or
+  /// deleted), so its text cannot be saved from here.
+  readOnly,
+}
+
 /// One draft version as a screen draws it (F6 decision 10): the version, the
 /// title and the plan, without the wire type. `ui/` reads `model/` and never
 /// `client/` (F1's boundary), so the projection lives here.
@@ -112,6 +143,18 @@ class DraftsModel extends ChangeNotifier {
   bool _saving = false;
   int _requests = 0;
 
+  /// Whether the text on screen holds edits the bridge has not acknowledged.
+  /// Distinct from `_pending`, which a save leaves in place as the content the
+  /// next deliberate write would send.
+  bool _unsaved = false;
+
+  /// Whether the last write did not reach the bridge. A *list* read that fails
+  /// sets `_failure` but not this: nothing was being written, so it is a
+  /// different promise. A conflict read that fails does set it, because the
+  /// refusal that raised the read already means the text on screen was not
+  /// stored, and the version that won it could not be read.
+  bool _writeFailed = false;
+
   /// The draft this editor holds, or null before one is created.
   WorkingDraft? get draft => _draft;
 
@@ -142,6 +185,78 @@ class DraftsModel extends ChangeNotifier {
   /// Whether a save is in flight.
   bool get saving => _saving;
 
+  /// Where the text on screen stands against the bridge.
+  ///
+  /// A conflict outranks everything, because no write may pass it; a draft the
+  /// bridge no longer holds as `editing` is read only; and a write in flight is
+  /// the newer fact than the failure a previous attempt left.
+  DraftPersistence get persistence {
+    if (_conflict != DraftConflict.none) return DraftPersistence.conflict;
+    final draft = _draft;
+    if (draft != null && draft.state != 'editing') {
+      return DraftPersistence.readOnly;
+    }
+    if (_saving) return DraftPersistence.saving;
+    if (_writeFailed) return DraftPersistence.failed;
+    if (_unsaved) return DraftPersistence.localEdits;
+    return draft == null ? DraftPersistence.localEdits : DraftPersistence.saved;
+  }
+
+  /// The short label a draft editor prints for [persistence]. Under a conflict
+  /// it names which refusal stands, because the two answers differ.
+  String get persistenceLabel => switch (persistence) {
+    DraftPersistence.localEdits => 'Only in this editor',
+    DraftPersistence.saving => 'Saving…',
+    DraftPersistence.saved => 'Saved to the bridge',
+    DraftPersistence.failed => 'Not saved',
+    DraftPersistence.conflict =>
+      _conflict == DraftConflict.deletedElsewhere
+          ? 'Deleted elsewhere'
+          : 'Changed elsewhere',
+    DraftPersistence.readOnly => switch (_draft?.state) {
+      'converting' => 'Converting, read only',
+      'converted' => 'Converted, read only',
+      'deleted' => 'Deleted, read only',
+      _ => 'Read only',
+    },
+  };
+
+  /// One sentence saying what [persistence] means in practice: whether another
+  /// device can see the text, what has not reached the bridge, and that no
+  /// reload is promised.
+  String get persistenceConsequence => switch (persistence) {
+    DraftPersistence.localEdits =>
+      'The bridge has not taken the text on screen yet, so another device '
+          'still sees the last version it saved, if any.',
+    DraftPersistence.saving =>
+      'The bridge is taking this version now, so another device sees it once '
+          'the bridge answers.',
+    DraftPersistence.saved =>
+      'The bridge holds the text on screen, so another device that opens this '
+          'draft sees it; nothing here promises to survive a reload.',
+    DraftPersistence.failed =>
+      'The last save did not reach the bridge, so this text exists only in '
+          'this editor and nothing was sent again automatically.',
+    DraftPersistence.conflict =>
+      _conflict == DraftConflict.deletedElsewhere
+          ? 'The draft was deleted elsewhere, so this work can be kept only as a '
+                'new draft.'
+          : 'Another device saved a newer version, so choose which one to keep '
+                'before typing more.',
+    DraftPersistence.readOnly => switch (_draft?.state) {
+      'converting' =>
+        'This draft is being converted into a work item, so its text is read '
+            'only here.',
+      'converted' =>
+        'This draft became a work item, so its text is read only '
+            'here.',
+      'deleted' => 'This draft was deleted, so its text is read only here.',
+      _ =>
+        'This draft is no longer being edited, so its text is read only '
+            'here.',
+    },
+  };
+
   /// Whether the draft on screen can be edited: a converted draft is read
   /// only, and a deleted one is not a draft at all.
   bool get editable =>
@@ -165,6 +280,8 @@ class DraftsModel extends ChangeNotifier {
     _draft = draft;
     _conflict = DraftConflict.none;
     _theirs = null;
+    _unsaved = false;
+    _writeFailed = false;
     notifyListeners();
   }
 
@@ -172,6 +289,7 @@ class DraftsModel extends ChangeNotifier {
   /// restarts on every edit, so a person typing continuously is saved once.
   void scheduleSave(WorkingDraftContent content) {
     _pending = content;
+    _unsaved = true;
     _timer?.cancel();
     if (!editable) return;
     _timer = Timer(autosave, () => unawaited(saveNow()));
@@ -205,6 +323,8 @@ class DraftsModel extends ChangeNotifier {
     _pending = theirs.content;
     _conflict = DraftConflict.none;
     _theirs = null;
+    _unsaved = false;
+    _writeFailed = false;
     notifyListeners();
   }
 
@@ -225,6 +345,8 @@ class DraftsModel extends ChangeNotifier {
     _pending = null;
     _conflict = DraftConflict.none;
     _theirs = null;
+    _unsaved = false;
+    _writeFailed = false;
     notifyListeners();
   }
 
@@ -244,8 +366,13 @@ class DraftsModel extends ChangeNotifier {
       _conflict = DraftConflict.none;
       _theirs = null;
       _failure = null;
+      _unsaved = false;
+      _writeFailed = false;
       await load();
     } catch (error) {
+      // A refused delete leaves the bridge's draft — and its last saved text —
+      // exactly as they were, so this is not an unsaved write: the text on
+      // screen is still the bridge's.
       _failure = '$error';
       notifyListeners();
     }
@@ -284,18 +411,28 @@ class DraftsModel extends ChangeNotifier {
       _conflict = DraftConflict.none;
       _theirs = null;
       _failure = null;
+      // Clear only what this write acknowledged. Edits made while the write was
+      // in flight set `_pending` again, and those are still only here: saying
+      // "saved" over them would claim another device sees text the bridge never
+      // received.
+      if (identical(_pending, content)) _unsaved = false;
+      _writeFailed = false;
     } on BridgeFailure catch (failure) {
       switch (failure.status) {
         case 409:
+          _writeFailed = false;
           await _readConflict();
         case 404:
           _conflict = DraftConflict.deletedElsewhere;
           _failure = null;
+          _writeFailed = false;
         default:
           _failure = failure.message;
+          _writeFailed = true;
       }
     } catch (error) {
       _failure = '$error';
+      _writeFailed = true;
     }
     _saving = false;
     notifyListeners();
@@ -315,6 +452,7 @@ class DraftsModel extends ChangeNotifier {
       // A read that fails leaves the conflict unnamed rather than claiming
       // the draft is gone: the person can retry.
       _failure = '$error';
+      _writeFailed = true;
     }
   }
 

@@ -182,12 +182,14 @@ FactoryWorker factoryWorker({
   String agentId = 'agent-1',
   String sessionId = 'sess-1',
   String role = 'implementer',
+  bool parked = false,
+  String? spawnEffectId,
 }) => FactoryWorker.fromJson({
   'agentId': agentId,
   'sessionId': sessionId,
   'role': role,
-  'spawnEffectId': 'effect-$role',
-  'parked': false,
+  'spawnEffectId': spawnEffectId ?? 'effect-$role',
+  'parked': parked,
   'subagents': {'enabled': false, 'concurrency': 0},
 });
 
@@ -218,9 +220,10 @@ FactoryEvent factoryEvent(
   String kind,
   String message, {
   String effectId = '',
+  String at = '2026-11-17T09:30:00Z',
 }) => FactoryEvent.fromJson({
   'sequence': sequence,
-  'at': '2026-11-17T09:30:00Z',
+  'at': at,
   'kind': kind,
   'message': message,
   'effectId': effectId,

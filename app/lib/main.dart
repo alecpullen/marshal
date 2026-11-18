@@ -178,9 +178,15 @@ Future<void> main() async {
           // plan off. A project that cannot be read still opens the sheet on
           // the host alone, because the review must open rather than fail: its
           // fields then say the project states them not, and the person
-          // chooses the rest. Approving creates the item through the one store
+          // chooses the rest. The action creates the item through the one store
           // that reads the factory.
-          handoffFor: (thread, plan, spec) async {
+          //
+          // A review opened from a planning thread brings the capture it was
+          // reviewed from: the sheet shows that evidence, and the draft is
+          // posted through the snapshot's handoff route, so the bridge's frozen
+          // bytes and verified hashes are what the item is built from. The
+          // new-work dialog passes no capture and keeps the create route.
+          handoffFor: (thread, plan, spec, {plannerID, snapshot}) async {
             final client = hosts.hosts
                 .firstWhere((owner) => owner.name == thread.host)
                 .client;
@@ -195,10 +201,10 @@ Future<void> main() async {
               // The sheet opens on the host alone, stating what the project
               // does not; a settings read must not leave the plan unhanded.
             }
-            // The version this review is bound to: the combined one the bridge
-            // composes, so a settings change made while the review is open is
-            // noticed at approval rather than frozen unread. A read that fails
-            // leaves the review unbound, never blocked.
+            // The version this review is bound to: the combined one the
+            // bridge composes, so a settings change made while the review
+            // is open is noticed at approval rather than frozen unread. A
+            // read that fails leaves the review unbound, never blocked.
             String? version;
             try {
               version = await client.factorySettingsVersion(thread.project);
@@ -215,6 +221,10 @@ Future<void> main() async {
               readSettingsVersion: (root) =>
                   client.factorySettingsVersion(root),
               create: (draft) => factory.create(thread.host, draft),
+              reviewedSnapshot: snapshot,
+              plannerID: plannerID,
+              handoffSnapshot: (planner, snapshotID, request) =>
+                  factory.handoff(thread.host, planner, snapshotID, request),
             );
           },
           // Answers a plan run's question, for a run opened from a project

@@ -48,6 +48,36 @@ void main() {
     expect(fake.requests.single.uri, '/api/daemon');
   });
 
+  test('relayHosts reads the relay\'s hosts', () async {
+    fake.reply(
+      'GET',
+      '/api/relay/hosts',
+      const FakeReply(
+        200,
+        body:
+            '{"hosts":[{"name":"laptop","connected":true,'
+            '"since":1763300000000,"lastContact":1763300060000},'
+            '{"name":"build","connected":false}]}',
+      ),
+    );
+
+    final relayed = await client.relayHosts();
+
+    expect(relayed.hosts, hasLength(2));
+    expect(relayed.hosts.first.name, 'laptop');
+    expect(relayed.hosts.first.connected, isTrue);
+    expect(relayed.hosts.first.since, 1763300000000);
+    expect(relayed.hosts.first.lastContact, 1763300060000);
+    // A host the relay names whether or not it is joined, so one that has
+    // never joined carries no times at all.
+    expect(relayed.hosts.last.name, 'build');
+    expect(relayed.hosts.last.connected, isFalse);
+    expect(relayed.hosts.last.since, isNull);
+    expect(relayed.hosts.last.lastContact, isNull);
+    expect(fake.requests.single.method, 'GET');
+    expect(fake.requests.single.uri, '/api/relay/hosts');
+  });
+
   test('agents decodes every agent', () async {
     fake.reply(
       'GET',

@@ -51,7 +51,7 @@ class HostsSection extends StatelessWidget {
               name: 'Add a host',
               description:
                   'A browser reaches the hosts the bridge that served it '
-                  'relays, so a host is added from the desktop app.',
+                  'relays: join a daemon to it with `webbridge --join`.',
             ),
         ]),
       ],
@@ -239,6 +239,7 @@ class _HostDetailState extends State<HostDetail> {
   final _token = TextEditingController();
   String? _failure;
   bool _signingIn = false;
+  bool _signingOut = false;
 
   @override
   void dispose() {
@@ -297,9 +298,16 @@ class _HostDetailState extends State<HostDetail> {
         ],
         if (server) ...[
           const SizedBox(height: Space.s16),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Btn('Remove…', onTap: () => _remove(context)),
+          Row(
+            children: [
+              Btn('Remove…', onTap: () => _remove(context)),
+              // Signing out is the browser's alone: it is what holds the token
+              // that reached a relayed host (decision 6, spec D22).
+              if (widget.model.canSignOut(host)) ...[
+                const SizedBox(width: Space.s12),
+                Btn('Sign out', onTap: _signingOut ? null : _signOut),
+              ],
+            ],
           ),
         ],
         if (server &&
@@ -359,6 +367,19 @@ class _HostDetailState extends State<HostDetail> {
         _failure = describeFailure(failure);
       });
     }
+  }
+
+  /// Forgets the token this browser kept for the host, then asks it to try
+  /// again: it reads "token refused" until it is signed in to with a new one
+  /// (decision 6, spec D22).
+  Future<void> _signOut() async {
+    setState(() {
+      _signingOut = true;
+      _failure = null;
+    });
+    await widget.model.signOut(widget.host.name);
+    if (!mounted) return;
+    setState(() => _signingOut = false);
   }
 
   /// Removes the profile and its stored token, after the confirmation Access

@@ -5,6 +5,7 @@ import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:marshal_app/src/client/relayed_transport.dart';
 import 'package:marshal_app/src/client/token_store_web.dart';
 import 'package:marshal_app/src/client/transport.dart';
 import 'package:marshal_app/src/client/transport_web.dart';
@@ -17,8 +18,13 @@ import 'package:web/web.dart' as web;
 /// bridge: it records the request the transport made and answers what the
 /// test scripted.
 void main() {
+  /// The host store the relayed tests sign in to, and the key it keeps.
+  const host = TokenStoreWeb.forHost('laptop');
+
   setUp(() {
     const TokenStoreWeb().clear();
+    host.clear();
+    web.window.localStorage.removeItem(svelteTokenStorageKey);
     calls.clear();
     status = 200;
     body = '{}';
@@ -28,6 +34,8 @@ void main() {
   tearDown(() {
     restoreFetch();
     const TokenStoreWeb().clear();
+    host.clear();
+    web.window.localStorage.removeItem(svelteTokenStorageKey);
   });
 
   test('sends the stored token', () async {
@@ -89,6 +97,60 @@ void main() {
       throwsA(isA<Unauthorized>()),
     );
   });
+
+  test('a host store keeps its own key', () async {
+    // Spec D21: a relayed host's token is kept under
+    // `marshal:bridge-token@<name>`, beside the page's own and never on top of
+    // it.
+    const TokenStoreWeb().write('page-token');
+    host.write('host-token');
+
+    expect(
+      web.window.localStorage.getItem('marshal:bridge-token@laptop'),
+      'host-token',
+    );
+    expect(const TokenStoreWeb().read(), 'page-token');
+    expect(host.read(), 'host-token');
+
+    await WebTransport(tokens: host).send(const Request(path: '/api/agents'));
+
+    expect(calls.single.authorization, 'Bearer host-token');
+  });
+
+  test('a host store has no svelte fallback', () {
+    // The Svelte Studio's key belongs to the bridge that served the page, and
+    // so does this Studio's own: neither may reach a host behind the relay.
+    web.window.localStorage.setItem(svelteTokenStorageKey, 'svelte-token');
+    const TokenStoreWeb().write('page-token');
+
+    expect(const TokenStoreWeb().read(), 'page-token');
+    expect(host.read(), isNull, reason: 'a host store reads its own key alone');
+
+    // Clearing and writing a host's key leaves the page's where it was.
+    host.clear();
+    expect(host.read(), isNull);
+    host.write('host-token');
+    expect(const TokenStoreWeb().read(), 'page-token');
+  });
+
+  test('a relayed host\'s request carries both tokens', () async {
+    // The page's token reaches the relay in the transport's own Authorization,
+    // and the host's rides beside it, in the header the relay reads (spec D18,
+    // D21).
+    const TokenStoreWeb().write('page-token');
+    host.write('host-token');
+
+    await relayedTransport(
+      WebTransport(),
+      host: 'laptop',
+      token: () async => host.read(),
+    ).send(const Request(path: '/api/agents'));
+
+    final call = calls.single;
+    expect(call.url, '/api/hosts/laptop/api/agents');
+    expect(call.authorization, 'Bearer page-token');
+    expect(call.hostToken, 'host-token');
+  });
 }
 
 /// One request the fake fetch received.
@@ -97,6 +159,7 @@ class FakeCall {
     required this.url,
     required this.authorization,
     this.ifMatch,
+    this.hostToken,
     this.body,
   });
 
@@ -105,6 +168,9 @@ class FakeCall {
 
   /// The `If-Match` the route named, when it named one.
   final String? ifMatch;
+
+  /// The relayed host's own token, when a relayed transport set one.
+  final String? hostToken;
   final String? body;
 }
 
@@ -144,6 +210,7 @@ JSPromise<JSAny> _fakeFetch(JSString input, [JSAny? init]) {
       url: input.toDart,
       authorization: headers?.get('authorization'),
       ifMatch: headers?.get('if-match'),
+      hostToken: headers?.get('x-marshal-host-token'),
       body: requestBody == null ? null : (requestBody as JSString).toDart,
     ),
   );

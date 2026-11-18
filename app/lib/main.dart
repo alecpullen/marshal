@@ -169,8 +169,11 @@ Future<void> main() async {
                 host: thread.host,
               );
             }
-            // The thread's host opens it, then the shell's scope host, then the
-            // first host that answers with a project.
+            // The thread's host opens it, then the first live host — which is
+            // what All hosts reads — then the first host that answers with a
+            // project. The shell's own scope is not plumbed into this closure,
+            // so a scope naming a later host still opens on the first live
+            // one.
             final scope = placeHost(store.hosts, null);
             final open = routes.containsKey(thread.host)
                 ? thread.host

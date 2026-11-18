@@ -462,7 +462,8 @@ func runFleetAdd(ctx context.Context, args []string, stderr io.Writer, home stri
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--ca-file":
-			if i+1 >= len(args) || args[i+1] == "" {
+			if i+1 >= len(args) || args[i+1] == "" ||
+				strings.HasPrefix(args[i+1], "-") {
 				return fmt.Errorf("marshal fleet add: --ca-file requires a path")
 			}
 			if caFile != "" {

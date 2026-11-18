@@ -14,6 +14,11 @@ import 'package:marshal_app/src/ui/thread/thread_screen.dart' show threadKeys;
 /// The `marshal fleet` commands as a test scripts them: every one is recorded,
 /// in the order it ran, and none runs anything real.
 class _Runner implements FleetProfiles {
+  _Runner({this.failAdd});
+
+  /// The words `add` refuses with, when the test asks for a failure.
+  final String? failAdd;
+
   @override
   bool get supported => true;
 
@@ -22,6 +27,8 @@ class _Runner implements FleetProfiles {
   @override
   Future<void> add(String name, Uri url, {String? caFile}) async {
     calls.add('add $name');
+    final words = failAdd;
+    if (words != null) throw FleetProfileFailure(words);
   }
 
   @override
@@ -178,6 +185,35 @@ void main() {
     expect(find.text('URL'), findsOneWidget);
     expect(find.text('CA file'), findsOneWidget);
     expect(find.text('Token'), findsOneWidget);
+  });
+
+  testWidgets('a failed add shows its words and keeps the fields', (
+    tester,
+  ) async {
+    final runner = _Runner(failAdd: 'studio is already in fleet.toml');
+    await pump(tester, place(profiles: runner));
+
+    await tester.tap(find.text('Add a host'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(EditableText).at(0), 'studio');
+    await tester.enterText(
+      find.byType(EditableText).at(1),
+      'https://127.0.0.1:7700',
+    );
+    await tester.tap(find.widgetWithText(Btn, 'Add'));
+    await tester.pumpAndSettle();
+
+    // The runner's words sit under the fields, and the fields keep what was
+    // typed, so the name can be corrected rather than retyped.
+    expect(find.text('studio is already in fleet.toml'), findsOneWidget);
+    expect(
+      tester
+          .widget<EditableText>(find.byType(EditableText).at(0))
+          .controller
+          .text,
+      'studio',
+    );
+    expect(runner.calls, ['add studio']);
   });
 
   testWidgets('the local daemon cannot be removed', (tester) async {

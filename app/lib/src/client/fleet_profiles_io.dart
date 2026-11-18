@@ -45,8 +45,15 @@ class _ProcessFleetProfiles implements FleetProfiles {
   Future<void> login(String name, String token) async {
     final process = await _start(cli.binary, ['fleet', 'login', name]);
     final stderrText = process.stderr.transform(utf8.decoder).join();
-    process.stdin.write('$token\n');
-    await process.stdin.close();
+    // A command that refuses before it reads — an unknown name, a file
+    // others can read — closes its stdin first, and writing to a closed pipe
+    // raises. The exit code and stderr below are what say why.
+    try {
+      process.stdin.write('$token\n');
+      await process.stdin.close();
+    } catch (_) {
+      // Reported by the exit code and stderr that follow.
+    }
     final code = await process.exitCode;
     final err = await stderrText;
     if (code != 0) throw FleetProfileFailure(_failure(err, code));

@@ -154,7 +154,9 @@ class HostsModel extends SectionModel<HostView> {
   /// fleet (spec D9).
   Future<void> remove(String host) async {
     final runner = profiles;
-    if (runner == null) return;
+    if (runner == null || !runner.supported) {
+      throw const FleetProfileFailure('This build cannot remove a host');
+    }
     await runner.remove(host);
     _loginFailures.remove(host);
     forget?.call(host);

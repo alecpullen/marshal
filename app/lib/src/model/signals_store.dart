@@ -119,12 +119,17 @@ class SignalsStore extends ChangeNotifier {
   /// Reads [host]'s three routes. Each keeps its own failure: a route that
   /// fails leaves that host's last value in place rather than handing an empty
   /// one over.
+  /// Whether [host] is still one the registry lists. A read that answers
+  /// after the host was forgotten must not put its data back (spec D9).
+  bool _listed(String host) => _hosts.hosts.any((owner) => owner.name == host);
+
   Future<void> _read(String host) async {
     final client = _clientOf(host);
     if (client == null) return;
 
     try {
       final watches = await client.watches();
+      if (!_listed(host)) return;
       _watches[host] = List.unmodifiable(watches);
     } catch (_) {
       // Keep the last tripped watches this host reported.
@@ -132,6 +137,7 @@ class SignalsStore extends ChangeNotifier {
 
     try {
       final blocks = await client.networkPending();
+      if (!_listed(host)) return;
       inbox.showPendingBlocks(host, blocks);
     } catch (_) {
       // Keep the inbox's last hand-over for this host.
@@ -139,6 +145,7 @@ class SignalsStore extends ChangeNotifier {
 
     try {
       final drafts = await client.reviewDrafts(status: 'draft');
+      if (!_listed(host)) return;
       inbox.showHeldDrafts(host, drafts);
     } catch (_) {
       // Keep the inbox's last hand-over for this host.

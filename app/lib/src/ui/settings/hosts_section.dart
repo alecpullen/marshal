@@ -200,7 +200,7 @@ class _HostFormState extends State<HostForm> {
         ),
         if (failure != null) ...[
           const SizedBox(height: Space.s12),
-          Text(failure, style: e.body.tint(e.err)),
+          Text(failure, style: e.small.tint(e.err)),
         ],
         const SizedBox(height: Space.s16),
         Align(
@@ -237,7 +237,15 @@ class HostDetail extends StatefulWidget {
 
 class _HostDetailState extends State<HostDetail> {
   final _token = TextEditingController();
+
+  /// A sign-in's words, shown under the token field.
   String? _failure;
+
+  /// A removal's words, shown under the button that asked for it: a host
+  /// that answered every request can still be refused a removal (an inline
+  /// definition, a file whose mode went loose), and that refusal is not a
+  /// sign-in failure.
+  String? _removeFailure;
   bool _signingIn = false;
   bool _signingOut = false;
 
@@ -271,6 +279,7 @@ class _HostDetailState extends State<HostDetail> {
     final loginFailure = widget.model.loginFailure(host.name);
     final relayRefused = _relayRefused;
     final failure = _failure;
+    final removeFailure = _removeFailure;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -296,7 +305,9 @@ class _HostDetailState extends State<HostDetail> {
           const SizedBox(height: Space.s12),
           Text('Sign in to the relay first.', style: e.small.tint(e.err)),
         ],
-        if (server) ...[
+        // A browser cannot remove a profile any more than it can add one, so
+        // the affordance follows the runner rather than the host's kind.
+        if (server && widget.model.canAdd) ...[
           const SizedBox(height: Space.s16),
           Row(
             children: [
@@ -309,6 +320,10 @@ class _HostDetailState extends State<HostDetail> {
               ],
             ],
           ),
+          if (removeFailure != null) ...[
+            const SizedBox(height: Space.s12),
+            Text(removeFailure, style: e.small.tint(e.err)),
+          ],
         ],
         if (server &&
             !relayRefused &&
@@ -386,6 +401,7 @@ class _HostDetailState extends State<HostDetail> {
   /// asks before a revoke: it names what is lost, and what keeps running.
   Future<void> _remove(BuildContext context) async {
     final host = widget.host;
+    if (_removeFailure != null) setState(() => _removeFailure = null);
     // The sheet's navigator, taken before the first await: after it the
     // widget's context may be gone, and this is the pop that closes the
     // confirmation.
@@ -419,7 +435,7 @@ class _HostDetailState extends State<HostDetail> {
       await widget.model.remove(host.name);
     } catch (failure) {
       if (!mounted) return;
-      setState(() => _failure = describeFailure(failure));
+      setState(() => _removeFailure = describeFailure(failure));
       return;
     }
     if (!mounted) return;

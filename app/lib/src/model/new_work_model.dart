@@ -539,17 +539,24 @@ class NewWorkModel extends ChangeNotifier {
 
   /// Moves the dialog to [routes]: the project it starts on, and the lists it
   /// fills the prompt with, are the new host's.
+  /// Counts host switches, so a slower earlier one cannot land on top of a
+  /// faster later one and leave the chips naming one host and the routes
+  /// another.
+  int _switch = 0;
+
   Future<void> _switchTo(NewWorkRoutes routes) async {
+    final token = ++_switch;
     // The new host's project list decides whether the root the dialog already
     // starts on is one it can start on at all: a root it does not list is not
     // a project there, whatever the chip said before.
     final roots = await _readProjects(routes);
+    if (token != _switch || _disposed) return;
     final root = _choices['Project']!;
     final kept = roots == null ? routes.project == root : roots.contains(root);
     _choices['Project'] = kept ? root : routes.project;
-    if (_disposed) return;
     _failure = null;
     await _read(routes);
+    if (token != _switch || _disposed) return;
     _setProjectMenu(roots);
     notifyListeners();
   }

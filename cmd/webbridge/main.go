@@ -630,6 +630,18 @@ func readOrCreateToken(path string) (string, error) {
 	return tok, nil
 }
 
+// errReexec is run's answer when the daemon is to re-execute itself (decision 2).
+type errReexec struct{ path string }
+
+func (e *errReexec) Error() string { return e.path + ": re-execute requested" }
+
+// The seams a test replaces.
+var ownExecutable = os.Executable
+var execSelf = syscall.Exec
+
+// testAsBinaryEnv makes the test binary run as webbridge (TestMain).
+const testAsBinaryEnv = "WEBBRIDGE_TEST_AS_BINARY"
+
 func main() {
 	// Drop libmalloc's debugging knobs before any child is spawned. The
 	// bridge hands os.Environ() to every `marshal acp` child it supervises
@@ -639,10 +651,23 @@ func main() {
 	// even when the supervised binary predates the same fix in
 	// cmd/marshal. See internal/procenv.
 	procenv.ScrubMallocDebugEnv()
-	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintf(os.Stderr, "webbridge: %v\n", err)
-		os.Exit(1)
+	err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	if err == nil {
+		return
 	}
+	// A daemon that decided to restart replaces this process image with the
+	// new build — same arguments, same environment — so its listeners, its
+	// workspace and its state carry over unchanged (decision 2). Exec only
+	// returns on failure, and then there is no daemon left to keep serving.
+	if reexec, ok := err.(*errReexec); ok {
+		if xerr := execSelf(reexec.path, os.Args, os.Environ()); xerr != nil {
+			fmt.Fprintf(os.Stderr, "webbridge: re-execute %s: %v\n", reexec.path, xerr)
+			os.Exit(1)
+		}
+		return
+	}
+	fmt.Fprintf(os.Stderr, "webbridge: %v\n", err)
+	os.Exit(1)
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -766,6 +791,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		// one, and the sweep returns at once.
 		fleet.SetIdleSessionTimeout(cfg.idleSessionTimeout)
 		go fleet.RunIdleSweep(ctx)
+		// A stale child is restarted on a new marshal build once it is idle
+		// (P6 B4), on its own goroutine: unlike the idle sweep, this one runs
+		// whatever the idle timeout is.
+		go fleet.RunRestartSweep(ctx)
 	}
 
 	secrets, err := buildSecretProvider(cfg)
@@ -817,13 +846,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// The backstop for every return below: Run is started above, so waiting
 	// on factoryDone here is always safe.
 	defer shutdownFactory()
-
-	// The local profile starts each pinned project's child on its own
-	// goroutine, one after another (decision 9). The server profile pins
-	// nothing, so it starts none.
-	if cfg.profile == "local" {
-		go fleet.StartPinned(ctx)
-	}
 
 	// The local profile starts each pinned project's child on its own
 	// goroutine, one after another (decision 9). The server profile pins
@@ -944,6 +966,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			StudioAddr:  studioAddr,
 			StudioError: studioErr,
 		})
+		// The daemon records its own executable so a replaced build can
+		// restart it, and so the socket's restart route knows what to
+		// execute (P6 B5). A daemon that cannot name its binary serves on
+		// without the restart route rather than failing to start.
+		if own, oerr := ownExecutable(); oerr != nil {
+			slog.Default().Warn("webbridge: restarting the daemon is unavailable", "err", oerr)
+		} else if oerr := fleet.SetOwnBinary(own); oerr != nil {
+			slog.Default().Warn("webbridge: restarting the daemon is unavailable", "path", own, "err", oerr)
+		}
 		if cfg.oauthRefresh {
 			// The refresh helper (P4 D12): `<marshal-bin> daemon refresh`
 			// beside the bridge, on the run's context. run waits for it to
@@ -1045,6 +1076,30 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}()
 	}
 
+	// The one shutdown sequence every path below runs once: HTTP first, then
+	// the factory and the children. It is idempotent so a signal, a failed
+	// listener and a restart can each ask for it without checking.
+	shutdown := sync.OnceFunc(func() {
+		slog.Default().Info("webbridge: shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if previewSrv != nil {
+			_ = previewSrv.Shutdown(shutdownCtx)
+		}
+		if socketSrv != nil {
+			// Closing the socket server closes the unix listener, which is
+			// what removes the socket file.
+			_ = socketSrv.Shutdown(shutdownCtx)
+		}
+		if srv != nil {
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				slog.Default().Warn("webbridge: HTTP shutdown", "err", err)
+			}
+		}
+		shutdownFactory()
+		fleet.Close()
+	})
+
 	select {
 	case err := <-serveErr:
 		// Serve only returns a non-ErrServerClosed error when the
@@ -1064,28 +1119,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		shutdownFactory()
 		fleet.Close()
 		return err
+	case sr := <-fleet.SelfRestarts():
+		// A replaced build, or a restart asked for over the socket (P6 B5):
+		// serve out what is in flight, take the children down, and let main
+		// re-execute the daemon in this process's place. stop() comes first
+		// so a shutdown that drags on is still interruptible.
+		slog.Default().Info("webbridge: restarting on " + sr.Version + ": " + sr.Reason)
+		stop()
+		shutdown()
+		return &errReexec{path: sr.Path}
 	case <-sigCtx.Done():
 	}
 	stop() // restore default signal handling so a second Ctrl-C kills
 
-	slog.Default().Info("webbridge: shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if previewSrv != nil {
-		_ = previewSrv.Shutdown(shutdownCtx)
-	}
-	if socketSrv != nil {
-		// Closing the socket server closes the unix listener, which is
-		// what removes the socket file.
-		_ = socketSrv.Shutdown(shutdownCtx)
-	}
-	if srv != nil {
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Default().Warn("webbridge: HTTP shutdown", "err", err)
-		}
-	}
-	shutdownFactory()
-	fleet.Close()
+	shutdown()
 	return nil
 }
 

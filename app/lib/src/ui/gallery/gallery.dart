@@ -201,6 +201,9 @@ class _GalleryState extends State<Gallery> {
       message: 'The gallery could not be drawn.',
       retry: StateAction('Try again', onTap: () {}),
     ),
+    StateKind.unauthorized => const StateMessage.unauthorized(
+      host: 'studio-box',
+    ),
     StateKind.unavailable => StateMessage.unavailable(
       host: 'studio-box',
       lastSeen: '4m',
@@ -405,6 +408,7 @@ class _GalleryState extends State<Gallery> {
       who: 'The implementer',
       text: 'started round 1',
       age: '8m',
+      ageTip: '2026-11-17 11:52 UTC',
       detail: 'implement_started',
     ),
     ActivityRow(who: 'You', text: 'revision 1 was approved', age: '12m'),

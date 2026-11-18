@@ -29,12 +29,25 @@ type fakeDaemonClient struct {
 	err    error
 	onInfo func(context.Context)
 
+	// infos, when set, are the scripted answers to Info, consumed in order:
+	// a restart test answers with the daemon's state before the restart and
+	// again with a later startedAt once it is back. The last answer repeats,
+	// so a poll after the list is spent sees a settled daemon rather than an
+	// empty one.
+	infos *[]daemon.Info
+
 	// pinState and pinErr are the scripted answer to Pin; pinCalls, when
 	// set, records every call, since the fake is copied into the seam and
 	// so cannot count on itself.
 	pinState daemon.PinState
 	pinErr   error
 	pinCalls *[]pinCall
+
+	// restartSteps are the scripted lines Restart reports; restartNow, when
+	// set, records the now it was called with. Like pinCalls these are
+	// pointers because the fake is copied into the seam.
+	restartSteps []daemon.RestartProgress
+	restartNow   *bool
 }
 
 // pinCall is one Pin the fake saw.
@@ -47,7 +60,31 @@ func (c fakeDaemonClient) Info(ctx context.Context) (daemon.Info, error) {
 	if c.onInfo != nil {
 		c.onInfo(ctx)
 	}
+	if c.infos != nil && len(*c.infos) != 0 {
+		info := (*c.infos)[0]
+		if len(*c.infos) > 1 {
+			*c.infos = (*c.infos)[1:]
+		}
+		return info, c.err
+	}
 	return c.info, c.err
+}
+
+// Restart replays the scripted lines as the client does: each reaches
+// progress, and an error line ends the answer with that error.
+func (c fakeDaemonClient) Restart(ctx context.Context, now bool, progress func(daemon.RestartProgress)) error {
+	if c.restartNow != nil {
+		*c.restartNow = now
+	}
+	for _, step := range c.restartSteps {
+		if progress != nil {
+			progress(step)
+		}
+		if step.Error != "" {
+			return errors.New(step.Error)
+		}
+	}
+	return nil
 }
 
 func (c fakeDaemonClient) Pin(ctx context.Context, root string, pinned bool) (daemon.PinState, error) {
@@ -568,8 +605,8 @@ func TestDaemonUninstallLeavesLingerEnabled(t *testing.T) {
 // TestDaemonStatusReportsARunningDaemon pins decision 12's happy path: three
 // lines, the daemon's version beside this marshal's, its start time, and its
 // projects — and a socket call bounded at two seconds. Under the daemon's line
-// it reports each child on a line of its own, with the child's environment
-// warning indented beneath it.
+// it reports each child on a line of its own, the restart that child holds and
+// its environment warning indented beneath it.
 func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 	home := daemonTestEnv(t)
 	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -594,12 +631,17 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 				Refresh:   &daemon.RefreshInfo{PID: 5151, Restarts: 2},
 				Children: []daemon.ChildInfo{
 					{
-						// Another build, with a warning: the line has to
-						// name both versions and the warning follows.
+						// Another build, with a warning and a held
+						// restart: the line has to name both versions,
+						// the restart follows it, and the warning last.
 						Root:       "/work/three",
 						Version:    "2.0.0",
 						Sessions:   []daemon.SessionInfo{{ID: "sess-1", Viewers: 1}},
 						EnvWarning: warning,
+						Restart: &daemon.DaemonRestart{
+							Reasons:    []string{"a new build", "config changed"},
+							WaitingFor: "2 sessions",
+						},
 					},
 					{
 						// This marshal's own version, no warning, no
@@ -639,9 +681,9 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
 	// The daemon's three lines, then its refresh helper's, then each
-	// child's, the warned child's second one included.
-	if len(lines) != 7 {
-		t.Fatalf("status printed %d lines, want 7:\n%s", len(lines), stdout.String())
+	// child's, the held restart and the warned child's warning included.
+	if len(lines) != 8 {
+		t.Fatalf("status printed %d lines, want 8:\n%s", len(lines), stdout.String())
 	}
 	if !strings.Contains(lines[0], "running") || !strings.Contains(lines[0], "4242") {
 		t.Errorf("service line = %q, want the running state and its pid", lines[0])
@@ -669,19 +711,23 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 		t.Errorf("refresh line = %q, want %q", lines[3], want)
 	}
 
-	// The first child runs another build and carries a warning: its line
-	// names its own version, this marshal's, and its one session, and the
-	// warning follows indented on a line of its own.
+	// The first child runs another build with a held restart and carries a
+	// warning: its line names its own version, this marshal's, and its one
+	// session; the restart follows it, then the warning, both indented.
 	if want := "child /work/three: version 2.0.0, 1 session (this marshal 0.9.0)"; lines[4] != want {
 		t.Errorf("child line = %q, want %q", lines[4], want)
 	}
-	if want := "  environment: " + warning; lines[5] != want {
-		t.Errorf("warning line = %q, want %q", lines[5], want)
+	if want := "  restart pending: a new build, config changed, waiting for 2 sessions"; lines[5] != want {
+		t.Errorf("restart line = %q, want %q under the child's", lines[5], want)
 	}
-	// The second child runs this marshal's version with no sessions and no
-	// warning: no "(this marshal ...)" aside, and no second line.
-	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[6] != want {
-		t.Errorf("child line = %q, want %q", lines[6], want)
+	if want := "  environment: " + warning; lines[6] != want {
+		t.Errorf("warning line = %q, want %q", lines[6], want)
+	}
+	// The second child runs this marshal's version with no sessions, no
+	// warning and no restart: no "(this marshal ...)" aside, and no second
+	// line.
+	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[7] != want {
+		t.Errorf("child line = %q, want %q", lines[7], want)
 	}
 	for _, line := range lines[4:] {
 		if strings.Contains(line, "/work/four") && strings.Contains(line, "this marshal") {
@@ -738,6 +784,71 @@ func TestDaemonChildLine(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if got := daemonChildLine(c.child, c.marshalVersion); got != c.want {
 				t.Errorf("daemonChildLine() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestDaemonRestartLines pins the restart lines under a child's: nothing for a
+// child that is current, the reasons and what they wait for while a restart is
+// held, the same reasons without the waiter when nothing holds it, and a
+// refusal on a line of its own. A restart with no reasons prints no bare
+// `restart pending: ` line, so a refusal alone still says what it is.
+func TestDaemonRestartLines(t *testing.T) {
+	cases := []struct {
+		name    string
+		restart *daemon.DaemonRestart
+		want    []string
+	}{
+		{
+			name:    "none",
+			restart: nil,
+			want:    nil,
+		},
+		{
+			name: "waiting",
+			restart: &daemon.DaemonRestart{
+				Reasons:    []string{"a new build", "config changed"},
+				WaitingFor: "2 sessions",
+			},
+			want: []string{"  restart pending: a new build, config changed, waiting for 2 sessions"},
+		},
+		{
+			name: "not waiting",
+			restart: &daemon.DaemonRestart{
+				Reasons: []string{"a new build"},
+			},
+			want: []string{"  restart pending: a new build"},
+		},
+		{
+			name: "refused",
+			restart: &daemon.DaemonRestart{
+				Reasons: []string{"a new build"},
+				Refused: "exit status 2",
+			},
+			want: []string{
+				"  restart pending: a new build",
+				"  restart refused: exit status 2",
+			},
+		},
+		{
+			name: "refused with no reasons",
+			restart: &daemon.DaemonRestart{
+				Refused: "exit status 2",
+			},
+			want: []string{"  restart refused: exit status 2"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := daemonRestartLines(daemon.ChildInfo{Restart: c.restart})
+			if len(got) != len(c.want) {
+				t.Fatalf("daemonRestartLines() = %q, want %q", got, c.want)
+			}
+			for i := range c.want {
+				if got[i] != c.want[i] {
+					t.Errorf("daemonRestartLines()[%d] = %q, want %q", i, got[i], c.want[i])
+				}
 			}
 		})
 	}
@@ -1245,6 +1356,250 @@ func TestDaemonStatusJSONReportsLinger(t *testing.T) {
 	}
 }
 
+// TestDaemonRestartPrintsWhatItWaitsFor: restart reports what the daemon is
+// waiting for as it sweeps, prints a repeated waiting line once, then names
+// the build it restarts on and reports the version it came back on.
+func TestDaemonRestartPrintsWhatItWaitsFor(t *testing.T) {
+	daemonTestEnv(t)
+
+	infos := []daemon.Info{
+		{Version: "v1", StartedAt: 1700000000000},
+		{Version: "v2", StartedAt: 1700000005000},
+	}
+	fakeDaemonSocket(t, fakeDaemonClient{
+		infos: &infos,
+		restartSteps: []daemon.RestartProgress{
+			{WaitingFor: []string{"a run in /work/one"}},
+			{WaitingFor: []string{"a run in /work/one"}},
+			{Restarting: true, Version: "v2"},
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"restart"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runDaemon restart: %v\nstderr: %s", err, stderr.String())
+	}
+
+	want := []string{
+		"waiting for a run in /work/one",
+		"restarting on v2",
+		"restarted: version v2",
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) != len(want) {
+		t.Fatalf("restart printed %q, want %q", lines, want)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("line %d = %q, want %q", i, lines[i], want[i])
+		}
+	}
+}
+
+// TestDaemonRestartNowAsksForNow: --now is the request's only argument, and it
+// reaches the daemon; without it the daemon waits for idle.
+func TestDaemonRestartNowAsksForNow(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "waits for idle", args: []string{"restart"}, want: false},
+		{name: "--now does not wait", args: []string{"restart", "--now"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			daemonTestEnv(t)
+
+			infos := []daemon.Info{
+				{Version: "v1", StartedAt: 1700000000000},
+				{Version: "v2", StartedAt: 1700000005000},
+			}
+			var gotNow bool
+			fakeDaemonSocket(t, fakeDaemonClient{
+				infos:        &infos,
+				restartSteps: []daemon.RestartProgress{{Restarting: true, Version: "v2"}},
+				restartNow:   &gotNow,
+			})
+
+			var stdout, stderr bytes.Buffer
+			if err := runDaemon(context.Background(), tc.args,
+				strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("runDaemon %v: %v\nstderr: %s", tc.args, err, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "restarting on v2") {
+				t.Fatalf("restart printed %q, want it to have asked the daemon", stdout.String())
+			}
+			if gotNow != tc.want {
+				t.Errorf("restart --now = %v, want %v", gotNow, tc.want)
+			}
+		})
+	}
+}
+
+// TestDaemonRestartStartsAnAbsentDaemon: a daemon that does not answer has no
+// restart to ask for, so restart starts it, as `start` does, and says so.
+func TestDaemonRestartStartsAnAbsentDaemon(t *testing.T) {
+	home := daemonTestEnv(t)
+
+	var calls []string
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+		return nil, nil
+	})
+	// Nothing is listening: the socket read and the readiness poll after the
+	// start both fail, which is the absent daemon this command starts.
+	fakeDaemonSocket(t, fakeDaemonClient{err: errors.New("dial unix: connect: no such file or directory")})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"restart"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runDaemon restart: %v\nstderr: %s", err, stderr.String())
+	}
+
+	if len(calls) == 0 {
+		t.Fatal("restart never reached the service manager")
+	}
+	if joined := strings.Join(calls, "\n"); !strings.Contains(joined, "bootstrap") {
+		t.Errorf("restart did not load the unit; manager calls:\n%s", joined)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if lines[0] != "started" {
+		t.Errorf("first line = %q, want \"started\"", lines[0])
+	}
+	if log := daemon.PathsFor(home).Log; !strings.Contains(stdout.String(), log) {
+		t.Errorf("restart printed %q, want it to name the log %q", stdout.String(), log)
+	}
+}
+
+// TestDaemonRestartReportsARefusal: the daemon's error line — the new build
+// failed — becomes the command's error, and no restart is reported.
+func TestDaemonRestartReportsARefusal(t *testing.T) {
+	daemonTestEnv(t)
+
+	const refusal = "the new build failed --version"
+	infos := []daemon.Info{{Version: "v1", StartedAt: 1700000000000}}
+	fakeDaemonSocket(t, fakeDaemonClient{
+		infos: &infos,
+		restartSteps: []daemon.RestartProgress{
+			{WaitingFor: []string{"2 sessions"}},
+			{Error: refusal},
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := runDaemon(context.Background(), []string{"restart"},
+		strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("restart succeeded although the daemon refused, want an error")
+	}
+	if !strings.Contains(err.Error(), "marshal daemon restart:") || !strings.Contains(err.Error(), refusal) {
+		t.Errorf("error = %q, want \"marshal daemon restart: %s\"", err, refusal)
+	}
+	if strings.Contains(stdout.String(), "restarted:") {
+		t.Errorf("restart printed %q, want no restarted line for a refusal", stdout.String())
+	}
+}
+
+// TestDaemonRestartRefusesArguments: restart takes only --now, so a stray
+// argument is refused by name and the daemon is never asked.
+func TestDaemonRestartRefusesArguments(t *testing.T) {
+	daemonTestEnv(t)
+	fakeDaemonSocket(t, fakeDaemonClient{onInfo: func(context.Context) {
+		t.Error("restart with an argument asked the daemon")
+	}})
+
+	err := runDaemon(context.Background(), []string{"restart", "extra"},
+		strings.NewReader(""), io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("restart with an argument succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "extra") {
+		t.Errorf("error = %q, want it to name %q", err, "extra")
+	}
+}
+
+// TestDaemonStatusShowsTheDaemonsRestart: status reports the daemon's own held
+// restart on the line after the daemon's, before the refresh helper's and
+// before any child's — pending with its reasons and waiter, and a refusal on a
+// line of its own.
+func TestDaemonStatusShowsTheDaemonsRestart(t *testing.T) {
+	cases := []struct {
+		name    string
+		restart *daemon.DaemonRestart
+		want    []string
+	}{
+		{
+			name: "pending",
+			restart: &daemon.DaemonRestart{
+				Reasons:    []string{"a new build", "config changed"},
+				WaitingFor: "2 sessions",
+			},
+			want: []string{"daemon restart pending: a new build, config changed, waiting for 2 sessions"},
+		},
+		{
+			name: "refused",
+			restart: &daemon.DaemonRestart{
+				Reasons: []string{"a new build"},
+				Refused: "exit status 2",
+			},
+			want: []string{
+				"daemon restart pending: a new build",
+				"daemon restart refused: exit status 2",
+			},
+		},
+		{
+			name:    "refused with no reasons",
+			restart: &daemon.DaemonRestart{Refused: "exit status 2"},
+			want:    []string{"daemon restart refused: exit status 2"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			daemonTestEnv(t)
+			fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+				return []byte("state = running\npid = 4242\n"), nil
+			})
+			fakeDaemonSocket(t, fakeDaemonClient{info: daemon.Info{
+				Version:   "1.4.0",
+				PID:       4242,
+				StartedAt: 1700000000000,
+				Restart:   c.restart,
+			}})
+
+			var stdout, stderr bytes.Buffer
+			if err := runDaemon(context.Background(), []string{"status"},
+				strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("runDaemon status: %v\nstderr: %s", err, stderr.String())
+			}
+
+			lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+			daemonAt := -1
+			for i, line := range lines {
+				if strings.HasPrefix(line, "daemon: version") {
+					daemonAt = i
+					break
+				}
+			}
+			if daemonAt < 0 {
+				t.Fatalf("status printed no daemon line:\n%s", stdout.String())
+			}
+			for i, want := range c.want {
+				at := daemonAt + 1 + i
+				if at >= len(lines) {
+					t.Fatalf("status printed %d lines, want %q at %d:\n%s", len(lines), want, at, stdout.String())
+				}
+				if lines[at] != want {
+					t.Errorf("line %d = %q, want %q", at, lines[at], want)
+				}
+			}
+			if next := daemonAt + 1 + len(c.want); next < len(lines) && strings.HasPrefix(lines[next], "daemon restart") {
+				t.Errorf("line %d = %q, want no further restart line", next, lines[next])
+			}
+		})
+	}
+}
+
 // TestDaemonRejectsUnknownSubcommands pins the listing: the usage error names
 // every subcommand, for a missing and for an unknown one.
 func TestDaemonRejectsUnknownSubcommands(t *testing.T) {
@@ -1265,7 +1620,7 @@ func TestDaemonRejectsUnknownSubcommands(t *testing.T) {
 			if !strings.Contains(err.Error(), c.want) {
 				t.Errorf("error = %q, want it to mention %q", err, c.want)
 			}
-			for _, sub := range []string{"install", "start", "stop", "status", "join-token", "token", "pin", "unpin", "uninstall"} {
+			for _, sub := range []string{"install", "start", "stop", "status", "restart", "join-token", "token", "pin", "unpin", "uninstall"} {
 				if !strings.Contains(err.Error(), sub) {
 					t.Errorf("error = %q, want it to list %q", err, sub)
 				}

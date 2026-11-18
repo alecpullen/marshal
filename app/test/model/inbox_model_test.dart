@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
+import 'package:marshal_app/src/model/attention.dart';
+import 'package:marshal_app/src/model/factory_store.dart';
 import 'package:marshal_app/src/model/inbox_model.dart';
 
 import '../support/fake_bridge.dart';
@@ -40,6 +42,22 @@ void main() {
   Future<InboxModel> inboxFor(ModelFixture fixture) async {
     await fixture.refresh();
     final model = InboxModel(fixture.store, client: fixture.clientFor);
+    addTearDown(model.dispose);
+    return model;
+  }
+
+  /// The inbox with the factory's work items folded into its queue, so a
+  /// fixture's factory asks are the same asks the app shows.
+  Future<InboxModel> inboxWithFactory(ModelFixture fixture) async {
+    await fixture.refresh();
+    final factory = FactoryStore(fixture.registry, now: fixture.clock.now);
+    addTearDown(factory.dispose);
+    await factory.refresh();
+    final model = InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+      factory: factory,
+    );
     addTearDown(model.dispose);
     return model;
   }
@@ -700,5 +718,268 @@ void main() {
       isEmpty,
       reason: 'nothing is posted for a dismissal',
     );
+  });
+
+  test('every ask names its source, project and scope', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        agents: [
+          agent(
+            id: 'a-1',
+            project: '/home/u/beta',
+            status: AgentState.agentAwaitingApproval,
+            pending: approval(),
+          ),
+        ],
+        queue: [
+          InboxItem(
+            kind: InboxItemKind.inboxItemIntake,
+            submission: submission(),
+            at: now.subtract(const Duration(minutes: 5)).toIso8601String(),
+          ),
+        ],
+        factoryItems: [
+          factoryItem(id: 'item-1', state: 'draft', project: '/home/u/alpha'),
+        ],
+      ),
+    ], now: now);
+    final inbox = await inboxWithFactory(fixture);
+
+    expect(inbox.asks, hasLength(3));
+
+    final factoryAsk = inbox.asks.singleWhere(
+      (ask) => ask.kind == AskKind.approvalDraft,
+    );
+    expect(factoryAsk.source, AskSource.factory);
+    expect(factoryAsk.project, '/home/u/alpha');
+    expect(factoryAsk.scope, AskScope.projectWide);
+
+    final agentAsk = inbox.asks.singleWhere(
+      (ask) => ask.kind == AskKind.approval,
+    );
+    expect(agentAsk.source, AskSource.fleet);
+    expect(agentAsk.project, '/home/u/beta');
+    expect(agentAsk.scope, AskScope.everyone);
+
+    final intakeAsk = inbox.asks.singleWhere(
+      (ask) => ask.kind == AskKind.intake,
+    );
+    expect(intakeAsk.source, AskSource.fleet);
+    expect(intakeAsk.project, '');
+    expect(intakeAsk.scope, AskScope.everyone);
+  });
+
+  test('a factory decision and the same worker\u2019s question stay separate '
+      'asks', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        agents: [
+          agent(
+            id: 'agent-1',
+            status: AgentState.agentAwaitingQuestion,
+            pending: const PendingRequest(
+              kind: PendingKind.pendingQuestion,
+              id: 'q-1',
+              params: {
+                'questions': [
+                  {'question': 'Which base should it use?'},
+                ],
+              },
+            ),
+          ),
+        ],
+        factoryItems: [
+          factoryItem(
+            id: 'item-1',
+            workers: [factoryWorker(agentId: 'agent-1')],
+            decision: FactoryDecision(
+              id: 'd-1',
+              kind: 'decision',
+              question: 'Should the worker rebase?',
+              reason: 'The branch was cut from an old base.',
+              effectID: 'effect-1',
+              createdAt: now.toIso8601String(),
+            ),
+          ),
+        ],
+      ),
+    ], now: now);
+    final inbox = await inboxWithFactory(fixture);
+
+    final decision = inbox.asks.singleWhere(
+      (ask) => ask.kind == AskKind.decision,
+    );
+    final question = inbox.asks.singleWhere(
+      (ask) => ask.kind == AskKind.question,
+    );
+
+    expect(inbox.asks, hasLength(2));
+    expect(decision.id, isNot(question.id));
+    expect(decision.source, AskSource.factory);
+    expect(question.source, AskSource.fleet);
+    // Neither is folded away: the item's decision is not the worker's
+    // question, and answering one must not drop the other.
+    expect(inbox.asks, containsAll([decision, question]));
+  });
+
+  test('a source that names no project says so rather than guessing', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        queue: [
+          InboxItem(
+            kind: InboxItemKind.inboxItemIntake,
+            submission: submission(),
+            at: now.subtract(const Duration(minutes: 5)).toIso8601String(),
+          ),
+        ],
+      ),
+    ], now: now);
+    final inbox = await inboxFor(fixture);
+
+    final ask = inbox.asks.single;
+
+    expect(ask.project, isEmpty);
+    expect(ask.provenance, 'Fleet · Everyone');
+    // No separator is left dangling where a project would have been.
+    expect(ask.provenance.split(' · ').where((part) => part.isEmpty), isEmpty);
+    expect(ask.provenance.contains('·  ·'), isFalse);
+  });
+
+  test('a draft blocks work and a completion does not', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        factoryItems: [
+          factoryItem(id: 'item-draft', state: 'draft'),
+          factoryItem(id: 'item-ready', state: 'ready'),
+        ],
+      ),
+    ], now: now);
+    final inbox = await inboxWithFactory(fixture);
+
+    final draft = inbox.asks.singleWhere(
+      (ask) => ask.kind == AskKind.approvalDraft,
+    );
+    final completion = inbox.asks.singleWhere(
+      (ask) => ask.kind == AskKind.completion,
+    );
+
+    expect(draft.blocking, isTrue);
+    expect(completion.blocking, isFalse);
+  });
+
+  test('factory asks are answered in their thread, not in the list', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        agents: [
+          agent(
+            id: 'a-1',
+            status: AgentState.agentAwaitingApproval,
+            pending: approval(),
+          ),
+        ],
+        factoryItems: [
+          factoryItem(id: 'item-draft', state: 'draft'),
+          factoryItem(
+            id: 'item-decision',
+            decision: FactoryDecision(
+              id: 'd-1',
+              kind: 'decision',
+              question: 'Should the worker rebase?',
+              reason: 'The branch was cut from an old base.',
+              effectID: 'effect-1',
+              createdAt: now.toIso8601String(),
+            ),
+          ),
+          factoryItem(id: 'item-recovery', state: 'needs_input'),
+          factoryItem(id: 'item-ready', state: 'ready'),
+        ],
+      ),
+    ], now: now);
+    final inbox = await inboxWithFactory(fixture);
+
+    for (final kind in const [
+      AskKind.approvalDraft,
+      AskKind.decision,
+      AskKind.recovery,
+      AskKind.completion,
+    ]) {
+      final ask = inbox.asks.singleWhere((ask) => ask.kind == kind);
+      expect(ask.answeredInThread, isTrue, reason: kind.name);
+    }
+
+    final agentAsk = inbox.asks.singleWhere(
+      (ask) => ask.kind == AskKind.approval,
+    );
+    expect(agentAsk.answeredInThread, isFalse);
+  });
+
+  /// One blocked request on [host], handed to the inbox as the Network
+  /// section does, and an inbox that records which host an answer went to.
+  Future<InboxModel> inboxWithBlock(
+    ModelFixture fixture,
+    List<String> answered,
+  ) async {
+    await fixture.refresh();
+    final model = InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+      onAnswered: answered.add,
+    );
+    addTearDown(model.dispose);
+    model.showPendingBlocks('local', const [
+      NetPending(
+        kind: 'network_block',
+        sessionID: 's-1',
+        agentID: 'a-1',
+        host: 'api.example.com',
+        workspace: 'default',
+        at: 1763352000000,
+      ),
+    ]);
+    return model;
+  }
+
+  test('answering a network ask asks for a re-read of its host', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    final answered = <String>[];
+    final inbox = await inboxWithBlock(fixture, answered);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/network/decisions',
+      const FakeReply(200, body: '{}'),
+    );
+
+    final ask = inbox.asks.single;
+    expect(ask.kind, AskKind.network);
+    await inbox.answer(ask, ask.actions.first);
+
+    expect(answered, ['local']);
+  });
+
+  test('a failed answer asks for nothing', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    final answered = <String>[];
+    final inbox = await inboxWithBlock(fixture, answered);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/network/decisions',
+      const FakeReply(500, body: '{"error":"the host is gone"}'),
+    );
+
+    final ask = inbox.asks.single;
+    await inbox.answer(ask, ask.actions.first);
+
+    // Nothing changed on the bridge, so nothing is re-read.
+    expect(answered, isEmpty);
+    expect(inbox.asks.single.state, AskState.failed);
   });
 }

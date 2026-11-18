@@ -187,18 +187,30 @@ class FleetStore extends ChangeNotifier {
   Iterable<String> _names(String? host) =>
       host != null ? [host] : [for (final owner in _registry.hosts) owner.name];
 
-  /// A host was discovered: hold its state and follow its stream. A host
-  /// already known is left alone, exactly as the registry leaves it.
+  /// The registry changed: a host it discovered has its state held and its
+  /// stream followed, and a host it has forgotten — its profile removed, its
+  /// daemon uninstalled — takes everything held for it with it, exactly as the
+  /// registry drops the host itself (spec D9).
   void _hostsChanged() {
-    var added = false;
+    var changed = false;
+    final listed = {for (final owner in _registry.hosts) owner.name};
+    for (final name in _states.keys.toList(growable: false)) {
+      if (listed.contains(name)) continue;
+      // The wiring goes first: a delta the bridge still sends for a host that
+      // is gone must not reach the store, or it would re-create the state this
+      // drops, and rows nothing can update again would come back.
+      _wiring.remove(name)?.dispose();
+      _states.remove(name);
+      changed = true;
+    }
     for (final owner in _registry.hosts) {
       if (!_states.containsKey(owner.name)) {
         _states[owner.name] = _HostState();
-        added = true;
+        changed = true;
       }
       _follow(owner);
     }
-    if (added) notifyListeners();
+    if (changed) notifyListeners();
   }
 
   /// Follows one host's fleet stream: its deltas, its replay gaps, and the
@@ -629,6 +641,10 @@ class HostView {
 
   /// Whether the host is answering now.
   bool get live => reach.name == 'live';
+
+  /// Whether the bridge refused this page's token for it. A refusal is not a
+  /// silence: a screen says so and offers the way to sign in.
+  bool get refused => reach.name == 'unauthorized';
 
   /// The reach in the design system's words, with its age when the host is
   /// not answering: "live", "stale 4m", "unreachable 4m", "token refused".

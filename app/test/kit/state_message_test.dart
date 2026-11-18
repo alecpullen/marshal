@@ -103,6 +103,7 @@ void main() {
         retry: StateAction('y', onTap: () {}),
       ).kind,
       const StateMessage.unavailable(host: 'h', lastSeen: '1m').kind,
+      const StateMessage.unauthorized(host: 'h').kind,
       const StateMessage.planned(name: 'n', note: 'x').kind,
     };
     expect(kinds, StateKind.values.toSet());

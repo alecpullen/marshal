@@ -121,6 +121,7 @@ issues, and so does a route the client issues that has no row.
 | POST | `/api/planners/X/requests/X` | answerPlanner |  |
 | POST | `/api/planners/X/snapshots` | createPlannerSnapshot |  |
 | GET | `/api/planners/X/snapshots/X` | plannerSnapshot |  |
+| POST | `/api/planners/X/snapshots/X/handoff` | handoffPlannerSnapshot |  |
 | DELETE | `/api/projects` | — | dropped: projects are discovered by the daemon, never created from the app |
 | GET | `/api/projects` | projects |  |
 | POST | `/api/projects` | — | dropped: projects are discovered by the daemon, never created from the app |

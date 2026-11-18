@@ -1,10 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/client/host.dart';
+import 'package:marshal_app/src/model/factory_store.dart';
 import 'package:marshal_app/src/model/inbox_model.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
+import 'package:marshal_app/src/model/source_state.dart';
 import 'package:marshal_app/src/model/thread_ref.dart';
 
+import '../support/fake_bridge.dart';
 import 'support.dart';
 
 /// The Overview is a projection (F2 decision 8): every section is a count of
@@ -188,4 +191,144 @@ void main() {
     // The host is still listed: a host with nothing on it is not nothing.
     expect(overview.capacity.single.threads, 0);
   });
+
+  test('the waiting total counts every ask while the drawn list stays capped', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        agents: [
+          for (var i = 0; i < 5; i++)
+            agent(
+              id: 'a-$i',
+              status: AgentState.agentAwaitingApproval,
+              pending: PendingRequest(
+                kind: PendingKind.pendingApproval,
+                id: 'tc-$i',
+              ),
+              lastActive: now.subtract(Duration(minutes: 10 + i)),
+            ),
+        ],
+        queue: [
+          for (var i = 0; i < 5; i++) ask('a-$i', Duration(minutes: 10 + i)),
+        ],
+      ),
+    ], now: now);
+    await fixture.refresh();
+    final inbox = InboxModel(fixture.store, client: fixture.clientFor);
+    addTearDown(inbox.dispose);
+
+    final overview = buildOverview(fixture.store, inbox);
+
+    // The design draws three cards, and the count is what exists: a label that
+    // says 3 for a queue of 5 under-reports the queue.
+    expect(overview.needsYou, hasLength(3));
+    expect(overview.needsYouTotal, 5);
+    expect(inbox.asks, hasLength(5));
+  });
+
+  test('the model carries one freshness row per host and source', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        agents: [agent(id: 'a-1')],
+        factoryItems: [factoryItem(id: 'item-1')],
+      ),
+      FixtureHost(
+        name: 'studio',
+        kind: HostKind.server,
+        projects: [project('/srv/alpha')],
+      ),
+    ], now: now);
+    await fixture.refresh();
+    final factory = FactoryStore(fixture.registry, now: fixture.clock.now);
+    addTearDown(factory.dispose);
+    await factory.refresh();
+    final inbox = InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+      factory: factory,
+    );
+    addTearDown(inbox.dispose);
+
+    final overview = buildOverview(fixture.store, inbox);
+
+    expect(
+      [
+        for (final source in overview.sources)
+          '${source.host}/${source.kind.name}',
+      ],
+      ['local/fleet', 'local/factory', 'studio/fleet', 'studio/factory'],
+    );
+    expect(
+      {for (final source in overview.sources) source.kind},
+      {SourceKind.fleet, SourceKind.factory},
+    );
+    expect(overview.sources.first.kind, SourceKind.fleet);
+    // The factory answered, so its rows are loaded, not merely present.
+    expect(
+      overview.sources
+          .where((source) => source.kind == SourceKind.factory)
+          .every((source) => source.loaded),
+      isTrue,
+    );
+  });
+
+  test(
+    'a factory read failure leaves the fleet\'s project counts intact',
+    () async {
+      final fixture = await ModelFixture.start([
+        FixtureHost(
+          name: 'local',
+          projects: [project('/home/u/alpha')],
+          agents: [
+            agent(
+              id: 'a-1',
+              status: AgentState.agentRunning,
+              lastActive: now.subtract(const Duration(minutes: 3)),
+            ),
+          ],
+        ),
+      ], now: now);
+      await fixture.refresh();
+      final factory = FactoryStore(fixture.registry, now: fixture.clock.now);
+      addTearDown(factory.dispose);
+      fixture.bridges['local']!.reply(
+        'GET',
+        '/api/factory/items',
+        const FakeReply(
+          500,
+          headers: {'content-type': 'application/json'},
+          body: '{"error":"offline"}',
+        ),
+      );
+      await factory.refresh('local');
+      expect(factory.loaded('local'), isFalse);
+      final inbox = InboxModel(
+        fixture.store,
+        client: fixture.clientFor,
+        factory: factory,
+      );
+      addTearDown(inbox.dispose);
+
+      final overview = buildOverview(fixture.store, inbox);
+
+      // One dead feed is named as itself: it does not empty the fleet's rows.
+      expect([for (final row in overview.projects) row.id], ['/home/u/alpha']);
+      expect(overview.projects.single.running, 1);
+      expect(overview.capacity.single.host, 'local');
+      expect(overview.capacity.single.threads, 1);
+
+      final factorySource = overview.sources.singleWhere(
+        (source) => source.kind == SourceKind.factory,
+      );
+      expect(factorySource.failure, 'offline');
+      expect(factorySource.healthy, isFalse);
+      // The factory never answered at all, so it holds no snapshot to be
+      // stale: it is unavailable, and says so.
+      expect(factorySource.unavailable, isTrue);
+      expect(factorySource.stale, isFalse);
+    },
+  );
 }

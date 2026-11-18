@@ -28,11 +28,13 @@ import (
 	"marshal/internal/repo"
 )
 
-// daemonClient is the part of daemon.Client that `status` needs, so a test
-// answers with a scripted daemon instead of opening a socket.
+// daemonClient is the part of daemon.Client that `status`, `pin` and
+// `restart` need, so a test answers with a scripted daemon instead of opening
+// a socket.
 type daemonClient interface {
 	Info(ctx context.Context) (daemon.Info, error)
 	Pin(ctx context.Context, root string, pinned bool) (daemon.PinState, error)
+	Restart(ctx context.Context, now bool, progress func(daemon.RestartProgress)) error
 }
 
 // The two seams a test replaces: the service manager and the socket client.
@@ -60,8 +62,9 @@ const daemonReadyPoll = 100 * time.Millisecond
 
 var daemonStartTimeout = 5 * time.Second
 
-// runDaemon implements `marshal daemon <install|start|stop|status|uninstall>`,
-// and dispatches `refresh` as well.
+// runDaemon implements
+// `marshal daemon <install|start|stop|status|restart|uninstall>`, and
+// dispatches `refresh` as well.
 //
 // It owns the user-facing half of the local daemon: it resolves the binaries
 // and paths decision 10 names, renders them into a unit through
@@ -77,7 +80,7 @@ var daemonStartTimeout = 5 * time.Second
 // stderr) so main.go's dispatch is uniform and tests can substitute streams.
 func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("marshal daemon: a subcommand is required (install|start|stop|status|join-token|token|pin|unpin|spawn|uninstall)")
+		return errors.New("marshal daemon: a subcommand is required (install|start|stop|status|restart|join-token|token|pin|unpin|spawn|uninstall)")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -87,6 +90,8 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return runDaemonService(ctx, sub, rest, stdout, stderr)
 	case "status":
 		return runDaemonStatus(ctx, rest, stdout, stderr)
+	case "restart":
+		return runDaemonRestart(ctx, rest, stdout, stderr)
 	case "join-token":
 		return runDaemonJoinToken(ctx, rest, stdin, stdout, stderr)
 	case "token":
@@ -100,7 +105,7 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	case "refresh":
 		return runDaemonRefresh(ctx, rest, stderr)
 	default:
-		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|join-token|token|pin|unpin|spawn|uninstall)", sub)
+		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|restart|join-token|token|pin|unpin|spawn|uninstall)", sub)
 	}
 }
 
@@ -686,12 +691,18 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 	fmt.Fprintf(stdout, "socket: %s (answering)\n", paths.Socket)
 	marshalVersion := daemonVersion()
 	fmt.Fprintln(stdout, daemonInfoLine(info, marshalVersion))
+	for _, line := range daemonRestartText(info.Restart, "daemon ") {
+		fmt.Fprintln(stdout, line)
+	}
 	fmt.Fprintln(stdout, daemonRefreshLine(info))
 	if line, ok := daemonJoinLine(info); ok {
 		fmt.Fprintln(stdout, line)
 	}
 	for _, child := range info.Children {
 		fmt.Fprintln(stdout, daemonChildLine(child, marshalVersion))
+		for _, line := range daemonRestartLines(child) {
+			fmt.Fprintln(stdout, line)
+		}
 		if warning := strings.TrimSpace(child.EnvWarning); warning != "" {
 			fmt.Fprintf(stdout, "  environment: %s\n", warning)
 		}
@@ -700,6 +711,121 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stdout, line)
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// restart
+// ---------------------------------------------------------------------------
+
+// runDaemonRestart implements `marshal daemon restart [--now]`: it asks the
+// daemon to re-execute its own binary, says what holds the restart while the
+// daemon sweeps, and reports the version it came back on.
+//
+// The request is the daemon's to grant or refuse, so this command adds no
+// policy of its own: without --now the daemon waits for idle, and the waiting
+// lines are its account of what it is waiting for. ctrl+c withdraws the
+// request — the command returns the context's error and the daemon stops
+// waiting.
+//
+// A daemon that does not answer has no restart to ask for, so the command does
+// what `start` does and loads the service instead.
+func runDaemonRestart(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("daemon restart", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	now := fs.Bool("now", false, "restart now, without waiting for idle")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if rest := fs.Args(); len(rest) != 0 {
+		return fmt.Errorf("marshal daemon restart: unexpected argument %q", rest[0])
+	}
+
+	home, err := daemonHome()
+	if err != nil {
+		return err
+	}
+	paths := daemon.PathsFor(home)
+	socket := paths.Socket
+
+	infoCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
+	first, infoErr := daemonClientFor(socket).Info(infoCtx)
+	cancel()
+	if infoErr != nil {
+		// Nothing answered, so there is no daemon to ask: start it, exactly
+		// as `start` does, rather than reporting a restart of nothing.
+		m, err := daemonManagerFor(home)
+		if err != nil {
+			return err
+		}
+		if err := m.Start(ctx); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, "started")
+		daemonReadyNote(ctx, paths, stdout)
+		return nil
+	}
+
+	// A waiting line repeats on every sweep, so only a change in it is news;
+	// the restarting line is the one that starts the clock for the poll below.
+	lastWaiting := ""
+	var restartedAt time.Time
+	err = daemonClientFor(socket).Restart(ctx, *now, func(step daemon.RestartProgress) {
+		if len(step.WaitingFor) != 0 {
+			line := "waiting for " + strings.Join(step.WaitingFor, "; ")
+			if line != lastWaiting {
+				lastWaiting = line
+				fmt.Fprintln(stdout, line)
+			}
+			return
+		}
+		if step.Restarting {
+			restartedAt = time.Now()
+			fmt.Fprintf(stdout, "restarting on %s\n", step.Version)
+		}
+	})
+	if err != nil {
+		// ctrl+c ends the context, which withdraws the request: the
+		// context's error is the answer, not a daemon failure.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("marshal daemon restart: %w", err)
+	}
+	if restartedAt.IsZero() {
+		restartedAt = time.Now()
+	}
+
+	// The daemon keeps its process ID, so a new start time is what says the
+	// re-execution happened; the wait is longer than a fresh start's because
+	// a restart first lets every child finish.
+	if info, ok := daemonWaitsForRestart(ctx, socket, first.StartedAt, restartedAt.Add(daemonStartTimeout+30*time.Second)); ok {
+		fmt.Fprintf(stdout, "restarted: version %s\n", info.Version)
+		return nil
+	}
+	fmt.Fprintf(stdout, "not answering yet; its log is %s\n", paths.Log)
+	return nil
+}
+
+// daemonWaitsForRestart polls until the daemon reports a start time later
+// than before — the one thing a re-execution changes — and returns that
+// answer. It reports false when the deadline passes or the context ends.
+func daemonWaitsForRestart(ctx context.Context, socket string, restartedFrom int64, deadline time.Time) (daemon.Info, bool) {
+	for {
+		infoCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
+		info, err := daemonClientFor(socket).Info(infoCtx)
+		cancel()
+		if err == nil && info.StartedAt > restartedFrom {
+			return info, true
+		}
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			return daemon.Info{}, false
+		}
+		select {
+		case <-ctx.Done():
+			return daemon.Info{}, false
+		case <-time.After(daemonReadyPoll):
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -866,6 +992,39 @@ func daemonChildLine(child daemon.ChildInfo, marshalVersion string) string {
 		line += ", pinned"
 	}
 	return line
+}
+
+// daemonRestartText renders one held restart with prefix in front of each
+// line: what the daemon is holding it for and, while something holds it, what
+// it waits for. A restart that was tried and refused says so on a line of its
+// own — the reasons are the same, but the build the daemon would swap in
+// failed, which is the state a reader most needs told.
+//
+// The reasons are the pending line's subject, so a restart held with none
+// (only a waiter, or only a refusal) prints no bare `restart pending: `: the
+// line says what it has and nothing more.
+func daemonRestartText(restart *daemon.DaemonRestart, prefix string) []string {
+	if restart == nil {
+		return nil
+	}
+	var lines []string
+	if len(restart.Reasons) != 0 {
+		line := prefix + "restart pending: " + strings.Join(restart.Reasons, ", ")
+		if waiting := restart.WaitingFor; waiting != "" {
+			line += ", waiting for " + waiting
+		}
+		lines = append(lines, line)
+	}
+	if refused := restart.Refused; refused != "" {
+		lines = append(lines, prefix+"restart refused: "+refused)
+	}
+	return lines
+}
+
+// daemonRestartLines are the restart lines under a child's, indented so they
+// read as that child's.
+func daemonRestartLines(child daemon.ChildInfo) []string {
+	return daemonRestartText(child.Restart, "  ")
 }
 
 // daemonPinnedLines are the `pinned <root>: not running` lines, one per

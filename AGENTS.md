@@ -47,10 +47,10 @@ recreate the services from scratch are documented in
 [`docs/dev-loop.md`](docs/dev-loop.md).
 
 `marshal` also dispatches subcommands: `acp` (headless JSON-RPC server),
-`attach` (reattach to a daemon session), `daemon` (install and drive the local
-daemon), `fleet` (the fleet screen on the local daemon), `history`, `plugin`,
-`snapshots`, `calibrate-tokens`. Top-level flags are `--trust`, `--embedded`
-(run in this process, without the daemon) and `--version`.
+`attach` (reattach to a daemon session), `daemon` (install, drive and restart
+the local daemon), `fleet` (the fleet screen on the local daemon), `history`,
+`plugin`, `snapshots`, `calibrate-tokens`. Top-level flags are `--trust`,
+`--embedded` (run in this process, without the daemon) and `--version`.
 
 ### Web control plane
 
@@ -88,7 +88,11 @@ its client.
 host processes only, and no container machinery. Each project runs its own
 `marshal acp --viewers` child, started on the first attach and stopped 30s
 after its last session closes; `POST /api/projects/attach` upgrades a marshal
-client onto that child's viewer socket, relaying its frames unchanged. Plain
+client onto that child's viewer socket, relaying its frames unchanged. A
+project child whose `marshal` binary or config changed is restarted by the
+daemon at its next idle moment, and its screens reconnect. A replaced
+`webbridge` re-executes itself at its next idle moment, keeping its process
+ID, and `marshal daemon restart [--now]` asks for that restart at once. Plain
 `marshal` starts its session on that daemon when one answers, the quit key and
 `/detach` leave it running, and `marshal attach [id]` comes back to it.
 A session screen whose connection closes reconnects to its session for up to a
@@ -122,6 +126,8 @@ elsewhere, over TLS. The profiles live in `fleet.toml` in the user's config
 directory (`~/.config/marshal/fleet.toml` by default), which must be private —
 `0600`, owned by the user — and holds no token: a server's token comes from its
 `token_cmd`, or from the keychain, where `marshal fleet login NAME` stores it.
+`marshal fleet add NAME URL` and `marshal fleet remove NAME` write the file,
+keeping its comments.
 Each `[servers.<name>]` table names an `https://` origin (or a loopback
 `http://` one) and may set `ca_file` and `notify`; `[local] notify` turns
 notifications off for the local daemon. The bridge serves the agent attach on

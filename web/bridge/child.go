@@ -25,8 +25,9 @@ import (
 // is a var so tests can shrink it, as restartBackoff is.
 var maxFrameBytes = 64 << 20
 
-// stopGrace is how long Stop waits between SIGTERM and SIGKILL.
-const stopGrace = 2 * time.Second
+// stopGrace is how long Stop and Recycle wait between SIGTERM and SIGKILL.
+// It is a var so tests can shorten the escalation, as restartBackoff is.
+var stopGrace = 2 * time.Second
 
 // restartBackoff is the delay before respawning an unexpectedly exited
 // child, so a crash-looping binary does not spin the CPU. It is a var so
@@ -243,6 +244,53 @@ func (c *Child) Stop() {
 	kill := time.AfterFunc(stopGrace, c.killCurrent)
 	defer kill.Stop()
 	<-c.done
+}
+
+// Recycle ends the current generation as Stop does, without ending
+// supervision: supervise respawns it from the binary on disk and OnRestart
+// runs. It returns once that generation's output has closed. It fails when the
+// Child is not running or is stopping.
+func (c *Child) Recycle() error {
+	c.mu.Lock()
+	if !c.started {
+		c.mu.Unlock()
+		return errors.New("bridge: cannot recycle a child that is not running")
+	}
+	if c.stopping {
+		c.mu.Unlock()
+		return errors.New("bridge: cannot recycle a child that is stopping")
+	}
+	stdin := c.stdin
+	readDone := c.readDone
+	c.mu.Unlock()
+
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	if err := c.signalCurrentResult(syscall.SIGTERM); err != nil {
+		return err
+	}
+
+	// Wait for this generation's output to close, escalating to SIGKILL only
+	// if it outlives the grace period. The generation is reaped and
+	// respawned by supervise; Recycle never waits on that, only on this
+	// generation's own pipe.
+	select {
+	case <-readDone:
+		return nil
+	case <-time.After(stopGrace):
+	}
+	// The non-blocking check keeps the kill off a generation that exited on
+	// the signal in the same moment the grace period expired: by then
+	// supervise may already be respawning it.
+	select {
+	case <-readDone:
+		return nil
+	default:
+		c.killCurrent()
+	}
+	<-readDone
+	return nil
 }
 
 // stopConfirmed disables supervision and waits for the generation to exit.

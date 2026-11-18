@@ -216,6 +216,13 @@ func (s *Server) SocketHandler() http.Handler {
 			s.pinProject(w, r)
 			return
 		}
+		if r.URL.Path == daemonRestartPath {
+			// Restarting the daemon ends every viewer and re-executes the
+			// bridge, so it is the socket's own operation: the network
+			// listener answers it 404 (P6 B5).
+			s.restartDaemon(w, r)
+			return
+		}
 		if r.URL.Path == marshalEnrollPath {
 			// Enrollment is the socket's own operation: it is reached only
 			// where the owner is the caller, never on the network listener,

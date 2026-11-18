@@ -47,6 +47,9 @@ func (f *Fleet) frameCap() int {
 	return maxFrameBytes
 }
 
+// restartingMethod is acpwire.MethodRestarting; web/ may not import it.
+const restartingMethod = "marshal/restarting"
+
 // relay kinds a watched request can be.
 const (
 	watchReplacement = iota
@@ -91,6 +94,9 @@ func (f *Fleet) relay(end relayEnd, sessionID, agentID string, client net.Conn, 
 		cap:     f.frameCap(),
 	}
 	logAttach("attached", end.root, sessionID, "requested")
+	// Tracked before either pump starts, so a restart that is announced while
+	// this viewer is live reaches it.
+	f.trackRelay(r)
 
 	done := make(chan string, 2)
 	go func() { done <- r.pumpClient(buffered) }()
@@ -137,6 +143,85 @@ type relay struct {
 	stopOnce sync.Once
 }
 
+// trackRelay records a running relay under the registry it counts its viewer
+// on, so that a child's restart announcement reaches exactly that child's
+// viewers.
+func (f *Fleet) trackRelay(r *relay) {
+	if r.end.reg == nil {
+		return
+	}
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	if f.relays == nil {
+		f.relays = make(map[*Registry]map[*relay]struct{})
+	}
+	set := f.relays[r.end.reg]
+	if set == nil {
+		set = make(map[*relay]struct{})
+		f.relays[r.end.reg] = set
+	}
+	set[r] = struct{}{}
+}
+
+// untrackRelay removes a finished relay. A registry whose set empties is
+// deleted from the map: a child with no viewer has nothing to announce to.
+func (f *Fleet) untrackRelay(r *relay) {
+	if r.end.reg == nil {
+		return
+	}
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	set := f.relays[r.end.reg]
+	delete(set, r)
+	if len(set) == 0 {
+		delete(f.relays, r.end.reg)
+	}
+}
+
+// announceRestart writes marshal/restarting to every live relay counted on
+// reg, and answers how many it reached.
+//
+// The set is copied under relayMu and the lock released before any client is
+// written to: one slow client must not hold up another child's viewers. A
+// relay whose write fails is skipped rather than waited on, because its pumps
+// will end it.
+func (f *Fleet) announceRestart(reg *Registry, reason, version string) int {
+	f.relayMu.Lock()
+	live := make([]*relay, 0, len(f.relays[reg]))
+	for r := range f.relays[reg] {
+		live = append(live, r)
+	}
+	f.relayMu.Unlock()
+
+	params := map[string]any{"reason": reason}
+	// The agent's own frame omits an empty version, so this one does too.
+	if version != "" {
+		params["version"] = version
+	}
+	// Marshalled from maps, so the reason is quoted; encoding/json sorts a
+	// map's keys, so the frame is the same bytes every time.
+	frame, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  restartingMethod,
+		"params":  params,
+	})
+	if err != nil {
+		return 0
+	}
+	frame = append(frame, '\n')
+
+	reached := 0
+	for _, r := range live {
+		r.clientMu.Lock()
+		_, err := r.client.Write(frame)
+		r.clientMu.Unlock()
+		if err == nil {
+			reached++
+		}
+	}
+	return reached
+}
+
 // currentSession is the session the relay follows right now: a replacement
 // moves it.
 func (r *relay) currentSession() string {
@@ -163,6 +248,7 @@ func (r *relay) stop() {
 // the close that ended the relay left the project child with no session. An
 // own child has no linger to arm: end.linger is nil.
 func (r *relay) finish(reason string) {
+	r.fleet.untrackRelay(r)
 	id := r.currentSession()
 	r.end.reg.detachViewer(id)
 	r.end.reg.touch(id)

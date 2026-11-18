@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../../model/expected_checks.dart';
 import '../../model/handoff_model.dart';
 import '../kit/kit.dart';
 
@@ -22,8 +23,8 @@ Sheet handoffSheet(BuildContext context, HandoffModel model) => Sheet(
   child: HandoffForm(model: model),
 );
 
-/// The sheet's one primary action: Approve, disabled while the model says
-/// what stops it, and saying that in its tooltip.
+/// The sheet's one primary action: creating the factory draft, disabled while
+/// the model says what stops it, and saying that in its tooltip.
 class _ApproveAction extends StatelessWidget {
   const _ApproveAction({required this.model});
 
@@ -38,7 +39,9 @@ class _ApproveAction extends StatelessWidget {
   Widget _build(BuildContext context) {
     final blocker = model.blockers.isEmpty ? null : model.blockers.first;
     final approve = Btn.primary(
-      'Approve and start',
+      // Creating a factory item is not starting work: the item runs when it is
+      // approved in the factory, so the label says what the request does.
+      'Create the factory draft',
       onTap: blocker != null
           ? null
           : () async {
@@ -78,9 +81,14 @@ class _HandoffFormState extends State<HandoffForm> {
     ),
   };
 
+  /// The text a field's controller holds.
+  ///
+  /// The expected checks are shown as the person typed them — text the parser
+  /// refuses included — rather than as the checks that happened to parse.
   String _text(String field) {
+    if (field == HandoffField.checks) return widget.model.checksText;
     final value = widget.model.valueOf(field);
-    if (value is List<String>) return value.join(', ');
+    if (value is List<ExpectedCheck>) return formatExpectedChecks(value);
     return '$value';
   }
 
@@ -132,11 +140,13 @@ class _HandoffFormState extends State<HandoffForm> {
         const SizedBox(height: Space.s4),
         Text(_planSummary(model), style: e.small.tint(e.muted)),
         const SizedBox(height: Space.s16),
+        _evidence(context, model),
+        const SizedBox(height: Space.s16),
         Box.flush(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              for (final (index, field) in _fields.entries.indexed)
+              for (final (index, field) in _fields(context).entries.indexed)
                 _row(context, field.key, field.value, first: index == 0),
             ],
           ),
@@ -152,7 +162,7 @@ class _HandoffFormState extends State<HandoffForm> {
             ),
         ],
         const SizedBox(height: Space.s12),
-        Label('What approving authorises'),
+        Label('What creating the draft does'),
         const SizedBox(height: Space.s4),
         Text(model.consequence, style: e.body),
         if (model.failure != null) ...[
@@ -163,9 +173,140 @@ class _HandoffFormState extends State<HandoffForm> {
     );
   }
 
+  /// What the capture froze, or the plan an unbound review will send: the
+  /// evidence the person is reviewing, taken from the capture alone (the sheet
+  /// edits no evidence and selects no files).
+  Widget _evidence(BuildContext context, HandoffModel model) {
+    final e = Ember.of(context);
+    final snapshot = model.reviewedSnapshot;
+    final plan = model.planToSend.trim();
+    final spec = model.specToSend.trim();
+    // The text that travels, shown rather than described: a sentence promising
+    // "the plan text shown here" is false if the plan text is never drawn.
+    final documents = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (plan.isEmpty)
+          Text('No plan text to send.', style: e.small.tint(e.muted))
+        else
+          OutputBlock(text: plan),
+        if (spec.isNotEmpty) ...[
+          const SizedBox(height: Space.s8),
+          Text('Specification', style: e.bodyStrong),
+          const SizedBox(height: Space.s4),
+          OutputBlock(text: spec),
+        ],
+      ],
+    );
+    if (!model.boundToSnapshot || snapshot == null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Label('What will be sent'),
+          const SizedBox(height: Space.s4),
+          Text(
+            'No capture is bound to this review, so this plan text is what the '
+            'factory is sent.',
+            style: e.small.tint(e.muted),
+          ),
+          const SizedBox(height: Space.s8),
+          documents,
+        ],
+      );
+    }
+    final files = snapshot.files;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Label('The frozen capture', count: files.isEmpty ? null : files.length),
+        const SizedBox(height: Space.s4),
+        Text(
+          'Snapshot ${_short(snapshot.id)} · digest ${_short(snapshot.sha256)}',
+          style: e.monoSmall.tint(e.muted),
+        ),
+        const SizedBox(height: Space.s2),
+        Text(
+          'Base commit ${_short(snapshot.baseCommit)}',
+          style: e.monoSmall.tint(e.muted),
+        ),
+        const SizedBox(height: Space.s8),
+        Label('The plan'),
+        const SizedBox(height: Space.s4),
+        documents,
+        const SizedBox(height: Space.s8),
+        if (files.isEmpty)
+          Text(
+            'No files selected: this capture froze the documents only.',
+            style: e.small.tint(e.muted),
+          )
+        else
+          for (final file in files) ...[
+            Padding(
+              padding: const EdgeInsets.only(bottom: Space.s6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // A path is an identifier, so it is set in mono (§3).
+                  Text(file.path, style: e.monoSmall),
+                  const SizedBox(height: Space.s2),
+                  Text(
+                    _operationWords(file.operation),
+                    style: e.small.tint(e.muted),
+                  ),
+                  const SizedBox(height: Space.s4),
+                  OutputBlock(
+                    text: file.diff.isEmpty
+                        ? 'No difference recorded for this file.'
+                        : file.diff,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        if (snapshot.rejected.isNotEmpty) ...[
+          const SizedBox(height: Space.s6),
+          Label('Not captured', count: snapshot.rejected.length),
+          const SizedBox(height: Space.s4),
+          for (final rejected in snapshot.rejected)
+            Padding(
+              padding: const EdgeInsets.only(bottom: Space.s4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(rejected.path, style: e.monoSmall),
+                  const SizedBox(height: Space.s2),
+                  Text(rejected.reason, style: e.small.tint(e.muted)),
+                ],
+              ),
+            ),
+        ],
+        const SizedBox(height: Space.s6),
+        Text(
+          'The draft is built from these frozen bytes: the bridge rewrites the '
+          'plan and the specification from the capture and checks every file '
+          'against its recorded hash. Changing the evidence needs a fresh '
+          'capture.',
+          style: e.small.tint(e.muted),
+        ),
+      ],
+    );
+  }
+
+  /// A captured file's operation in the sheet's words.
+  static String _operationWords(String operation) => switch (operation) {
+    'create' => 'Created',
+    'modify' => 'Modified',
+    'delete' => 'Deleted',
+    _ => operation.isEmpty ? 'Captured' : operation,
+  };
+
+  /// An id, a digest or a commit, short enough for one line.
+  static String _short(String value) =>
+      value.length <= 8 ? value : value.substring(0, 8);
+
   /// The fields the sheet states itself: the scope is drawn above, and the
   /// environment and authority are menus rather than typed values.
-  Map<String, Widget> get _fields => {
+  Map<String, Widget> _fields(BuildContext context) => {
     HandoffField.repository: _field(
       HandoffField.repository,
       hint: 'The repository the work lands in',
@@ -182,16 +323,58 @@ class _HandoffFormState extends State<HandoffForm> {
       HandoffField.reviewer,
       hint: 'The project default',
     ),
-    HandoffField.checks: _field(
-      HandoffField.checks,
-      hint: 'Comma separated, e.g. build, unit',
-    ),
+    HandoffField.checks: _checksField(context),
     HandoffField.rounds: _field(HandoffField.rounds, hint: '3'),
     HandoffField.authority: _menu(
       HandoffField.authority,
       HandoffAuthority.options,
     ),
   };
+
+  /// The expected checks: the raw lines the person types, the parser's own
+  /// words under text it refuses, and the one control that acknowledges the
+  /// work needs no check at all. Text the parser refuses is kept as typed,
+  /// exactly as the project editor keeps it.
+  Widget _checksField(BuildContext context) {
+    final e = Ember.of(context);
+    final model = widget.model;
+    final acknowledged = model.noRequiredCIAcknowledged;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // The checks are a document, one per line, so this is the kit's
+        // multiline field in `mono` — the same field the project editor's raw
+        // mode uses — rather than a single line that would join them.
+        Field.multiline(
+          label: HandoffField.checks,
+          controller: _controllers[HandoffField.checks],
+          hint: 'One per line, e.g. check_run:build:42',
+          mono: true,
+          enabled: !acknowledged,
+          error: model.checksError,
+          onChanged: model.setChecksText,
+        ),
+        const SizedBox(height: Space.s8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Btn(
+            acknowledged
+                ? 'Withdraw the acknowledgement'
+                : 'Acknowledge no check is required',
+            onTap: () => model.setNoRequiredCIAcknowledged(!acknowledged),
+          ),
+        ),
+        if (acknowledged) ...[
+          const SizedBox(height: Space.s4),
+          Text(
+            'This work needs no CI check to pass; acknowledging clears the '
+            'stated checks.',
+            style: e.small.tint(e.muted),
+          ),
+        ],
+      ],
+    );
+  }
 
   /// One row of the sheet: the field's name, its control, and where its value
   /// came from.
@@ -263,14 +446,13 @@ class _HandoffFormState extends State<HandoffForm> {
     );
   }
 
-  /// The value a typed field means: the round allowance is a number, the
-  /// expected checks are a list, and everything else is its own text.
+  /// The value a typed field means: the round allowance is a number, and
+  /// everything else is its own text.
+  ///
+  /// The expected checks are not here: [_checksField] types them through
+  /// [HandoffModel.setChecksText], which keeps the text as typed.
   Object _valueOf(String field, String text) => switch (field) {
     HandoffField.rounds => int.tryParse(text.trim()) ?? 0,
-    HandoffField.checks => [
-      for (final name in text.split(','))
-        if (name.trim().isNotEmpty) name.trim(),
-    ],
     _ => text.trim(),
   };
 

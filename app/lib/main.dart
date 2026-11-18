@@ -29,6 +29,7 @@ import 'src/model/models_model.dart';
 import 'src/model/network_model.dart';
 import 'src/model/notifications_model.dart';
 import 'src/model/new_work_model.dart';
+import 'src/model/per_host.dart';
 import 'src/model/planning_model.dart';
 import 'src/model/project_model.dart';
 import 'src/model/pulls_model.dart';
@@ -38,6 +39,7 @@ import 'src/model/route_translation.dart';
 import 'src/model/schedules_model.dart';
 import 'src/model/secrets_model.dart';
 import 'src/model/section_model.dart';
+import 'src/model/signals_store.dart';
 import 'src/model/stack_store.dart';
 import 'src/model/usage_model.dart';
 import 'src/model/watches_model.dart';
@@ -90,12 +92,19 @@ Future<void> main() async {
   // This window's appearance and transcript density: Settings' General
   // section sets them, and the sections F7 built read them back.
   final preferences = GeneralPreferences();
+  // Every host's tripped watches, blocked requests and held drafts (spec D4).
+  // It is built after the inbox so an answer can ask for a re-read of the host
+  // it answered on, and its reads are what the Overview's card and the inbox's
+  // network and draft asks come from.
+  late final SignalsStore signals;
   final inbox = InboxModel(
     store,
     client: (name) =>
         hosts.hosts.firstWhere((host) => host.name == name).client,
     factory: factory,
+    onAnswered: (host) => signals.refresh(host),
   );
+  signals = SignalsStore(hosts, inbox: inbox, now: () => DateTime.now());
   // The pull requests read the same hosts, follow the same fleet streams, and
   // post through the same clients (F5).
   final pulls = PullsModel(
@@ -104,11 +113,13 @@ Future<void> main() async {
         hosts.hosts.firstWhere((host) => host.name == name).client,
   );
   // Automations, Library and Settings (F7): their sections read one bridge,
-  // so they are built from the first host the fleet finds.
+  // so each keeps one set of models per host, built when a person first opens
+  // that host's place.
   final sections = _Sections(
     hosts: hosts,
     store: store,
     preferences: preferences,
+    signals: signals,
   );
   runApp(
     EmberApp(
@@ -127,6 +138,7 @@ Future<void> main() async {
           automationsFor: sections.automations,
           libraryFor: sections.library,
           settingsFor: sections.settings,
+          signals: signals,
           // A thread place opens its own session's transcript on the client
           // that reaches its host (F3): the same client the inbox answers with.
           threadStore: (thread) => StackStore(
@@ -178,9 +190,15 @@ Future<void> main() async {
           // plan off. A project that cannot be read still opens the sheet on
           // the host alone, because the review must open rather than fail: its
           // fields then say the project states them not, and the person
-          // chooses the rest. Approving creates the item through the one store
+          // chooses the rest. The action creates the item through the one store
           // that reads the factory.
-          handoffFor: (thread, plan, spec) async {
+          //
+          // A review opened from a planning thread brings the capture it was
+          // reviewed from: the sheet shows that evidence, and the draft is
+          // posted through the snapshot's handoff route, so the bridge's frozen
+          // bytes and verified hashes are what the item is built from. The
+          // new-work dialog passes no capture and keeps the create route.
+          handoffFor: (thread, plan, spec, {plannerID, snapshot}) async {
             final client = hosts.hosts
                 .firstWhere((owner) => owner.name == thread.host)
                 .client;
@@ -195,10 +213,10 @@ Future<void> main() async {
               // The sheet opens on the host alone, stating what the project
               // does not; a settings read must not leave the plan unhanded.
             }
-            // The version this review is bound to: the combined one the bridge
-            // composes, so a settings change made while the review is open is
-            // noticed at approval rather than frozen unread. A read that fails
-            // leaves the review unbound, never blocked.
+            // The version this review is bound to: the combined one the
+            // bridge composes, so a settings change made while the review
+            // is open is noticed at approval rather than frozen unread. A
+            // read that fails leaves the review unbound, never blocked.
             String? version;
             try {
               version = await client.factorySettingsVersion(thread.project);
@@ -215,6 +233,10 @@ Future<void> main() async {
               readSettingsVersion: (root) =>
                   client.factorySettingsVersion(root),
               create: (draft) => factory.create(thread.host, draft),
+              reviewedSnapshot: snapshot,
+              plannerID: plannerID,
+              handoffSnapshot: (planner, snapshotID, request) =>
+                  factory.handoff(thread.host, planner, snapshotID, request),
             );
           },
           // Answers a plan run's question, for a run opened from a project
@@ -258,6 +280,7 @@ Future<void> main() async {
     ),
   );
   factory.start();
+  signals.start();
   await startTray();
 }
 
@@ -279,51 +302,110 @@ StartPlace startPlaceFromPage(Uri page) {
   );
 }
 
-/// The three sectioned places F7 built, built for the host that answers.
+/// The three sectioned places F7 built, each built for the host that answers.
 ///
-/// Each place reads one bridge, so it reads the first host the fleet found —
-/// the local daemon where there is one. A place is built the first time a
-/// person opens it and kept for the life of the window: its rows are read
-/// once, and an edit in progress survives moving around the Studio.
+/// Each place reads one bridge, so it reads the host the Studio's switcher
+/// names — the host [placeHost] resolves (spec D1). A place's models are built
+/// the first time a person opens that host's place and kept for the life of the
+/// window: its rows are read once, and an edit in progress survives moving
+/// around the Studio. Two hosts are two sets of models, holding that host's
+/// rows (spec D2: a section merges nothing across hosts).
 ///
 /// The fleet's own host list comes from the store, so the Hosts section is
-/// the one section that is not a bridge read.
+/// the one section that is not a bridge read — and it reads the same store
+/// under every host, as General reads this window's preferences.
 class _Sections {
   _Sections({
     required this.hosts,
     required this.store,
     required this.preferences,
-  });
+    required this.signals,
+  }) {
+    _automations = PerHost<_Automations>(
+      (host) => _Automations(
+        _clientFor(host)!,
+        project: _projectFor(host),
+        host: host,
+        now: store.now,
+        // A write in a section is a change the host's signals read: the
+        // Overview's card and the inbox say so again (spec D4).
+        onWrote: () => signals.refresh(host),
+      ),
+      dispose: (models) => models.dispose(),
+    );
+    _library = PerHost<_Library>(
+      (host) => _Library(
+        _clientFor(host)!,
+        project: _projectFor(host),
+        projects: [
+          for (final project in store.projects(host: host)) project.root,
+        ],
+      ),
+      dispose: (models) => models.dispose(),
+    );
+    _settings = PerHost<_Settings>(
+      (host) =>
+          _Settings(_clientFor(host)!, store: store, preferences: preferences),
+      dispose: (models) => models.dispose(),
+    );
+    // A host whose profile was removed is forgotten from all three (spec D9).
+    hosts.addListener(_hostsChanged);
+    _hostsChanged();
+  }
 
   final HostRegistry hosts;
   final FleetStore store;
   final GeneralPreferences preferences;
 
-  _Automations? _automations;
-  _Library? _library;
-  _Settings? _settings;
+  /// Every host's signals, re-read whenever an Automations section writes:
+  /// the Overview's card and the inbox's asks are that read's (spec D4).
+  final SignalsStore signals;
 
-  /// The host whose bridge these places read, or null before discovery has
-  /// answered.
-  Host? get _host => hosts.hosts.isEmpty ? null : hosts.hosts.first;
+  late final PerHost<_Automations> _automations;
+  late final PerHost<_Library> _library;
+  late final PerHost<_Settings> _settings;
 
-  /// The project a section that is scoped to one starts at: the host's first,
-  /// in the order the fleet lists them.
-  String get _project {
-    final host = _host;
-    if (host == null) return '';
-    final projects = store.projects(host: host.name);
+  /// The hosts the three caches were last built for: the ones the registry
+  /// listed when it last changed.
+  final _known = <String>{};
+
+  /// The registry changed: a host it no longer lists is forgotten from all
+  /// three caches, so its models are disposed and a host of that name, added
+  /// again, is built afresh (spec D9).
+  void _hostsChanged() {
+    final listed = {for (final host in hosts.hosts) host.name};
+    for (final name in _known.difference(listed)) {
+      _automations.forget(name);
+      _library.forget(name);
+      _settings.forget(name);
+    }
+    _known
+      ..clear()
+      ..addAll(listed);
+  }
+
+  /// The client that reaches [host], or null when this fleet no longer lists
+  /// it: a host can go away between the shell's build and this call.
+  BridgeClient? _clientFor(String host) {
+    for (final owner in hosts.hosts) {
+      if (owner.name == host) return owner.client;
+    }
+    return null;
+  }
+
+  /// The project a section that is scoped to one starts at: [host]'s first, in
+  /// the order the fleet lists them, and none where it lists none.
+  String _projectFor(String host) {
+    final projects = store.projects(host: host);
     return projects.isEmpty ? '' : projects.first.root;
   }
 
-  Widget? automations(int section, StateKind? state) {
-    final host = _host;
-    if (host == null) return null;
-    final models = _automations ??= _Automations(
-      host.client,
-      project: _project,
-      now: store.now,
-    );
+  /// The three places, each built for [host] — the host the Studio's switcher
+  /// names, or the first live host under "All hosts" (spec D1).
+  Widget? automations(String host, int section, StateKind? state) {
+    final client = _clientFor(host);
+    if (client == null) return null;
+    final models = _automations.of(host);
     return AutomationsPlace(
       bots: (tabs, state) => models.project.isEmpty
           ? PlannedTab(
@@ -345,17 +427,10 @@ class _Sections {
     );
   }
 
-  Widget? library(int section, StateKind? state) {
-    final host = _host;
-    if (host == null) return null;
-    final models = _library ??= _Library(
-      host.client,
-      project: _project,
-      projects: [
-        for (final host in hosts.hosts)
-          for (final project in store.projects(host: host.name)) project.root,
-      ],
-    );
+  Widget? library(String host, int section, StateKind? state) {
+    final client = _clientFor(host);
+    if (client == null) return null;
+    final models = _library.of(host);
     return LibraryPlace(
       skills: (tabs, state) =>
           SkillsTab(model: models.skills, tabs: tabs, state: state),
@@ -376,14 +451,10 @@ class _Sections {
     );
   }
 
-  Widget? settings(int section, StateKind? state) {
-    final host = _host;
-    if (host == null) return null;
-    final models = _settings ??= _Settings(
-      host.client,
-      store: store,
-      preferences: preferences,
-    );
+  Widget? settings(String host, int section, StateKind? state) {
+    final client = _clientFor(host);
+    if (client == null) return null;
+    final models = _settings.of(host);
     return SettingsPlace(
       preferences: preferences,
       index: section,
@@ -398,7 +469,7 @@ class _Sections {
             model: EnvironmentModel(
               name: row.name,
               source: models.environments.loadedOf(row.name)?.source ?? '',
-              client: host.client,
+              client: client,
               published: row.version,
             ),
             state: state,
@@ -430,11 +501,13 @@ class _Automations {
   _Automations(
     BridgeClient client, {
     required String project,
+    required String host,
     required DateTime now,
+    void Function()? onWrote,
   }) : project = project,
-       bots = BotsModel(client, project: project, now: now),
+       bots = BotsModel(client, project: project, now: now, onWrote: onWrote),
        schedules = SchedulesModel(client),
-       watches = WatchesModel(client, now: now),
+       watches = WatchesModel(client, host: host, now: now, onWrote: onWrote),
        recipes = RecipesModel(client) {
     for (final model in <SectionModel<Object>>[
       bots,
@@ -451,6 +524,18 @@ class _Automations {
   final SchedulesModel schedules;
   final WatchesModel watches;
   final RecipesModel recipes;
+
+  /// Disposes the four models this set built, and nothing that is not its own.
+  void dispose() {
+    for (final model in <SectionModel<Object>>[
+      bots,
+      schedules,
+      watches,
+      recipes,
+    ]) {
+      model.dispose();
+    }
+  }
 }
 
 /// Library's four sections' models (F7 decision 5), read once.
@@ -478,6 +563,18 @@ class _Library {
   final PluginsModel plugins;
   final ClientsModel clients;
   final MemoryModel memory;
+
+  /// Disposes the four models this set built, and nothing that is not its own.
+  void dispose() {
+    for (final model in <SectionModel<Object>>[
+      skills,
+      plugins,
+      clients,
+      memory,
+    ]) {
+      model.dispose();
+    }
+  }
 }
 
 /// Settings' ten sections' models (F7 decision 7), read once.
@@ -528,4 +625,23 @@ class _Settings {
   final NotificationsModel notifications;
   final AccessModel access;
   final GeneralModel general;
+
+  /// Disposes the ten models this set built, and nothing that is not its own:
+  /// the store, the preferences and the host registry are the window's.
+  void dispose() {
+    for (final model in <SectionModel<Object>>[
+      hosts,
+      environments,
+      connections,
+      models,
+      secrets,
+      network,
+      usage,
+      notifications,
+      access,
+      general,
+    ]) {
+      model.dispose();
+    }
+  }
 }

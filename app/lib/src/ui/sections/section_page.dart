@@ -144,6 +144,8 @@ class SectionPage<T> extends StatelessWidget {
             retry: retry,
           ),
         ];
+      case StateKind.unauthorized:
+        return const [StateMessage.unauthorized()];
       case StateKind.unavailable:
         return [
           StateMessage.unavailable(

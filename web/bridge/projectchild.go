@@ -44,12 +44,26 @@ type projectChild struct {
 	// caps are the capabilities its initialize advertised (P4 D10). They
 	// belong to the generation that answered, so every handshake sets them
 	// again.
-	// mu guards ready, linger, envWarning and caps.
+	// mu guards ready, linger, envWarning, caps, restart, refused, refusedText
+	// and recycling.
 	mu         sync.Mutex
 	ready      bool
 	linger     func() // stops the armed linger timer; nil when none
 	envWarning string
 	caps       map[string]bool
+	// restart is the last sweep's view of why this child is stale and what
+	// holds its restart back; nil when it is current or unknown (P6 B4).
+	restart *DaemonRestart
+	// refused is the marshal binary whose --version check failed, so a
+	// restart that would spawn it is refused until the file changes
+	// (decision 8). refusedText is what that build said, kept beside the file
+	// it describes so the refusal still reads the same after a sweep that saw
+	// the child current.
+	refused     os.FileInfo
+	refusedText string
+	// recycling is open while a restart is in flight: from before the old
+	// process ends until the new generation's handshake is done (decision 4).
+	recycling chan struct{}
 
 	// stopMu guards stopping, the marker a resolver waits on so no
 	// replacement child is started while the previous process still holds the
@@ -184,9 +198,40 @@ func (f *Fleet) forgetProjectChild(pc *projectChild) {
 	f.projMu.Unlock()
 }
 
+// waitRecycle blocks while a restart of this child is in flight, until ctx ends.
+func (pc *projectChild) waitRecycle(ctx context.Context) error {
+	pc.mu.Lock()
+	marker := pc.recycling
+	pc.mu.Unlock()
+	if marker == nil {
+		return nil
+	}
+	select {
+	case <-marker:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("bridge: wait for the project child of %s to restart: %w", pc.root, ctx.Err())
+	}
+}
+
+// closeRecycleLocked ends a restart's marker, if one is open, so an attach
+// waiting on it goes on (decision 4). The caller holds pc.mu.
+func (pc *projectChild) closeRecycleLocked() {
+	if pc.recycling == nil {
+		return
+	}
+	close(pc.recycling)
+	pc.recycling = nil
+}
+
 // startProjectChild builds, starts and handshakes pc's child, once. Concurrent
 // callers share one start through pc.mu.
 func (f *Fleet) startProjectChild(ctx context.Context, pc *projectChild) error {
+	// An attach waits for a restart in flight, so it never reaches a child
+	// whose process is on its way out (decision 4).
+	if err := pc.waitRecycle(ctx); err != nil {
+		return err
+	}
 	// A stop in flight keeps the viewer socket until its process is gone, so
 	// wait it out rather than start a replacement that cannot bind.
 	pc.waitStop()
@@ -351,6 +396,9 @@ func (f *Fleet) projectHandshake(ctx context.Context, pc *projectChild) error {
 func (f *Fleet) reinitProjectChild(pc *projectChild) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
+	// The restart's marker is ended here, on every path: an attach waiting on
+	// it takes the child as this handshake left it (decision 9).
+	defer pc.closeRecycleLocked()
 	pc.ready = false
 	if pc.child == nil {
 		return

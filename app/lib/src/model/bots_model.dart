@@ -67,14 +67,22 @@ class Bot {
 /// reads them and never writes half of that document; the review drafts it
 /// does change are its own routes.
 class BotsModel extends SectionModel<Bot> {
-  BotsModel(this._bridge, {required this.project, required this.now})
-    : _fixture = null;
+  BotsModel(
+    this._bridge, {
+    required this.project,
+    required this.now,
+    this.onWrote,
+  }) : _fixture = null;
 
   /// A section with rows and no bridge, for the gallery and the screens the
   /// enforcement tests pump.
-  BotsModel.fixture(List<Bot> rows, {required this.project, required this.now})
-    : _bridge = null,
-      _fixture = rows;
+  BotsModel.fixture(
+    List<Bot> rows, {
+    required this.project,
+    required this.now,
+    this.onWrote,
+  }) : _bridge = null,
+       _fixture = rows;
 
   final BridgeClient? _bridge;
   final List<Bot>? _fixture;
@@ -84,6 +92,11 @@ class BotsModel extends SectionModel<Bot> {
 
   /// What an age is measured against.
   final DateTime now;
+
+  /// How a write tells the host's signals to be read again (spec D4): called
+  /// once after a draft is posted, sent to its author or discarded, and never
+  /// for a write the bridge refused.
+  final void Function()? onWrote;
 
   @override
   Future<List<Bot>> fetch() async {
@@ -117,22 +130,26 @@ class BotsModel extends SectionModel<Bot> {
   Future<ReviewDraft> postDraft(ReviewDraft draft) async {
     final posted = await _requireBridge().postReviewDraft(draft.id);
     _replaceDraft(posted);
+    onWrote?.call();
     return posted;
   }
 
   /// POST /api/automations/review/drafts/{id}/send-to-author: hands every
   /// finding to the agent that owns the pull request.
-  Future<void> sendDraftToAuthor(ReviewDraft draft) =>
-      _requireBridge().sendDraftToAuthor(
-        draft.id,
-        findingIds: [for (final finding in draft.findings) finding.id],
-      );
+  Future<void> sendDraftToAuthor(ReviewDraft draft) async {
+    await _requireBridge().sendDraftToAuthor(
+      draft.id,
+      findingIds: [for (final finding in draft.findings) finding.id],
+    );
+    onWrote?.call();
+  }
 
   /// POST /api/automations/review/drafts/{id}/discard: drops the draft, and
   /// its row with it.
   Future<void> discardDraft(ReviewDraft draft) async {
     await _requireBridge().discardReviewDraft(draft.id);
     _dropDraft(draft);
+    onWrote?.call();
   }
 
   /// PUT /api/automations/review/drafts/{id}: stores an edit of the findings

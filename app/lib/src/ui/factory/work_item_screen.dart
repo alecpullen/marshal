@@ -23,6 +23,11 @@ import 'pulls_tab.dart';
 /// The screen takes a [WorkItemView] and callbacks and never fetches (§5):
 /// the store it projects from, the pull requests and the change tab are the
 /// host's.
+///
+/// Its order is deliberate: the asks it is blocked on come first, then the
+/// tabs that read its plan, workers, checks, change and pull requests, and
+/// its history last. What needs a person, and what they might revise, are not
+/// buried under the timeline.
 class WorkItemScreen extends StatefulWidget {
   const WorkItemScreen({
     super.key,
@@ -112,6 +117,17 @@ class WorkItemScreen extends StatefulWidget {
 class _WorkItemScreenState extends State<WorkItemScreen> {
   int _tab = 0;
 
+  /// What the person has typed on an ask and what is in flight. It lives here
+  /// rather than in the cards so a poll, or a worker drill-in that swaps the
+  /// body out and back, does not lose it.
+  final _askDraft = WorkItemAskDraft();
+
+  @override
+  void dispose() {
+    _askDraft.dispose();
+    super.dispose();
+  }
+
   static const _tabs = ['Plan', 'Agents', 'Checks', 'Changes', 'Pull requests'];
 
   DateTime get _now => widget.now ?? DateTime.now();
@@ -189,6 +205,7 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
           ItemAsks(
             item: item,
             now: _now,
+            draft: _askDraft,
             conflict: widget.conflict,
             onApprove: widget.onApprove,
             onAnswer: widget.onAnswer,
@@ -209,10 +226,6 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
           ),
         ],
         const SizedBox(height: Space.s16),
-        Label('Activity', count: item.activity.length),
-        const SizedBox(height: Space.s4),
-        _activity(),
-        const SizedBox(height: Space.s16),
         Tabs(
           tabs: [for (final label in _tabs) TabItem(label)],
           index: _tab,
@@ -220,6 +233,10 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
         ),
         const SizedBox(height: Space.s12),
         _tabContent(context),
+        const SizedBox(height: Space.s16),
+        Label('Activity', count: item.activity.length),
+        const SizedBox(height: Space.s4),
+        _activity(),
       ],
     );
   }
@@ -239,16 +256,25 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
             if (index > 0) const Hairline(),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: Space.s16),
-              child: ActivityRow(
-                who: entry.who,
-                text: entry.text,
-                age: relativeAge(entry.at, _now),
-                detail: entry.detail,
-              ),
+              child: _activityRow(entry),
             ),
           ],
         ],
       ),
+    );
+  }
+
+  /// One entry, with its age relative to now and the exact time behind it.
+  /// A time this build cannot read says so rather than claiming an epoch.
+  Widget _activityRow(ActivityEntry entry) {
+    final at = entry.at;
+    final age = at == null ? 'Unknown' : relativeAge(at, _now);
+    return ActivityRow(
+      who: entry.who,
+      text: entry.text,
+      age: age,
+      ageTip: at == null ? null : exactTimeLabel(at),
+      detail: entry.detail,
     );
   }
 
@@ -329,6 +355,7 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
         message: 'The work item could not be read.',
         retry: retry,
       ),
+      StateKind.unauthorized => const StateMessage.unauthorized(),
       StateKind.unavailable => StateMessage.unavailable(
         host: widget.item.host,
         lastSeen: 'now',

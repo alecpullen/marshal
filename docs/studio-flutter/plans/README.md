@@ -45,5 +45,8 @@ F0 was executed directly from its spec and has no plan.
 | 13 | [F9.2 start from anywhere](2026-11-18-f9-2-start-from-anywhere-plan.md) | 11; may run before or after 12 |
 | 14 | [F9.3 Overview and project parity](2026-11-18-f9-3-overview-parity-plan.md) | 11; may run beside 12 and 13 |
 | 15 | [Studio visual fixes](2026-11-18-studio-visual-fixes-plan.md) | 12–14, P8 on `main` |
+| 16 | [Studio controls that do nothing](2026-11-18-studio-dead-controls-plan.md) | 15 |
+| 17 | [Studio conversation readability](2026-11-18-studio-conversation-readability-plan.md) | 15, 16 |
+| 18 | [Studio places polish](2026-11-18-studio-places-polish-plan.md) | 15, 16 |
 
 The Svelte Studio is frozen, bug fixes only, from the start of plan 2.

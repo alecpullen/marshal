@@ -4,6 +4,7 @@ import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
+import 'package:marshal_app/src/model/watches_model.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/model/pulls_model.dart';
 import 'package:marshal_app/src/model/source_state.dart';
@@ -59,12 +60,16 @@ void main() {
     OverviewModel overview, {
     List<Place>? opened,
     StateKind? state,
+    List<TrippedWatch> automations = const [],
+    bool manyHosts = false,
   }) => EmberApp(
     brightness: Brightness.light,
     home: Overview(
       overview: overview,
       now: shellNow,
       hosts: shellHosts,
+      automations: automations,
+      manyHosts: manyHosts,
       state: state,
       onSelect: (place) => opened?.add(place),
       onRetry: () {},
@@ -421,6 +426,77 @@ void main() {
 
     expect(find.text('Not seen yet'), findsOneWidget);
     expect(find.textContaining('ago'), findsNothing);
+  });
+
+  testWidgets('tripped watches name their host when there are several', (
+    tester,
+  ) async {
+    const overview = OverviewModel(
+      needsYou: [],
+      running: [],
+      needsYouTotal: 0,
+      sources: [],
+      projects: [],
+      capacity: [],
+      spend: null,
+    );
+    await tester.pumpWidget(
+      show(
+        overview,
+        manyHosts: true,
+        automations: const [
+          TrippedWatch(
+            host: 'local',
+            name: 'the gate',
+            agent: 'Agent a-1',
+            action: 'Reroutes implementer to local',
+            age: '4m',
+          ),
+          TrippedWatch(
+            host: 'studio',
+            name: 'the queue',
+            agent: 'studio',
+            action: 'Notifies you',
+            age: '12m',
+          ),
+        ],
+      ),
+    );
+
+    // With more than one host, each row says which host's watch tripped.
+    expect(find.text('local · the gate'), findsOneWidget);
+    expect(find.text('studio · the queue'), findsOneWidget);
+    expect(find.text('the gate'), findsNothing);
+  });
+
+  testWidgets('one host’s watches carry no prefix', (tester) async {
+    const overview = OverviewModel(
+      needsYou: [],
+      running: [],
+      needsYouTotal: 0,
+      sources: [],
+      projects: [],
+      capacity: [],
+      spend: null,
+    );
+    await tester.pumpWidget(
+      show(
+        overview,
+        automations: const [
+          TrippedWatch(
+            host: 'local',
+            name: 'the gate',
+            agent: 'Agent a-1',
+            action: 'Reroutes implementer to local',
+            age: '4m',
+          ),
+        ],
+      ),
+    );
+
+    // One host, so its name would repeat on every row: the row carries none.
+    expect(find.text('the gate'), findsOneWidget);
+    expect(find.text('local · the gate'), findsNothing);
   });
 
   testWidgets('the Activity card names an event', (tester) async {

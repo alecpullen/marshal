@@ -1,10 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/model/hosts_model.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as inbox;
 import 'package:marshal_app/src/model/new_work_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
+import 'package:marshal_app/src/ui/sections/unsaved_guard.dart';
+import 'package:marshal_app/src/ui/shell/host_switcher.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
 
@@ -40,6 +43,169 @@ void main() {
       opened,
     );
   }
+
+  /// The top line's switcher: the one above the place, drawn after the
+  /// sidebar's.
+  Finder topSwitcher() => find.byType(HostSwitcher).last;
+
+  /// The shell at a per-host place, its three builders recording the host each
+  /// was asked for, and the guard it consults when a test gives it one.
+  (Widget, List<String>) hostShellAt(Place place, {UnsavedGuard? unsaved}) {
+    final recorded = <String>[];
+    final nav = shellNavFor(place);
+    Widget? build(String host, int section, StateKind? state) {
+      recorded.add(host);
+      return Text('${placeTitle(place, nav)} at $host');
+    }
+
+    return (
+      Shell(
+        nav: nav,
+        hosts: shellHosts,
+        place: place,
+        now: shellNow,
+        onSelect: (_) {},
+        unsaved: unsaved,
+        automationsFor: build,
+        libraryFor: build,
+        settingsFor: build,
+        content: (_) => plannedPlace(place, nav),
+      ),
+      recorded,
+    );
+  }
+
+  /// Opens the top line's switcher and picks the host called [name].
+  Future<void> chooseHost(WidgetTester tester, String name) async {
+    await tester.tap(
+      find.descendant(of: topSwitcher(), matching: find.byType(Btn)),
+    );
+    // The popover has no animation, but it builds over two frames.
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text(name));
+    await tester.pump();
+  }
+
+  testWidgets('the settings builder receives the switcher\'s host', (
+    tester,
+  ) async {
+    final (shell, recorded) = hostShellAt(const Place(PlaceKind.settings));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    // The switcher's scope is All hosts until a host is chosen, and under it
+    // the place reads the first host that answers.
+    expect(recorded.last, 'local');
+    expect(find.text('Settings at local'), findsOneWidget);
+
+    await chooseHost(tester, 'studio');
+
+    expect(recorded.last, 'studio');
+    expect(find.text('Settings at studio'), findsOneWidget);
+  });
+
+  testWidgets('under all hosts the builder receives the first live host', (
+    tester,
+  ) async {
+    final (shell, recorded) = hostShellAt(const Place(PlaceKind.library));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    expect(
+      find.descendant(
+        of: find.byType(HostSwitcher).first,
+        matching: find.text('All hosts'),
+      ),
+      findsOneWidget,
+    );
+    // `shellHosts` lists an unreachable `studio` first and a live `local`
+    // second: All hosts reaches past it to the host that is answering.
+    expect(recorded, isNotEmpty);
+    expect(
+      recorded.every((host) => host == 'local'),
+      isTrue,
+      reason: '$recorded',
+    );
+  });
+
+  testWidgets('a per-host place shows the switcher naming its host', (
+    tester,
+  ) async {
+    final (shell, recording) = hostShellAt(const Place(PlaceKind.automations));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    await chooseHost(tester, 'studio');
+
+    expect(tester.widget<HostSwitcher>(topSwitcher()).selected, 'studio');
+    expect(
+      find.descendant(of: topSwitcher(), matching: find.text('studio')),
+      findsOneWidget,
+    );
+    expect(recording.last, 'studio');
+    expect(find.text('Automations at studio'), findsOneWidget);
+  });
+
+  testWidgets('changing the scope over an unsaved edit asks first', (
+    tester,
+  ) async {
+    // A section holding an edit: the host changing under it would lose what
+    // was typed, so the switcher asks as the sidebar does.
+    final edits = HostsModel.fixture(shellHosts)
+      ..edit(shellHosts.first)
+      ..change(shellHosts.first);
+    final guard = UnsavedGuard()..watch(edits);
+    final (shell, recorded) = hostShellAt(
+      const Place(PlaceKind.settings),
+      unsaved: guard,
+    );
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+    expect(recorded.last, 'local');
+
+    await chooseHost(tester, 'studio');
+    await tester.pump();
+
+    expect(find.text('Leave without saving?'), findsOneWidget);
+    expect(recorded.contains('studio'), isFalse);
+
+    await tester.tap(find.text('Discard the edit'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(recorded.last, 'studio');
+    expect(edits.hasUnsavedEdits, isFalse);
+    expect(find.text('Settings at studio'), findsOneWidget);
+  });
+
+  testWidgets('a per-host place keeps its switcher below 760', (tester) async {
+    // The top line is drawn in the content area, which the narrow layout
+    // fills: it must sit under the app bar, name its host, and not overflow.
+    tester.view.physicalSize = const Size(390, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final (shell, recorded) = hostShellAt(const Place(PlaceKind.automations));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+    await tester.pump();
+
+    // The sidebar is behind the app bar's button, so the one switcher on
+    // screen is the place's own top line.
+    expect(find.byType(HostSwitcher), findsOneWidget);
+    expect(
+      find.descendant(of: topSwitcher(), matching: find.text('local')),
+      findsOneWidget,
+    );
+    expect(recorded.last, 'local');
+    expect(find.text('Automations at local'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('selecting a row changes the place', (tester) async {
     final (shell, opened) = shellAt(const Place.overview());

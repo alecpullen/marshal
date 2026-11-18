@@ -108,6 +108,57 @@ func TestStepsFollowTheActiveBranch(t *testing.T) {
 	}
 }
 
+func TestTurnStepsCountsTheRunningTurn(t *testing.T) {
+	s := plainState()
+	s.AddMessage(RoleUser, "first", ContentTypePlain)
+	a := s.BeginStep(Actor{})
+	s.EndStep(a)
+	b := s.BeginStep(Actor{})
+	s.EndStep(b)
+	s.AddMessage(RoleUser, "second", ContentTypePlain)
+	c := s.BeginStep(Actor{})
+	s.EndStep(c)
+	d := s.BeginStep(Actor{})
+	s.EndStep(d)
+	s.BeginStep(Actor{}) // the running turn's third step
+	if got := s.TurnSteps(); got != 3 {
+		t.Fatalf("TurnSteps = %d, want 3 (the newest turn's trailing run)", got)
+	}
+}
+
+func TestTurnStepsIsZeroBeforeAnyStep(t *testing.T) {
+	s := plainState()
+	if got := s.TurnSteps(); got != 0 {
+		t.Fatalf("TurnSteps = %d, want 0 on a fresh state", got)
+	}
+}
+
+func TestTurnStepsIgnoresAnotherBranchsTurn(t *testing.T) {
+	s := plainState()
+	s.AddMessage(RoleUser, "one", ContentTypePlain)
+	a := s.BeginStep(Actor{})
+	s.EndStep(a)
+	b := s.BeginStep(Actor{})
+	s.EndStep(b)
+	s.AddMessage(RoleUser, "two", ContentTypePlain)
+	turnTwo := s.Messages()[len(s.Messages())-1].ID
+	c := s.BeginStep(Actor{})
+	s.EndStep(c)
+	d := s.BeginStep(Actor{})
+	s.EndStep(d)
+	s.BeginStep(Actor{}) // a third step on the rewound branch
+	s.Rewind(turnTwo)
+	// Steps() already filters to the active branch, so c, d and e — whose
+	// turn message is on the rewound branch — never reach the count.
+	steps := s.Steps()
+	if len(steps) != 2 || steps[0].ID != a || steps[1].ID != b {
+		t.Fatalf("steps after rewind = %+v", steps)
+	}
+	if got := s.TurnSteps(); got != 2 {
+		t.Fatalf("TurnSteps = %d, want 2: only the trailing run on the active branch counts", got)
+	}
+}
+
 func TestAddNarrationStampsStep(t *testing.T) {
 	s := plainState()
 	s.AddMessage(RoleUser, "go", ContentTypePlain)

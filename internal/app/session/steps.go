@@ -133,6 +133,25 @@ func (s *State) Steps() []Step {
 	return out
 }
 
+// TurnSteps is how many steps the turn in flight has taken: the trailing
+// run of steps on the active branch that share the newest step's turn
+// message. Zero when no step has begun since the last user message.
+func (s *State) TurnSteps() int {
+	steps := s.Steps()
+	if len(steps) == 0 {
+		return 0
+	}
+	turn := steps[len(steps)-1].TurnMsgID
+	n := 0
+	for i := len(steps) - 1; i >= 0; i-- {
+		if steps[i].TurnMsgID != turn {
+			break
+		}
+		n++
+	}
+	return n
+}
+
 // Step looks up a step by ID, on any branch.
 func (s *State) Step(id StepID) (Step, bool) {
 	s.mu.Lock()

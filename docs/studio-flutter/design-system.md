@@ -208,7 +208,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Field` | A text input | Border only; the label is above it. `Field.multiline` is the same input for prose, taller and growing with what it holds; its `mono` flag sets the text in `mono` for a document a person edits line by line |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
 | `Sheet` | A dialog or bottom sheet; it dims what is behind it with `scrim` | One per screen at most |
-| `Composer` | The field a thread is driven from | The draft, the mode and model chips, Stop while running, Send or Steer. A read-only session is one line saying why |
+| `Composer` | The field a thread is driven from | The draft, the mode and model chips, Stop while running, Send or Steer; the mode chip is left out while the mode is not known, as the model chip is when no model is named. A read-only session is one line saying why |
 
 Added in F2: `NavRow`, the sidebar's row (an icon or a disclosure chevron, a
 label, an optional count; the selected row is filled and its icon is

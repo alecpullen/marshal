@@ -47,8 +47,9 @@ class Composer extends StatelessWidget {
   /// Why the session is read-only, in words. Required when [readOnly].
   final String? readOnlyReason;
 
-  /// The permission mode chip's label.
-  final String mode;
+  /// The permission mode chip's label; no chip is drawn when it is null, as a
+  /// mode that is not known is no fact to state.
+  final String? mode;
 
   /// The model chip's label; no chip is drawn when it is null.
   final String? model;
@@ -116,6 +117,7 @@ class Composer extends StatelessWidget {
         ),
       );
     }
+    final mode = this.mode;
     final model = this.model;
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -153,18 +155,21 @@ class Composer extends StatelessWidget {
               runSpacing: Space.s6,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                _chip(
-                  context,
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: Layout.sidebar),
-                    child: Pill.icon(
-                      mode,
-                      icon: Glyphs.shield,
-                      tooltip: 'Permission mode',
+                if (mode != null)
+                  _chip(
+                    context,
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxWidth: Layout.sidebar,
+                      ),
+                      child: Pill.icon(
+                        mode,
+                        icon: Glyphs.shield,
+                        tooltip: 'Permission mode',
+                      ),
                     ),
+                    onMode,
                   ),
-                  onMode,
-                ),
                 if (model != null)
                   _chip(
                     context,

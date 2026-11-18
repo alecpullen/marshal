@@ -146,7 +146,7 @@ class _PlanningScreenState extends State<PlanningScreen> {
               ? 'Steer the planner…'
               : 'Describe the work to plan…',
           running: model.running,
-          mode: model.modeWords,
+          mode: model.reported ? model.modeWords : null,
           onSend: model.running ? null : _send,
           onStop: model.running ? () => unawaited(model.cancel()) : null,
         ),
@@ -158,12 +158,22 @@ class _PlanningScreenState extends State<PlanningScreen> {
   /// whether it is connected, the mode and whether the bridge confirmed it,
   /// and the workspace it runs in.
   ///
+  /// Nothing here is guessed: each chip is one field of the record. Until the
+  /// record has been read there is nothing to state, so the strip is one line
+  /// saying so rather than three chips saying the same thing in three ways
+  /// (design-system.md §7).
+  ///
   /// Every fact is words first — a chip's colour is never the only thing it
   /// says (design-system.md §2) — and the tooltip says what the fact means for
-  /// the person rather than repeating the words beside it (§9). Nothing here
-  /// is guessed: each chip is one field of the record, or says that the record
-  /// has not been read.
+  /// the person rather than repeating the words beside it (§9).
   Widget _contextStrip(PlanningModel model) {
+    final e = Ember.of(context);
+    if (!model.reported) {
+      return Text(
+        'The planner has not reported yet',
+        style: e.small.tint(e.muted),
+      );
+    }
     final connection = model.connection;
     final waiting = model.waiting;
     return Wrap(

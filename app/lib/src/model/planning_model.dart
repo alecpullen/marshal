@@ -278,6 +278,10 @@ class PlanningModel extends ChangeNotifier {
   /// The planner as the bridge last reported it, for what its session can do.
   PlannerView? get view => _view;
 
+  /// Whether the planner's record has been read. False until a read lands, so
+  /// nothing is stated as a fact the bridge has not reported.
+  bool get reported => _view != null;
+
   /// The session's connection, from the record alone: a record that says the
   /// planner ended is ended, one that says it is live is live, and anything
   /// else — no record read yet, or a record that does not claim to be live —

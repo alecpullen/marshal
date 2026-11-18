@@ -108,9 +108,50 @@ void main() {
     final request = model.requests.single;
     expect(request.requestID, 'req-1');
     expect(request.permission, isFalse);
-    expect(request.title, 'Question from the planner');
-    expect(request.detail, 'Which inspector tab comes first?');
     expect(request.questions, ['Which inspector tab comes first?']);
+  });
+
+  test('a planner’s question is its card’s title', () async {
+    final routes = _Routes();
+    routes.events = [
+      _event(1, 'turn.question', {
+        'requestId': 'req-1',
+        'method': 'session/request_question',
+        'params': {
+          'questions': [
+            {'question': 'Which inspector tab comes first?'},
+          ],
+        },
+      }),
+      _event(2, 'turn.question', {
+        'requestId': 'req-2',
+        'method': 'session/request_question',
+        'params': {'message': 'Which branch should the plan start from?'},
+      }),
+      _event(3, 'turn.permission', {
+        'requestId': 'req-3',
+        'method': 'session/request_permission',
+        'params': {'toolName': 'shell.run', 'command': 'go test ./...'},
+      }),
+    ];
+    final model = routes.model();
+    addTearDown(model.dispose);
+
+    await model.refresh();
+
+    final [asked, messaged, permission] = model.requests;
+    // The question is the card's title; its body is empty, so the question is
+    // not written twice.
+    expect(asked.title, 'Which inspector tab comes first?');
+    expect(asked.detail, isEmpty);
+    // A payload that asked no question but carried its own line is titled with
+    // that line too.
+    expect(messaged.title, 'Which branch should the plan start from?');
+    expect(messaged.detail, isEmpty);
+    // A permission is the other way round: the wording is the title and the
+    // command is the body.
+    expect(permission.title, 'Permission requested');
+    expect(permission.detail, 'tool: shell.run · command: go test ./...');
   });
 
   test('a permission request is a permission card', () async {

@@ -71,10 +71,11 @@ class PlannerRequest {
   /// Whether it is a permission request rather than a question.
   final bool permission;
 
-  /// What is being asked: "Permission requested", "Question from the planner".
+  /// What is being asked: the question itself, or "Permission requested".
   final String title;
 
-  /// The command, the question, or whatever the payload still carried.
+  /// The command a permission asks to run. Empty for a question, whose title
+  /// is the question.
   final String detail;
 
   /// Every question the request asks, in the order they must be answered. A
@@ -551,6 +552,10 @@ class PlanningModel extends ChangeNotifier {
     }
     final permission = kind == 'turn.permission';
     final payload = _payload(data['params'] ?? data['update']);
+    // The question is the card's title, so a question's body is empty; a
+    // permission keeps its wording as the title and its command as the body.
+    final asked = permission ? '' : _questionLine(payload);
+    final titled = asked.isNotEmpty;
     _requests.add(
       PlannerRequest(
         requestID: requestID,
@@ -558,8 +563,14 @@ class PlanningModel extends ChangeNotifier {
         permission: permission,
         title: permission
             ? 'Permission requested'
+            : titled
+            ? asked
             : 'Question from the planner',
-        detail: permission ? _permissionLine(payload) : _questionLine(payload),
+        detail: permission
+            ? _permissionLine(payload)
+            : titled
+            ? ''
+            : asked,
         questions: permission ? const [] : _questionTexts(payload),
       ),
     );

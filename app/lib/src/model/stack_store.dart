@@ -203,7 +203,7 @@ class StackStore extends ChangeNotifier {
       await opener();
     } catch (error) {
       if (_disposed) return false;
-      _failure = describeFailure(error);
+      _failure = error is BridgeFailure ? describeFailure(error) : null;
       _setStatus(StackStatus.error);
       return false;
     }
@@ -291,11 +291,15 @@ class StackStore extends ChangeNotifier {
         _gone();
         return;
       }
-      _failed(describeFailure(failure));
+      // The bridge's words are for a session's screen (P7 decision 7): an
+      // agent's store has its own sentence, and a session's keeps them.
+      _failed(opener == null ? null : describeFailure(failure));
       return;
-    } catch (error) {
+    } catch (_) {
       if (_disposed || generation != _generation) return;
-      _failed(describeFailure(error));
+      // A transport exception is not the bridge speaking: a raw `toString()`
+      // is not the design system's plain words, so the screen says its own.
+      _failed(null);
       return;
     }
     if (_disposed || generation != _generation) return;
@@ -321,7 +325,7 @@ class StackStore extends ChangeNotifier {
 
   /// A failed fetch keeps a snapshot already held; only a store that holds
   /// nothing reports it, and the next event tries again.
-  void _failed(String message) {
+  void _failed(String? message) {
     if (_status == StackStatus.ready) return;
     _failure = message;
     _status = StackStatus.error;
@@ -333,6 +337,7 @@ class StackStore extends ChangeNotifier {
   /// thrown away — and the screen offers to open it again.
   void _gone() {
     if (_status == StackStatus.ready) return;
+    if (_status == StackStatus.gone) return;
     _failure = null;
     _status = StackStatus.gone;
     notifyListeners();

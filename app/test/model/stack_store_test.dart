@@ -441,7 +441,68 @@ void main() {
     await store.refresh();
 
     expect(store.status, StackStatus.error);
-    expect(store.failure, 'no such session');
+    expect(
+      store.failure,
+      isNull,
+      reason: 'the bridge’s words are a session’s, so an agent keeps its own',
+    );
+    store.dispose();
+  });
+
+  test('a transport outage keeps the plain sentence', () async {
+    // A session's store, opened and followed, whose read throws something
+    // that is not the bridge answering at all.
+    final store = StackStore(
+      BridgeClient(_UnusedTransport()),
+      's-1',
+      fetcher: (sessionId, subagentId) async =>
+          throw Exception('connection refused'),
+      events: () => _RecordedStream(<String>[]),
+      opener: () async {},
+    );
+
+    store.start();
+    await _settleAll();
+
+    expect(store.status, StackStatus.error);
+    expect(
+      store.failure,
+      isNull,
+      reason:
+          'a raw exception is not the bridge speaking: the screen keeps '
+          'the design system’s plain words',
+    );
+    store.dispose();
+  });
+
+  test('a second 404 on a gone session says nothing new', () async {
+    final store = StackStore(
+      BridgeClient(_UnusedTransport()),
+      's-1',
+      fetcher: (sessionId, subagentId) async =>
+          throw BridgeFailure(404, '{"error":"no such session"}'),
+      events: () => _RecordedStream(<String>[]),
+      opener: () async {},
+    );
+    var notifications = 0;
+    store.addListener(() => notifications++);
+
+    store.start();
+    await _settleAll();
+    expect(store.status, StackStatus.gone);
+    final told = notifications;
+
+    // The store keeps following its stream, so a gap refetches again and the
+    // 404 arrives a second time.
+    await store.refresh();
+    await _settleAll();
+
+    expect(store.status, StackStatus.gone);
+    expect(
+      notifications,
+      told,
+      reason: 'nothing changed, so there is nothing to say',
+    );
     store.dispose();
   });
 

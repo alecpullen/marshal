@@ -688,7 +688,7 @@ void main() {
     await eventually(() => fixture.store.session('local', 's-2') != null);
     expect(
       [for (final s in fixture.store.sessions()) s.row.sessionID],
-      containsAll(['s-2', 't-1']),
+      equals(['s-2', 't-1']),
       reason: 'the rooted read answers for its root, not for every group',
     );
     expect(
@@ -697,6 +697,80 @@ void main() {
       reason: 'the re-read names its root',
     );
   });
+
+  test(
+    'a slow snapshot read does not put back a newer rooted answer',
+    () async {
+      final fixture = await fixtureWith();
+      fixture.serve(
+        'local',
+        '/api/sessions/all',
+        SessionIndex(
+          projects: [
+            group('/home/u/alpha', [sessionRow('s-1')]),
+            group('/home/u/beta', [sessionRow('t-1')]),
+          ],
+        ).toJson(),
+      );
+      await fixture.refresh();
+      expect(fixture.store.sessions(), hasLength(2));
+
+      // The stream goes live on its first frame, and going live costs a
+      // snapshot: write the heartbeat and let that snapshot's index read land
+      // before this test's own reads, so they are what it is about.
+      int indexReads() => fixture
+          .requests('local')
+          .where((request) => request.uri.startsWith('/api/sessions/all'))
+          .length;
+      final beforeLive = indexReads();
+      fixture.frames['local']!.write(': hb\n\n');
+      await eventually(() => fixture.store.reach('local') == HostReach.live);
+      await eventually(() => indexReads() > beforeLive);
+      await settle();
+
+      // The snapshot's index read is held at the bridge, and answers the
+      // index as it stood before the delta — alpha's group with s-1.
+      fixture.serve(
+        'local',
+        '/api/sessions/all',
+        SessionIndex(
+          projects: [
+            group('/home/u/alpha', [sessionRow('s-1')]),
+            group('/home/u/beta', [sessionRow('t-1')]),
+          ],
+        ).toJson(),
+        delay: const Duration(milliseconds: 300),
+      );
+      final asking = indexReads();
+      final snapshot = fixture.store.refresh('local');
+      await eventually(() => indexReads() > asking);
+      await settle();
+
+      // A sessions delta for alpha answers at once and applies: alpha's
+      // group now holds s-2.
+      fixture.serve(
+        'local',
+        '/api/sessions/all',
+        SessionIndex(
+          projects: [
+            group('/home/u/alpha', [sessionRow('s-2')]),
+          ],
+        ).toJson(),
+      );
+      fixture.delta('local', {'kind': 'sessions', 'project': '/home/u/alpha'});
+      await eventually(() => fixture.store.session('local', 's-2') != null);
+
+      // The held answer lands after it: asked for first, and older, so it is
+      // dropped rather than put back over the rooted read.
+      await snapshot;
+
+      expect(
+        [for (final s in fixture.store.sessions()) s.row.sessionID],
+        ['s-2', 't-1'],
+        reason: 'the answer asked for last is the one that stands',
+      );
+    },
+  );
 
   test('a burst of sessions deltas costs at most two reads', () async {
     final fixture = await fixtureWith();

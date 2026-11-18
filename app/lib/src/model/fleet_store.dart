@@ -124,6 +124,7 @@ class FleetStore extends ChangeNotifier {
     final state = _state(host);
     final generation = ++state.generation;
     final agentsRead = ++state.agentsReads;
+    final sessionsRead = ++state.sessionsReads;
     final since = state.deltaSeq;
     try {
       final agents = await owner.client.agents();
@@ -136,7 +137,6 @@ class FleetStore extends ChangeNotifier {
         ..projects = _projectsFrom(projects, state, since)
         ..queue = _queueFrom(inbox.queue, state, since)
         ..budgets = budgets
-        ..sessions = _sessionsFrom(sessions, state, null)
         ..failure = null;
       // The rows only while no read of them was asked for after this one: a
       // delta that names an unknown agent re-reads them itself (see
@@ -146,6 +146,13 @@ class FleetStore extends ChangeNotifier {
       // a different list.
       if (agentsRead == state.agentsReads) {
         state.agents = _agentsFrom(agents, state, since);
+      }
+      // The same rule for the index: a root read again by a delta while this
+      // snapshot was in flight answers for its group afterwards, so this
+      // answer — asked for before that read — must not put the older groups
+      // back over it.
+      if (sessionsRead == state.sessionsReads) {
+        state.sessions = _sessionsFrom(sessions, state, null);
       }
       notifyListeners();
     } catch (error) {
@@ -582,6 +589,7 @@ class FleetStore extends ChangeNotifier {
     _HostState state,
     Set<String?> roots,
   ) async {
+    final read = ++state.sessionsReads;
     try {
       // A single root is the rooted read a delta asked for; several
       // coalesced roots, or a read of them all in the set, answer for every
@@ -590,7 +598,7 @@ class FleetStore extends ChangeNotifier {
           ? null
           : roots.single;
       final index = await owner.client.sessionIndex(root: root);
-      if (_disposed) return;
+      if (_disposed || read != state.sessionsReads) return;
       state.sessions = _sessionsFrom(index.projects, state, root);
       notifyListeners();
     } catch (_) {
@@ -681,6 +689,11 @@ class _HostState {
   /// snapshot refresh and a delta's re-read — so the answer asked for last is
   /// the one that stands, however late an earlier answer arrives.
   int agentsReads = 0;
+
+  /// Bumped by each read of the session index. Two reads feed that one list —
+  /// the snapshot's and a delta's rooted re-read — so the answer asked for
+  /// last is the one that stands, however late an earlier answer arrives.
+  int sessionsReads = 0;
 
   /// A pending delta's re-read is in flight.
   bool agentsRefetching = false;

@@ -47,32 +47,18 @@ func (s *State) Workspace() Workspace {
 // the project root"; Branch is forced empty whenever ActiveRoot ==
 // ProjectRoot. (Task 3 adds persistence here.)
 func (s *State) SetWorkspace(w Workspace) {
+	s.rebind(w, false)
+}
+
+// rebind makes w current with the given isolation, then publishes and persists
+// it when it changed.
+func (s *State) rebind(w Workspace, isolated bool) {
 	// The owner's accessMu first: an active-root change invalidates the
 	// owner's access revision, and the documented lock order is
 	// accessMu → mu.
 	owner := s.ownerState()
 	owner.accessMu.Lock()
-	s.mu.Lock()
-	if w.ProjectRoot == "" {
-		w.ProjectRoot = s.workspace.ProjectRoot
-	}
-	if w.ActiveRoot == "" {
-		w.ActiveRoot = w.ProjectRoot
-	}
-	if w.ActiveRoot == w.ProjectRoot {
-		w.Branch = ""
-		w.BaseSha = ""
-		w.TargetBranch = ""
-	}
-	changed := s.workspace != w
-	rootChanged := s.workspace.ActiveRoot != w.ActiveRoot
-	s.workspace = w
-	// A direct rebinding is the session's own choice again, so a root a
-	// dispatcher had bound is no longer isolated: recovery applies to it.
-	s.isolatedRoot = false
-	broker := s.workspaceBroker
-	s.mu.Unlock()
-
+	ws, changed, rootChanged, broker := s.assignWorkspace(w, isolated)
 	if rootChanged {
 		owner.access.Revision++
 		owner.signalInteractionLocked()
@@ -88,8 +74,8 @@ func (s *State) SetWorkspace(w Workspace) {
 		return
 	}
 	if s.persistenceEnabled() {
-		persistRoot, persistBranch, persistTarget, persistBase := w.ActiveRoot, w.Branch, w.TargetBranch, w.BaseSha
-		if w.ActiveRoot == w.ProjectRoot {
+		persistRoot, persistBranch, persistTarget, persistBase := ws.ActiveRoot, ws.Branch, ws.TargetBranch, ws.BaseSha
+		if ws.ActiveRoot == ws.ProjectRoot {
 			persistRoot, persistBranch, persistTarget, persistBase = "", "", "", ""
 		}
 		if err := s.db.UpdateSessionWorkspace(s.sessionID, persistRoot, persistBranch, persistTarget, persistBase); err != nil {
@@ -97,9 +83,40 @@ func (s *State) SetWorkspace(w Workspace) {
 		}
 	}
 	if broker != nil {
-		broker.Publish("workspace", WorkspaceEvent{Workspace: w})
+		broker.Publish("workspace", WorkspaceEvent{Workspace: ws})
 	}
 	s.publishEvent(EventTranscriptChanged, Event{})
+}
+
+// assignWorkspace normalizes w and makes it current under mu. The isolation
+// flag is written in the same critical section as the workspace itself, so a
+// concurrent reader never sees one without the other — which is what keeps a
+// dispatcher's binding and the reason it must not be recovered atomic.
+// An ordinary SetWorkspace passes false: a direct rebinding is the session's
+// own choice again, so recovery applies to it.
+func (s *State) assignWorkspace(w Workspace, isolated bool) (ws Workspace, changed, rootChanged bool, broker *pubsub.Broker[WorkspaceEvent]) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if w.ProjectRoot == "" {
+		w.ProjectRoot = s.workspace.ProjectRoot
+	}
+	if w.ActiveRoot == "" {
+		w.ActiveRoot = w.ProjectRoot
+	}
+	if w.ActiveRoot == w.ProjectRoot {
+		w.Branch = ""
+		w.BaseSha = ""
+		w.TargetBranch = ""
+	}
+	changed = s.workspace != w
+	rootChanged = s.workspace.ActiveRoot != w.ActiveRoot
+	s.workspace = w
+	s.isolatedRoot = isolated
+	// The normalized workspace goes back to the caller: publishing or storing
+	// the argument as it arrived would drop the ProjectRoot default and the
+	// branch clearing, and a caller that left ProjectRoot empty would persist
+	// its own active root as a worktree.
+	return w, changed, rootChanged, s.workspaceBroker
 }
 
 // SetWorkspaceBroker wires the broker SetWorkspace publishes to. Mirrors
@@ -119,14 +136,15 @@ func (s *State) SetWorkspaceBroker(b *pubsub.Broker[WorkspaceEvent]) {
 // failing in the bound worktree. It fails loudly instead, as it did before
 // recovery existed.
 func (s *State) BindIsolatedWorkspace(root string) {
-	s.SetWorkspace(Workspace{ActiveRoot: root})
-	s.mu.Lock()
-	s.isolatedRoot = true
-	s.mu.Unlock()
+	// One critical section for both fields: binding the root and marking it a
+	// dispatcher's must not be separable, or a concurrent recovery could move
+	// the session between the two steps and leave the mark on the wrong root.
+	s.rebind(Workspace{ActiveRoot: root}, true)
 }
 
 // workspaceAndIsolation returns the current workspace with the dispatcher-
-// bound flag, read under one lock so the pair cannot be observed torn.
+// bound flag. Both are written together under mu (assignWorkspace), so they
+// are always a consistent pair.
 func (s *State) workspaceAndIsolation() (Workspace, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

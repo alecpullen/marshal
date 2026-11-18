@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -352,6 +353,152 @@ func (f *Fleet) projectChildrenInRootOrder() []*projectChild {
 	children := f.projectChildSnapshot()
 	sort.Slice(children, func(i, j int) bool { return children[i].root < children[j].root })
 	return children
+}
+
+// SessionIndex builds GET /api/sessions/all's answer (P7 D7); root narrows it
+// to that project. Every root's listing is read in parallel, each through
+// listRoot's own bound, so one stalled child cannot hold the answer
+// (decision 6). Only a root the fleet knows is listed: an unknown root is an
+// index with no projects.
+func (f *Fleet) SessionIndex(ctx context.Context, root string) contract.SessionIndex {
+	index := contract.SessionIndex{Projects: []contract.ProjectSessions{}}
+	roots := f.knownRoots()
+	if root != "" {
+		root = filepath.Clean(root)
+		narrowed := make([]string, 0, 1)
+		for _, known := range roots {
+			if known == root {
+				narrowed = append(narrowed, root)
+			}
+		}
+		roots = narrowed
+	}
+	if len(roots) == 0 {
+		return index
+	}
+
+	// The listings are fetched side by side: a root that never answers costs
+	// its own timeout and no other root's.
+	type rootListing struct {
+		rows []contract.SessionSummary
+		err  error
+	}
+	listings := make([]rootListing, len(roots))
+	var wg sync.WaitGroup
+	for i, r := range roots {
+		wg.Add(1)
+		go func(i int, r string) {
+			defer wg.Done()
+			rows, err := f.listRoot(ctx, r)
+			listings[i] = rootListing{rows: rows, err: err}
+		}(i, r)
+	}
+	wg.Wait()
+
+	// One ownership map for the whole index: it is the same for every root.
+	owned := f.ownedSessions()
+	children := make(map[string]*projectChild)
+	for _, pc := range f.projectChildSnapshot() {
+		children[filepath.Clean(pc.root)] = pc
+	}
+
+	index.Projects = make([]contract.ProjectSessions, 0, len(roots))
+	for i, r := range roots {
+		group := contract.ProjectSessions{
+			Root:     r,
+			Sessions: make([]contract.SessionRow, 0, len(listings[i].rows)),
+		}
+		if listings[i].err != nil {
+			group.Error = listings[i].err.Error()
+		}
+		named := make(map[string]contract.SessionSummary, len(listings[i].rows))
+		for _, s := range listings[i].rows {
+			named[s.SessionID] = s
+		}
+
+		// The open rows come first: what the root's live child is tracking
+		// right now, minus the bridge's own sessions. A session the listing
+		// names takes the listing's title and message count; one only the
+		// registry knows falls back to when it was last active.
+		open := make([]contract.SessionRow, 0)
+		openIDs := make(map[string]bool)
+		var reg *Registry
+		if pc := children[r]; pc != nil {
+			pc.mu.Lock()
+			reg = pc.reg
+			pc.mu.Unlock()
+		}
+		if reg != nil {
+			for _, cs := range reg.clientSessions() {
+				if _, isOwned := owned[cs.ID]; isOwned {
+					continue
+				}
+				row := contract.SessionRow{
+					SessionID: cs.ID,
+					UpdatedAt: cs.LastActive.UnixMilli(),
+					Open:      true,
+					Viewers:   cs.Viewers,
+					Busy:      cs.Busy,
+				}
+				if s, ok := named[cs.ID]; ok {
+					row.Title = s.Title
+					row.UpdatedAt = s.UpdatedAt
+					row.MessageCount = s.MessageCount
+				}
+				if pending, ok := reg.PendingRequest(cs.ID); ok {
+					p := pending
+					row.Pending = &p
+				}
+				openIDs[cs.ID] = true
+				open = append(open, row)
+			}
+		}
+		sortNewestFirst(open)
+		group.Sessions = append(group.Sessions, open...)
+
+		// Then the closed ones: everything the listing names that is neither
+		// open on the child nor the bridge's own.
+		closed := make([]contract.SessionRow, 0, len(listings[i].rows))
+		for _, s := range listings[i].rows {
+			if openIDs[s.SessionID] {
+				continue
+			}
+			if _, isOwned := owned[s.SessionID]; isOwned {
+				continue
+			}
+			closed = append(closed, contract.SessionRow{
+				SessionID:    s.SessionID,
+				Title:        s.Title,
+				UpdatedAt:    s.UpdatedAt,
+				MessageCount: s.MessageCount,
+			})
+		}
+		sortNewestFirst(closed)
+		group.Sessions = append(group.Sessions, closed...)
+		index.Projects = append(index.Projects, group)
+	}
+	return index
+}
+
+// sortNewestFirst orders rows by the updatedAt they report, newest first, ties
+// broken by id so a listing reads the same on every call.
+func sortNewestFirst(rows []contract.SessionRow) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].UpdatedAt != rows[j].UpdatedAt {
+			return rows[i].UpdatedAt > rows[j].UpdatedAt
+		}
+		return rows[i].SessionID < rows[j].SessionID
+	})
+}
+
+// serveSessionIndex serves GET /api/sessions/all: every project's sessions,
+// open and closed, narrowed by the root query parameter.
+func (s *Server) serveSessionIndex(w http.ResponseWriter, r *http.Request) {
+	if s.fleet == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "this bridge has no fleet"})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.fleet.SessionIndex(r.Context(), r.URL.Query().Get("root")))
 }
 
 // followClientSession follows a client session on a project child, logging a

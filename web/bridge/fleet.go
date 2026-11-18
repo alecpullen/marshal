@@ -1170,6 +1170,19 @@ func (f *Fleet) ResolvePermission(id string, d Decision) error {
 			return err
 		}
 	}
+	// A terminal's session lives on its project's child, not on an agent's
+	// runtime, and the Studio answers it through the same route (P7 D2).
+	for _, pc := range f.projectChildSnapshot() {
+		pc.mu.Lock()
+		reg := pc.reg
+		pc.mu.Unlock()
+		if reg == nil {
+			continue
+		}
+		if err := reg.ResolvePermission(id, d); !errors.Is(err, ErrGone) {
+			return err
+		}
+	}
 	return ErrGone
 }
 
@@ -1182,6 +1195,19 @@ func (f *Fleet) ResolveQuestion(id string, a Answers) error {
 	f.mu.Unlock()
 	for _, rt := range rts {
 		if err := rt.reg.ResolveQuestion(id, a); !errors.Is(err, ErrGone) {
+			return err
+		}
+	}
+	// The same rule as ResolvePermission: a client session's ask is parked on
+	// its project child's registry.
+	for _, pc := range f.projectChildSnapshot() {
+		pc.mu.Lock()
+		reg := pc.reg
+		pc.mu.Unlock()
+		if reg == nil {
+			continue
+		}
+		if err := reg.ResolveQuestion(id, a); !errors.Is(err, ErrGone) {
 			return err
 		}
 	}

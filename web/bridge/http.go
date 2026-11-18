@@ -286,6 +286,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agents/{id}/exit", s.agentExit)
 	s.mux.HandleFunc("GET /api/agents/{id}/patch", s.agentPatch)
 	s.mux.HandleFunc("GET /api/sessions", s.listSessions)
+	// The index is a literal segment, so it is more specific than
+	// GET /api/sessions/{id}/… and can never shadow a session id.
+	s.mux.HandleFunc("GET /api/sessions/all", s.serveSessionIndex)
 	s.mux.HandleFunc("POST /api/sessions", s.newSession)
 	s.mux.HandleFunc("POST /api/sessions/{id}/load", s.loadSession)
 	s.mux.HandleFunc("DELETE /api/sessions/{id}", s.deleteSession)

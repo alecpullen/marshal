@@ -7,6 +7,9 @@ import '../kit/kit.dart';
 /// the live headline on the next; Share and the overflow menu at the right.
 /// A thread that needs you has no headline: the ask in the conversation is
 /// where its question is read, and the dot's tooltip says what waits.
+/// On the narrow layout the headline is not drawn either (§4: below
+/// [Layout.narrow] there is no second column for it), and the title has the
+/// whole line, so a long one is read rather than cut to half its words.
 ///
 /// Share makes a read-only status link for the thread (F7 decision 7). It is
 /// drawn disabled until a caller hands it one: a control that cannot work is
@@ -58,6 +61,19 @@ class ThreadHeader extends StatelessWidget {
         '$_kindWord  ·  ${[?branch, ?environment, thread.host].join('  ·  ')}';
     final identity = '${projectName(thread.project)}  ›  $rest';
     final identityTip = '${thread.project}  ›  $rest';
+    // design-system.md §4: below `Layout.narrow` one line holds one thing, so
+    // the dot and the title take it and the headline is not drawn.
+    final narrow = MediaQuery.sizeOf(context).width < Layout.narrow;
+    final title = Tip(
+      message: thread.title,
+      child: Text(
+        thread.title,
+        style: e.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+    final headline = narrow ? null : thread.headline;
     return Padding(
       padding: const EdgeInsets.fromLTRB(
         Layout.pageSide,
@@ -86,23 +102,19 @@ class ThreadHeader extends StatelessWidget {
                   children: [
                     Dot(_status(thread.status)),
                     const SizedBox(width: Space.s8),
-                    Flexible(
-                      child: Tip(
-                        message: thread.title,
-                        child: Text(
-                          thread.title,
-                          style: e.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ),
-                    if (thread.headline.isNotEmpty &&
+                    // A whole line for the title on a phone, and a share of it
+                    // beside a headline on a wide one.
+                    if (narrow)
+                      Expanded(child: title)
+                    else
+                      Flexible(child: title),
+                    if (headline != null &&
+                        headline.isNotEmpty &&
                         thread.status != model.ThreadStatus.needsYou) ...[
                       const SizedBox(width: Space.s12),
                       Expanded(
                         child: Text(
-                          thread.headline,
+                          headline,
                           style: e.small.tint(e.muted),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,

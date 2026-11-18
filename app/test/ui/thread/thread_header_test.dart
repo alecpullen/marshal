@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/ui/kit/kit.dart';
@@ -11,11 +12,12 @@ void main() {
   model.ThreadRef thread({
     model.ThreadStatus status = model.ThreadStatus.running,
     String headline = 'Removing the fixtures nobody reads',
+    String title = 'Clean up the fixtures',
   }) => model.ThreadRef(
     host: 'local',
     id: 'a-1',
     project: '/home/u/marshal',
-    title: 'Clean up the fixtures',
+    title: title,
     kind: model.ThreadKind.agent,
     status: status,
     headline: headline,
@@ -24,9 +26,10 @@ void main() {
 
   Future<void> pumpHeader(
     WidgetTester tester,
-    model.ThreadRef threadRef,
-  ) async {
-    tester.view.physicalSize = const Size(1200, 200);
+    model.ThreadRef threadRef, {
+    double width = 1200,
+  }) async {
+    tester.view.physicalSize = Size(width, 200);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(
@@ -69,5 +72,27 @@ void main() {
     await pumpHeader(tester, thread());
 
     expect(find.text('Removing the fixtures nobody reads'), findsOneWidget);
+  });
+
+  testWidgets('a phone gives the title the whole line', (tester) async {
+    // 390 wide: half a line holds neither the title nor a headline, so the
+    // headline is not drawn and the title is read whole rather than cut to
+    // "Clean up the test …" to make room for one (f9 findings 6).
+    const title = 'Clean up the fixture leftovers';
+    await pumpHeader(tester, thread(title: title), width: 390);
+
+    expect(find.text('Removing the fixtures nobody reads'), findsNothing);
+
+    // The drawn line, not the string that is set: a title can be found and
+    // still be elided, so the paragraph that holds it must have taken the
+    // whole of one line.
+    final drawn = tester.renderObject<RenderParagraph>(find.text(title));
+    expect(
+      drawn.didExceedMaxLines,
+      isFalse,
+      reason:
+          'the title needs ${drawn.getMaxIntrinsicWidth(double.infinity)} '
+          'but was given ${drawn.size.width}',
+    );
   });
 }

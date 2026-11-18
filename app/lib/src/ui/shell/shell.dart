@@ -215,6 +215,14 @@ class _ShellState extends State<Shell> {
 
   @override
   Widget build(BuildContext context) {
+    // A scope naming a host the fleet no longer lists reads as All hosts (see
+    // [placeHost]); it is cleared here, before anything is drawn, so the
+    // switcher's anchor and the places that read a host agree on the one they
+    // show from this frame on.
+    final host = _host;
+    if (host != null && !widget.hosts.any((each) => each.name == host)) {
+      _host = null;
+    }
     final narrow = MediaQuery.sizeOf(context).width < Layout.narrow;
     if (!narrow) {
       return Row(
@@ -1076,22 +1084,15 @@ class _StudioState extends State<Studio> {
           thread: thread,
           buildStore: build,
           composerFor: widget.composerFor,
+          // The thread's own ⌘N opens the Studio's one dialog, naming the
+          // thread's host and project; the dialog may then move to another
+          // host (spec D10, P8 plan 2 decision 6).
           shareFor: widget.shareFor,
           inspectorFor: widget.inspectorFor,
-          onThreadStarted: (id) =>
-              navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
-          handoffFor: widget.handoffFor,
-          onOpenItem: (id) =>
-              navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
-          onPlannerStarted: (planner) {
-            _rememberPlanner(thread.host, thread.project, planner);
-            navigation.go(
-              Place(PlaceKind.thread, host: thread.host, id: planner.id),
-            );
-          },
-          // The thread's own ⌘N resolves to the shell's one call, so it obeys
-          // the same rule about a composer that has the keyboard (F9 decision
-          // 6).
+          // The thread's own ⌘N is the shell's one call, so it obeys the same
+          // rule about a composer that has the keyboard (F9 decision 6). The
+          // dialog opens on this thread's host and may move to another (spec
+          // D10, P8 plan 2 decision 6).
           onNewWork: widget.newWorkFor == null ? null : _newWorkFromKeys,
           asks: [
             for (final ask in widget.inbox.asks)
@@ -1303,18 +1304,23 @@ class _StudioState extends State<Studio> {
       newWorkDialog(
         model,
         onCancel: () => Navigator.maybePop(context),
+        // The dialog may move to another host after it opens (spec D10), so
+        // every answer lands on the host the model names now, not the one the
+        // sheet opened on.
         onStarted: (agentId) {
           Navigator.maybePop(context);
-          navigation.go(Place(PlaceKind.thread, host: host, id: agentId));
+          navigation.go(Place(PlaceKind.thread, host: model.host, id: agentId));
         },
         onPlanned: (planner) {
           Navigator.maybePop(context);
-          _rememberPlanner(host, project, planner);
-          navigation.go(Place(PlaceKind.thread, host: host, id: planner.id));
+          _rememberPlanner(model.host, project, planner);
+          navigation.go(
+            Place(PlaceKind.thread, host: model.host, id: planner.id),
+          );
         },
         onWorkItem: (prompt) {
           Navigator.maybePop(context);
-          unawaited(_openNewWorkItem(navigation, host, project, prompt));
+          unawaited(_openNewWorkItem(navigation, model.host, project, prompt));
         },
       ),
     );
@@ -1390,10 +1396,6 @@ class _ThreadPlace extends StatefulWidget {
     this.composerFor,
     this.shareFor,
     this.inspectorFor,
-    this.onThreadStarted,
-    this.onPlannerStarted,
-    this.handoffFor,
-    this.onOpenItem,
     this.onNewWork,
     this.asks = const [],
     this.onAnswer,
@@ -1414,20 +1416,11 @@ class _ThreadPlace extends StatefulWidget {
   /// beside the transcript (F9 decision 4). Null leaves the thread without
   /// one, as every thread was before F9.
   final InspectorBuilder? inspectorFor;
-  final void Function(String agentId)? onThreadStarted;
 
-  /// Opens the planning thread a "Plan first" started (F6 decision 8).
-  final void Function(StartedPlanner planner)? onPlannerStarted;
-
-  /// The handoff review's model, and where an approved item opens.
-  final HandoffBuilder? handoffFor;
-  final void Function(String itemID)? onOpenItem;
-
-  /// Opens the Studio's one new-work dialog for this thread's project: `⌘N`,
-  /// and the empty transcript's "Start an agent". Null leaves both without a
+  /// Opens the Studio's one new-work dialog for this thread's host and
+  /// project. Null leaves `⌘N` and the empty transcript's action without a
   /// dialog.
   final VoidCallback? onNewWork;
-
   final List<inbox.Ask> asks;
   final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
   final DateTime? now;
@@ -1498,11 +1491,6 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
     super.dispose();
   }
 
-  /// Opens the new-work dialog, and the thread it starts.
-  ///
-  /// The Studio opens it (it owns the navigation the dialog's answers land
-  /// on), so this place only asks for it: `⌘N` and the empty transcript's one
-  /// action are the same call.
   @override
   Widget build(BuildContext context) {
     final composer = _composer;

@@ -30,9 +30,11 @@ StackSnapshot _snapshot(String sessionId) => StackSnapshot(
       kind: 'step',
       parent: 'turn:1',
       step: WireStep(
-        headline: sessionId == 'a-2'
-            ? 'Step in the new thread'
-            : 'Step in the first thread',
+        headline: switch (sessionId) {
+          'a-2' => 'Step in the new thread',
+          'a-3' => 'Step in the studio thread',
+          _ => 'Step in the first thread',
+        },
       ),
     ),
   ],
@@ -148,28 +150,61 @@ void main() {
     expect(posted.body, contains('Fix the login redirect'));
     expect(posted.body, contains('"project":"/home/u/marshal"'));
 
-    // …and the dialog closed onto the thread it started (the Studio's
-    // `_openNewWork` in ui/shell/shell.dart), not the one it opened from.
+    // …and the dialog closed onto the thread it started
+    // (`onThreadStarted` in ui/shell/shell.dart), not the one it opened from.
     expect(find.text('Start a new agent'), findsNothing);
     expect(find.text('Step in the new thread'), findsOneWidget);
     expect(find.text('Step in the first thread'), findsNothing);
   });
 
-  testWidgets('the Overview’s New opens the same dialog', (tester) async {
+  testWidgets('a thread started on another host opens there', (tester) async {
     final fixture = await tester.runAsync(
       () => ModelFixture.start([
         FixtureHost(
           name: 'local',
           projects: [project('/home/u/marshal')],
-          agents: [agent(id: 'a-1', project: '/home/u/marshal')],
+          agents: [
+            agent(
+              id: 'a-1',
+              project: '/home/u/marshal',
+              name: 'The first thread',
+              status: AgentState.agentRunning,
+            ),
+          ],
+        ),
+        FixtureHost(
+          name: 'studio',
+          projects: [project('/home/u/studio')],
+          agents: [
+            agent(
+              id: 'a-3',
+              project: '/home/u/studio',
+              name: 'The studio thread',
+            ),
+          ],
         ),
       ], now: now),
     );
-    final bridge = fixture!.bridges['local']!;
+    final local = fixture!.bridges['local']!;
+    final studio = fixture.bridges['studio']!;
     await tester.runAsync(() => fixture.refresh());
-    bridge
-      ..reply('GET', '/api/prompts/recent', const FakeReply(200, body: '{}'))
-      ..reply('GET', '/api/recipes', const FakeReply(200, body: '[]'));
+
+    // The dialog's own lists on both hosts, and the spawn's answer on the one
+    // it will start on.
+    for (final bridge in [local, studio]) {
+      bridge
+        ..reply(
+          'GET',
+          '/api/prompts/recent',
+          const FakeReply(200, body: '{"prompts":["Clean up the fixtures"]}'),
+        )
+        ..reply('GET', '/api/recipes', const FakeReply(200, body: '[]'));
+    }
+    studio.reply(
+      'POST',
+      '/api/agents',
+      const FakeReply(200, body: '{"agentId":"a-3"}'),
+    );
 
     final inboxModel = inbox.InboxModel(
       fixture.store,
@@ -177,29 +212,82 @@ void main() {
     );
     addTearDown(inboxModel.dispose);
 
-    // The window opens on the Overview (the default place), and the page's
-    // header carries the one primary action: start work (design.md, "Starting
-    // work", and the mock's `Btn('New', primary: true, icon: plus)`).
     await tester.pumpWidget(
       EmberApp(
         brightness: Brightness.light,
         home: Studio(
           store: fixture.store,
           inbox: inboxModel,
-          newWorkFor: (host, root) => NewWorkModel.forProject(
-            project('/home/u/marshal'),
-            fixture.clientFor('local'),
-            host: 'local',
+          threadStore: (thread) => StackStore.seeded(_snapshot(thread.id)),
+          // Both hosts answer with a project, so the dialog may start on
+          // either (spec D10, P8 plan 2 decision 6).
+          newWorkFor: (host, root) => NewWorkModel.forHosts(
+            host: host,
+            routes: {
+              'local': NewWorkRoutes.forProject(
+                project('/home/u/marshal'),
+                fixture.clientFor('local'),
+              ),
+              'studio': NewWorkRoutes.forProject(
+                project('/home/u/studio'),
+                fixture.clientFor('studio'),
+              ),
+            },
+            project: host == 'studio'
+                ? project('/home/u/studio')
+                : project('/home/u/marshal'),
           ),
+          initialPlace: const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
         ),
       ),
     );
     await settleIo(tester);
+    expect(find.text('Step in the first thread'), findsOneWidget);
 
-    final button = find.widgetWithText(Btn, 'New');
-    expect(button, findsOneWidget);
-    await tester.tap(button);
+    // ⌘N opens the dialog, and its Host chip moves it to the other host.
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
     await tester.pump(const Duration(milliseconds: 400));
-    expect(find.text('Start a new agent'), findsOneWidget);
+    await tester.tap(find.textContaining('Host: local'));
+    await tester.pump(const Duration(milliseconds: 400));
+    // The sidebar's switcher lists the hosts too, so the menu's entry is the
+    // last one drawn.
+    await tester.tap(find.text('studio').last);
+    await settleIo(tester);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.textContaining('Host: studio'), findsOneWidget);
+
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(Sheet),
+        matching: find.byType(EditableText),
+      ),
+      'Fix the studio redirect',
+    );
+    await tester.pump();
+    await tester.tap(find.text('Start'));
+    await settleIo(tester);
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // The request went to the host the chip named…
+    final posted = studio.requests.lastWhere(
+      (request) => request.method == 'POST',
+    );
+    expect(posted.uri, '/api/agents');
+    expect(posted.body, contains('"project":"/home/u/studio"'));
+    expect(
+      local.requests.where(
+        (request) => request.method == 'POST' && request.uri == '/api/agents',
+      ),
+      isEmpty,
+      reason: 'the host the dialog left posts nothing',
+    );
+
+    // …and the dialog closed onto the thread it started there, not onto the
+    // thread on the host it opened from.
+    expect(find.text('Start a new agent'), findsNothing);
+    expect(find.text('Step in the studio thread'), findsOneWidget);
+    expect(find.text('Step in the first thread'), findsNothing);
   });
 }

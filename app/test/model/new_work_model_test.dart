@@ -91,6 +91,84 @@ class _Routes {
   );
 }
 
+/// One host's routes, recording what they were asked, so a test can say which
+/// host the dialog read and posted through (P8 plan 2, decision 6).
+class _Host {
+  _Host({required this.label, required this.project, required this.roots});
+
+  /// What this host's lists say, so a test can tell whose list it reads.
+  final String label;
+
+  /// The root its routes open with: its first project.
+  final String project;
+
+  /// The roots its project menu lists.
+  final List<String> roots;
+
+  /// How many times its lists were read, and the projects its issues route was
+  /// asked about.
+  var reads = 0;
+  final issuesFor = <String>[];
+
+  /// The spawns it was asked to make.
+  final spawns = <SpawnRequest>[];
+
+  NewWorkRoutes routes() => NewWorkRoutes(
+    project: project,
+    recentPrompts: () async {
+      reads++;
+      return RecentPrompts(prompts: ['Recent on $label']);
+    },
+    issues: (root) async {
+      issuesFor.add(root);
+      return [
+        RepoIssue(
+          number: 42,
+          title: 'Issue on $label',
+          body: 'The return path is lost.',
+          url: 'https://github.com/owner/name/issues/42',
+        ),
+      ];
+    },
+    recipes: () async => [
+      Recipe(
+        name: 'recipe-on-$label',
+        title: 'Recipe on $label',
+        kind: 'prompt',
+        prompt: 'Find the bug, fix it, and add a test.',
+      ),
+    ],
+    spawn: (request) async {
+      spawns.add(request);
+      return SpawnResult(agentID: 'a-$label');
+    },
+    projects: () async => roots,
+  );
+}
+
+/// The dialog over two hosts: `local`, which the thread starts on, and
+/// `studio`, whose project menu is [studioRoots].
+({NewWorkModel model, _Host local, _Host studio}) _twoHosts({
+  List<String> studioRoots = const ['/home/u/studio'],
+}) {
+  final local = _Host(
+    label: 'local',
+    project: '/home/u/marshal',
+    roots: const ['/home/u/marshal'],
+  );
+  final studio = _Host(
+    label: 'studio',
+    project: '/home/u/studio',
+    roots: studioRoots,
+  );
+  final model = NewWorkModel.forHosts(
+    host: 'local',
+    routes: {'local': local.routes(), 'studio': studio.routes()},
+    project: _project,
+  );
+  return (model: model, local: local, studio: studio);
+}
+
 void main() {
   test('the defaults come from the project', () {
     final model = _Routes().model();
@@ -398,7 +476,7 @@ void main() {
       expect(chips['Model']!.chooseable, isFalse);
       expect(chips['Model']!.note, contains('F6'));
       expect(chips['Host']!.chooseable, isFalse);
-      expect(chips['Host']!.note, contains('F7'));
+      expect(chips['Host']!.note, 'The only host that answers with a project');
       model.dispose();
     },
   );
@@ -438,6 +516,113 @@ void main() {
       '/home/u/other',
       reason: 'the menu changes the request, not just the label',
     );
+    model.dispose();
+  });
+
+  test('the host chip lists every host given', () {
+    final (:model, local: _, studio: _) = _twoHosts();
+    final chip = model.chips.firstWhere((chip) => chip.name == 'Host');
+
+    expect(model.host, 'local');
+    expect(chip.value, 'local');
+    expect(chip.options, [
+      'local',
+      'studio',
+    ], reason: 'the routes\' keys, in the order they were given');
+    expect(chip.chooseable, isTrue);
+    model.dispose();
+  });
+
+  test('one host draws the chip as a note', () {
+    final model = NewWorkModel.forHosts(
+      host: 'local',
+      routes: {
+        'local': _Host(
+          label: 'local',
+          project: '/home/u/marshal',
+          roots: const ['/home/u/marshal'],
+        ).routes(),
+      },
+      project: _project,
+    );
+    final chip = model.chips.firstWhere((chip) => chip.name == 'Host');
+
+    expect(
+      chip.chooseable,
+      isFalse,
+      reason:
+          'a menu whose only entry is the value already set changes nothing',
+    );
+    expect(chip.note, 'The only host that answers with a project');
+    model.dispose();
+  });
+
+  test('choosing a host keeps a root it also lists', () async {
+    final (:model, local: _, studio: _) = _twoHosts(
+      studioRoots: const ['/home/u/marshal', '/home/u/studio'],
+    );
+    await model.load();
+
+    model.setChoice('Host', 'studio');
+    await pumpEventQueue();
+
+    expect(model.host, 'studio');
+    expect(
+      model.choices['Project'],
+      '/home/u/marshal',
+      reason: 'the new host lists the root the dialog already starts on',
+    );
+    model.dispose();
+  });
+
+  test('choosing a host without the root takes its first project', () async {
+    final (:model, local: _, studio: _) = _twoHosts();
+    await model.load();
+
+    model.setChoice('Host', 'studio');
+    await pumpEventQueue();
+
+    expect(
+      model.choices['Project'],
+      '/home/u/studio',
+      reason: 'a root the host does not list is not a project there',
+    );
+    model.dispose();
+  });
+
+  test('choosing a host reloads its lists', () async {
+    final (:model, local: _, :studio) = _twoHosts();
+    await model.load();
+    expect(model.recentPrompts.single, 'Recent on local');
+
+    model.setChoice('Host', 'studio');
+    await pumpEventQueue();
+
+    expect(studio.reads, 1, reason: 'the new host\'s lists are read');
+    expect(model.recentPrompts.single, 'Recent on studio');
+    expect(model.issues.single.title, 'Issue on studio');
+    expect(model.recipes.single.name, 'recipe-on-studio');
+    expect(
+      studio.issuesFor.single,
+      '/home/u/studio',
+      reason: 'the issues are asked about the project it starts on',
+    );
+    model.dispose();
+  });
+
+  test('start posts on the chosen host', () async {
+    final (:model, :local, :studio) = _twoHosts();
+    await model.load();
+
+    model.setChoice('Host', 'studio');
+    await pumpEventQueue();
+    model.prefill('Do the work');
+    await model.start();
+
+    expect(local.spawns, isEmpty, reason: 'the host it left posts nothing');
+    expect(studio.spawns.single.project, '/home/u/studio');
+    expect(studio.spawns.single.prompt, 'Do the work');
+    expect(model.started?.agentID, 'a-studio');
     model.dispose();
   });
 }

@@ -461,4 +461,36 @@ void main() {
     expect(factory.lastReadAt('studio'), isNull);
     expect(factory.loaded('studio'), isFalse);
   });
+
+  test("a forgotten host's items go", () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        factoryItems: [factoryItem(id: 'item-1')],
+      ),
+      FixtureHost(
+        name: 'studio',
+        kind: HostKind.server,
+        projects: [project('/home/u/beta')],
+        factoryItems: [factoryItem(id: 'item-2', project: '/home/u/beta')],
+      ),
+    ]);
+    final factory = FactoryStore(fixture.registry, now: fixture.clock.now);
+    addTearDown(factory.dispose);
+    await factory.refresh();
+    expect([for (final item in factory.items()) item.id], ['item-1', 'item-2']);
+
+    fixture.registry.forget('local');
+    await settle();
+
+    expect([for (final item in factory.items()) item.id], ['item-2']);
+    expect(factory.items(host: 'local'), isEmpty);
+    expect(factory.byId('local', 'item-1'), isNull);
+    expect(
+      factory.loaded('local'),
+      isFalse,
+      reason: 'a host that is gone is not one this store has read',
+    );
+  });
 }

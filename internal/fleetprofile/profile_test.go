@@ -315,3 +315,136 @@ func TestLookupOnAnEmptyFileGivesAStarter(t *testing.T) {
 		}
 	}
 }
+
+// TestARelayedServerNamesAURLServer holds D20's first rule: relay = "HUB"
+// reaches a server profile that holds a url, and the relayed server carries
+// the fields any server may carry.
+func TestARelayedServerNamesAURLServer(t *testing.T) {
+	f, err := Load(writeFleet(t, `
+[servers.hub]
+url = "https://fleet.example.com"
+
+[servers.edge]
+relay = "hub"
+token_cmd = "pass show fleet/edge"
+notify = false
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	edge, ok := f.Servers["edge"]
+	if !ok {
+		t.Fatalf("servers = %v, want edge", sortedNames(f.Servers))
+	}
+	if edge.Relay != "hub" || edge.URL != "" {
+		t.Fatalf("edge = %+v, want relay hub and no url of its own", edge)
+	}
+	if edge.TokenCmd != "pass show fleet/edge" || edge.Notify {
+		t.Fatalf("edge = %+v, want its token_cmd and its notify = false", edge)
+	}
+	if got := f.Servers["hub"].Relay; got != "" {
+		t.Fatalf("hub relay = %q, want none", got)
+	}
+
+	// A relay naming no server at all is refused, and the refusal names the
+	// servers the file does have.
+	_, err = Load(writeFleet(t, `
+[servers.hub]
+url = "https://fleet.example.com"
+
+[servers.edge]
+relay = "nope"
+`))
+	if err == nil {
+		t.Fatal("a relay naming no server was loaded, want a refusal")
+	}
+	for _, want := range []string{"servers.edge.relay", "nope", "hub"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to name %q", err, want)
+		}
+	}
+}
+
+// TestARelayMustNotBeRelayed holds D20's "There are no chains": a relay naming
+// a server that is itself relayed is refused.
+func TestAServerNameIsNotDotsAlone(t *testing.T) {
+	for _, name := range []string{".", ".."} {
+		_, err := Load(writeFleet(t, "[servers.\""+name+"\"]\nurl = \"https://fleet.example.com\"\n"))
+		if err == nil {
+			t.Fatalf("a server named %q was loaded, want a refusal", name)
+		}
+		if want := "dots alone"; !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to hold %q", err, want)
+		}
+	}
+}
+
+func TestARelayMustNotBeRelayed(t *testing.T) {
+	_, err := Load(writeFleet(t, `
+[servers.hub]
+url = "https://fleet.example.com"
+
+[servers.middle]
+relay = "hub"
+
+[servers.edge]
+relay = "middle"
+`))
+	if err == nil {
+		t.Fatal("a relay of a relayed server was loaded, want a refusal")
+	}
+	if want := "servers.edge.relay: middle is itself relayed"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to hold %q", err, want)
+	}
+}
+
+// TestAServerNeedsAURLOrARelayNotBoth holds D20's rule that a server has one
+// of url and relay: both, and neither, are refused.
+func TestAServerNeedsAURLOrARelayNotBoth(t *testing.T) {
+	_, err := Load(writeFleet(t, `
+[servers.hub]
+url = "https://fleet.example.com"
+
+[servers.edge]
+url = "https://edge.example.com"
+relay = "hub"
+`))
+	if err == nil {
+		t.Fatal("a server with a url and a relay was loaded, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "servers.edge") || !strings.Contains(err.Error(), "url") {
+		t.Fatalf("error = %q, want it to name the url the relay replaces", err)
+	}
+
+	_, err = Load(writeFleet(t, `
+[servers.edge]
+token_cmd = "pass show fleet/edge"
+`))
+	if err == nil {
+		t.Fatal("a server with neither a url nor a relay was loaded, want a refusal")
+	}
+	if want := "servers.edge: a server needs a url, or a relay naming one"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to hold %q", err, want)
+	}
+}
+
+// TestARelayedServerHasNoCAFile holds D20's decision 4: a relayed profile's
+// TLS is the hub's, so a ca_file of its own is refused.
+func TestARelayedServerHasNoCAFile(t *testing.T) {
+	_, err := Load(writeFleet(t, `
+[servers.hub]
+url = "https://fleet.example.com"
+
+[servers.edge]
+relay = "hub"
+ca_file = "edge.pem"
+`))
+	if err == nil {
+		t.Fatal("a relayed server with a ca_file was loaded, want a refusal")
+	}
+	for _, want := range []string{"servers.edge.ca_file", "no ca_file", "hub"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to name %q", err, want)
+		}
+	}
+}

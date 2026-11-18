@@ -4,7 +4,9 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'src/client/bridge_client.dart';
 import 'src/client/contract.g.dart';
+import 'src/client/fleet_profiles.dart';
 import 'src/client/host.dart';
+import 'src/client/host_tokens.dart';
 import 'src/client/host_discovery_stub.dart'
     if (dart.library.io) 'src/client/host_discovery_io.dart';
 import 'src/client/studio_code_stub.dart'
@@ -32,6 +34,7 @@ import 'src/model/network_model.dart';
 import 'src/model/notifications_model.dart';
 import 'src/model/new_work_model.dart';
 import 'src/model/per_host.dart';
+import 'src/model/place_host.dart' show placeHost;
 import 'src/model/planning_model.dart';
 import 'src/model/project_model.dart';
 import 'src/model/pulls_model.dart';
@@ -165,26 +168,37 @@ Future<void> main() async {
             thread.id,
             view: view,
           ),
-          // The Studio's one way into the new-work dialog (F3 task 7, F6
-          // decisions 8 and 9): a thread's `⌘N`, the Overview's "New" and a
-          // project page's "New" all name a host and a project, and the dialog
-          // starts an agent, a planner, or the handoff review a work item
-          // comes from.
-          newWorkFor: (host, project) => NewWorkModel.forProject(
-            store
-                .projects(host: host)
-                .firstWhere(
-                  (status) => status.root == project,
-                  orElse: () => ProjectStatus(
-                    root: project,
-                    available: true,
-                    trust: TrustState.trustNA,
-                    isolation: 'available',
-                  ),
-                ),
-            hosts.hosts.firstWhere((owner) => owner.name == host).client,
-            host: host,
-          ),
+          // The new-work dialog starts on the thread's own host and may start
+          // on any other that answers with a project (spec D10, P8 plan 2
+          // decision 6).
+          newWorkFor: (host, project) {
+            final routes = _newWorkRoutes(hosts, store);
+            if (routes.isEmpty) {
+              // Nothing answers with a project: the dialog still opens on the
+              // thread's own host, which is what F6 built.
+              return NewWorkModel.forProject(
+                _newWorkProject(store, host, project),
+                hosts.hosts.firstWhere((owner) => owner.name == host).client,
+                host: host,
+              );
+            }
+            // The thread's host opens it, then the first live host — which is
+            // what All hosts reads — then the first host that answers with a
+            // project. The shell's own scope is not plumbed into this closure,
+            // so a scope naming a later host still opens on the first live
+            // one.
+            final scope = placeHost(store.hosts, null);
+            final open = routes.containsKey(host)
+                ? host
+                : (scope != null && routes.containsKey(scope)
+                      ? scope
+                      : routes.keys.first);
+            return NewWorkModel.forHosts(
+              host: open,
+              routes: routes,
+              project: _newWorkProject(store, open, project),
+            );
+          },
           // Registers a repository for issue intake from the sidebar's plus
           // (F9 B1): the sheet is the Studio's, the client is the host's.
           connectRepoFor: (host) => ConnectRepoModel(
@@ -366,6 +380,44 @@ StartPlace startPlaceFromPage(Uri page) {
   );
 }
 
+/// The new-work routes of every host the dialog may start on: the ones that are
+/// live and list at least one project, in discovery order (P8 plan 2 decision
+/// 6). Each is built from that host's client and its first project, as a
+/// single-host dialog always has been.
+Map<String, NewWorkRoutes> _newWorkRoutes(
+  HostRegistry hosts,
+  FleetStore store,
+) {
+  final routes = <String, NewWorkRoutes>{};
+  for (final owner in hosts.hosts) {
+    final live = store.hosts.any(
+      (host) => host.name == owner.name && host.live,
+    );
+    if (!live) continue;
+    final projects = store.projects(host: owner.name);
+    if (projects.isEmpty) continue;
+    routes[owner.name] = NewWorkRoutes.forProject(projects.first, owner.client);
+  }
+  return routes;
+}
+
+/// The project a new-work dialog opens on, on [host]: the thread's own project
+/// when that host lists it, else the first project the host lists, and — on a
+/// host that lists none — the thread's project, which is what F6 opened on.
+ProjectStatus _newWorkProject(FleetStore store, String host, String root) {
+  final projects = store.projects(host: host);
+  for (final project in projects) {
+    if (project.root == root) return project;
+  }
+  if (projects.isNotEmpty) return projects.first;
+  return ProjectStatus(
+    root: root,
+    available: true,
+    trust: TrustState.trustNA,
+    isolation: 'available',
+  );
+}
+
 /// The three sectioned places F7 built, each built for the host that answers.
 ///
 /// Each place reads one bridge, so it reads the host the Studio's switcher
@@ -408,10 +460,17 @@ class _Sections {
       dispose: (models) => models.dispose(),
     );
     _settings = PerHost<_Settings>(
-      (host) =>
-          _Settings(_clientFor(host)!, store: store, preferences: preferences),
+      (host) => _Settings(
+        _clientFor(host)!,
+        store: store,
+        preferences: preferences,
+        registry: hosts,
+      ),
       dispose: (models) => models.dispose(),
     );
+    // A host whose profile was removed is forgotten from all three (spec D9).
+    hosts.addListener(_hostsChanged);
+    _hostsChanged();
   }
 
   final HostRegistry hosts;
@@ -425,6 +484,25 @@ class _Sections {
   late final PerHost<_Automations> _automations;
   late final PerHost<_Library> _library;
   late final PerHost<_Settings> _settings;
+
+  /// The hosts the three caches were last built for: the ones the registry
+  /// listed when it last changed.
+  final _known = <String>{};
+
+  /// The registry changed: a host it no longer lists is forgotten from all
+  /// three caches, so its models are disposed and a host of that name, added
+  /// again, is built afresh (spec D9).
+  void _hostsChanged() {
+    final listed = {for (final host in hosts.hosts) host.name};
+    for (final name in _known.difference(listed)) {
+      _automations.forget(name);
+      _library.forget(name);
+      _settings.forget(name);
+    }
+    _known
+      ..clear()
+      ..addAll(listed);
+  }
 
   /// The client that reaches [host], or null when this fleet no longer lists
   /// it: a host can go away between the shell's build and this call.
@@ -645,7 +723,18 @@ class _Settings {
     BridgeClient client, {
     required this.store,
     required this.preferences,
-  }) : hosts = HostsModel(() => store.hosts),
+    required HostRegistry registry,
+  }) : hosts = HostsModel(
+         () => store.hosts,
+         profiles: fleetProfiles(),
+         rediscover: registry.discover,
+         forget: registry.forget,
+         retry: registry.retry,
+         // A browser writes the host's own key; a native build leaves both
+         // unset and signs in through `marshal fleet login` (spec D21).
+         storeToken: hostTokenWriters?.store,
+         clearToken: hostTokenWriters?.clear,
+       ),
        environments = EnvironmentsModel(client),
        connections = ConnectionsModel(client),
        models = ModelsModel(client),

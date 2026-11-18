@@ -129,8 +129,12 @@ elsewhere, over TLS. The profiles live in `fleet.toml` in the user's config
 directory (`~/.config/marshal/fleet.toml` by default), which must be private —
 `0600`, owned by the user — and holds no token: a server's token comes from its
 `token_cmd`, or from the keychain, where `marshal fleet login NAME` stores it.
+`marshal fleet add NAME URL` and `marshal fleet remove NAME` write the file,
+keeping its comments.
 Each `[servers.<name>]` table names an `https://` origin (or a loopback
-`http://` one) and may set `ca_file` and `notify`; `[local] notify` turns
+`http://` one) and may set `ca_file` and `notify`; a table with `relay = "HUB"`
+in place of `url` is reached through HUB, and the fleet screen does not use one
+yet; `[local] notify` turns
 notifications off for the local daemon. The bridge serves the agent attach on
 its network listener behind the bearer token, over TLS or on a loopback
 address, and refuses it 403 elsewhere. `internal/fleetprofile` owns that file.

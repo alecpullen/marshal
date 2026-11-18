@@ -23,11 +23,15 @@ class HostSpec {
     required this.name,
     required this.kind,
     required this.client,
+    this.via,
   });
 
   final String name;
   final HostKind kind;
   final BridgeClient client;
+
+  /// The relay's host name this host is reached through, or null.
+  final String? via;
 }
 
 /// Finds the hosts this build can reach.
@@ -47,11 +51,15 @@ class Host extends ChangeNotifier {
     required this.kind,
     required this.client,
     required this.fleet,
+    this.via,
   });
 
   final String name;
   final HostKind kind;
   final BridgeClient client;
+
+  /// The relay's host name this host is reached through, or null.
+  final String? via;
 
   /// The fleet stream this host follows.
   final EventStream fleet;
@@ -139,12 +147,42 @@ class HostRegistry extends ChangeNotifier {
         kind: spec.kind,
         client: spec.client,
         fleet: _fleetFor(spec.client),
+        via: spec.via,
       );
       host.start();
       _hosts.add(host);
       added = true;
     }
     if (added) notifyListeners();
+  }
+
+  /// Stops, disposes and drops [name], and notifies (spec D9).
+  ///
+  /// It is the one way a host leaves the fleet: discovery never forgets one,
+  /// however long it stays down (decision 8), so a host whose profile was
+  /// removed is dropped here and nowhere else. A name this fleet does not list
+  /// does nothing.
+  void forget(String name) {
+    final at = _hosts.indexWhere((host) => host.name == name);
+    if (at < 0) return;
+    final host = _hosts.removeAt(at);
+    host.dispose();
+    notifyListeners();
+  }
+
+  /// Stops [name]'s stream and starts it again, after its token changed.
+  ///
+  /// A refused token is terminal (decision 6): the stream is stopped rather
+  /// than retried, so a host that has just been signed in to is asked to try
+  /// once more instead of waited on. A name this fleet does not list does
+  /// nothing.
+  void retry(String name) {
+    for (final host in _hosts) {
+      if (host.name != name) continue;
+      host.stop();
+      host.start();
+      return;
+    }
   }
 
   @override

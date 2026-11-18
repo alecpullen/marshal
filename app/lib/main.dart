@@ -22,6 +22,7 @@ import 'src/model/fleet_store.dart';
 import 'src/model/general_model.dart';
 import 'src/model/handoff_model.dart';
 import 'src/model/composer_model.dart';
+import 'src/model/connect_repo_model.dart';
 import 'src/model/hosts_model.dart';
 import 'src/model/inbox_model.dart';
 import 'src/model/inspector_state.dart';
@@ -50,6 +51,7 @@ import 'src/ui/automations/bots_tab.dart';
 import 'src/ui/automations/placeholder.dart';
 import 'src/ui/automations/recipes_tab.dart';
 import 'src/ui/automations/schedules_tab.dart';
+import 'src/ui/automations/watch_form.dart';
 import 'src/ui/automations/watches_tab.dart';
 import 'src/ui/inspector/host.dart';
 import 'src/ui/kit/kit.dart';
@@ -142,20 +144,30 @@ Future<void> main() async {
             thread.id,
             view: view,
           ),
-          newWorkFor: (thread) => NewWorkModel.forProject(
+          // The Studio's one way into the new-work dialog (F3 task 7, F6
+          // decisions 8 and 9): a thread's `⌘N`, the Overview's "New" and a
+          // project page's "New" all name a host and a project, and the dialog
+          // starts an agent, a planner, or the handoff review a work item
+          // comes from.
+          newWorkFor: (host, project) => NewWorkModel.forProject(
             store
-                .projects(host: thread.host)
+                .projects(host: host)
                 .firstWhere(
-                  (project) => project.root == thread.project,
+                  (status) => status.root == project,
                   orElse: () => ProjectStatus(
-                    root: thread.project,
+                    root: project,
                     available: true,
                     trust: TrustState.trustNA,
                     isolation: 'available',
                   ),
                 ),
-            hosts.hosts.firstWhere((host) => host.name == thread.host).client,
-            host: thread.host,
+            hosts.hosts.firstWhere((owner) => owner.name == host).client,
+            host: host,
+          ),
+          // Registers a repository for issue intake from the sidebar's plus
+          // (F9 B1): the sheet is the Studio's, the client is the host's.
+          connectRepoFor: (host) => ConnectRepoModel(
+            hosts.hosts.firstWhere((owner) => owner.name == host).client,
           ),
           // A thread's Share mints a read-only status link for its agent on
           // the client that reaches its host (F7 decision 7): a running
@@ -217,47 +229,48 @@ Future<void> main() async {
           // posted through the snapshot's handoff route, so the bridge's frozen
           // bytes and verified hashes are what the item is built from. The
           // new-work dialog passes no capture and keeps the create route.
-          handoffFor: (thread, plan, spec, {plannerID, snapshot}) async {
-            final client = hosts.hosts
-                .firstWhere((owner) => owner.name == thread.host)
-                .client;
-            var defaults = ProjectDefaults(hostID: thread.host);
-            try {
-              final settings = await client.projectSettings(thread.project);
-              defaults = ProjectDefaults.fromSettings(
-                settings.settings,
-                hostID: thread.host,
-              );
-            } catch (_) {
-              // The sheet opens on the host alone, stating what the project
-              // does not; a settings read must not leave the plan unhanded.
-            }
-            // The version this review is bound to: the combined one the
-            // bridge composes, so a settings change made while the review
-            // is open is noticed at approval rather than frozen unread. A
-            // read that fails leaves the review unbound, never blocked.
-            String? version;
-            try {
-              version = await client.factorySettingsVersion(thread.project);
-            } catch (_) {
-              version = null;
-            }
-            return HandoffModel(
-              defaults: defaults,
-              projectRoot: thread.project,
-              title: thread.title,
-              plan: plan,
-              spec: spec,
-              settingsVersion: version,
-              readSettingsVersion: (root) =>
-                  client.factorySettingsVersion(root),
-              create: (draft) => factory.create(thread.host, draft),
-              reviewedSnapshot: snapshot,
-              plannerID: plannerID,
-              handoffSnapshot: (planner, snapshotID, request) =>
-                  factory.handoff(thread.host, planner, snapshotID, request),
-            );
-          },
+          handoffFor:
+              (host, project, title, plan, spec, {plannerID, snapshot}) async {
+                final client = hosts.hosts
+                    .firstWhere((owner) => owner.name == host)
+                    .client;
+                var defaults = ProjectDefaults(hostID: host);
+                try {
+                  final settings = await client.projectSettings(project);
+                  defaults = ProjectDefaults.fromSettings(
+                    settings.settings,
+                    hostID: host,
+                  );
+                } catch (_) {
+                  // The sheet opens on the host alone, stating what the project
+                  // does not; a settings read must not leave the plan unhanded.
+                }
+                // The version this review is bound to: the combined one the
+                // bridge composes, so a settings change made while the review
+                // is open is noticed at approval rather than frozen unread. A
+                // read that fails leaves the review unbound, never blocked.
+                String? version;
+                try {
+                  version = await client.factorySettingsVersion(project);
+                } catch (_) {
+                  version = null;
+                }
+                return HandoffModel(
+                  defaults: defaults,
+                  projectRoot: project,
+                  title: title,
+                  plan: plan,
+                  spec: spec,
+                  settingsVersion: version,
+                  readSettingsVersion: (root) =>
+                      client.factorySettingsVersion(root),
+                  create: (draft) => factory.create(host, draft),
+                  reviewedSnapshot: snapshot,
+                  plannerID: plannerID,
+                  handoffSnapshot: (planner, snapshotID, request) =>
+                      factory.handoff(host, planner, snapshotID, request),
+                );
+              },
           // Answers a plan run's question, for a run opened from a project
           // page's list (F6 decision 12).
           answerRunFor: (host, agentID, answer) => hosts.hosts
@@ -383,6 +396,26 @@ class _Sections {
           RecipesTab(model: models.recipes, tabs: tabs, state: state),
       tab: section,
       state: state,
+      // Each tab says how many entries it holds, from the model that already
+      // holds them (F9 B4). Bots counts the project's forge rows; a fleet with
+      // no project draws the planned tab, which has nothing to count.
+      counts: {
+        0: models.project.isEmpty ? null : models.bots.items.length,
+        1: models.schedules.items.length,
+        2: models.watches.items.length,
+        3: models.recipes.items.length,
+      },
+      // New automation starts the kind it names (F9 B4), in the tab that owns
+      // that form. A recipe has no create of its own — one is made by copying
+      // a built-in on the Recipes tab, which the Recipe choice opens.
+      onNew: (tab, context) async {
+        switch (tab) {
+          case 1:
+            SchedulesTab.create(context, models.schedules);
+          case 2:
+            await showWatchForm(context, models.watches);
+        }
+      },
     );
   }
 

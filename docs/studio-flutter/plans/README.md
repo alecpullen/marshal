@@ -41,5 +41,8 @@ F0 was executed directly from its spec and has no plan.
 | 9 | [F7.1 list pattern, Automations, Library](2026-11-17-f7-1-automations-library-plan.md) | 2; may run beside 3–8 |
 | 10 | [F7.2 Settings](2026-11-17-f7-2-settings-plan.md) | 9 |
 | 11 | [F8 cutover](2026-11-17-f8-cutover-plan.md) | all |
+| 12 | [F9.1 reachable surfaces](2026-11-18-f9-1-reachable-surfaces-plan.md) | 11; may run before or after 13 |
+| 13 | [F9.2 start from anywhere](2026-11-18-f9-2-start-from-anywhere-plan.md) | 11; may run before or after 12 |
+| 14 | [F9.3 Overview and project parity](2026-11-18-f9-3-overview-parity-plan.md) | 11; may run beside 12 and 13 |
 
 The Svelte Studio is frozen, bug fixes only, from the start of plan 2.

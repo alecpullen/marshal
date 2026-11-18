@@ -327,8 +327,17 @@ class _ThreadScreenState extends State<ThreadScreen> {
     }
     if (store.status == StackStatus.error) {
       return StateMessage.error(
-        message: 'The transcript could not be read.',
+        // The bridge's own words when it refused for a reason it named — a
+        // session's owner, say — and the screen's sentence when it did not
+        // (P7 decision 7).
+        message: store.failure ?? 'The transcript could not be read.',
         retry: StateAction('Try again', onTap: store.refresh),
+      );
+    }
+    if (store.status == StackStatus.gone) {
+      return StateMessage.error(
+        message: 'This session was closed while idle.',
+        retry: StateAction('Reopen', onTap: store.reopen),
       );
     }
     return Column(

@@ -786,6 +786,14 @@ class _StudioState extends State<Studio> {
     if (run != null && run.host == host) return run;
     final item = widget.factory?.byId(host, id);
     if (item != null) return threadOfItem(host, item);
+    // A session the bridge's index lists is a thread of its own (P7). The two
+    // cannot collide: the index leaves out the sessions agents run in, so an
+    // agent's id and a session's name the same thread only by impossible
+    // accident.
+    final session = widget.store.session(host, id);
+    if (session != null) {
+      return model.threadOfSession(host, session.root, session.row);
+    }
     for (final agent in widget.store.agents(host: host)) {
       if (agent.id == id) return model.threadFor(host, agent);
     }

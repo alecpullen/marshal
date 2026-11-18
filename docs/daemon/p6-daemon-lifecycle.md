@@ -1073,15 +1073,17 @@ recorded before any edit: `scripts/test.sh ci --go-only` passed every package
 (no Go test failed, nothing panicked), and the four per-task Verify packages
 were green, so no task re-proved a baseline failure.
 
-The commits, in the order they landed (`git log --oneline 6174f32e..HEAD` at
-the time of writing; this record's own docs commit lands after it, so it is not
-in this list):
+The commits, oldest first (`git log` prints them newest first):
 
 - `e1a9543b` task 1 — the wire
 - `8dabe19d` task 4 — the client's restart
 - `7a0d9701` task 5 — `marshal daemon restart` and the daemon's status line
 - `48c7a7bb` task 2 — the bridge's own restart and its route
 - `e176c91f` task 3 — `webbridge` re-executes itself
+- `70a3dbb8` task 6 — the docs, the record and full verification
+- `f13ab85e` review round one — the findings below
+
+The record's own docs commit lands after this list, so it is not in it.
 
 The tasks ran as delegated subagents in waves, parallel where their packages
 were disjoint: task 2 (`web/bridge`) beside task 4 (`internal/daemon`), then
@@ -1145,7 +1147,7 @@ own restart.
   refused restart directly under its info line, through the same
   `daemonRestartText` helper the children use.
 
-**Tests.** `web/bridge/selfrestart_test.go` (484 lines) covers the replaced
+**Tests.** `web/bridge/selfrestart_test.go` (654 lines) covers the replaced
 build that restarts when idle, the unchanged build that does not, the busy
 child and the running agent that hold it, the refused build that keeps the
 daemon serving, the viewers that hear the restart, the route's streaming and
@@ -1214,6 +1216,70 @@ and none starts from an installed daemon at a service-managed path.
   passed against that binary: `ok marshal/test/usability 44.528s`.
 - `cd app && flutter test test/boundary_test.dart` passed, nine rules, with
   Flutter 3.50.0.
+
+**Mutation check.** The plan's task 2 names one: drop the agents from
+`daemonHolds`, and `TestTheBridgeWaitsForARunningAgent` must fail. It does,
+after the review round's changes as well:
+
+```
+2026/11/18 13:40:14 INFO webbridge: restarting the daemon version=test-new reason="a new webbridge build"
+--- FAIL: TestTheBridgeWaitsForARunningAgent (0.10s)
+    selfrestart_test.go:309: the bridge restarted unexpectedly: {Path:/tmp/p6-5-suite/TestTheBridgeWaitsForARunningAgent2787714799/001/webbridge Version:test-new Reason:a new webbridge build}
+```
+
+The line was restored; `git diff` was empty afterwards, and the two tests that
+touch that path ran green again.
+
+**The review round.** Three reviewer subagents read the branch before it left
+draft (the wire and CLI surface, the bridge's concurrency, and the plan's own
+test list). No blocker was found; three minor findings and several nits were
+acted on in `f13ab85e`, after the six task commits:
+
+- **A requested restart was invisible.** `requestRestart` streamed its
+  waiting lines but never published the daemon's state, and the 30s sweep
+  cleared it on every pass, so `marshal daemon status` reported no restart for
+  the whole of a `marshal daemon restart` that was waiting. The request now
+  publishes "a restart was asked for" with its waiting-for while it waits, the
+  sweep leaves a requested state alone, and the fire publishes the reason with
+  nothing left to wait for.
+- **Nothing asked again after the build check.** `daemonHolds` could answer
+  empty, `--version` could then take up to its 10s budget, and only then did
+  the daemon announce and shut down — a turn starting in that window was
+  ended, which decision 2 forbids for an unasked restart and for a request
+  without `--now`. `fireSelfRestart` now takes a `recheck` flag and asks again
+  with the right quiet rule; `--now` still fires at once.
+- **A sweep in flight at shutdown could fire.** `fleet.Close` does not stop an
+  in-progress `SweepRestarts`, so a sweep reaching `sweepOwnRestart` after the
+  daemon had already returned could announce `marshal/restarting` and send a
+  decision nobody would read. It now returns as soon as `f.done` closes, and
+  the request loop stops there too.
+- **A refusal replaced the reason that triggered it** with whatever the status
+  said before; the reason argument now wins, and the published waiting-for
+  carries every hold, comma-joined, rather than only the first.
+- **Two test findings.** L6's subprocess inherited the developer's `HOME` and
+  XDG directories, so the re-executed daemon could read a real config; they
+  are pinned inside the test's temporary directory. And the withdrawal test's
+  single 100ms look became a bounded wait of twenty sweeps, which a starved
+  tick cannot slip past.
+
+Four tests were added — the requested restart's visible status, the second
+hold check, the post-close sweep, and the requested state surviving an
+unchanged sweep — and one existing test's setup changed without touching its
+assertions: `TestTheViewersHearTheDaemonRestart` now ages the viewer's activity
+past the quiet window instead of sweeping with a future clock, because the
+fire re-asks the quiet gate at the real clock.
+
+What the reviewers found sound is part of the record too: the wire change is
+additive with `StatusSchema` still 1 and the Dart mirror generated and
+currently checked; the published state is deep-copied under `ownRestartMu`, so
+`GET /api/daemon` cannot read a torn value; `selfFired` makes the decision
+one-per-process and the announce precedes the non-blocking send; the route is
+socket-only, gates its method and answers 501 without an own binary; and the
+lock order is `sweepMu → relayMu → clientMu`, with `sweepMu` never held across
+`Close`. Two nits were left: the post-restart `Info` poll can overshoot its
+deadline by one `daemonStatusTimeout` (the same shape `daemonAnswers` has), and
+the route's per-line flush is not asserted, since dropping it changes latency
+rather than content.
 
 ### Plan 6 — a wake with no screen, and the two P4 warnings
 

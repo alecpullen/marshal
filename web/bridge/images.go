@@ -107,28 +107,22 @@ func writeImageTooLarge(w http.ResponseWriter) {
 	})
 }
 
-// imageTarget resolves where an upload belongs: the session's own registry
-// when the bridge already knows that session, else the project child rooted at
-// root — which must know the session id too, since the image is stored on the
-// session's runtime. A child that does not know it is an unknown session, not
-// a reason to open a dialer of our own.
+// imageTarget resolves where an upload belongs: the session's own registry, by
+// the one rule every per-session route uses (P7 D2). The image is stored on the
+// session's runtime, so resolution alone decides where it goes.
+//
+// root stays in the signature for its callers, which address an upload by
+// project and session together — the route refuses a missing or relative one
+// before it gets here. Resolution ignores it: one session id names one
+// runtime, and a project child that merely happens to be rooted at root is
+// never opened on an upload's behalf.
 func (s *Server) imageTarget(ctx context.Context, root, sessionID string) (*Registry, string, error) {
 	reg, _, sid, err := s.registryForSession(sessionID)
-	if err == nil {
-		if reg == nil {
-			return nil, "", ErrUnknownSession
-		}
-		return reg, sid, nil
-	}
-	if s.fleet == nil {
-		return nil, "", ErrUnknownSession
-	}
-	pc, err := s.fleet.projectChildFor(ctx, root)
 	if err != nil {
 		return nil, "", err
 	}
-	if _, tracked := pc.reg.lookup(sessionID); !tracked {
+	if reg == nil {
 		return nil, "", ErrUnknownSession
 	}
-	return pc.reg, sessionID, nil
+	return reg, sid, nil
 }

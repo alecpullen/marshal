@@ -216,6 +216,13 @@ func (s *Server) SocketHandler() http.Handler {
 			s.pinProject(w, r)
 			return
 		}
+		if r.URL.Path == daemonRestartPath {
+			// Restarting the daemon ends every viewer and re-executes the
+			// bridge, so it is the socket's own operation: the network
+			// listener answers it 404 (P6 B5).
+			s.restartDaemon(w, r)
+			return
+		}
 		if r.URL.Path == marshalEnrollPath {
 			// Enrollment is the socket's own operation: it is reached only
 			// where the owner is the caller, never on the network listener,
@@ -303,6 +310,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agents/{id}/exit", s.agentExit)
 	s.mux.HandleFunc("GET /api/agents/{id}/patch", s.agentPatch)
 	s.mux.HandleFunc("GET /api/sessions", s.listSessions)
+	// The index is a literal segment, so it is more specific than
+	// GET /api/sessions/{id}/… and can never shadow a session id.
+	s.mux.HandleFunc("GET /api/sessions/all", s.serveSessionIndex)
 	s.mux.HandleFunc("POST /api/sessions", s.newSession)
 	s.mux.HandleFunc("POST /api/sessions/{id}/load", s.loadSession)
 	s.mux.HandleFunc("DELETE /api/sessions/{id}", s.deleteSession)
@@ -420,6 +430,7 @@ func writeErr(w http.ResponseWriter, err error) {
 	var setup ErrSetupFailed
 	var merge ErrWorkspaceMerge
 	var running pullFixRunning
+	var owned ErrSessionOwned
 	switch {
 	case errors.Is(err, ErrFactoryConflict):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
@@ -464,6 +475,11 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "budget_exceeded", "scope": budget.Scope})
 	case errors.Is(err, ErrUnknownSession):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.As(err, &owned):
+		// The session exists but belongs to the bridge — an agent's, the
+		// control agent's, a planner's — so opening it is a conflict with
+		// its owner, not a missing session (P7 D5).
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrGone):
 		writeJSON(w, http.StatusGone, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownAgent):
@@ -856,17 +872,19 @@ func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
 	log.ServeSSE(w, r)
 }
 
-// registryForSession resolves an id (agent id or ACP session id) to the
-// owning Registry, its event log, and the ACP session id to address
-// registry calls with. In the non-fleet path the id is already the
+// registryForSession resolves an id to the owning Registry, its event log, and
+// the ACP session id to address registry calls with. A fleet resolves it
+// through ResolveSession, the one rule, so every per-session route — an
+// agent's session and a terminal's client session on its project child alike —
+// reaches the same runtime (P7 D2). In the non-fleet path the id is already the
 // session id.
 func (s *Server) registryForSession(id string) (*Registry, *EventLog, string, error) {
 	if s.fleet != nil {
-		rt, err := s.fleet.RuntimeForSession(id)
+		rs, err := s.fleet.ResolveSession(id)
 		if err != nil {
 			return nil, nil, "", err
 		}
-		return rt.reg, rt.log, rt.sessionID, nil
+		return rs.Reg, rs.Log, rs.SessionID, nil
 	}
 	return s.reg, s.log, id, nil
 }
@@ -893,6 +911,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		params["cursor"] = cursor
 	}
 	var reg *Registry
+	var child *Child
 	if s.fleet != nil {
 		rt, err := s.fleet.runtimeForRoot(cwd)
 		if err != nil {
@@ -905,7 +924,10 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, err)
 				return
 			}
-			reg, err = s.fleet.controlRegistryForRoot(r.Context(), cwd)
+			// The control child is asked directly. Building a Registry
+			// over it would install that Registry's hooks on a child the
+			// bridge already owns.
+			child, err = s.fleet.controlChild(r.Context())
 			if err != nil {
 				writeErr(w, err)
 				return
@@ -922,7 +944,10 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	} else {
 		reg = s.reg
 	}
-	res, err := reg.child.Request(r.Context(), "session/list", params)
+	if child == nil {
+		child = reg.child
+	}
+	res, err := child.Request(r.Context(), "session/list", params)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -985,13 +1010,27 @@ func (s *Server) loadSession(w http.ResponseWriter, r *http.Request) {
 	cwd := body.Cwd
 	var agentCwd AgentPath
 	if s.fleet != nil {
-		rt, err := s.fleet.RuntimeForSession(id)
+		rs, err := s.fleet.OpenSession(r.Context(), id)
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
-		reg, log, sessionID = rt.reg, rt.log, rt.sessionID
-		agentCwd, err = rt.agentPath(cwd)
+		reg, log, sessionID = rs.Reg, rs.Log, rs.SessionID
+		if rs.Agent == nil {
+			// A project session is already open on its child's runtime, and
+			// followed there: there is nothing for session/load to do, and the
+			// log's tail is the answer the SPA gets (decision 5).
+			events := log.Tail(sessionID)
+			if events == nil {
+				events = []Event{}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"sessionId": sessionID,
+				"events":    events,
+			})
+			return
+		}
+		agentCwd, err = rs.Agent.agentPath(cwd)
 		if err != nil {
 			writeErr(w, err)
 			return

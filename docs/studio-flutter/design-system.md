@@ -186,7 +186,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `StageStrip` | A work item's four stages, the one it is at marked | The stages as a `Segments` bar and as words; a stage the item left is `muted` and one ahead is `faint`. Never a fifth stage: an item that is ending says so in one word beside it |
 | `Lanes` | A run's tasks by role | One row per task, one column per lane — Implement, Verify, Review, Commit. Every cell is a status dot and its word, never colour alone; a cell with an action opens that role's conversation and one without is a fact |
 | `TaskGraph` | A plan's tasks as a dependency graph | Tasks laid out in dependency layers, left to right, with straight `border` edges and no free dragging. A plan that declares no dependency is drawn as one chain, in order, because that is the work it describes |
-| `ActivityRow` | One entry of a thread's activity | Who acted, in words, and what they did, with the event's own kind small beneath it and its age at the right. A timeline, not a transcript |
+| `ActivityRow` | One entry of a thread's activity | Who acted, in words, and what they did, with the event's own kind small beneath it and its age at the right. A timeline, not a transcript. Its age may carry the exact time in a `Tip` (§8) |
 | `Meter` | A labelled bar | Capacity and quota. Bar is `muted` unless it reports a fault |
 | `Spark` | A small line | One series, `fg`, no axes |
 | `CheckStrip` | One block per CI check | Order is the forge's order; tooltip names each check |
@@ -315,6 +315,10 @@ test covers each:
   data as current, and never infer failure from a lost connection.
 - **Error** — what failed, in plain words, and one action to retry.
 - **Unavailable** — the host is unreachable; say when it was last seen.
+- **Unauthorized** — the bridge refused this page's token, which no retry
+  clears: name the host that refused it and say how to sign in again. Never
+  drawn as unreachability — that sends the reader to look at the network when
+  the fix is a sign-in.
 - **Planned** — a capability that does not exist yet is a disabled row where
   it will live, with one line saying so. It is never drawn as working.
 
@@ -410,7 +414,7 @@ widget tree; none needs a daemon.
 | · `kit components do not fetch` | A file under `ui/kit/` imports `model/` or `client/` |
 | · `terminal colours stay in the terminal widget` | `termBlue`, `termMagenta` or `termCyan` is used under `ui/` outside `tokens.dart` and `terminal_view.dart` |
 | `tooltips_test.dart` | Any screen, pumped with fixture data at each width, contains an icon-only control, dot, chip icon or strip without a tooltip |
-| `states_test.dart` | A registered screen lacks a case for loading, empty, stale, error or unavailable |
+| `states_test.dart` | A registered screen lacks a case for loading, empty, stale, error, unavailable or unauthorized |
 | `contrast_test.dart` | A token pair in §2 falls below its ratio in either theme |
 | `gallery_test.dart` | A kit component is missing from the gallery, or a gallery golden differs in light or dark |
 | `overflow_test.dart` | Any screen overflows or scrolls sideways at 390, 800 or 1440 wide, or at text scale 2 |

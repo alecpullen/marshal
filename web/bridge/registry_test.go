@@ -1885,3 +1885,68 @@ func TestAFollowWarningIsForgottenWithItsSession(t *testing.T) {
 		})
 	}
 }
+
+// setLastActive makes id's record claim the activity at, so a quiet-rule test
+// need not sleep to age one.
+func setLastActive(r *Registry, id string, at time.Time) {
+	r.mu.Lock()
+	if info, ok := r.sessions[id]; ok {
+		info.lastActive = at
+	}
+	r.mu.Unlock()
+}
+
+// TestQuietSince: a child is quiet when it has no session, when none of its
+// sessions has a viewer, or when none of them was active after the cutoff
+// (decision 3).
+func TestQuietSince(t *testing.T) {
+	cutoff := time.Now()
+	cases := []struct {
+		name  string
+		build func(r *Registry)
+		quiet bool
+	}{
+		{
+			name:  "no sessions",
+			build: func(r *Registry) {},
+			quiet: true,
+		},
+		{
+			// A session nobody watches is not a reason to keep the child
+			// busy, however recently it ran.
+			name: "sessions with no viewer and recent activity",
+			build: func(r *Registry) {
+				r.track("s-1", AgentPath("/repo"))
+				setLastActive(r, "s-1", cutoff.Add(time.Minute))
+			},
+			quiet: true,
+		},
+		{
+			name: "a viewer and activity before the cutoff",
+			build: func(r *Registry) {
+				r.track("s-1", AgentPath("/repo"))
+				r.attachViewer("s-1")
+				setLastActive(r, "s-1", cutoff.Add(-time.Minute))
+			},
+			quiet: true,
+		},
+		{
+			name: "a viewer and activity after the cutoff",
+			build: func(r *Registry) {
+				r.track("s-1", AgentPath("/repo"))
+				r.attachViewer("s-1")
+				setLastActive(r, "s-1", cutoff.Add(time.Minute))
+			},
+			quiet: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRegistry(&Child{})
+			tc.build(r)
+			if got := r.quietSince(cutoff); got != tc.quiet {
+				t.Fatalf("quietSince(%v) = %v, want %v", cutoff, got, tc.quiet)
+			}
+		})
+	}
+}

@@ -4,6 +4,7 @@ import '../../model/inbox_model.dart' as model;
 import '../../model/overview_model.dart';
 import '../../model/place.dart';
 import '../../model/pulls_model.dart';
+import '../../model/source_state.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/watches_model.dart' show TrippedWatch;
 import '../kit/kit.dart';
@@ -23,11 +24,13 @@ class Overview extends StatelessWidget {
     required this.now,
     this.hosts = const [],
     this.automations = const [],
+    this.manyHosts = false,
     this.pulls = const [],
     this.state,
     this.onSelect,
     this.onAnswer,
     this.onRetry,
+    this.onNewWork,
   });
 
   final OverviewModel overview;
@@ -41,6 +44,10 @@ class Overview extends StatelessWidget {
   /// The watches that tripped, newest first: the Automations card, and
   /// nothing when none has (F7 plan 1, Task 3).
   final List<TrippedWatch> automations;
+
+  /// Whether more than one host is known, so a tripped watch's row names its
+  /// host before its name (spec D4, decision 5).
+  final bool manyHosts;
 
   /// The pull requests that need a person: the ready and the failing ones
   /// (F5 decision 14). They sit directly under Needs you, and the place is one
@@ -64,25 +71,44 @@ class Overview extends StatelessWidget {
   })?
   onAnswer;
 
+  /// Opens the studio's new-work dialog: the page's primary action
+  /// (design.md, "Starting work"). Null leaves the header without one rather
+  /// than drawing a button that opens nothing.
+  final VoidCallback? onNewWork;
+
   /// Reads the fleet again, for the one action a state offers.
   final VoidCallback? onRetry;
+
+  /// The header's one primary action: start work. It comes first, and it is
+  /// the only primary the page has (§5).
+  List<Widget> _actions() {
+    final newWork = onNewWork;
+    if (newWork == null) return const [];
+    return [Btn.primary('New', icon: Glyphs.plus, onTap: newWork)];
+  }
 
   @override
   Widget build(BuildContext context) {
     final state = this.state;
-    if (state != null && state != StateKind.stale) {
-      return PageBody(title: 'Overview', children: [_stateMessage(state)]);
+    // A state that would replace the page yields to any source that answered:
+    // a dead feed must not hide the projects and asks a healthy one reported.
+    final anyLoaded = overview.sources.any((source) => source.loaded);
+    if (state != null && state != StateKind.stale && !anyLoaded) {
+      return PageBody(
+        title: 'Overview',
+        actions: _actions(),
+        children: [_stateMessage(state)],
+      );
     }
+    final freshness = _freshness();
     return PageBody(
       title: 'Overview',
       subtitle: _subtitle(),
       width: PageWidth.full,
+      actions: _actions(),
       children: [
-        if (state == StateKind.stale) ...[
-          StateMessage.stale(
-            age: _oldestContact(),
-            detail: 'The fleet has not answered; this is what it last said.',
-          ),
+        if (freshness.isNotEmpty) ...[
+          ...freshness,
           const SizedBox(height: Space.s16),
         ],
         LayoutBuilder(
@@ -93,7 +119,8 @@ class Overview extends StatelessWidget {
                 ..._needsYou(context),
                 const SizedBox(height: Space.s24),
                 ..._pullRequests(context),
-                if (pulls.isNotEmpty) const SizedBox(height: Space.s24),
+                if (pulls.isNotEmpty || overview.moreInProgress > 0)
+                  const SizedBox(height: Space.s24),
                 ..._running(context),
                 const SizedBox(height: Space.s24),
                 ..._projects(context),
@@ -128,6 +155,61 @@ class Overview extends StatelessWidget {
     );
   }
 
+  /// One row per source that is not well: what is held, how old it is, and
+  /// what did not arrive (§8). A healthy source says nothing here, and one
+  /// still making its first attempt says nothing either.
+  List<Widget> _freshness() {
+    final retry = StateAction('Read again', onTap: onRetry ?? () {});
+    final rows = [
+      for (final source in overview.sources)
+        if (source.stale || source.unavailable)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Space.s12),
+            child: _freshnessRow(source, retry),
+          ),
+    ];
+    // A screen the shell calls stale whose sources all count as healthy (a
+    // stream that stopped without a failed read) still marks the age: §7
+    // never presents old data as current.
+    if (rows.isEmpty && state == StateKind.stale) {
+      return [
+        StateMessage.stale(
+          age: _oldestSeen() ?? 'now',
+          detail: 'The fleet has not answered; this is what it last said.',
+        ),
+      ];
+    }
+    return rows;
+  }
+
+  /// The age of the oldest snapshot any source holds, in the design system's
+  /// words, or null when nothing has been read yet.
+  String? _oldestSeen() {
+    DateTime? oldest;
+    for (final source in overview.sources) {
+      final read = source.lastRead;
+      if (read == null) continue;
+      if (oldest == null || read.isBefore(oldest)) oldest = read;
+    }
+    return oldest == null ? null : relativeAge(oldest, now);
+  }
+
+  /// One source's row, in that source's own words.
+  ///
+  /// A stale source holds a snapshot, so its age is the age of the read that
+  /// made it; a source that never answered holds nothing, so it says so
+  /// rather than carrying an age that would be a guess.
+  Widget _freshnessRow(SourceState source, StateAction retry) {
+    final lastRead = source.lastRead;
+    if (source.stale && lastRead != null) {
+      return StateMessage.stale(
+        age: relativeAge(lastRead, now),
+        detail: source.words(now),
+      );
+    }
+    return StateMessage.error(message: source.words(now), retry: retry);
+  }
+
   /// The watches that tripped, newest first, and what each did when it did
   /// (F7 plan 1, Task 3). It opens the Automations place.
   List<Widget> _automations(BuildContext context) {
@@ -137,7 +219,7 @@ class Overview extends StatelessWidget {
       Rows([
         for (final watch in automations)
           RowItem(
-            name: watch.name,
+            name: manyHosts ? '${watch.host} · ${watch.name}' : watch.name,
             description: '${watch.agent} · ${watch.action}',
             value: watch.age,
             onTap: onSelect == null
@@ -148,16 +230,15 @@ class Overview extends StatelessWidget {
     ];
   }
 
-  /// What is waiting, oldest first: at most three, and the Inbox one link
-  /// away.
+  /// What is waiting: the cards the model hands over, the true total beside
+  /// them, and the Inbox one link away.
   List<Widget> _needsYou(BuildContext context) {
-    // The three oldest, whatever the model hands over: the rest are the
-    // Inbox's, one link away.
-    final asks = overview.needsYou.take(overviewAsks).toList();
+    final asks = overview.needsYou;
+    final more = overview.needsYouTotal - asks.length;
     return [
       Label(
         'Needs you',
-        count: asks.length,
+        count: overview.needsYouTotal,
         link: LabelLink(
           'Open inbox',
           onTap: _open(const Place(PlaceKind.inbox)) ?? () {},
@@ -180,12 +261,23 @@ class Overview extends StatelessWidget {
             body: ask.body.isEmpty ? null : ask.body,
             waiting: relativeAge(ask.since, now),
             waitingSince: ask.since.toLocal().toString(),
-            source: ask.thread == null
-                ? null
-                : '${ask.thread!.project.split('/').last} › ${ask.thread!.title}',
+            source: ask.provenance,
             onOpenSource: ask.thread == null ? null : _thread(ask.thread!),
             placement: AskPlacement.overview,
-            actions: ask.questions.length > 1
+            actions: ask.answeredInThread
+                // A work item's asks carry its version and reviewed identity,
+                // so they are answered in the item's own thread: the card
+                // opens it and offers nothing that would post nothing here.
+                ? [
+                    AskAction(
+                      'Open in the factory',
+                      onTap: ask.thread == null ? null : _thread(ask.thread!),
+                      note: ask.thread == null
+                          ? 'This ask names no work item to open.'
+                          : null,
+                    ),
+                  ]
+                : ask.questions.length > 1
                 // Several questions need an answer for each, and the
                 // Overview has no room to collect them: the card sends the
                 // person to the Inbox, which draws every question of the
@@ -209,6 +301,11 @@ class Overview extends StatelessWidget {
           ),
           const SizedBox(height: Space.s8),
         ],
+      if (more > 0)
+        Text(
+          '$more more in the inbox.',
+          style: Ember.of(context).small.tint(Ember.of(context).muted),
+        ),
     ];
   }
 
@@ -221,24 +318,35 @@ class Overview extends StatelessWidget {
         if (pull.group == PullGroup.ready || pull.group == PullGroup.failing)
           pull,
     ];
-    if (shown.isEmpty) return const [];
     final open = _open(const Place(PlaceKind.pulls));
+    final more = overview.moreInProgress;
+    if (shown.isEmpty && more == 0) return const [];
     return [
-      Label(
-        'Pull requests',
-        count: shown.length,
-        link: open == null
-            ? null
-            : LabelLink('Open pull requests', onTap: open),
-      ),
-      const SizedBox(height: Space.s12),
-      for (final pull in shown)
-        Padding(
-          padding: const EdgeInsets.only(bottom: Space.s8),
-          child: PrCard(
-            pull: pullFactsOf(pull, now: now),
-            actions: PrActions(openSource: _pullSource(pull)),
+      if (shown.isNotEmpty) ...[
+        Label(
+          'Pull requests',
+          count: shown.length,
+          link: open == null
+              ? null
+              : LabelLink('Open pull requests', onTap: open),
+        ),
+        const SizedBox(height: Space.s12),
+        for (final pull in shown)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Space.s8),
+            child: PrCard(
+              pull: pullFactsOf(pull, now: now),
+              actions: PrActions(openSource: _pullSource(pull)),
+            ),
           ),
+      ],
+      // What the two cards leave out, in the mock's words: it is still work in
+      // flight, so it is one line beneath them and never a card of its own
+      // (F9 decision 7).
+      if (more > 0)
+        Text(
+          '$more more in progress with checks passing or running',
+          style: Ember.of(context).small.tint(Ember.of(context).muted),
         ),
     ];
   }
@@ -294,10 +402,11 @@ class Overview extends StatelessWidget {
                           ),
                         ],
                       ),
-                      if (thread.headline.isNotEmpty) ...[
+                      if (thread.headline.isNotEmpty ||
+                          thread.stepsDone != null) ...[
                         const SizedBox(height: Space.s4),
                         Text(
-                          thread.headline,
+                          _detail(thread),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: Ember.of(context).small
@@ -327,8 +436,8 @@ class Overview extends StatelessWidget {
           for (final project in projects)
             RowItem(
               name: project.name,
-              description: _counts(project),
-              value: '${project.threads}',
+              description: _projectDetail(project),
+              value: _projectWorth(project),
               onTap: onSelect == null
                   ? null
                   : () => onSelect!(Place(PlaceKind.project, id: project.id)),
@@ -337,10 +446,39 @@ class Overview extends StatelessWidget {
     ];
   }
 
+  /// A project row's description: its thread total, then the counts it breaks
+  /// into. The total is what the row's value used to carry; the value now
+  /// belongs to what the bridge answered about the project (F9 decision 7).
+  static String _projectDetail(ProjectSummary project) {
+    final counts = _counts(project);
+    if (project.threads == 0) return counts;
+    final threads = project.threads == 1
+        ? '1 thread'
+        : '${project.threads} threads';
+    return '$threads · $counts';
+  }
+
+  /// A project row's value: its pull requests' state, then what it spent over
+  /// the usage window. Only the parts that are not zero are named, and a row
+  /// with nothing to name draws an em dash rather than an empty slot.
+  static String _projectWorth(ProjectSummary project) {
+    final ci = [
+      if (project.ciReady > 0) '${project.ciReady} ready',
+      if (project.ciFailing > 0) '${project.ciFailing} failing',
+    ].join(' · ');
+    final spend = project.spendUSD > 0
+        ? '\$${project.spendUSD.toStringAsFixed(2)} this week'
+        : '';
+    return [
+      if (ci.isNotEmpty) ci else if (spend.isEmpty) '—',
+      if (spend.isNotEmpty) spend,
+    ].join(' · ');
+  }
+
   /// The side rail: what each host is carrying, and the day's spend.
   Widget _rail(BuildContext context) {
-    final e = Ember.of(context);
     final spend = overview.spend;
+    final split = _roleSplit();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -371,14 +509,104 @@ class Overview extends StatelessWidget {
                 ? 'The daily cap is holding work back'
                 : 'Today’s spend against the daily cap',
           ),
+          // The days behind today, as the mock's rail draws them: a shape,
+          // not a table (the spark says nothing about values).
+          if (overview.spendDays.isNotEmpty) ...[
+            const SizedBox(height: Space.s8),
+            Spark([
+              for (final point in overview.spendDays) point.costUSD,
+            ], semanticLabel: 'Daily spend'),
+          ],
+          if (split != null) ...[
+            const SizedBox(height: Space.s8),
+            Text(
+              split,
+              style: Ember.of(context).small.tint(Ember.of(context).muted),
+            ),
+          ],
         ],
+        const SizedBox(height: Space.s24),
+        const Label('Activity'),
         const SizedBox(height: Space.s12),
-        Text(
-          'Activity arrives with the thread screen in F3.',
-          style: e.small.tint(e.muted),
-        ),
+        if (overview.activity.isEmpty)
+          // The rail card is not a page state: an empty feed says so in one
+          // quiet line rather than offering a second action beside the
+          // page's own (design-system.md §7 keeps one action per state).
+          Text(
+            'Nothing has happened yet.',
+            style: Ember.of(context).small.tint(Ember.of(context).muted),
+          )
+        else
+          Rows([
+            for (final event in overview.activity)
+              RowItem(
+                name: _eventWords(event.event),
+                description: _eventDetail(event),
+                value: _eventAge(event.ts),
+              ),
+          ]),
       ],
     );
+  }
+
+  /// An audit event's kind, worded for a person: `agent.spawn` reads
+  /// "Agent spawn". An event whose kind is one bare word keeps it.
+  static String _eventWords(String event) {
+    final words = [
+      for (final word in event.split(RegExp(r'[._\-\s]+')))
+        if (word.isNotEmpty) word,
+    ];
+    if (words.isEmpty) return event;
+    final first = words.first;
+    return [
+      '${first[0].toUpperCase()}${first.substring(1)}',
+      ...words.skip(1),
+    ].join(' ');
+  }
+
+  /// What the event says beyond its kind: the operator's reason first, then
+  /// the event's own detail, and nothing when it has neither.
+  static String _eventDetail(AuditEvent event) {
+    final reason = event.reason;
+    if (reason != null && reason.isNotEmpty) return reason;
+    return event.detail ?? '';
+  }
+
+  /// How long ago the event happened, in the sidebar's words.
+  String _eventAge(String ts) {
+    final at = DateTime.tryParse(ts);
+    return at == null ? '' : relativeAge(at, now);
+  }
+
+  /// A running tile's one detail line: which step the turn is on, and what
+  /// the agent is doing. A step is a number and never a fraction: a turn's
+  /// steps are discovered as the model narrates, so there is no total to name
+  /// (F9 decision 3).
+  static String _detail(model.ThreadRef thread) {
+    final step = thread.stepsDone;
+    return [
+      if (step != null) 'step $step',
+      if (thread.headline.isNotEmpty) thread.headline,
+    ].join(' · ');
+  }
+
+  /// The window's spend by role, largest first, as shares of the whole: at
+  /// most three roles, and none too small to name a percentage of its own.
+  /// The first word is capitalised so the line reads as a sentence.
+  String? _roleSplit() {
+    final roles = overview.spendByRole;
+    final total = roles.fold<double>(0, (sum, role) => sum + role.costUSD);
+    if (total <= 0) return null;
+    final named = <String>[];
+    for (final role in roles) {
+      final share = role.costUSD / total * 100;
+      if (share < 1) continue;
+      named.add('${role.key} ${share.round()}%');
+      if (named.length == 3) break;
+    }
+    if (named.isEmpty) return null;
+    final line = named.join(' · ');
+    return '${line[0].toUpperCase()}${line.substring(1)}';
   }
 
   Widget _stateMessage(StateKind state) {
@@ -395,12 +623,24 @@ class Overview extends StatelessWidget {
         message: 'The fleet could not be read.',
         retry: retry,
       ),
+      // Name the host that refused the token: it is the one to sign in to.
+      StateKind.unauthorized => StateMessage.unauthorized(
+        host: hosts.isEmpty
+            ? 'The daemon'
+            : hosts
+                  .firstWhere((host) => host.refused, orElse: () => hosts.first)
+                  .name,
+      ),
       StateKind.unavailable => StateMessage.unavailable(
         host: hosts.isEmpty ? 'The daemon' : hosts.first.name,
-        lastSeen: _oldestContact(),
+        // No read has made a snapshot, so there is no age to give; when one
+        // has, its own age is the honest one.
+        lastSeen: _oldestSeen(),
         action: retry,
       ),
-      StateKind.stale => StateMessage.stale(age: _oldestContact()),
+      // Unreachable: a stale screen keeps its content and draws each source's
+      // own row (`_freshness`), never a whole-page message.
+      StateKind.stale => const SizedBox.shrink(),
       StateKind.planned => const StateMessage.planned(
         name: 'Overview',
         note: 'Not built yet',
@@ -411,7 +651,7 @@ class Overview extends StatelessWidget {
   /// The line under the title: how much is running and how much waits.
   String _subtitle() {
     final running = overview.running.length;
-    final waiting = overview.needsYou.length;
+    final waiting = overview.needsYouTotal;
     final threads = running == 1 ? '1 turn running' : '$running turns running';
     if (waiting == 0) return threads;
     return '$threads · ${waiting == 1 ? '1 waiting on you' : '$waiting waiting on you'}';
@@ -464,17 +704,6 @@ class Overview extends StatelessWidget {
       total += other.threads;
     }
     return total == 0 ? 0 : host.threads / total;
-  }
-
-  /// How long ago the fleet last said anything.
-  String _oldestContact() {
-    DateTime? oldest;
-    for (final host in hosts) {
-      final contact = host.lastContact;
-      if (contact == null) continue;
-      if (oldest == null || contact.isBefore(oldest)) oldest = contact;
-    }
-    return relativeAge(oldest ?? now, now);
   }
 
   /// Opening a thread by the place that names it.

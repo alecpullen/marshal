@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // projectLinger is how long a project child with no tracked session lives on
@@ -44,12 +46,26 @@ type projectChild struct {
 	// caps are the capabilities its initialize advertised (P4 D10). They
 	// belong to the generation that answered, so every handshake sets them
 	// again.
-	// mu guards ready, linger, envWarning and caps.
+	// mu guards ready, linger, envWarning, caps, restart, refused, refusedText
+	// and recycling.
 	mu         sync.Mutex
 	ready      bool
 	linger     func() // stops the armed linger timer; nil when none
 	envWarning string
 	caps       map[string]bool
+	// restart is the last sweep's view of why this child is stale and what
+	// holds its restart back; nil when it is current or unknown (P6 B4).
+	restart *DaemonRestart
+	// refused is the marshal binary whose --version check failed, so a
+	// restart that would spawn it is refused until the file changes
+	// (decision 8). refusedText is what that build said, kept beside the file
+	// it describes so the refusal still reads the same after a sweep that saw
+	// the child current.
+	refused     os.FileInfo
+	refusedText string
+	// recycling is open while a restart is in flight: from before the old
+	// process ends until the new generation's handshake is done (decision 4).
+	recycling chan struct{}
 
 	// stopMu guards stopping, the marker a resolver waits on so no
 	// replacement child is started while the previous process still holds the
@@ -184,9 +200,40 @@ func (f *Fleet) forgetProjectChild(pc *projectChild) {
 	f.projMu.Unlock()
 }
 
+// waitRecycle blocks while a restart of this child is in flight, until ctx ends.
+func (pc *projectChild) waitRecycle(ctx context.Context) error {
+	pc.mu.Lock()
+	marker := pc.recycling
+	pc.mu.Unlock()
+	if marker == nil {
+		return nil
+	}
+	select {
+	case <-marker:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("bridge: wait for the project child of %s to restart: %w", pc.root, ctx.Err())
+	}
+}
+
+// closeRecycleLocked ends a restart's marker, if one is open, so an attach
+// waiting on it goes on (decision 4). The caller holds pc.mu.
+func (pc *projectChild) closeRecycleLocked() {
+	if pc.recycling == nil {
+		return
+	}
+	close(pc.recycling)
+	pc.recycling = nil
+}
+
 // startProjectChild builds, starts and handshakes pc's child, once. Concurrent
 // callers share one start through pc.mu.
 func (f *Fleet) startProjectChild(ctx context.Context, pc *projectChild) error {
+	// An attach waits for a restart in flight, so it never reaches a child
+	// whose process is on its way out (decision 4).
+	if err := pc.waitRecycle(ctx); err != nil {
+		return err
+	}
 	// A stop in flight keeps the viewer socket until its process is gone, so
 	// wait it out rather than start a replacement that cannot bind.
 	pc.waitStop()
@@ -259,15 +306,34 @@ func (f *Fleet) startProjectChildLocked(ctx context.Context, pc *projectChild) (
 		pc.reg.ClientTrust = true
 		// One event log and one classifier for the child, installed before
 		// it starts, as Attach requires (P4 D10 decision 3). The log keeps
-		// every session that is not tracked as a client's: a fleet session is
-		// logged from its first notification, even before Spawn has tracked
-		// it. A restart reuses this Child, so the log and both hooks carry
-		// over to the next generation.
+		// every session the child serves, the fleet's and a client's alike:
+		// a followed run's events and the Studio's session index both read
+		// it (P7 D4). A restart reuses this Child and its hooks, so the log,
+		// the change hook and both of the others carry over to the next
+		// generation.
 		pc.log = NewEventLog()
 		reg := pc.reg
-		attachSessions(pc.log, child, reg, func(sessionID string) bool {
-			return !reg.tracksClient(sessionID)
-		})
+		// An SSE client disconnecting from a session was watching it, so the
+		// disconnect counts as activity: the sweep gives the session a full
+		// timeout from that moment rather than closing one the client saw
+		// (P4 D7a). The callback runs under the log's lock, hence the lock
+		// order: the log's mu, then the registry's. The registry never calls
+		// into the log while holding its own mu.
+		pc.log.OnUnsubscribe = func(sessionID string) { reg.touch(sessionID) }
+		attachSessions(pc.log, child, reg, nil)
+		// Every change of the child's sessions is announced on the fleet's
+		// stream, so the Studio reads the index again (decision 1). A change
+		// that can move a title or a message count — a new track and a turn's
+		// end — also drops the root's cached listing. OnChange runs with the
+		// registry's locks released, and neither emit nor dropListing takes
+		// one back.
+		pc.reg.OnChange = func(sessionID string, change registryChange) {
+			f.emit(contract.SessionsDelta{Kind: contract.DeltaSessions, Project: pc.root})
+			switch change {
+			case changeTracked, changeTurnEnded:
+				f.dropListing(pc.root)
+			}
+		}
 		f.installClassifier(child, reg, f.agentForSession)
 		pc.ready, pc.version = false, ""
 		if err := child.Start(); err != nil {
@@ -351,6 +417,9 @@ func (f *Fleet) projectHandshake(ctx context.Context, pc *projectChild) error {
 func (f *Fleet) reinitProjectChild(pc *projectChild) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
+	// The restart's marker is ended here, on every path: an attach waiting on
+	// it takes the child as this handshake left it (decision 9).
+	defer pc.closeRecycleLocked()
 	pc.ready = false
 	if pc.child == nil {
 		return

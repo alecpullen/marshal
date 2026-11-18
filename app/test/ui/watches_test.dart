@@ -87,7 +87,11 @@ void main() {
         ]),
       ),
     });
-    final model = WatchesModel(BridgeClient(transport), now: now);
+    final model = WatchesModel(
+      BridgeClient(transport),
+      now: now,
+      host: 'local',
+    );
     addTearDown(model.dispose);
     await model.load();
 
@@ -113,7 +117,11 @@ void main() {
         ]),
       ),
     });
-    final model = WatchesModel(BridgeClient(transport), now: now);
+    final model = WatchesModel(
+      BridgeClient(transport),
+      now: now,
+      host: 'local',
+    );
     addTearDown(model.dispose);
     await model.load();
 
@@ -144,7 +152,11 @@ void main() {
       ),
       'POST /api/reroutes/rr-1/undo': const Response(status: 200, body: '{}'),
     });
-    final model = WatchesModel(BridgeClient(transport), now: now);
+    final model = WatchesModel(
+      BridgeClient(transport),
+      now: now,
+      host: 'local',
+    );
     addTearDown(model.dispose);
     await model.load();
 
@@ -195,7 +207,11 @@ void main() {
         ]),
       ),
     });
-    final model = WatchesModel(BridgeClient(transport), now: now);
+    final model = WatchesModel(
+      BridgeClient(transport),
+      now: now,
+      host: 'local',
+    );
     addTearDown(model.dispose);
     await model.load();
 
@@ -227,7 +243,11 @@ void main() {
       'GET /api/watches': const Response(status: 200, body: '[]'),
       'POST /api/reroutes/rr-1/undo': const Response(status: 200, body: '{}'),
     });
-    final model = WatchesModel(BridgeClient(transport), now: now);
+    final model = WatchesModel(
+      BridgeClient(transport),
+      now: now,
+      host: 'local',
+    );
     addTearDown(model.dispose);
     await model.undoReroute('rr-1');
     expect(
@@ -240,6 +260,39 @@ void main() {
     );
   });
 
+  test('starting a watch reports the write', () async {
+    final transport = _Scripted({
+      'GET /api/watches': const Response(status: 200, body: '[]'),
+      'POST /api/watches': Response(
+        status: 200,
+        body: jsonEncode({'id': 'w-3', 'name': 'the build'}),
+      ),
+    });
+    var writes = 0;
+    final model = WatchesModel(
+      BridgeClient(transport),
+      now: now,
+      host: 'local',
+      onWrote: () => writes++,
+    );
+    addTearDown(model.dispose);
+
+    final started = await model.create(
+      const WatchCreate(
+        spec: WatchSpec(
+          name: 'the build',
+          kind: 'command',
+          command: 'make test',
+          mode: 'repeat',
+          intervalMs: 60000,
+        ),
+      ),
+    );
+
+    expect(started.id, 'w-3');
+    expect(writes, 1);
+  });
+
   testWidgets('a tripped watch appears in the Overview card', (tester) async {
     final model = WatchesModel(
       BridgeClient(
@@ -248,6 +301,7 @@ void main() {
         }),
       ),
       now: now,
+      host: 'local',
     );
     addTearDown(model.dispose);
 
@@ -257,6 +311,8 @@ void main() {
         overview: OverviewModel(
           needsYou: const [],
           running: const [],
+          needsYouTotal: 0,
+          sources: const [],
           projects: const [],
           capacity: const [],
           spend: null,
@@ -265,6 +321,7 @@ void main() {
         automations: model.tripped.isEmpty
             ? const [
                 TrippedWatch(
+                  host: 'local',
                   name: 'the gate',
                   agent: 'Agent a-1',
                   action: 'Reroutes implementer to local',

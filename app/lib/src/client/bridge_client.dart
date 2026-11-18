@@ -73,7 +73,7 @@ class BridgeClient {
         query: {'range': range, 'by': by},
       );
 
-  /// GET /api/audit?limit=: the audit log, newest first.
+  /// GET /api/audit?limit=: the audit log, oldest first.
   Future<List<AuditEvent>> audit({int limit = 50}) =>
       _listOf('/api/audit', AuditEvent.fromJson, query: {'limit': '$limit'});
 
@@ -1452,6 +1452,30 @@ class BridgeClient {
         '${Uri.encodeComponent(snapshotID)}',
         PlannerSnapshotView.fromJson,
       );
+
+  /// POST /api/planners/{id}/snapshots/{snapshotId}/handoff: creates a factory
+  /// draft from the capture's frozen plan, spec and files.
+  ///
+  /// The bridge rewrites the draft's plan and spec from what the snapshot
+  /// froze and verifies every captured file against the hash it recorded, so
+  /// the evidence the person reviewed is what the draft runs on rather than
+  /// the text a sheet happens to show. A replay of the same request id answers
+  /// the item it already made, with 200 rather than 201; the answer is the
+  /// same `{"item": …}` either way.
+  Future<FactoryItem> handoffPlannerSnapshot(
+    String id,
+    String snapshotID,
+    FactoryCreate request,
+  ) async {
+    final body = await _objectOf<Map<String, dynamic>>(
+      '/api/planners/${Uri.encodeComponent(id)}/snapshots/'
+      '${Uri.encodeComponent(snapshotID)}/handoff',
+      (json) => json,
+      method: 'POST',
+      body: request,
+    );
+    return FactoryItem.fromJson(body['item'] as Map<String, dynamic>);
+  }
 
   Future<Response> _send(Request request) async {
     final response = await _transport.send(request);

@@ -3,10 +3,16 @@ import 'package:flutter/foundation.dart';
 import '../client/bridge_client.dart' show ProjectSettingsVersion;
 import '../client/contract.g.dart';
 import '../client/transport.dart' show BridgeFailure;
+import 'expected_checks.dart';
 import 'fleet_store.dart' show describeFailure;
 import 'handoff_model.dart' show FieldSource;
 import 'section_model.dart' show SaveState, UnsavedEditsSource;
 import 'thread_ref.dart' show ThreadStatus;
+
+// The schedule and watch types the Automations tab lists reach their screens
+// through the model, so `ui/` reads `model/` and never `client/`
+// (test/boundary_test.dart).
+export '../client/contract.g.dart' show Schedule, WatchInfo;
 
 // The readers and the writer are passed in, so their fields stay private: Dart
 // has no private named parameter.
@@ -28,6 +34,14 @@ enum AutoChoice { inherit, on, off }
 /// `isolated` is a tri-state too: unset leaves the caller's default.
 enum IsolationChoice { inherit, isolated, shared }
 
+/// The copyWith sentinel: a parameter left at this value keeps the draft's
+/// own, so an empty list and an inherit choice can still be set on purpose.
+const _unset = _Unset();
+
+class _Unset {
+  const _Unset();
+}
+
 /// One editable field of a project's defaults, as the Defaults tab lists it
 /// (F6 decision 12).
 ///
@@ -45,6 +59,7 @@ enum ProjectField {
   rounds,
   ciPoll,
   ciWait,
+  expectedChecks,
   reviewerInstructions,
   plannerDelegation,
 }
@@ -69,6 +84,9 @@ class ProjectDraft {
     this.rounds = '',
     this.ciPoll = '',
     this.ciWait = '',
+    this.expectedChecksChoice = ExpectedChecksChoice.inherit,
+    this.expectedChecks = const [],
+    this.expectedChecksText = '',
     this.reviewerInstructions = '',
     this.plannerDelegation = false,
     this.designatedClient = '',
@@ -78,6 +96,10 @@ class ProjectDraft {
   /// is what "inherit" looks like.
   factory ProjectDraft.of(ProjectSettings settings) {
     final factory = settings.factoryDefaults;
+    final expectedChecks = [
+      for (final check in factory?.expectedChecks ?? const <FactoryCheckKey>[])
+        ExpectedCheck.of(check),
+    ];
     return ProjectDraft(
       agentProfile: profileOf(settings.routing),
       implementerProfile: profileOf(factory?.implementerRouting),
@@ -98,6 +120,11 @@ class ProjectDraft {
       rounds: _number(factory?.maxRounds),
       ciPoll: _number(factory?.ciPollSeconds),
       ciWait: _number(factory?.ciWaitSeconds),
+      expectedChecksChoice: expectedChecks.isEmpty
+          ? ExpectedChecksChoice.inherit
+          : ExpectedChecksChoice.custom,
+      expectedChecks: expectedChecks,
+      expectedChecksText: formatExpectedChecks(expectedChecks),
       reviewerInstructions: factory?.reviewerInstructions ?? '',
       plannerDelegation: settings.plannerDelegationEnabled ?? false,
       designatedClient: settings.designatedMCPClientID ?? '',
@@ -126,11 +153,29 @@ class ProjectDraft {
   final String ciPoll;
   final String ciWait;
 
+  /// Whether the project states its own checks.
+  ///
+  /// [ExpectedChecksChoice.inherit] states nothing, which is the only state
+  /// that clears a stored list: `FactoryDefaults.ExpectedChecks` carries
+  /// `omitempty`, so an empty custom list serialises as absent too, and only
+  /// inherit restores the follow-the-defaults behaviour.
+  final ExpectedChecksChoice expectedChecksChoice;
+
+  /// The project's own checks, when it states any.
+  final List<ExpectedCheck> expectedChecks;
+
+  /// The checks as the canonical raw lines the person edits. Kept verbatim
+  /// while it does not parse, so an edit is never silently dropped.
+  final String expectedChecksText;
+
   final String reviewerInstructions;
   final bool plannerDelegation;
   final String designatedClient;
 
   /// This draft with the named fields replaced.
+  ///
+  /// The checks members take a sentinel rather than `??`, so an empty list,
+  /// an empty text and [ExpectedChecksChoice.inherit] can be set on purpose.
   ProjectDraft copyWith({
     String? agentProfile,
     String? implementerProfile,
@@ -143,6 +188,9 @@ class ProjectDraft {
     String? rounds,
     String? ciPoll,
     String? ciWait,
+    Object? expectedChecksChoice = _unset,
+    Object? expectedChecks = _unset,
+    Object? expectedChecksText = _unset,
     String? reviewerInstructions,
     bool? plannerDelegation,
     String? designatedClient,
@@ -158,6 +206,15 @@ class ProjectDraft {
     rounds: rounds ?? this.rounds,
     ciPoll: ciPoll ?? this.ciPoll,
     ciWait: ciWait ?? this.ciWait,
+    expectedChecksChoice: expectedChecksChoice == _unset
+        ? this.expectedChecksChoice
+        : expectedChecksChoice as ExpectedChecksChoice,
+    expectedChecks: expectedChecks == _unset
+        ? this.expectedChecks
+        : expectedChecks as List<ExpectedCheck>,
+    expectedChecksText: expectedChecksText == _unset
+        ? this.expectedChecksText
+        : expectedChecksText as String,
     reviewerInstructions: reviewerInstructions ?? this.reviewerInstructions,
     plannerDelegation: plannerDelegation ?? this.plannerDelegation,
     designatedClient: designatedClient ?? this.designatedClient,
@@ -214,6 +271,14 @@ class ProjectDraft {
     _putCount(factory, 'maxRounds', rounds);
     _putCount(factory, 'ciPollSeconds', ciPoll);
     _putCount(factory, 'ciWaitSeconds', ciWait);
+    switch (expectedChecksChoice) {
+      case ExpectedChecksChoice.inherit:
+        factory.remove('expectedChecks');
+      case ExpectedChecksChoice.custom:
+        factory['expectedChecks'] = [
+          for (final check in expectedChecks) check.toKey().toJson(),
+        ];
+    }
     _putOrRemove(factory, 'reviewerInstructions', reviewerInstructions.trim());
     if (factory.isEmpty) {
       json.remove('factoryDefaults');
@@ -604,12 +669,18 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
     Future<ProjectHealth> Function()? readHealth,
     Future<List<RunListEntry>> Function()? readRuns,
     Future<DiscoveryReport> Function(String repoID)? discover,
+    Future<List<Schedule>> Function()? readSchedules,
+    Future<List<WatchInfo>> Function()? readWatches,
+    String? Function(String agentID)? projectOfAgent,
     DateTime Function()? now,
   }) : _read = read,
        _write = write,
        _readHealth = readHealth,
        _readRuns = readRuns,
        _discover = discover,
+       _readSchedules = readSchedules,
+       _readWatches = readWatches,
+       _projectOfAgent = projectOfAgent,
        _now = now ?? DateTime.now;
 
   /// The project's root, its id everywhere else in the app.
@@ -634,6 +705,14 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
   final Future<List<RunListEntry>> Function()? _readRuns;
 
   final Future<DiscoveryReport> Function(String repoID)? _discover;
+
+  /// The schedules and watches read for the Automations tab, and the resolver
+  /// that says which project a watch's agent belongs to. All three are
+  /// optional: a host that wires none leaves the tab with its forge rows.
+  final Future<List<Schedule>> Function()? _readSchedules;
+  final Future<List<WatchInfo>> Function()? _readWatches;
+  final String? Function(String agentID)? _projectOfAgent;
+
   final DateTime Function() _now;
 
   ProjectSettings? _stored;
@@ -653,6 +732,12 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
   DiscoveryView? _discovery;
   bool _discovering = false;
   String? _discoveryError;
+
+  /// The project's own schedules and the watches its agents started, as the
+  /// Automations tab lists them. Empty until a read answers, and after a read
+  /// that fails: the tab draws what it has.
+  List<Schedule> _schedules = const [];
+  List<WatchInfo> _watches = const [];
 
   /// The document the bridge last answered with, or null before the first
   /// read.
@@ -707,6 +792,18 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
     return configured == null ? null : ProjectAutomations.of(configured);
   }
 
+  /// The schedules this project owns, as the Automations tab lists them: the
+  /// bridge's list filtered to those whose project is this root.
+  List<Schedule> get automationSchedules => _schedules;
+
+  /// The watches this project's agents started: the bridge's list filtered to
+  /// those whose agent resolves to this root.
+  List<WatchInfo> get automationWatches => _watches;
+
+  /// The labels an intake issue must carry to be picked up, and none when the
+  /// project watches every issue of its repository.
+  List<String> get intakeLabels => _stored?.intake.labels ?? const [];
+
   /// The repository discovery probes: the intake wiring's repo, or "" when the
   /// project names none, in which case discovery is not offered.
   String get repoID => _stored?.intake.repoID ?? '';
@@ -737,6 +834,9 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
       ProjectField.rounds => draft.rounds != base.rounds,
       ProjectField.ciPoll => draft.ciPoll != base.ciPoll,
       ProjectField.ciWait => draft.ciWait != base.ciWait,
+      ProjectField.expectedChecks =>
+        draft.expectedChecksChoice != base.expectedChecksChoice ||
+            !listEquals(draft.expectedChecks, base.expectedChecks),
       ProjectField.reviewerInstructions =>
         draft.reviewerInstructions != base.reviewerInstructions,
       ProjectField.plannerDelegation =>
@@ -770,6 +870,41 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
       _loading = false;
       notifyListeners();
     }
+    // The schedules and watches the Automations tab lists: read in the same
+    // load, and never failing it. A list the bridge will not answer is empty,
+    // and the page's own state already says the read failed.
+    await _readAutomations();
+  }
+
+  /// Reads the project's schedules and its agents' watches, each filtered to
+  /// this root. A failed read leaves that list empty rather than failing the
+  /// page: the Automations tab draws what it has.
+  Future<void> _readAutomations() async {
+    final readSchedules = _readSchedules;
+    final readWatches = _readWatches;
+    final projectOf = _projectOfAgent;
+    if (readSchedules == null && readWatches == null) return;
+    if (readSchedules != null) {
+      try {
+        _schedules = List.unmodifiable([
+          for (final schedule in await readSchedules())
+            if (schedule.project == root) schedule,
+        ]);
+      } catch (_) {
+        _schedules = const [];
+      }
+    }
+    if (readWatches != null && projectOf != null) {
+      try {
+        _watches = List.unmodifiable([
+          for (final watch in await readWatches())
+            if (projectOf(watch.agentID) == root) watch,
+        ]);
+      } catch (_) {
+        _watches = const [];
+      }
+    }
+    notifyListeners();
   }
 
   /// Reads the health report. A failure is its own line in the Health tab; it
@@ -860,6 +995,37 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
       _edit((draft) => draft.copyWith(ciPoll: seconds));
   void setCIWait(String seconds) =>
       _edit((draft) => draft.copyWith(ciWait: seconds));
+
+  /// Sets the project's own checks, which stops them following the defaults.
+  void setExpectedChecks(List<ExpectedCheck> checks) => _edit(
+    (draft) => draft.copyWith(
+      expectedChecksChoice: ExpectedChecksChoice.custom,
+      expectedChecks: checks,
+      expectedChecksText: formatExpectedChecks(checks),
+    ),
+  );
+
+  /// Types the project's own checks as the canonical raw lines. Text that
+  /// does not parse is kept verbatim, with the checks that did parse beside
+  /// it, and [save] refuses until it does.
+  void setExpectedChecksText(String text) => _edit(
+    (draft) => draft.copyWith(
+      expectedChecksChoice: ExpectedChecksChoice.custom,
+      expectedChecks: parseExpectedChecks(text).checks,
+      expectedChecksText: text,
+    ),
+  );
+
+  /// Returns the checks to the bridge's follow-the-defaults behaviour: the
+  /// project states none of its own.
+  void clearExpectedChecks() => _edit(
+    (draft) => draft.copyWith(
+      expectedChecksChoice: ExpectedChecksChoice.inherit,
+      expectedChecks: const <ExpectedCheck>[],
+      expectedChecksText: '',
+    ),
+  );
+
   void setReviewerInstructions(String text) =>
       _edit((draft) => draft.copyWith(reviewerInstructions: text));
   void setPlannerDelegation(bool enabled) =>
@@ -895,6 +1061,11 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
         ProjectField.rounds => draft.copyWith(rounds: base.rounds),
         ProjectField.ciPoll => draft.copyWith(ciPoll: base.ciPoll),
         ProjectField.ciWait => draft.copyWith(ciWait: base.ciWait),
+        ProjectField.expectedChecks => draft.copyWith(
+          expectedChecksChoice: base.expectedChecksChoice,
+          expectedChecks: base.expectedChecks,
+          expectedChecksText: base.expectedChecksText,
+        ),
         ProjectField.reviewerInstructions => draft.copyWith(
           reviewerInstructions: base.reviewerInstructions,
         ),
@@ -916,6 +1087,16 @@ class ProjectModel extends ChangeNotifier implements UnsavedEditsSource {
     final draft = _draft;
     if (stored == null || draft == null || _saveState == SaveState.saving) {
       return;
+    }
+    // Raw check text that does not parse is kept as typed so it can be fixed;
+    // the save is refused here, in the parser's own words, rather than
+    // storing something other than what the person sees.
+    if (draft.expectedChecksChoice == ExpectedChecksChoice.custom) {
+      final error = parseExpectedChecks(draft.expectedChecksText).error;
+      if (error != null) {
+        _refuse(null, error);
+        return;
+      }
     }
     _saveState = SaveState.saving;
     _saveError = null;

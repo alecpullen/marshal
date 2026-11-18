@@ -1,12 +1,16 @@
 import 'dart:convert';
 
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart'
     show ProjectSettingsVersion;
 import 'package:marshal_app/src/client/contract.g.dart' as contract;
+import 'package:marshal_app/src/model/expected_checks.dart';
+import 'package:marshal_app/src/model/factory_store.dart';
 import 'package:marshal_app/src/model/inbox_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/project_model.dart';
+import 'package:marshal_app/src/model/section_model.dart' show SaveState;
 import 'package:marshal_app/src/model/work_item_model.dart'
     show Stage, WorkItemView;
 import 'package:marshal_app/src/ui/kit/kit.dart';
@@ -15,7 +19,15 @@ import 'package:marshal_app/src/ui/sections/unsaved_guard.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
 
 import '../../model/support.dart'
-    show FixtureHost, ModelFixture, agent, factoryItem, project;
+    show
+        FixtureHost,
+        ModelFixture,
+        agent,
+        factoryCheck,
+        factoryCI,
+        factoryItem,
+        factoryRound,
+        project;
 import '../../support/fake_bridge.dart' show FakeReply;
 
 /// The moment the page's fixtures are measured against.
@@ -23,21 +35,32 @@ final _now = DateTime.utc(2026, 11, 17, 4, 12);
 
 /// A project's settings with a repository to discover and a factory default
 /// block, and health and runs beside them.
-ProjectModel _model() => ProjectModel(
-  root: '/home/u/alpha',
-  name: 'alpha',
+///
+/// [factoryDefaults] replaces the whole factory block, so a test can store the
+/// checks a project states; [onWrite] sees the document a save would send.
+ProjectModel _model({
+  String root = '/home/u/alpha',
+  String name = 'alpha',
+  Map<String, Object?>? factoryDefaults,
+  void Function(contract.ProjectSettings next)? onWrite,
+}) => ProjectModel(
+  root: root,
+  name: name,
   now: () => _now,
   read: () async => ProjectSettingsVersion(
     settings: contract.ProjectSettings.fromJson({
       'routing': {'profile': 'balanced'},
       'mode': 'act',
       'intake': {'repoId': 'repo-1'},
-      'factoryDefaults': {'targetBranch': 'main', 'maxRounds': 3},
+      'factoryDefaults':
+          factoryDefaults ?? {'targetBranch': 'main', 'maxRounds': 3},
     }),
     etag: 'v1',
   ),
-  write: (next, etag) async =>
-      ProjectSettingsVersion(settings: next, etag: 'v2'),
+  write: (next, etag) async {
+    onWrite?.call(next);
+    return ProjectSettingsVersion(settings: next, etag: 'v2');
+  },
   readHealth: () async => contract.ProjectHealth.fromJson({
     'gateRunnable': 'yes',
     'mirrorFresh': <Object?>[],
@@ -67,6 +90,39 @@ Future<void> _pumpTall(WidgetTester tester, Widget page) async {
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(EmberApp(brightness: Brightness.light, home: page));
+  await tester.pump();
+}
+
+/// The Defaults tab with its expected-checks sheet open.
+Future<void> _openChecks(
+  WidgetTester tester,
+  ProjectModel model, {
+  List<ObservedCheck> observedChecks = const <ObservedCheck>[],
+}) async {
+  await _pumpTall(
+    tester,
+    ProjectPage(
+      model: model,
+      initialTab: 2,
+      now: _now,
+      observedChecks: observedChecks,
+    ),
+  );
+  await tester.pump();
+  await tester.tap(find.text('Expected checks'));
+  await tester.pumpAndSettle();
+}
+
+/// Types into the sheet's field labelled [label].
+Future<void> _enter(WidgetTester tester, String label, String text) async {
+  final field = find.ancestor(
+    of: find.text(label),
+    matching: find.byType(Field),
+  );
+  await tester.enterText(
+    find.descendant(of: field, matching: find.byType(EditableText)),
+    text,
+  );
   await tester.pump();
 }
 
@@ -124,6 +180,22 @@ void main() {
       ),
       findsNothing,
     );
+  });
+
+  testWidgets('the header New starts work in this project', (tester) async {
+    var opened = 0;
+    await _pumpTall(
+      tester,
+      ProjectPage(model: _model(), now: _now, onNewWork: () => opened++),
+    );
+
+    // The page's one primary action, in its header (design.md, "Starting
+    // work"), on every section: the page is where a project's next agent is
+    // started from.
+    final button = find.widgetWithText(Btn, 'New');
+    expect(button, findsOneWidget);
+    await tester.tap(button);
+    expect(opened, 1);
   });
 
   testWidgets('discovery shows its report', (tester) async {
@@ -235,6 +307,94 @@ void main() {
         reason: 'the project page has a $label tab',
       );
     }
+  });
+
+  testWidgets('suggestions come from the project\u2019s own repository', (
+    tester,
+  ) async {
+    // The shell is what hands the store the project's intake repository, so
+    // the evidence it offers comes from the same project and the same
+    // repository (F6 decision 12), never from a neighbouring one.
+    final fixture = (await tester.runAsync(
+      () => ModelFixture.start([
+        FixtureHost(
+          name: 'local',
+          projects: [project('/home/u/alpha')],
+          agents: [agent(id: 'a-1', project: '/home/u/alpha')],
+          factoryItems: [
+            factoryItem(
+              id: 'item-1',
+              repo: 'repo-1',
+              rounds: [
+                factoryRound(
+                  ci: factoryCI(
+                    checks: [factoryCheck(name: 'build', appID: 42)],
+                  ),
+                ),
+              ],
+            ),
+            factoryItem(
+              id: 'item-2',
+              repo: 'repo-2',
+              rounds: [
+                factoryRound(
+                  ci: factoryCI(
+                    checks: [factoryCheck(name: 'other', appID: 7)],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ]),
+    ))!;
+    await tester.runAsync(() => fixture.refresh());
+    final factory = FactoryStore(fixture.registry, now: fixture.clock.now);
+    addTearDown(factory.dispose);
+    await tester.runAsync(() => factory.refresh('local'));
+
+    tester.view.physicalSize = const Size(1440, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: InboxModel(fixture.store, client: fixture.clientFor),
+          factory: factory,
+          // The project's intake names repo-1; item-2 was recorded in
+          // repo-2, so its check is not evidence for this project.
+          projectFor: (host, root) => _model(),
+          initialPlace: const Place(PlaceKind.project, id: '/home/u/alpha'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    final page = find.byType(ProjectPage);
+    await tester.tap(
+      find.descendant(of: page, matching: find.text('Defaults')),
+    );
+    await tester.pump();
+    await tester.tap(
+      find.descendant(of: page, matching: find.text('Expected checks')),
+    );
+    // The shell keeps a frame source of its own, so the sheet's opening
+    // animation is pumped past rather than waited out.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Show checks observed in this project'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('build (App 42)'), findsOneWidget);
+    expect(
+      find.text('other (App 7)'),
+      findsNothing,
+      reason: 'a check recorded in another repository is not evidence here',
+    );
   });
 
   testWidgets('the discovery tap asks the bridge and draws its answer', (
@@ -368,5 +528,592 @@ void main() {
     expect(find.text('DISCOVERY REPORT'), findsOneWidget);
     expect(find.text('forge_metadata'), findsOneWidget);
     expect(find.text('supported'), findsOneWidget);
+  });
+
+  testWidgets('the page names the project and its section, wide and narrow', (
+    tester,
+  ) async {
+    Future<void> pumpNarrow(Widget page) async {
+      tester.view.physicalSize = const Size(420, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        EmberApp(brightness: Brightness.light, home: page),
+      );
+      await tester.pump();
+    }
+
+    final model = _model();
+    for (final narrow in [true, false]) {
+      final page = ProjectPage(model: model, now: _now);
+      if (narrow) {
+        await pumpNarrow(page);
+      } else {
+        await _pumpTall(tester, page);
+      }
+      final within = find.byType(ProjectPage);
+      // The page's header is the one place the project is named: its title and
+      // its subtitle, at every width (§1.4: quiet until it matters).
+      final header = find.byType(PageBody);
+      expect(
+        tester.widget<PageBody>(header).title,
+        'alpha',
+        reason: 'the header carries the project\'s name',
+      );
+      expect(
+        tester.widget<PageBody>(header).subtitle,
+        '/home/u/alpha',
+        reason: 'the root tells two same-named projects apart',
+      );
+      for (final text in ['alpha', '/home/u/alpha']) {
+        expect(
+          find.descendant(of: header, matching: find.text(text)),
+          findsOneWidget,
+          reason: '$text is drawn once, in the header',
+        );
+      }
+      for (final label in ['Work', 'Automations', 'Defaults', 'Health']) {
+        expect(
+          find.descendant(of: within, matching: find.text(label)),
+          findsOneWidget,
+          reason: 'a $label tab, ${narrow ? 'narrow' : 'wide'}',
+        );
+      }
+      expect(
+        find.descendant(
+          of: within,
+          matching: find.text(
+            'The project\'s work items, its agents and its plan runs',
+          ),
+        ),
+        findsOneWidget,
+        reason: 'the open section\'s line, ${narrow ? 'narrow' : 'wide'}',
+      );
+    }
+  });
+
+  testWidgets('a project whose id holds special characters opens its page', (
+    tester,
+  ) async {
+    const root = '/srv/old one #2/';
+    await _pumpTall(
+      tester,
+      ProjectPage(
+        model: _model(root: root, name: 'old one #2'),
+        now: _now,
+      ),
+    );
+    await tester.pump();
+
+    // The identity is the page's header: the name and the root, which is what
+    // tells two same-named projects apart.
+    final header = find.byType(PageBody);
+    expect(tester.widget<PageBody>(header).title, 'old one #2');
+    expect(tester.widget<PageBody>(header).subtitle, root);
+    expect(
+      find.descendant(of: header, matching: find.text('old one #2')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: header, matching: find.text(root)),
+      findsOneWidget,
+    );
+
+    // All four sections open.
+    for (final (label, mark) in const [
+      ('Automations', 'No forge automation is configured for this project.'),
+      ('Defaults', 'Model profile'),
+      ('Health', 'Run discovery'),
+      ('Work', 'No agent is running in this project.'),
+    ]) {
+      await tester.tap(find.text(label));
+      await tester.pump();
+      expect(
+        find.descendant(
+          of: find.byType(ProjectPage),
+          matching: find.text(mark),
+        ),
+        findsOneWidget,
+        reason: '$label opens',
+      );
+    }
+  });
+
+  testWidgets('an unsaved edit survives switching sections', (tester) async {
+    final model = _model();
+    await _pumpTall(
+      tester,
+      ProjectPage(model: model, initialTab: 2, now: _now),
+    );
+    await tester.pump();
+
+    // The draft lives in the model, so the edit is the page's, not one
+    // tab's.
+    model.setRounds('7');
+    await tester.pump();
+    expect(find.text('7'), findsOneWidget, reason: 'the row shows the edit');
+
+    await tester.tap(find.text('Health'));
+    await tester.pump();
+    await tester.tap(find.text('Defaults'));
+    await tester.pump();
+
+    expect(
+      find.text('7'),
+      findsOneWidget,
+      reason: 'switching sections keeps the unsaved edit',
+    );
+    expect(model.draft!.rounds, '7');
+    expect(model.dirty, isTrue);
+  });
+
+  testWidgets('an unreachable project is called out once, on any section', (
+    tester,
+  ) async {
+    await _pumpTall(
+      tester,
+      ProjectPage(model: _model(), state: StateKind.unavailable, now: _now),
+    );
+    await tester.pump();
+
+    // One call-out, above the sections. Unavailable replaces the content
+    // (§7), so no section draws what it cannot read beneath it.
+    expect(find.text('alpha is unreachable'), findsOneWidget);
+    expect(find.text('Last seen now ago'), findsOneWidget);
+    expect(
+      find.text('No agent is running in this project.'),
+      findsNothing,
+      reason: 'unavailable replaces the Work tab content, not sits beside it',
+    );
+
+    // The same one call-out stands on a section that is not Work.
+    await tester.tap(find.text('Automations'));
+    await tester.pump();
+    expect(find.text('alpha is unreachable'), findsOneWidget);
+    expect(
+      find.text('No forge automation is configured for this project.'),
+      findsNothing,
+      reason: 'unavailable replaces the Automations content too',
+    );
+  });
+
+  testWidgets('the keyboard moves between sections', (tester) async {
+    await _pumpTall(
+      tester,
+      ProjectPage(model: _model(), initialTab: 3, now: _now),
+    );
+    await tester.pump();
+
+    // The first tab stop is the Work tab: Enter opens it, and the line
+    // under the tabs follows.
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(
+      find.text('The project\'s work items, its agents and its plan runs'),
+      findsOneWidget,
+      reason: 'the line names the section the keyboard opened',
+    );
+
+    // The next stop is Automations: Enter opens it too.
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(
+      find.text('The forge automations configured for this project'),
+      findsOneWidget,
+      reason: 'the line follows the keyboard again',
+    );
+    expect(
+      find.text('No forge automation is configured for this project.'),
+      findsOneWidget,
+      reason: 'Enter opened the section',
+    );
+  });
+
+  testWidgets('the defaults tab says whether it follows the app or states '
+      'checks', (tester) async {
+    final model = _model();
+    await _pumpTall(
+      tester,
+      ProjectPage(model: model, initialTab: 2, now: _now),
+    );
+    await tester.pump();
+
+    expect(find.text('Expected checks'), findsOneWidget);
+    expect(
+      find.text('Following the defaults'),
+      findsOneWidget,
+      reason: 'stored settings that state none follow the app\'s',
+    );
+  });
+
+  testWidgets('adding a check writes both checks and keeps the rest of the '
+      'settings', (tester) async {
+    final written = <Map<String, dynamic>>[];
+    final model = _model(
+      factoryDefaults: {
+        'targetBranch': 'main',
+        'maxRounds': 3,
+        'expectedChecks': [
+          {'kind': 'check_run', 'name': 'ci:build', 'appId': 42},
+        ],
+      },
+      onWrite: (next) => written.add(next.toJson()),
+    );
+    await _pumpTall(
+      tester,
+      ProjectPage(model: model, initialTab: 2, now: _now),
+    );
+    await tester.pump();
+    expect(find.text('1 check'), findsOneWidget);
+
+    await _openChecks(tester, model);
+
+    // The stored check is the sheet's row, its name and app kept whole.
+    expect(find.text('ci:build (App 42)'), findsOneWidget);
+
+    // A commit status whose context holds a colon, added from the form. The
+    // kinds are chosen in plain words, and stored as the wire's spelling.
+    await tester.tap(find.text('Check run'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Commit status'));
+    await tester.pumpAndSettle();
+    await _enter(tester, 'Name', 'ci:lint:repo');
+    await tester.tap(find.text('Add the check'));
+    await tester.pumpAndSettle();
+    expect(find.text('ci:lint:repo'), findsOneWidget);
+
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    expect(find.text('2 checks'), findsOneWidget);
+
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(written, hasLength(1));
+    final document = written.single;
+    expect(document['mode'], 'act', reason: 'unrelated settings survived');
+    final factory = document['factoryDefaults'] as Map<String, dynamic>;
+    expect(factory['targetBranch'], 'main');
+    expect(factory['expectedChecks'], [
+      {'kind': 'check_run', 'name': 'ci:build', 'appId': 42},
+      {'kind': 'commit_status', 'name': 'ci:lint:repo', 'appId': 0},
+    ]);
+  });
+
+  testWidgets('mode switching keeps invalid raw text and the page refuses it', (
+    tester,
+  ) async {
+    final written = <Map<String, dynamic>>[];
+    final model = _model(onWrite: (next) => written.add(next.toJson()));
+    await _openChecks(tester, model);
+
+    // Rows hands over to raw text, which is the draft's own text.
+    await tester.tap(find.text('Rows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Raw text'));
+    await tester.pumpAndSettle();
+    await _enter(tester, 'Checks', 'nonsense');
+    expect(find.textContaining('"nonsense" is neither'), findsOneWidget);
+
+    // Rows and back again: the text the person typed is still there, and so
+    // is the line that says why it cannot be stored.
+    await tester.tap(find.text('Raw text'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Raw text'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('nonsense'), findsOneWidget);
+    expect(find.textContaining('"nonsense" is neither'), findsOneWidget);
+
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    expect(find.text('Not valid'), findsOneWidget);
+
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(model.saveState, SaveState.failed);
+    expect(model.saveError, contains('nonsense'));
+    expect(written, isEmpty, reason: 'nothing unparsed reached the bridge');
+  });
+
+  testWidgets('rows mode over text it cannot read offers no way to lose it', (
+    tester,
+  ) async {
+    final model = _model();
+    await _openChecks(tester, model);
+
+    // Rows hands over to the raw lines, which is where a person types.
+    await tester.tap(find.text('Rows'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Raw text'));
+    await tester.pumpAndSettle();
+    await _enter(tester, 'Checks', 'nonsense');
+    final typed = model.draft!.expectedChecksText;
+    final dirtyAfterTyping = model.dirty;
+
+    // Back to rows: the text parses to no check, so the sheet says so in
+    // the parser's own words rather than claiming nothing is stated. An add
+    // form here would rewrite the text from the empty parse and lose it.
+    await tester.tap(find.text('Raw text'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rows'));
+    await tester.pumpAndSettle();
+
+    expect(
+      model.draft!.expectedChecksText,
+      typed,
+      reason: 'switching to rows leaves the typed text byte for byte',
+    );
+    expect(
+      model.dirty,
+      dirtyAfterTyping,
+      reason: 'merely viewing the unreadable text does not dirty the draft',
+    );
+    expect(find.textContaining('"nonsense" is neither'), findsOneWidget);
+    expect(
+      find.text('No check is stated.'),
+      findsNothing,
+      reason: 'the sheet does not claim the project states no check',
+    );
+    expect(
+      find.text('Add the check'),
+      findsNothing,
+      reason: 'no add form over text that cannot be read',
+    );
+    expect(
+      find.text('Show checks observed in this project'),
+      findsNothing,
+      reason: 'no suggestion list that would rewrite the text',
+    );
+
+    // The one way on is the text itself, still holding what was typed.
+    await tester.tap(find.text('Edit the text as raw lines'));
+    await tester.pumpAndSettle();
+    expect(find.text('nonsense'), findsOneWidget);
+    expect(model.draft!.expectedChecksText, typed);
+  });
+
+  testWidgets('observed checks are offered only when asked, and added one at '
+      'a time', (tester) async {
+    final written = <Map<String, dynamic>>[];
+    final model = _model(onWrite: (next) => written.add(next.toJson()));
+    const observed = [
+      ObservedCheck(
+        check: ExpectedCheck(kind: 'check_run', name: 'ci/build', appID: 11),
+        observedAt: '2026-11-17T03:00:00Z',
+        revision: 2,
+      ),
+      ObservedCheck(
+        check: ExpectedCheck(kind: 'check_run', name: 'ci/build', appID: 12),
+        observedAt: '2026-11-17T04:00:00Z',
+        revision: 3,
+      ),
+    ];
+    await _openChecks(tester, model, observedChecks: observed);
+
+    // Nothing is offered until the person asks for it.
+    expect(find.text('ci/build (App 11)'), findsNothing);
+    await tester.tap(find.text('Show checks observed in this project'));
+    await tester.pumpAndSettle();
+
+    // Both are listed, told apart by their app, and each says where it came
+    // from: the round, and how long ago (§8: never a raw timestamp).
+    expect(find.text('ci/build (App 11)'), findsOneWidget);
+    expect(find.text('ci/build (App 12)'), findsOneWidget);
+    expect(find.text('seen in round 2, 1h 12m ago'), findsOneWidget);
+    expect(find.text('seen in round 3, 12m ago'), findsOneWidget);
+    expect(
+      find.textContaining('2026-11-17T'),
+      findsNothing,
+      reason: 'no raw timestamp in person-facing copy',
+    );
+    expect(
+      find.text(
+        'These were recorded by earlier work; they are not a complete list '
+        'of what the forge requires.',
+      ),
+      findsOneWidget,
+    );
+
+    // Looking is not choosing: the draft and the bridge are untouched.
+    expect(model.dirty, isFalse);
+    expect(written, isEmpty);
+
+    await tester.tap(find.text('Add').first);
+    await tester.pumpAndSettle();
+
+    expect(model.draft!.expectedChecks, [
+      const ExpectedCheck(kind: 'check_run', name: 'ci/build', appID: 11),
+    ]);
+  });
+
+  testWidgets('with nothing observed the editor says so and takes a check by '
+      'hand', (tester) async {
+    final model = _model();
+    await _openChecks(tester, model);
+
+    await tester.tap(find.text('Show checks observed in this project'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'No check has been observed in this project yet, so add them by hand.',
+      ),
+      findsOneWidget,
+    );
+
+    // The add form is still there, and still the way in.
+    await _enter(tester, 'Name', 'build');
+    await _enter(tester, 'App id', '42');
+    await tester.tap(find.text('Add the check'));
+    await tester.pumpAndSettle();
+
+    expect(model.draft!.expectedChecks, [
+      const ExpectedCheck(kind: 'check_run', name: 'build', appID: 42),
+    ]);
+  });
+
+  testWidgets('a project lists its schedules and watches', (tester) async {
+    final opened = <int?>[];
+    final model = ProjectModel(
+      root: '/home/u/alpha',
+      name: 'alpha',
+      now: () => _now,
+      read: () async => ProjectSettingsVersion(
+        settings: contract.ProjectSettings.fromJson({
+          'routing': {'profile': 'balanced'},
+          'mode': 'act',
+          'intake': {
+            'repoId': 'repo-1',
+            'labels': ['studio'],
+          },
+        }),
+        etag: 'v1',
+      ),
+      write: (next, etag) async =>
+          ProjectSettingsVersion(settings: next, etag: etag),
+      readSchedules: () async => const [
+        contract.Schedule(
+          id: 's-1',
+          name: 'nightly gate',
+          recipe: 'gate',
+          project: '/home/u/alpha',
+          cron: '0 3 * * *',
+          enabled: true,
+          lastResult: 'passed',
+          ownerID: 'owner-1',
+        ),
+        contract.Schedule(
+          id: 's-2',
+          name: 'weekly review',
+          recipe: 'review',
+          project: '/home/u/alpha',
+          cron: '0 9 * * 1',
+          enabled: false,
+          ownerID: 'owner-1',
+        ),
+      ],
+      readWatches: () async => [
+        contract.WatchInfo(
+          agentID: 'a-1',
+          id: 'w-1',
+          name: 'the gate',
+          kind: 'command',
+          state: 'fired',
+          condition: 'exit != 0',
+          mode: 'interval',
+          intervalMs: 5000,
+          fireCount: 1,
+          createdAt: 1763352000000,
+          samples: const [],
+        ),
+      ],
+      projectOfAgent: (agentID) => agentID == 'a-1' ? '/home/u/alpha' : null,
+    );
+    addTearDown(model.dispose);
+
+    await _pumpTall(
+      tester,
+      ProjectPage(
+        model: model,
+        initialTab: 1,
+        now: _now,
+        onOpenAutomations: opened.add,
+      ),
+    );
+    // The model's read lands after the first frame.
+    await tester.pump();
+
+    // Every row says what it is and where it stands, in the words its own
+    // section uses. A section label is uppercase (§5).
+    expect(find.text('SCHEDULES'), findsOneWidget);
+    expect(find.text('nightly gate'), findsOneWidget);
+    expect(find.text('0 3 * * *'), findsOneWidget);
+    expect(find.text('passed'), findsOneWidget);
+    expect(find.text('weekly review'), findsOneWidget);
+    expect(find.text('Paused'), findsOneWidget);
+    expect(find.text('WATCHES'), findsOneWidget);
+    expect(find.text('the gate'), findsOneWidget);
+    expect(find.text('Tripped'), findsOneWidget);
+    // The intake names the repository and the label an issue must carry.
+    expect(find.text('ISSUE INTAKE'), findsOneWidget);
+    expect(find.text('repo-1'), findsOneWidget);
+    expect(find.text('Issues labelled studio'), findsOneWidget);
+
+    // Each row opens the editor that owns it, at that tab.
+    await tester.tap(find.text('nightly gate'));
+    await tester.pump();
+    await tester.tap(find.text('the gate'));
+    await tester.pump();
+    expect(opened, [
+      automationsSections.indexOf('schedules'),
+      automationsSections.indexOf('watches'),
+    ]);
+  });
+
+  testWidgets('a tab section with nothing is absent', (tester) async {
+    final model = ProjectModel(
+      root: '/home/u/alpha',
+      name: 'alpha',
+      now: () => _now,
+      read: () async => ProjectSettingsVersion(
+        settings: contract.ProjectSettings.fromJson({
+          'routing': {'profile': 'balanced'},
+          'mode': 'act',
+        }),
+        etag: 'v1',
+      ),
+      write: (next, etag) async =>
+          ProjectSettingsVersion(settings: next, etag: etag),
+      readSchedules: () async => const <contract.Schedule>[],
+      readWatches: () async => const <contract.WatchInfo>[],
+      projectOfAgent: (_) => null,
+    );
+    addTearDown(model.dispose);
+
+    await _pumpTall(
+      tester,
+      ProjectPage(
+        model: model,
+        initialTab: 1,
+        now: _now,
+        onOpenAutomations: (_) {},
+      ),
+    );
+    await tester.pump();
+
+    // A heading with nothing under it is not drawn at all.
+    expect(find.text('SCHEDULES'), findsNothing);
+    expect(find.text('WATCHES'), findsNothing);
+    expect(find.text('ISSUE INTAKE'), findsNothing);
   });
 }

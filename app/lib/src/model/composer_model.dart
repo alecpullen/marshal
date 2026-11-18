@@ -66,6 +66,7 @@ class ComposerModel extends ChangeNotifier {
   final Future<AccessState> Function() _access;
 
   bool _running;
+  bool _cancellationRequested = false;
   bool _readOnly;
   String? _readOnlyReason;
   String _permissionMode;
@@ -74,6 +75,14 @@ class ComposerModel extends ChangeNotifier {
 
   /// Whether a turn is running: a send steers, and Stop is offered.
   bool get running => _running;
+
+  /// Whether a stop has been asked for and the session has not yet reported
+  /// that the turn ended.
+  ///
+  /// Cancelling is a request, so Steer and Stop stay offered and the composer
+  /// says it is waiting. Only [setRunning] with the session's own report
+  /// confirms the stop.
+  bool get cancellationRequested => _cancellationRequested;
 
   /// Whether the session can only be read. The composer is then one line
   /// saying why (spec decision 12).
@@ -93,9 +102,16 @@ class ComposerModel extends ChangeNotifier {
 
   /// Takes the running flag from what the session reports, so a screen that
   /// reopens a live thread offers Steer and Stop.
+  ///
+  /// This is the only confirmation of a stop: taking the session's report
+  /// clears any cancellation the composer asked for.
   void setRunning(bool running) {
-    if (_running == running) return;
+    // A report that the turn is still running does not confirm a stop: only
+    // the session saying it ended clears the request. An unchanged false
+    // report may still be that confirmation, so it is not short-circuited.
+    if (_running == running && (running || !_cancellationRequested)) return;
     _running = running;
+    if (!running) _cancellationRequested = false;
     notifyListeners();
   }
 
@@ -113,6 +129,8 @@ class ComposerModel extends ChangeNotifier {
       } else {
         await _prompt(message);
         _running = true;
+        // A new turn is not the cancelled one: no request is pending on it.
+        _cancellationRequested = false;
       }
       view.draft = '';
     } catch (error) {
@@ -121,12 +139,16 @@ class ComposerModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Stops the running turn.
+  /// Asks the session to stop the running turn.
+  ///
+  /// Cancelling is a request, not a confirmed stop: the composer says it is
+  /// waiting and keeps Steer and Stop until the session reports the turn's
+  /// state through [setRunning].
   Future<void> stop() async {
     _failure = null;
     try {
       await _cancel();
-      _running = false;
+      _cancellationRequested = true;
     } catch (error) {
       _failure = _words(error);
     }

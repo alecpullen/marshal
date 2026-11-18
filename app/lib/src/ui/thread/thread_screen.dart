@@ -67,6 +67,18 @@ String threadKeyTip(String key) {
 /// It is an embeddable widget: it takes the thread's store and view state and
 /// draws them, so F6 can put it beside an inspector and a test can pump it
 /// with fixture data. It never fetches; the store does.
+///
+/// **Integration point for child context.** Only a parent's conversation is
+/// shown today: the host always hands this screen the parent's [store]
+/// (`StackStore(subagentId: 0)`), and [asks] are the parent's asks. When the
+/// worker-subagent plan lands, the child's context belongs here: the
+/// breadcrumb naming the child its conversation is, and the back action to
+/// its parent, go above the transcript in `_thread`'s column, under the
+/// [ThreadHeader]; that plan's shared child views and steering replace the
+/// drill-in the shell has now. Until then this screen draws no child status,
+/// no breadcrumb value and no back or steer control, because no adapter it
+/// talks to offers one — reporting an unsupported operation as done is worse
+/// than not offering it.
 class ThreadScreen extends StatefulWidget {
   const ThreadScreen({
     super.key,
@@ -176,6 +188,24 @@ class _ThreadScreenState extends State<ThreadScreen> {
   final _focus = FocusNode(debugLabel: 'thread');
   late final TranscriptSelection _selection =
       widget.selection ?? TranscriptSelection(textOf: widget.store.plainText);
+
+  @override
+  void initState() {
+    super.initState();
+    // The place's screen owns the keyboard (F9 decision 6). The shell's
+    // shortcut anchor autofocuses too, and a scope grants focus to the first
+    // autofocus it registered, so ask for it once this screen is mounted —
+    // unless something below is already being typed in, which keeps it.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final focused = FocusManager.instance.primaryFocus?.context;
+      if (focused != null &&
+          focused.findAncestorWidgetOfExactType<EditableText>() != null) {
+        return;
+      }
+      _focus.requestFocus();
+    });
+  }
 
   @override
   void dispose() {
@@ -338,18 +368,10 @@ class _ThreadScreenState extends State<ThreadScreen> {
     );
   }
 
-  /// Every tab this thread kind has (decision 2). F6 brings the work item's
-  /// and the plan run's sets; until then those kinds have none.
-  List<InspectorTab> get _inspectorTabs => switch (widget.thread.kind) {
-    model.ThreadKind.agent => const [
-      InspectorTab.changes,
-      InspectorTab.files,
-      InspectorTab.terminal,
-      InspectorTab.preview,
-      InspectorTab.inspect,
-    ],
-    model.ThreadKind.workItem || model.ThreadKind.planRun => const [],
-  };
+  /// Every tab this thread kind has. The set is the kind's, declared by
+  /// `tabsForThread` (F4 decision 2, F6 decision 6), so this screen and the
+  /// model cannot disagree about which tabs a kind has.
+  List<InspectorTab> get _inspectorTabs => tabsForThread(widget.thread.kind);
 
   /// Whether the inspector is a sheet below the medium breakpoint.
   bool get _inspectorBelowBreakpoint =>
@@ -451,7 +473,10 @@ class _ThreadScreenState extends State<ThreadScreen> {
     children: [
       _pullHeader(),
       Expanded(
-        child: _rowsOf(store).isEmpty
+        // An empty transcript with something waiting on the person is not
+        // empty: the transcript still draws, so its pinned-ask path shows
+        // what the Inbox holds. Only a thread with neither says so.
+        child: _rowsOf(store).isEmpty && !_hasVisibleAsks
             ? StateMessage.empty(
                 message: 'Nothing has happened in this thread yet.',
                 action: StateAction(
@@ -472,6 +497,14 @@ class _ThreadScreenState extends State<ThreadScreen> {
       _composer(),
     ],
   );
+
+  /// Whether an ask is waiting as of the screen's clock. The transcript
+  /// filters its asks by the same rule, so the empty message is shown only
+  /// when there is truly nothing to draw.
+  bool get _hasVisibleAsks {
+    final now = widget.now ?? DateTime.now();
+    return widget.asks.any((ask) => ask.since.isBefore(now));
+  }
 
   /// The conversation narrowed to step headlines, what an expanded inspector
   /// leaves beside it (decision 3). Selecting one inspects it.
@@ -614,6 +647,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
       message: 'The transcript could not be read.',
       retry: StateAction('Try again', onTap: () {}),
     ),
+    StateKind.unauthorized => const StateMessage.unauthorized(),
     StateKind.unavailable => StateMessage.unavailable(
       host: widget.thread.host,
       lastSeen: '4m',

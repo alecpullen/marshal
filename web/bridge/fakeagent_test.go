@@ -223,6 +223,11 @@ type fakeProjectChild struct {
 	// signals counts the stop signals the bridge sent, so a test can tell one
 	// stop from a stop-and-retry.
 	signals int
+	// opens counts the generations the bridge asked this fake to start, and
+	// openFailFrom, when set, makes every Open from that generation on fail,
+	// so a test can watch a restart that does not come back (decision 7).
+	opens        int
+	openFailFrom int
 }
 
 func newFakeProjectChild(socket string) *fakeProjectChild {
@@ -236,6 +241,13 @@ func newFakeProjectChild(socket string) *fakeProjectChild {
 // Open serves stdio as fakeAgent does and binds the viewer socket, so a viewer
 // can reach the child exactly as `marshal acp --viewers` would let it.
 func (p *fakeProjectChild) Open() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
+	p.mu.Lock()
+	p.opens++
+	gen, failFrom := p.opens, p.openFailFrom
+	p.mu.Unlock()
+	if failFrom > 0 && gen >= failFrom {
+		return nil, nil, nil, fmt.Errorf("fake project child: generation %d cannot start", gen)
+	}
 	// A previous generation's socket is gone before this one binds: a restart
 	// is a new process, which cannot listen on a path that is still bound.
 	p.closeSocket()

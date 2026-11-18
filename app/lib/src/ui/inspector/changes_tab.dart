@@ -52,6 +52,7 @@ class ChangesTab extends StatelessWidget {
       message: 'The changes could not be read.',
       retry: StateAction('Try again', onTap: model.refresh),
     ),
+    StateKind.unauthorized => const StateMessage.unauthorized(),
     StateKind.unavailable => StateMessage.unavailable(
       host: 'The bridge',
       lastSeen: '4m',

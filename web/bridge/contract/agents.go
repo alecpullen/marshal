@@ -57,7 +57,11 @@ type AgentStatus struct {
 	Activity     string       `json:"activity,omitempty"`
 	ContextPct   int          `json:"contextPct,omitempty"`
 	ChangedFiles int          `json:"changedFiles,omitempty"`
-	Interrupted  bool         `json:"interrupted,omitempty"`
+	// StepsDone is how many steps the current turn has taken. A turn's steps
+	// are discovered as the model narrates, so there is no total while it
+	// runs: a client shows a step number, never a fraction.
+	StepsDone   int  `json:"stepsDone,omitempty"`
+	Interrupted bool `json:"interrupted,omitempty"`
 	// VersionWarning, when non-empty, says the agent runs a marshal other
 	// than the daemon's, in the daemon's own words: "agent runs marshal
 	// <theirs>; the daemon is <ours>". It is empty when the versions agree,

@@ -22,13 +22,16 @@ import 'src/model/fleet_store.dart';
 import 'src/model/general_model.dart';
 import 'src/model/handoff_model.dart';
 import 'src/model/composer_model.dart';
+import 'src/model/connect_repo_model.dart';
 import 'src/model/hosts_model.dart';
 import 'src/model/inbox_model.dart';
+import 'src/model/inspector_state.dart';
 import 'src/model/library_model.dart';
 import 'src/model/models_model.dart';
 import 'src/model/network_model.dart';
 import 'src/model/notifications_model.dart';
 import 'src/model/new_work_model.dart';
+import 'src/model/per_host.dart';
 import 'src/model/planning_model.dart';
 import 'src/model/project_model.dart';
 import 'src/model/pulls_model.dart';
@@ -38,7 +41,10 @@ import 'src/model/route_translation.dart';
 import 'src/model/schedules_model.dart';
 import 'src/model/secrets_model.dart';
 import 'src/model/section_model.dart';
+import 'src/model/share_model.dart';
+import 'src/model/signals_store.dart';
 import 'src/model/stack_store.dart';
+import 'src/model/thread_inspector_models.dart';
 import 'src/model/usage_model.dart';
 import 'src/model/watches_model.dart';
 import 'src/model/nav_model.dart' show projectName;
@@ -47,7 +53,9 @@ import 'src/ui/automations/bots_tab.dart';
 import 'src/ui/automations/placeholder.dart';
 import 'src/ui/automations/recipes_tab.dart';
 import 'src/ui/automations/schedules_tab.dart';
+import 'src/ui/automations/watch_form.dart';
 import 'src/ui/automations/watches_tab.dart';
+import 'src/ui/inspector/host.dart';
 import 'src/ui/kit/kit.dart';
 import 'src/ui/library/library_place.dart';
 import 'src/ui/library/mcp_tab.dart';
@@ -90,12 +98,19 @@ Future<void> main() async {
   // This window's appearance and transcript density: Settings' General
   // section sets them, and the sections F7 built read them back.
   final preferences = GeneralPreferences();
+  // Every host's tripped watches, blocked requests and held drafts (spec D4).
+  // It is built after the inbox so an answer can ask for a re-read of the host
+  // it answered on, and its reads are what the Overview's card and the inbox's
+  // network and draft asks come from.
+  late final SignalsStore signals;
   final inbox = InboxModel(
     store,
     client: (name) =>
         hosts.hosts.firstWhere((host) => host.name == name).client,
     factory: factory,
+    onAnswered: (host) => signals.refresh(host),
   );
+  signals = SignalsStore(hosts, inbox: inbox, now: () => DateTime.now());
   // The pull requests read the same hosts, follow the same fleet streams, and
   // post through the same clients (F5).
   final pulls = PullsModel(
@@ -104,11 +119,13 @@ Future<void> main() async {
         hosts.hosts.firstWhere((host) => host.name == name).client,
   );
   // Automations, Library and Settings (F7): their sections read one bridge,
-  // so they are built from the first host the fleet finds.
+  // so each keeps one set of models per host, built when a person first opens
+  // that host's place.
   final sections = _Sections(
     hosts: hosts,
     store: store,
     preferences: preferences,
+    signals: signals,
   );
   runApp(
     EmberApp(
@@ -120,6 +137,15 @@ Future<void> main() async {
           pulls: pulls,
           factory: factory,
           read: hosts.discover,
+          // The Overview's activity feed: the newest audit events the first
+          // host that answers reports. A read that fails leaves the card
+          // empty without failing the page.
+          readAudit: () => hosts.hosts.first.client.audit(limit: 20),
+          // The spend rail's trend and split, and the projects table's
+          // column: the same usage ledger, read by project, by day and by
+          // role.
+          readUsage: ({String by = 'project'}) =>
+              hosts.hosts.first.client.usage(by: by),
           // The place the page's own address names: an old hash route from the
           // Svelte Studio, or this build's own path (F8 decision 2). A
           // desktop has no page, so its window opens the Overview.
@@ -127,6 +153,7 @@ Future<void> main() async {
           automationsFor: sections.automations,
           libraryFor: sections.library,
           settingsFor: sections.settings,
+          signals: signals,
           // A thread place opens its own session's transcript on the client
           // that reaches its host (F3): the same client the inbox answers with.
           threadStore: (thread) => StackStore(
@@ -138,21 +165,58 @@ Future<void> main() async {
             thread.id,
             view: view,
           ),
-          newWorkFor: (thread) => NewWorkModel.forProject(
+          // The Studio's one way into the new-work dialog (F3 task 7, F6
+          // decisions 8 and 9): a thread's `⌘N`, the Overview's "New" and a
+          // project page's "New" all name a host and a project, and the dialog
+          // starts an agent, a planner, or the handoff review a work item
+          // comes from.
+          newWorkFor: (host, project) => NewWorkModel.forProject(
             store
-                .projects(host: thread.host)
+                .projects(host: host)
                 .firstWhere(
-                  (project) => project.root == thread.project,
+                  (status) => status.root == project,
                   orElse: () => ProjectStatus(
-                    root: thread.project,
+                    root: project,
                     available: true,
                     trust: TrustState.trustNA,
                     isolation: 'available',
                   ),
                 ),
-            hosts.hosts.firstWhere((host) => host.name == thread.host).client,
-            host: thread.host,
+            hosts.hosts.firstWhere((owner) => owner.name == host).client,
+            host: host,
           ),
+          // Registers a repository for issue intake from the sidebar's plus
+          // (F9 B1): the sheet is the Studio's, the client is the host's.
+          connectRepoFor: (host) => ConnectRepoModel(
+            hosts.hosts.firstWhere((owner) => owner.name == host).client,
+          ),
+          // A thread's Share mints a read-only status link for its agent on
+          // the client that reaches its host (F7 decision 7): a running
+          // thread's id is its agent id, which the route takes.
+          shareFor: (host, agentId) => ShareModel(
+            hosts.hosts.firstWhere((owner) => owner.name == host).client,
+            agentId: agentId,
+          ),
+          // A thread's inspector reads the five models its tabs draw on the
+          // client that reaches its host (F9 decision 4). A thread's id is
+          // both its agent id and its session id, and the root is the project
+          // its files are read under.
+          inspectorFor: (host, thread) {
+            final models = ThreadInspectorModels(
+              hosts.hosts.firstWhere((owner) => owner.name == host).client,
+              agentId: thread.id,
+              sessionId: thread.id,
+              root: thread.project,
+            );
+            return ThreadInspector(
+              state: InspectorState(),
+              body: (tab) => inspectorBody(models, tab),
+              start: models.start,
+              dispose: () {
+                models.dispose();
+              },
+            );
+          },
           // A planning thread reads its planner's journal on the client that
           // reaches its host, and captures the plan for review (F6 decision 8).
           planningFor: (host, plannerID) {
@@ -178,45 +242,56 @@ Future<void> main() async {
           // plan off. A project that cannot be read still opens the sheet on
           // the host alone, because the review must open rather than fail: its
           // fields then say the project states them not, and the person
-          // chooses the rest. Approving creates the item through the one store
+          // chooses the rest. The action creates the item through the one store
           // that reads the factory.
-          handoffFor: (thread, plan, spec) async {
-            final client = hosts.hosts
-                .firstWhere((owner) => owner.name == thread.host)
-                .client;
-            var defaults = ProjectDefaults(hostID: thread.host);
-            try {
-              final settings = await client.projectSettings(thread.project);
-              defaults = ProjectDefaults.fromSettings(
-                settings.settings,
-                hostID: thread.host,
-              );
-            } catch (_) {
-              // The sheet opens on the host alone, stating what the project
-              // does not; a settings read must not leave the plan unhanded.
-            }
-            // The version this review is bound to: the combined one the bridge
-            // composes, so a settings change made while the review is open is
-            // noticed at approval rather than frozen unread. A read that fails
-            // leaves the review unbound, never blocked.
-            String? version;
-            try {
-              version = await client.factorySettingsVersion(thread.project);
-            } catch (_) {
-              version = null;
-            }
-            return HandoffModel(
-              defaults: defaults,
-              projectRoot: thread.project,
-              title: thread.title,
-              plan: plan,
-              spec: spec,
-              settingsVersion: version,
-              readSettingsVersion: (root) =>
-                  client.factorySettingsVersion(root),
-              create: (draft) => factory.create(thread.host, draft),
-            );
-          },
+          //
+          // A review opened from a planning thread brings the capture it was
+          // reviewed from: the sheet shows that evidence, and the draft is
+          // posted through the snapshot's handoff route, so the bridge's frozen
+          // bytes and verified hashes are what the item is built from. The
+          // new-work dialog passes no capture and keeps the create route.
+          handoffFor:
+              (host, project, title, plan, spec, {plannerID, snapshot}) async {
+                final client = hosts.hosts
+                    .firstWhere((owner) => owner.name == host)
+                    .client;
+                var defaults = ProjectDefaults(hostID: host);
+                try {
+                  final settings = await client.projectSettings(project);
+                  defaults = ProjectDefaults.fromSettings(
+                    settings.settings,
+                    hostID: host,
+                  );
+                } catch (_) {
+                  // The sheet opens on the host alone, stating what the project
+                  // does not; a settings read must not leave the plan unhanded.
+                }
+                // The version this review is bound to: the combined one the
+                // bridge composes, so a settings change made while the review
+                // is open is noticed at approval rather than frozen unread. A
+                // read that fails leaves the review unbound, never blocked.
+                String? version;
+                try {
+                  version = await client.factorySettingsVersion(project);
+                } catch (_) {
+                  version = null;
+                }
+                return HandoffModel(
+                  defaults: defaults,
+                  projectRoot: project,
+                  title: title,
+                  plan: plan,
+                  spec: spec,
+                  settingsVersion: version,
+                  readSettingsVersion: (root) =>
+                      client.factorySettingsVersion(root),
+                  create: (draft) => factory.create(host, draft),
+                  reviewedSnapshot: snapshot,
+                  plannerID: plannerID,
+                  handoffSnapshot: (planner, snapshotID, request) =>
+                      factory.handoff(host, planner, snapshotID, request),
+                );
+              },
           // Answers a plan run's question, for a run opened from a project
           // page's list (F6 decision 12).
           answerRunFor: (host, agentID, answer) => hosts.hosts
@@ -251,6 +326,17 @@ Future<void> main() async {
                   if (run.project == root) run,
               ],
               discover: (repoID) => client.discoverRepo(repoID),
+              // The Automations tab lists what this project actually has: its
+              // own schedules, and the watches its agents started. The fleet
+              // already knows which project an agent belongs to.
+              readSchedules: client.schedules,
+              readWatches: client.watches,
+              projectOfAgent: (agentID) {
+                for (final agent in store.agents()) {
+                  if (agent.id == agentID) return agent.project;
+                }
+                return null;
+              },
             );
           },
         ),
@@ -258,6 +344,7 @@ Future<void> main() async {
     ),
   );
   factory.start();
+  signals.start();
   await startTray();
 }
 
@@ -279,51 +366,88 @@ StartPlace startPlaceFromPage(Uri page) {
   );
 }
 
-/// The three sectioned places F7 built, built for the host that answers.
+/// The three sectioned places F7 built, each built for the host that answers.
 ///
-/// Each place reads one bridge, so it reads the first host the fleet found —
-/// the local daemon where there is one. A place is built the first time a
-/// person opens it and kept for the life of the window: its rows are read
-/// once, and an edit in progress survives moving around the Studio.
+/// Each place reads one bridge, so it reads the host the Studio's switcher
+/// names — the host [placeHost] resolves (spec D1). A place's models are built
+/// the first time a person opens that host's place and kept for the life of the
+/// window: its rows are read once, and an edit in progress survives moving
+/// around the Studio. Two hosts are two sets of models, holding that host's
+/// rows (spec D2: a section merges nothing across hosts).
 ///
 /// The fleet's own host list comes from the store, so the Hosts section is
-/// the one section that is not a bridge read.
+/// the one section that is not a bridge read — and it reads the same store
+/// under every host, as General reads this window's preferences.
 class _Sections {
   _Sections({
     required this.hosts,
     required this.store,
     required this.preferences,
-  });
+    required this.signals,
+  }) {
+    _automations = PerHost<_Automations>(
+      (host) => _Automations(
+        _clientFor(host)!,
+        project: _projectFor(host),
+        host: host,
+        now: store.now,
+        // A write in a section is a change the host's signals read: the
+        // Overview's card and the inbox say so again (spec D4).
+        onWrote: () => signals.refresh(host),
+      ),
+      dispose: (models) => models.dispose(),
+    );
+    _library = PerHost<_Library>(
+      (host) => _Library(
+        _clientFor(host)!,
+        project: _projectFor(host),
+        projects: [
+          for (final project in store.projects(host: host)) project.root,
+        ],
+      ),
+      dispose: (models) => models.dispose(),
+    );
+    _settings = PerHost<_Settings>(
+      (host) =>
+          _Settings(_clientFor(host)!, store: store, preferences: preferences),
+      dispose: (models) => models.dispose(),
+    );
+  }
 
   final HostRegistry hosts;
   final FleetStore store;
   final GeneralPreferences preferences;
 
-  _Automations? _automations;
-  _Library? _library;
-  _Settings? _settings;
+  /// Every host's signals, re-read whenever an Automations section writes:
+  /// the Overview's card and the inbox's asks are that read's (spec D4).
+  final SignalsStore signals;
 
-  /// The host whose bridge these places read, or null before discovery has
-  /// answered.
-  Host? get _host => hosts.hosts.isEmpty ? null : hosts.hosts.first;
+  late final PerHost<_Automations> _automations;
+  late final PerHost<_Library> _library;
+  late final PerHost<_Settings> _settings;
 
-  /// The project a section that is scoped to one starts at: the host's first,
-  /// in the order the fleet lists them.
-  String get _project {
-    final host = _host;
-    if (host == null) return '';
-    final projects = store.projects(host: host.name);
+  /// The client that reaches [host], or null when this fleet no longer lists
+  /// it: a host can go away between the shell's build and this call.
+  BridgeClient? _clientFor(String host) {
+    for (final owner in hosts.hosts) {
+      if (owner.name == host) return owner.client;
+    }
+    return null;
+  }
+
+  /// The project a section that is scoped to one starts at: [host]'s first, in
+  /// the order the fleet lists them, and none where it lists none.
+  String _projectFor(String host) {
+    final projects = store.projects(host: host);
     return projects.isEmpty ? '' : projects.first.root;
   }
 
-  Widget? automations(int section, StateKind? state) {
-    final host = _host;
-    if (host == null) return null;
-    final models = _automations ??= _Automations(
-      host.client,
-      project: _project,
-      now: store.now,
-    );
+  /// The three places, each built for [host] — the host the Studio's switcher
+  /// names, or the first live host under "All hosts" (spec D1).
+  Widget? automations(String host, int section, StateKind? state) {
+    final client = _clientFor(host);
+    if (client == null) return null;
+    final models = _automations.of(host);
     return AutomationsPlace(
       bots: (tabs, state) => models.project.isEmpty
           ? PlannedTab(
@@ -342,20 +466,33 @@ class _Sections {
           RecipesTab(model: models.recipes, tabs: tabs, state: state),
       tab: section,
       state: state,
+      // Each tab says how many entries it holds, from the model that already
+      // holds them (F9 B4). Bots counts the project's forge rows; a fleet with
+      // no project draws the planned tab, which has nothing to count.
+      counts: {
+        0: models.project.isEmpty ? null : models.bots.items.length,
+        1: models.schedules.items.length,
+        2: models.watches.items.length,
+        3: models.recipes.items.length,
+      },
+      // New automation starts the kind it names (F9 B4), in the tab that owns
+      // that form. A recipe has no create of its own — one is made by copying
+      // a built-in on the Recipes tab, which the Recipe choice opens.
+      onNew: (tab, context) async {
+        switch (tab) {
+          case 1:
+            SchedulesTab.create(context, models.schedules);
+          case 2:
+            await showWatchForm(context, models.watches);
+        }
+      },
     );
   }
 
-  Widget? library(int section, StateKind? state) {
-    final host = _host;
-    if (host == null) return null;
-    final models = _library ??= _Library(
-      host.client,
-      project: _project,
-      projects: [
-        for (final host in hosts.hosts)
-          for (final project in store.projects(host: host.name)) project.root,
-      ],
-    );
+  Widget? library(String host, int section, StateKind? state) {
+    final client = _clientFor(host);
+    if (client == null) return null;
+    final models = _library.of(host);
     return LibraryPlace(
       skills: (tabs, state) =>
           SkillsTab(model: models.skills, tabs: tabs, state: state),
@@ -376,14 +513,10 @@ class _Sections {
     );
   }
 
-  Widget? settings(int section, StateKind? state) {
-    final host = _host;
-    if (host == null) return null;
-    final models = _settings ??= _Settings(
-      host.client,
-      store: store,
-      preferences: preferences,
-    );
+  Widget? settings(String host, int section, StateKind? state) {
+    final client = _clientFor(host);
+    if (client == null) return null;
+    final models = _settings.of(host);
     return SettingsPlace(
       preferences: preferences,
       index: section,
@@ -398,7 +531,7 @@ class _Sections {
             model: EnvironmentModel(
               name: row.name,
               source: models.environments.loadedOf(row.name)?.source ?? '',
-              client: host.client,
+              client: client,
               published: row.version,
             ),
             state: state,
@@ -430,11 +563,13 @@ class _Automations {
   _Automations(
     BridgeClient client, {
     required String project,
+    required String host,
     required DateTime now,
+    void Function()? onWrote,
   }) : project = project,
-       bots = BotsModel(client, project: project, now: now),
+       bots = BotsModel(client, project: project, now: now, onWrote: onWrote),
        schedules = SchedulesModel(client),
-       watches = WatchesModel(client, now: now),
+       watches = WatchesModel(client, host: host, now: now, onWrote: onWrote),
        recipes = RecipesModel(client) {
     for (final model in <SectionModel<Object>>[
       bots,
@@ -451,6 +586,18 @@ class _Automations {
   final SchedulesModel schedules;
   final WatchesModel watches;
   final RecipesModel recipes;
+
+  /// Disposes the four models this set built, and nothing that is not its own.
+  void dispose() {
+    for (final model in <SectionModel<Object>>[
+      bots,
+      schedules,
+      watches,
+      recipes,
+    ]) {
+      model.dispose();
+    }
+  }
 }
 
 /// Library's four sections' models (F7 decision 5), read once.
@@ -478,6 +625,18 @@ class _Library {
   final PluginsModel plugins;
   final ClientsModel clients;
   final MemoryModel memory;
+
+  /// Disposes the four models this set built, and nothing that is not its own.
+  void dispose() {
+    for (final model in <SectionModel<Object>>[
+      skills,
+      plugins,
+      clients,
+      memory,
+    ]) {
+      model.dispose();
+    }
+  }
 }
 
 /// Settings' ten sections' models (F7 decision 7), read once.
@@ -528,4 +687,23 @@ class _Settings {
   final NotificationsModel notifications;
   final AccessModel access;
   final GeneralModel general;
+
+  /// Disposes the ten models this set built, and nothing that is not its own:
+  /// the store, the preferences and the host registry are the window's.
+  void dispose() {
+    for (final model in <SectionModel<Object>>[
+      hosts,
+      environments,
+      connections,
+      models,
+      secrets,
+      network,
+      usage,
+      notifications,
+      access,
+      general,
+    ]) {
+      model.dispose();
+    }
+  }
 }

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
 import '../client/transport.dart';
+import 'attention.dart';
 import 'fleet_store.dart';
 import 'thread_ref.dart';
 import 'factory_store.dart';
@@ -169,6 +170,9 @@ class Ask {
     required this.body,
     required this.actions,
     required this.since,
+    required this.source,
+    this.project = '',
+    required this.scope,
     this.step,
     this.questions = const [],
     this.pull,
@@ -213,6 +217,55 @@ class Ask {
   /// When it was asked.
   final DateTime since;
 
+  /// Where it came from: the feed that reported it.
+  final AskSource source;
+
+  /// The project it belongs to, as the source names it; empty when the source
+  /// names none, which the source line omits rather than guessing.
+  final String project;
+
+  /// Who it belongs to, as the source can say.
+  final AskScope scope;
+
+  /// Whether this ask stops work until it is answered.
+  ///
+  /// It is the source's own kind saying so, not a filter's guess: a draft
+  /// that cannot start, a worker's question, a decision, a recovery, a failed
+  /// fix, a held review and a blocked request all stop something. An intake
+  /// has not started yet and a completion waits only after the work finished,
+  /// so neither blocks.
+  bool get blocking => switch (kind) {
+    AskKind.approval ||
+    AskKind.question ||
+    AskKind.approvalDraft ||
+    AskKind.decision ||
+    AskKind.recovery ||
+    AskKind.pull ||
+    AskKind.reviewDraft ||
+    AskKind.network => true,
+    AskKind.intake || AskKind.completion => false,
+  };
+
+  /// Whether it is answered in its own thread rather than from a list: a work
+  /// item's four asks carry the item's version and reviewed identity, so a
+  /// list shows them and their source line opens the thread
+  /// (`InboxModel.answer` posts nothing for them).
+  bool get answeredInThread => switch (kind) {
+    AskKind.approvalDraft ||
+    AskKind.decision ||
+    AskKind.recovery ||
+    AskKind.completion => true,
+    AskKind.approval ||
+    AskKind.question ||
+    AskKind.intake ||
+    AskKind.pull ||
+    AskKind.reviewDraft ||
+    AskKind.network => false,
+  };
+
+  /// The card's source line.
+  String get provenance => provenanceOf(source, project, scope);
+
   /// The pull request's failed fix, when this is one (F5 decision 6): which
   /// check, what became of it, what was tried, what it found and what the
   /// person can do. Null for every other kind of ask.
@@ -236,6 +289,9 @@ class Ask {
     body: body,
     actions: actions,
     since: since,
+    source: source,
+    project: project,
+    scope: scope,
     step: step,
     questions: questions,
     pull: pull,
@@ -255,7 +311,12 @@ class Ask {
 /// writes no fleet state: the store is still the only writer, and an ask
 /// leaves when the stream stops reporting it.
 class InboxModel extends ChangeNotifier {
-  InboxModel(this._store, {required this.client, this.factory}) {
+  InboxModel(
+    this._store, {
+    required this.client,
+    this.factory,
+    this.onAnswered,
+  }) {
     _store.addListener(_rebuild);
     factory?.addListener(_rebuild);
     _rebuild();
@@ -267,6 +328,11 @@ class InboxModel extends ChangeNotifier {
   /// draft or a decision is never waiting with nothing showing it (F6
   /// decision 5). Null leaves the inbox to the fleet alone.
   final FactoryStore? factory;
+
+  /// Called with the ask's host after a network or draft answer posts
+  /// successfully, so that host's signals are read again (spec D4). A failed
+  /// post calls nothing: it changed nothing on the bridge.
+  final void Function(String host)? onAnswered;
 
   /// The client that reaches a host, for the answer an ask posts.
   final BridgeClient Function(String host) client;
@@ -398,6 +464,13 @@ class InboxModel extends ChangeNotifier {
       return;
     }
     // Posted: it stays sending until the store says it is gone.
+    //
+    // A network or draft answer changed what its host reports, so that host's
+    // signals are read again (spec D4). Every other kind's answer is a fleet
+    // change the stream carries, so it asks for nothing here.
+    if (ask.kind == AskKind.network || ask.kind == AskKind.reviewDraft) {
+      onAnswered?.call(ask.host);
+    }
   }
 
   /// The body a question's answer posts: exactly one [Answer] per question,
@@ -659,6 +732,8 @@ class InboxModel extends ChangeNotifier {
       body: _pullBody(pull),
       actions: _pullActions,
       since: since,
+      source: AskSource.fleet,
+      scope: AskScope.everyone,
       pull: pull,
     );
   }
@@ -715,6 +790,9 @@ class InboxModel extends ChangeNotifier {
       actions: approval ? _approvalActions : _questionActions(questions),
       questions: questions,
       since: since ?? lastActiveOf(agent),
+      source: AskSource.fleet,
+      project: agent.project,
+      scope: AskScope.everyone,
       step: _stepOf(pending),
     );
   }
@@ -779,6 +857,8 @@ class InboxModel extends ChangeNotifier {
       body: '${submission.repoID} · ${_submissionSummary(submission)}',
       actions: _intakeActions,
       since: since,
+      source: AskSource.fleet,
+      scope: AskScope.everyone,
     );
     return ask;
   }
@@ -874,6 +954,8 @@ class InboxModel extends ChangeNotifier {
           '${findings == 1 ? 'finding' : 'findings'}',
       actions: _draftActions,
       since: _time(draft.createdAt),
+      source: AskSource.review,
+      scope: AskScope.everyone,
     );
   }
 
@@ -912,6 +994,9 @@ class InboxModel extends ChangeNotifier {
       ].join(' · '),
       actions: _networkActions,
       since: DateTime.fromMillisecondsSinceEpoch(block.at, isUtc: true),
+      source: AskSource.network,
+      project: agent?.project ?? '',
+      scope: AskScope.everyone,
       network: NetworkAsk(
         agentID: block.agentID,
         host: block.host,

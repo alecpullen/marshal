@@ -134,6 +134,7 @@ class PullsPlace extends StatelessWidget {
         message: 'The pull requests could not be read.',
         retry: retry,
       ),
+      StateKind.unauthorized => const StateMessage.unauthorized(),
       StateKind.unavailable => StateMessage.unavailable(
         host: 'The daemon',
         lastSeen: '4m',

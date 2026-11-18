@@ -6,7 +6,15 @@ import 'pill.dart';
 import 'vocabulary.dart';
 
 /// The states every screen that shows data has (design-system.md §7).
-enum StateKind { loading, empty, stale, error, unavailable, planned }
+enum StateKind {
+  loading,
+  empty,
+  stale,
+  error,
+  unavailable,
+  unauthorized,
+  planned,
+}
 
 /// The one action a state offers: "Try again", "Start an agent".
 @immutable
@@ -57,15 +65,28 @@ class StateMessage extends StatelessWidget {
        lines = 0;
 
   /// The host is unreachable: names it and when it was last seen.
+  ///
+  /// [lastSeen] is null when no read ever made a snapshot, so there is no age
+  /// to give: the row says "Not seen yet" rather than printing "unknown ago".
   const StateMessage.unavailable({
     super.key,
     required String host,
-    required String lastSeen,
+    String? lastSeen,
     this.action,
   }) : kind = StateKind.unavailable,
        message = host,
        detail = lastSeen,
        lines = 0;
+
+  /// The bridge refused this page's token: names the host that did, and the
+  /// one thing that clears it. Never drawn as unreachability — no retry and
+  /// no amount of waiting turns a refusal into an answer.
+  const StateMessage.unauthorized({super.key, String? host})
+    : kind = StateKind.unauthorized,
+      message = host,
+      detail = signInAgain,
+      action = null,
+      lines = 0;
 
   /// A capability that does not exist yet: a disabled row where it will
   /// live, with one line saying so. Never drawn as working.
@@ -78,6 +99,13 @@ class StateMessage extends StatelessWidget {
        detail = note,
        action = null,
        lines = 0;
+
+  /// What a refused token takes to clear. The Studio signs in from a link a
+  /// local command prints, so the sentence names it rather than offering a
+  /// retry that cannot work.
+  static const String signInAgain =
+      'Sign in again: run `marshal studio` on that box and open the link it '
+      'prints.';
 
   final StateKind kind;
   final String? message;
@@ -146,7 +174,16 @@ class StateMessage extends StatelessWidget {
         Glyphs.wifi_slash,
         e.muted,
         '$message is unreachable',
-        'Last seen $detail ago',
+        detail == null ? 'Not seen yet' : 'Last seen $detail ago',
+      ),
+      // A refusal is not a silence: it needs the reader to sign in, so it
+      // carries the warning colour and the sentence that fixes it.
+      StateKind.unauthorized => _line(
+        e,
+        Glyphs.lock,
+        e.warn,
+        '${message ?? 'The bridge'} refused this page\'s token',
+        detail,
       ),
       StateKind.planned => Padding(
         padding: const EdgeInsets.symmetric(

@@ -105,11 +105,15 @@ void main() {
         'POST /api/automations/review/drafts/d-1/discard': ?discard,
       });
 
-  Future<BotsModel> modelFor(_Scripted transport) async {
+  Future<BotsModel> modelFor(
+    _Scripted transport, {
+    void Function()? onWrote,
+  }) async {
     final model = BotsModel(
       BridgeClient(transport),
       project: '/home/u/marshal',
       now: now,
+      onWrote: onWrote,
     );
     addTearDown(model.dispose);
     await model.load();
@@ -225,6 +229,39 @@ void main() {
     // automatic-fixing switch is a planned row.
     expect(find.byType(Field), findsNothing);
     expect(find.text('Automatic fixing'), findsOneWidget);
+  });
+
+  test('posting a draft reports the write', () async {
+    final transport = transportFor(
+      post: Response(
+        status: 200,
+        body: jsonEncode(draftJson(status: 'posted')),
+      ),
+    );
+    var writes = 0;
+    final model = await modelFor(transport, onWrote: () => writes++);
+
+    await model.postDraft(model.drafts.single);
+
+    expect(writes, 1);
+  });
+
+  test('a refused post reports nothing', () async {
+    final transport = transportFor(
+      post: Response(
+        status: 409,
+        body: jsonEncode({'error': 'this review is already posted'}),
+      ),
+    );
+    var writes = 0;
+    final model = await modelFor(transport, onWrote: () => writes++);
+
+    await expectLater(
+      model.postDraft(model.drafts.single),
+      throwsA(isA<BridgeFailure>()),
+    );
+
+    expect(writes, 0);
   });
 
   test('a held draft is an ask', () async {

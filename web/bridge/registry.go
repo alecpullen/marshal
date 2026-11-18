@@ -47,6 +47,18 @@ type Answer = contract.Answer
 // result, otherwise one entry per question, in order.
 type Answers = contract.Answers
 
+// registryChange is what changed in a tracked session (decision 1).
+type registryChange int
+
+const (
+	changeTracked     registryChange = iota // a new session is tracked
+	changeDropped                           // a session is no longer tracked
+	changeViewers                           // a viewer attached or detached
+	changeTurnStarted                       // the bridge's own turn or a followed run began
+	changeTurnEnded                         // either ended, or a restart interrupted it
+	changePending                           // a request was parked or cleared
+)
+
 // sessionInfo tracks one active session's bridge-side state.
 type sessionInfo struct {
 	// Cwd is the agent's view, because it is re-sent on delete and
@@ -109,6 +121,10 @@ type Registry struct {
 	// is sent. The fleet uses it to arm a workspace's agent timeout.
 	OnPrompt func(sessionID string)
 
+	// OnChange, if set, is called after a tracked session changes, outside
+	// the registry's locks.
+	OnChange func(sessionID string, change registryChange)
+
 	// testHookBeforeRegister, when non-nil, is invoked between a pending
 	// request's generation capture and its registration. Tests use it to
 	// force a cancel in the late-registration race window.
@@ -136,10 +152,17 @@ type Registry struct {
 	permMu      sync.Mutex
 	permissions map[string]chan Decision
 	permSession map[string]string // toolCallId -> issuing sessionId
+	// permParams holds each parked permission's payload as received, so a
+	// listing can report it verbatim. Guarded by permMu, and reset wherever
+	// permSession is.
+	permParams map[string]json.RawMessage // toolCallId -> request params
 
 	quesMu      sync.Mutex
 	questions   map[string]chan Answers
 	quesSession map[string]string // questionId -> issuing sessionId
+	// quesParams holds each parked question's payload as received. Guarded
+	// by quesMu, and reset wherever quesSession is.
+	quesParams map[string]json.RawMessage // questionId -> request params
 
 	// steerMu guards the Send now receipts this registry observed: the newest
 	// receipt per session and request, bounded by
@@ -159,8 +182,10 @@ func NewRegistry(child *Child) *Registry {
 		followWarned: make(map[string]bool),
 		permissions:  make(map[string]chan Decision),
 		permSession:  make(map[string]string),
+		permParams:   make(map[string]json.RawMessage),
 		questions:    make(map[string]chan Answers),
 		quesSession:  make(map[string]string),
+		quesParams:   make(map[string]json.RawMessage),
 	}
 	child.OnRequest = r.handleChildRequest
 	// Followed runs are reported as session/update notifications, so the
@@ -295,6 +320,7 @@ func (r *Registry) trackAs(id string, cwd AgentPath, fleet bool) {
 		fleet:      fleet,
 	}
 	r.mu.Unlock()
+	r.changed(id, changeTracked)
 }
 
 // IsFleet reports whether id is tracked as a fleet agent's session.
@@ -346,6 +372,7 @@ func (r *Registry) closeTracked(ctx context.Context, id string, cwd AgentPath) e
 	r.mu.Lock()
 	r.dropSessionLocked(id)
 	r.mu.Unlock()
+	r.changed(id, changeDropped)
 	return nil
 }
 
@@ -356,6 +383,7 @@ func (r *Registry) forget(id string) {
 	r.mu.Lock()
 	r.dropSessionLocked(id)
 	r.mu.Unlock()
+	r.changed(id, changeDropped)
 }
 
 // dropSessionLocked removes id's record and the follow log kept for it, so
@@ -431,21 +459,28 @@ func (r *Registry) rename(oldID, newID string) bool {
 // attachViewer counts a viewer on a tracked session; false when untracked.
 func (r *Registry) attachViewer(id string) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	info, ok := r.sessions[id]
 	if !ok {
+		r.mu.Unlock()
 		return false
 	}
 	info.viewers++
+	r.mu.Unlock()
+	r.changed(id, changeViewers)
 	return true
 }
 
 // detachViewer uncounts a viewer.
 func (r *Registry) detachViewer(id string) {
+	moved := false
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if info, ok := r.sessions[id]; ok && info.viewers > 0 {
 		info.viewers--
+		moved = true
+	}
+	r.mu.Unlock()
+	if moved {
+		r.changed(id, changeViewers)
 	}
 }
 
@@ -456,6 +491,31 @@ func (r *Registry) touch(id string) {
 	if info, ok := r.sessions[id]; ok {
 		info.lastActive = time.Now()
 	}
+}
+
+// quietSince reports whether no session has a viewer, or none was active
+// after cutoff (decision 3). It is the per-child quiet rule a restart waits
+// for: a session nobody watches, however recently it ran, is not a reason to
+// keep a child busy.
+func (r *Registry) quietSince(cutoff time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	watched := false
+	for _, info := range r.sessions {
+		if info.viewers > 0 {
+			watched = true
+			break
+		}
+	}
+	if !watched {
+		return true
+	}
+	for _, info := range r.sessions {
+		if info.lastActive.After(cutoff) {
+			return false
+		}
+	}
+	return true
 }
 
 // summaries lists the tracked sessions, most recently active first. Ties
@@ -484,6 +544,39 @@ func (r *Registry) summaries() []DaemonSession {
 	return out
 }
 
+// clientSession is one tracked client session, as the index reads it.
+type clientSession struct {
+	ID         string
+	Viewers    int
+	Busy       bool
+	LastActive time.Time
+}
+
+// clientSessions lists the tracked sessions that are not the fleet's.
+func (r *Registry) clientSessions() []clientSession {
+	r.mu.Lock()
+	out := make([]clientSession, 0, len(r.sessions))
+	for id, info := range r.sessions {
+		if info.fleet {
+			continue
+		}
+		out = append(out, clientSession{
+			ID:         id,
+			Viewers:    info.viewers,
+			Busy:       info.Busy,
+			LastActive: info.lastActive,
+		})
+	}
+	r.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].LastActive.Equal(out[j].LastActive) {
+			return out[i].LastActive.After(out[j].LastActive)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
 // count is the number of tracked sessions.
 func (r *Registry) count() int {
 	r.mu.Lock()
@@ -505,6 +598,7 @@ func (r *Registry) Delete(ctx context.Context, id string) error {
 	r.mu.Lock()
 	r.dropSessionLocked(id)
 	r.mu.Unlock()
+	r.changed(id, changeDropped)
 	return nil
 }
 
@@ -713,6 +807,7 @@ func (r *Registry) observeFollowedRun(params json.RawMessage) {
 		info.Busy = true
 		info.accepting = true
 		r.mu.Unlock()
+		r.changed(p.SessionID, changeTurnStarted)
 	case "ended":
 		if p.Update.RunID == "" || info.followedRun != p.Update.RunID {
 			// Another run's end (or one already reported): nothing to clear.
@@ -727,6 +822,7 @@ func (r *Registry) observeFollowedRun(params json.RawMessage) {
 			info.accepting = false
 		}
 		r.mu.Unlock()
+		r.changed(p.SessionID, changeTurnEnded)
 		r.emitEvent(p.SessionID, followedRunTurnEnd(p.Update))
 	default:
 		r.mu.Unlock()
@@ -824,6 +920,40 @@ func (r *Registry) Pending(sessionID string) string {
 	return ""
 }
 
+// PendingRequest is the request id's session is parked on, with its payload;
+// an approval wins over a question, as Pending's does.
+func (r *Registry) PendingRequest(sessionID string) (contract.PendingRequest, bool) {
+	if sessionID == "" {
+		return contract.PendingRequest{}, false
+	}
+	r.permMu.Lock()
+	for toolCallID, sid := range r.permSession {
+		if sid == sessionID {
+			out := contract.PendingRequest{
+				Kind:   contract.PendingApproval,
+				ID:     toolCallID,
+				Params: r.permParams[toolCallID],
+			}
+			r.permMu.Unlock()
+			return out, true
+		}
+	}
+	r.permMu.Unlock()
+
+	r.quesMu.Lock()
+	defer r.quesMu.Unlock()
+	for questionID, sid := range r.quesSession {
+		if sid == sessionID {
+			return contract.PendingRequest{
+				Kind:   contract.PendingQuestion,
+				ID:     questionID,
+				Params: r.quesParams[questionID],
+			}, true
+		}
+	}
+	return contract.PendingRequest{}, false
+}
+
 // ResolvePermission delivers the HTTP layer's decision to a pending
 // session/request_permission. Late or duplicate resolves return ErrGone.
 func (r *Registry) ResolvePermission(toolCallId string, d Decision) error {
@@ -832,6 +962,7 @@ func (r *Registry) ResolvePermission(toolCallId string, d Decision) error {
 	if ok {
 		delete(r.permissions, toolCallId)
 		delete(r.permSession, toolCallId)
+		delete(r.permParams, toolCallId)
 	}
 	r.permMu.Unlock()
 	if !ok {
@@ -849,6 +980,7 @@ func (r *Registry) ResolveQuestion(questionId string, a Answers) error {
 	if ok {
 		delete(r.questions, questionId)
 		delete(r.quesSession, questionId)
+		delete(r.quesParams, questionId)
 	}
 	r.quesMu.Unlock()
 	if !ok {
@@ -897,7 +1029,9 @@ func (r *Registry) awaitPermission(ctx context.Context, params json.RawMessage) 
 	r.permMu.Lock()
 	r.permissions[req.ToolCallID] = ch
 	r.permSession[req.ToolCallID] = req.SessionID
+	r.permParams[req.ToolCallID] = params
 	r.permMu.Unlock()
+	r.changed(req.SessionID, changePending)
 	// Clean up the pending entry on every exit path (resolve, session
 	// cancel/delete, subscriber disconnect, child restart) so a waiter
 	// that returns via the session context cannot leak its map entry.
@@ -905,7 +1039,9 @@ func (r *Registry) awaitPermission(ctx context.Context, params json.RawMessage) 
 		r.permMu.Lock()
 		delete(r.permissions, req.ToolCallID)
 		delete(r.permSession, req.ToolCallID)
+		delete(r.permParams, req.ToolCallID)
 		r.permMu.Unlock()
+		r.changed(req.SessionID, changePending)
 	}()
 	// Late-registration guard: if the session was cancelled between the
 	// generation capture above and this registration, the drain already
@@ -971,7 +1107,9 @@ func (r *Registry) awaitQuestion(ctx context.Context, params json.RawMessage) (a
 	r.quesMu.Lock()
 	r.questions[req.QuestionID] = ch
 	r.quesSession[req.QuestionID] = req.SessionID
+	r.quesParams[req.QuestionID] = params
 	r.quesMu.Unlock()
+	r.changed(req.SessionID, changePending)
 	// Clean up the pending entry on every exit path (resolve, session
 	// cancel/delete, subscriber disconnect, child restart) so a waiter
 	// that returns via the session context cannot leak its map entry.
@@ -979,7 +1117,9 @@ func (r *Registry) awaitQuestion(ctx context.Context, params json.RawMessage) (a
 		r.quesMu.Lock()
 		delete(r.questions, req.QuestionID)
 		delete(r.quesSession, req.QuestionID)
+		delete(r.quesParams, req.QuestionID)
 		r.quesMu.Unlock()
+		r.changed(req.SessionID, changePending)
 	}()
 	// Late-registration guard: if the session was cancelled between the
 	// generation capture above and this registration, the drain already
@@ -1052,18 +1192,22 @@ func (r *Registry) sessionAccepting(id string) bool {
 
 func (r *Registry) beginTurn(id string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if info, ok := r.sessions[id]; ok {
+	info, ok := r.sessions[id]
+	if ok {
 		info.accepting = true
 		info.Busy = true
 		info.ownTurn = true
+	}
+	r.mu.Unlock()
+	if ok {
+		r.changed(id, changeTurnStarted)
 	}
 }
 
 func (r *Registry) endTurn(id string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if info, ok := r.sessions[id]; ok {
+	info, ok := r.sessions[id]
+	if ok {
 		info.ownTurn = false
 		// A followed run still in flight keeps the session busy: the bridge's
 		// own prompt is over, not the run it is reporting. The two cannot
@@ -1072,6 +1216,10 @@ func (r *Registry) endTurn(id string) {
 			info.accepting = false
 			info.Busy = false
 		}
+	}
+	r.mu.Unlock()
+	if ok {
+		r.changed(id, changeTurnEnded)
 	}
 }
 
@@ -1133,6 +1281,7 @@ func (r *Registry) drainSession(id string) {
 				delete(r.permissions, toolCallID)
 			}
 			delete(r.permSession, toolCallID)
+			delete(r.permParams, toolCallID)
 		}
 	}
 	r.permMu.Unlock()
@@ -1145,6 +1294,7 @@ func (r *Registry) drainSession(id string) {
 				delete(r.questions, questionID)
 			}
 			delete(r.quesSession, questionID)
+			delete(r.quesParams, questionID)
 		}
 	}
 	r.quesMu.Unlock()
@@ -1174,6 +1324,11 @@ func (r *Registry) resumeAll() {
 		info.followedRun = ""
 	}
 	r.mu.Unlock()
+	// Every turn the restart interrupted is reported once the lock is
+	// released.
+	for _, id := range ids {
+		r.changed(id, changeTurnEnded)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1205,6 +1360,7 @@ func (r *Registry) clearPending() {
 		delete(r.permissions, id)
 	}
 	r.permSession = make(map[string]string)
+	r.permParams = make(map[string]json.RawMessage)
 	r.permMu.Unlock()
 
 	r.quesMu.Lock()
@@ -1213,6 +1369,7 @@ func (r *Registry) clearPending() {
 		delete(r.questions, id)
 	}
 	r.quesSession = make(map[string]string)
+	r.quesParams = make(map[string]json.RawMessage)
 	r.quesMu.Unlock()
 }
 
@@ -1240,5 +1397,13 @@ func (r *Registry) setBusy(id string, busy bool) {
 func (r *Registry) emitEvent(sessionId string, payload any) {
 	if r.OnEvent != nil {
 		r.OnEvent(sessionId, payload)
+	}
+}
+
+// changed reports a tracked session's change. It is always called with the
+// registry's locks released, so OnChange may read the registry.
+func (r *Registry) changed(sessionID string, change registryChange) {
+	if r.OnChange != nil {
+		r.OnChange(sessionID, change)
 	}
 }

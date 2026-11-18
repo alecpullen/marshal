@@ -65,3 +65,29 @@ type RosterBudget struct {
 	MaxFixRounds   int `json:"maxFixRounds"`
 	MaxTotalTokens int `json:"maxTotalTokens"`
 }
+
+// SessionIndex is GET /api/sessions/all's answer: every project's sessions,
+// sorted by root. Projects is never null.
+type SessionIndex struct {
+	Projects []ProjectSessions `json:"projects"`
+}
+
+// ProjectSessions is one project root's sessions. Sessions is never null.
+// Error is why the root's listing failed; its open sessions still list.
+type ProjectSessions struct {
+	Root     string       `json:"root"`
+	Sessions []SessionRow `json:"sessions"`
+	Error    string       `json:"error,omitempty"`
+}
+
+// SessionRow is one session the index lists (P7 D7).
+type SessionRow struct {
+	SessionID    string          `json:"sessionId"`
+	Title        string          `json:"title,omitempty"`
+	UpdatedAt    int64           `json:"updatedAt,omitempty"` // Unix milliseconds
+	MessageCount int             `json:"messageCount,omitempty"`
+	Open         bool            `json:"open"`    // tracked on its project's live child
+	Viewers      int             `json:"viewers"` // terminals attached through the relay
+	Busy         bool            `json:"busy"`
+	Pending      *PendingRequest `json:"pending,omitempty"` // a turn the bridge started is parked on it
+}

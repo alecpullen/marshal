@@ -1,9 +1,18 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
+import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/model/hosts_model.dart';
+import 'package:marshal_app/src/model/inbox_model.dart' as inbox;
+import 'package:marshal_app/src/model/new_work_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
+import 'package:marshal_app/src/ui/sections/unsaved_guard.dart';
+import 'package:marshal_app/src/ui/shell/host_switcher.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
 
+import '../model/support.dart';
+import '../support/fake_bridge.dart';
 import '../support/screens.dart';
 
 /// The shell's rules (F2 decision 1 and §4): a row opens its place, the
@@ -12,7 +21,11 @@ import '../support/screens.dart';
 /// time it was last seen.
 void main() {
   /// The shell with a recorder for the place it opened.
-  (Widget, List<Place>) shellAt(Place place, {StateKind? state}) {
+  (Widget, List<Place>) shellAt(
+    Place place, {
+    StateKind? state,
+    VoidCallback? onNew,
+  }) {
     final opened = <Place>[];
     final nav = shellNavFor(place);
     return (
@@ -24,11 +37,175 @@ void main() {
         now: shellNow,
         onRetry: () {},
         onSelect: opened.add,
+        onNew: onNew,
         content: (_) => plannedPlace(place, nav),
       ),
       opened,
     );
   }
+
+  /// The top line's switcher: the one above the place, drawn after the
+  /// sidebar's.
+  Finder topSwitcher() => find.byType(HostSwitcher).last;
+
+  /// The shell at a per-host place, its three builders recording the host each
+  /// was asked for, and the guard it consults when a test gives it one.
+  (Widget, List<String>) hostShellAt(Place place, {UnsavedGuard? unsaved}) {
+    final recorded = <String>[];
+    final nav = shellNavFor(place);
+    Widget? build(String host, int section, StateKind? state) {
+      recorded.add(host);
+      return Text('${placeTitle(place, nav)} at $host');
+    }
+
+    return (
+      Shell(
+        nav: nav,
+        hosts: shellHosts,
+        place: place,
+        now: shellNow,
+        onSelect: (_) {},
+        unsaved: unsaved,
+        automationsFor: build,
+        libraryFor: build,
+        settingsFor: build,
+        content: (_) => plannedPlace(place, nav),
+      ),
+      recorded,
+    );
+  }
+
+  /// Opens the top line's switcher and picks the host called [name].
+  Future<void> chooseHost(WidgetTester tester, String name) async {
+    await tester.tap(
+      find.descendant(of: topSwitcher(), matching: find.byType(Btn)),
+    );
+    // The popover has no animation, but it builds over two frames.
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text(name));
+    await tester.pump();
+  }
+
+  testWidgets('the settings builder receives the switcher\'s host', (
+    tester,
+  ) async {
+    final (shell, recorded) = hostShellAt(const Place(PlaceKind.settings));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    // The switcher's scope is All hosts until a host is chosen, and under it
+    // the place reads the first host that answers.
+    expect(recorded.last, 'local');
+    expect(find.text('Settings at local'), findsOneWidget);
+
+    await chooseHost(tester, 'studio');
+
+    expect(recorded.last, 'studio');
+    expect(find.text('Settings at studio'), findsOneWidget);
+  });
+
+  testWidgets('under all hosts the builder receives the first live host', (
+    tester,
+  ) async {
+    final (shell, recorded) = hostShellAt(const Place(PlaceKind.library));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    expect(
+      find.descendant(
+        of: find.byType(HostSwitcher).first,
+        matching: find.text('All hosts'),
+      ),
+      findsOneWidget,
+    );
+    // `shellHosts` lists an unreachable `studio` first and a live `local`
+    // second: All hosts reaches past it to the host that is answering.
+    expect(recorded, isNotEmpty);
+    expect(
+      recorded.every((host) => host == 'local'),
+      isTrue,
+      reason: '$recorded',
+    );
+  });
+
+  testWidgets('a per-host place shows the switcher naming its host', (
+    tester,
+  ) async {
+    final (shell, recording) = hostShellAt(const Place(PlaceKind.automations));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    await chooseHost(tester, 'studio');
+
+    expect(tester.widget<HostSwitcher>(topSwitcher()).selected, 'studio');
+    expect(
+      find.descendant(of: topSwitcher(), matching: find.text('studio')),
+      findsOneWidget,
+    );
+    expect(recording.last, 'studio');
+    expect(find.text('Automations at studio'), findsOneWidget);
+  });
+
+  testWidgets('changing the scope over an unsaved edit asks first', (
+    tester,
+  ) async {
+    // A section holding an edit: the host changing under it would lose what
+    // was typed, so the switcher asks as the sidebar does.
+    final edits = HostsModel.fixture(shellHosts)
+      ..edit(shellHosts.first)
+      ..change(shellHosts.first);
+    final guard = UnsavedGuard()..watch(edits);
+    final (shell, recorded) = hostShellAt(
+      const Place(PlaceKind.settings),
+      unsaved: guard,
+    );
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+    expect(recorded.last, 'local');
+
+    await chooseHost(tester, 'studio');
+    await tester.pump();
+
+    expect(find.text('Leave without saving?'), findsOneWidget);
+    expect(recorded.contains('studio'), isFalse);
+
+    await tester.tap(find.text('Discard the edit'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(recorded.last, 'studio');
+    expect(edits.hasUnsavedEdits, isFalse);
+    expect(find.text('Settings at studio'), findsOneWidget);
+  });
+
+  testWidgets('a per-host place keeps its switcher below 760', (tester) async {
+    // The top line is drawn in the content area, which the narrow layout
+    // fills: it must sit under the app bar, name its host, and not overflow.
+    tester.view.physicalSize = const Size(390, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final (shell, recorded) = hostShellAt(const Place(PlaceKind.automations));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+    await tester.pump();
+
+    // The sidebar is behind the app bar's button, so the one switcher on
+    // screen is the place's own top line.
+    expect(find.byType(HostSwitcher), findsOneWidget);
+    expect(
+      find.descendant(of: topSwitcher(), matching: find.text('local')),
+      findsOneWidget,
+    );
+    expect(recorded.last, 'local');
+    expect(find.text('Automations at local'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('selecting a row changes the place', (tester) async {
     final (shell, opened) = shellAt(const Place.overview());
@@ -185,5 +362,159 @@ void main() {
     // The search field is drawn where it will live, disabled, and says why.
     expect(find.text('Search'), findsOneWidget);
     expect(find.byTooltip('Search arrives in a later phase'), findsOneWidget);
+  });
+
+  testWidgets('the narrow app bar has New', (tester) async {
+    tester.view.physicalSize = const Size(600, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final (shell, _) = shellAt(const Place.overview(), onNew: () {});
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    expect(find.byTooltip('New'), findsOneWidget);
+  });
+
+  testWidgets('the sidebar has New beside search', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final (shell, _) = shellAt(const Place.overview(), onNew: () {});
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    // The wide layout draws the sidebar and no app bar, so the one plus is
+    // the sidebar's.
+    expect(find.byTooltip('New'), findsOneWidget);
+    expect(find.byTooltip('Projects and threads'), findsNothing);
+  });
+
+  testWidgets('New starts work in the first project', (tester) async {
+    tester.view.physicalSize = const Size(600, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final started = await tester.runAsync(
+      () => ModelFixture.start([
+        FixtureHost(name: 'local', projects: [project('/home/u/marshal')]),
+      ], now: DateTime.utc(2026, 11, 17, 12)),
+    );
+    final fixture = started!;
+    await tester.runAsync(() => fixture.refresh());
+    fixture.bridges['local']!
+      ..reply(
+        'GET',
+        '/api/prompts/recent',
+        const FakeReply(200, body: '{"prompts":[]}'),
+      )
+      ..reply('GET', '/api/recipes', const FakeReply(200, body: '[]'));
+    final inboxModel = inbox.InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+    );
+    addTearDown(inboxModel.dispose);
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inboxModel,
+          newWorkFor: (host, root) => NewWorkModel.forProject(
+            project('/home/u/marshal'),
+            fixture.clientFor('local'),
+            host: 'local',
+          ),
+        ),
+      ),
+    );
+    // The fleet store has a live stream and a clock, so nothing ever settles:
+    // the Studio's own tests pump explicitly (test/ui/f2_flow_test).
+    for (var i = 0; i < 8; i++) {
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+    }
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('New'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('Start a new agent'), findsOneWidget);
+  });
+
+  group('the fleet state (§7)', () {
+    HostView host(String name, HostReach reach) => HostView(
+      name: name,
+      kind: HostKind.local,
+      reach: reach,
+      lastContact: shellNow,
+    );
+
+    StateKind? kindFor(List<HostView> hosts, {bool anyAgents = false}) =>
+        fleetStateKind(
+          read: true,
+          failed: false,
+          anyAgents: anyAgents,
+          hosts: hosts,
+        );
+
+    test('a refused token is unauthorized, never unreachable', () {
+      expect(
+        kindFor([host('local', HostReach.unauthorized)]),
+        StateKind.unauthorized,
+        reason:
+            'a page whose token the bridge refused must say so: reporting it '
+            'as unreachability sends the reader to look at the wrong thing',
+      );
+    });
+
+    test('a host nothing answers on is unavailable', () {
+      expect(
+        kindFor([host('local', HostReach.unreachable)]),
+        StateKind.unavailable,
+      );
+    });
+
+    test('a refusal explains a fleet of refusals better than a silence', () {
+      expect(
+        kindFor([
+          host('local', HostReach.unreachable),
+          host('studio', HostReach.unauthorized),
+        ]),
+        StateKind.unauthorized,
+      );
+    });
+
+    test('a fleet still showing agents is stale, not a state page', () {
+      expect(
+        kindFor([
+          host('local', HostReach.live),
+          host('studio', HostReach.unauthorized),
+        ], anyAgents: true),
+        StateKind.stale,
+      );
+    });
+
+    test('a fleet with nothing to show and no answers is empty or error', () {
+      expect(kindFor([]), StateKind.empty);
+      expect(
+        fleetStateKind(read: true, failed: true, anyAgents: false, hosts: []),
+        StateKind.error,
+      );
+      expect(
+        fleetStateKind(
+          read: false,
+          failed: false,
+          anyAgents: false,
+          hosts: [host('local', HostReach.live)],
+        ),
+        StateKind.loading,
+      );
+    });
   });
 }

@@ -103,6 +103,7 @@ class PlannerSnapshot {
   const PlannerSnapshot({
     required this.id,
     required this.sha256,
+    required this.baseCommit,
     required this.plan,
     required this.spec,
     this.files = const [],
@@ -114,6 +115,11 @@ class PlannerSnapshot {
 
   /// The digest of the capture: the identity a handoff is held to.
   final String sha256;
+
+  /// The commit the capture was taken against. A handoff names it, so the
+  /// files it froze are the files of that revision rather than of whatever the
+  /// repository holds when the draft is created.
+  final String baseCommit;
 
   /// The plan text, verbatim.
   final String plan;
@@ -137,6 +143,7 @@ class PlannerSnapshot {
   factory PlannerSnapshot.of(PlannerSnapshotReply reply) => PlannerSnapshot(
     id: reply.id,
     sha256: reply.sha256,
+    baseCommit: reply.baseCommit,
     plan: _artifact(reply.artifacts, 'plan'),
     spec: _artifact(reply.artifacts, 'spec'),
     files: reply.files,
@@ -169,6 +176,38 @@ String planSummary(String plan) {
   ].firstOrNull;
   final count = tasks == 0 ? 'plan' : '$tasks ${tasks == 1 ? 'task' : 'tasks'}';
   return first == null ? count : '$count · $first';
+}
+
+/// Where a planning session stands, as the bridge last reported it: live,
+/// ended, or unknown because no record has been read or the record does not
+/// say it is live.
+///
+/// It is never inferred from the journal: an event is a thing that happened,
+/// and a journal that stops moving is not evidence that anything is running
+/// (design-system.md §7).
+enum PlannerConnection {
+  live(
+    'Planner live',
+    'The bridge reports this session connected, so a turn can run here.',
+  ),
+  ended(
+    'Planner ended',
+    'The session has ended. Its conversation, its journal and its plan are '
+        'still here to read.',
+  ),
+  unknown(
+    'Planner state unknown',
+    'The bridge has not said whether this session is connected, so nothing '
+        'here is shown as running.',
+  );
+
+  const PlannerConnection(this.label, this.note);
+
+  /// The state in words, for a chip or a line.
+  final String label;
+
+  /// What it means for the person, in one sentence.
+  final String note;
 }
 
 /// One planning thread (F6 decision 8): the planner's journal as a
@@ -238,8 +277,71 @@ class PlanningModel extends ChangeNotifier {
   /// The planner as the bridge last reported it, for what its session can do.
   PlannerView? get view => _view;
 
+  /// The session's connection, from the record alone: a record that says the
+  /// planner ended is ended, one that says it is live is live, and anything
+  /// else — no record read yet, or a record that does not claim to be live —
+  /// is unknown rather than assumed connected.
+  PlannerConnection get connection {
+    final view = _view;
+    if (view == null) return PlannerConnection.unknown;
+    if (view.state == 'ended' || view.endedAt != null) {
+      return PlannerConnection.ended;
+    }
+    return view.live ? PlannerConnection.live : PlannerConnection.unknown;
+  }
+
+  /// The mode the person asked for, in the design system's words: the
+  /// request, which is not the same thing as the mode in force.
+  String? get requestedMode => _modeWordsOrNull(_view?.requestedMode);
+
+  /// The mode in force, in the design system's words, and only one the
+  /// bridge confirmed. Null while a request is unanswered, so no screen can
+  /// draw a requested mode as the one running.
+  String? get confirmedMode {
+    final view = _view;
+    if (view == null || !view.modeConfirmed) return null;
+    // A confirmation that names its mode is that mode; one that confirms only
+    // the request confirms the request.
+    return _modeWordsOrNull(view.confirmedMode) ??
+        _modeWordsOrNull(view.requestedMode);
+  }
+
+  /// Whether the bridge confirmed the session's mode.
+  bool get modeConfirmed => confirmedMode != null;
+
+  /// The mode in one phrase: the mode in force, else the one requested and
+  /// not yet confirmed, else that this build has no mode to state.
+  String get modeWords {
+    final confirmed = confirmedMode;
+    if (confirmed != null) return confirmed;
+    final requested = requestedMode;
+    if (requested != null) return '$requested requested · not confirmed';
+    return 'Mode unknown';
+  }
+
+  /// The workspace the planner runs in, as the record named it; null when the
+  /// record names none, or when no record has been read.
+  String? get workspace {
+    final id = _view?.workspaceID ?? '';
+    return id.isEmpty ? null : id;
+  }
+
+  /// Where the planner runs, in one phrase: its workspace, that the record
+  /// names none, or that no record has been read.
+  String get workspaceWords {
+    final workspace = this.workspace;
+    if (workspace != null) return 'Workspace $workspace';
+    return _view == null ? 'Workspace unknown' : 'No workspace';
+  }
+
+  /// How many requests are waiting on the person: the cards the planner is
+  /// parked on, counted.
+  int get waiting => _requests.length;
+
   /// Whether a turn is in flight: the composer's button steers while it is.
-  bool get running => _running;
+  /// A planner the record says has ended is never in flight, whatever its
+  /// last turn says, because nothing is running in it any more.
+  bool get running => _running && connection != PlannerConnection.ended;
 
   /// Whether a read is in flight.
   bool get loading => _loading;
@@ -566,6 +668,11 @@ class PlanningModel extends ChangeNotifier {
     'default' => 'Restricted',
     _ => mode,
   };
+
+  /// The same words, for a record that may name no mode at all: an absent or
+  /// empty mode is null rather than a made-up one.
+  static String? _modeWordsOrNull(String? mode) =>
+      mode == null || mode.isEmpty ? null : _modeWords(mode);
 
   String _requestID() =>
       'app-planner-$plannerID-${DateTime.now().microsecondsSinceEpoch}-'

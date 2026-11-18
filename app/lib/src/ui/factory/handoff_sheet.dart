@@ -22,8 +22,8 @@ Sheet handoffSheet(BuildContext context, HandoffModel model) => Sheet(
   child: HandoffForm(model: model),
 );
 
-/// The sheet's one primary action: Approve, disabled while the model says
-/// what stops it, and saying that in its tooltip.
+/// The sheet's one primary action: creating the factory draft, disabled while
+/// the model says what stops it, and saying that in its tooltip.
 class _ApproveAction extends StatelessWidget {
   const _ApproveAction({required this.model});
 
@@ -38,7 +38,9 @@ class _ApproveAction extends StatelessWidget {
   Widget _build(BuildContext context) {
     final blocker = model.blockers.isEmpty ? null : model.blockers.first;
     final approve = Btn.primary(
-      'Approve and start',
+      // Creating a factory item is not starting work: the item runs when it is
+      // approved in the factory, so the label says what the request does.
+      'Create the factory draft',
       onTap: blocker != null
           ? null
           : () async {
@@ -132,6 +134,8 @@ class _HandoffFormState extends State<HandoffForm> {
         const SizedBox(height: Space.s4),
         Text(_planSummary(model), style: e.small.tint(e.muted)),
         const SizedBox(height: Space.s16),
+        _evidence(context, model),
+        const SizedBox(height: Space.s16),
         Box.flush(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -152,7 +156,7 @@ class _HandoffFormState extends State<HandoffForm> {
             ),
         ],
         const SizedBox(height: Space.s12),
-        Label('What approving authorises'),
+        Label('What creating the draft does'),
         const SizedBox(height: Space.s4),
         Text(model.consequence, style: e.body),
         if (model.failure != null) ...[
@@ -162,6 +166,137 @@ class _HandoffFormState extends State<HandoffForm> {
       ],
     );
   }
+
+  /// What the capture froze, or the plan an unbound review will send: the
+  /// evidence the person is reviewing, taken from the capture alone (the sheet
+  /// edits no evidence and selects no files).
+  Widget _evidence(BuildContext context, HandoffModel model) {
+    final e = Ember.of(context);
+    final snapshot = model.reviewedSnapshot;
+    final plan = model.planToSend.trim();
+    final spec = model.specToSend.trim();
+    // The text that travels, shown rather than described: a sentence promising
+    // "the plan text shown here" is false if the plan text is never drawn.
+    final documents = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (plan.isEmpty)
+          Text('No plan text to send.', style: e.small.tint(e.muted))
+        else
+          OutputBlock(text: plan),
+        if (spec.isNotEmpty) ...[
+          const SizedBox(height: Space.s8),
+          Text('Specification', style: e.bodyStrong),
+          const SizedBox(height: Space.s4),
+          OutputBlock(text: spec),
+        ],
+      ],
+    );
+    if (!model.boundToSnapshot || snapshot == null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Label('What will be sent'),
+          const SizedBox(height: Space.s4),
+          Text(
+            'No capture is bound to this review, so this plan text is what the '
+            'factory is sent.',
+            style: e.small.tint(e.muted),
+          ),
+          const SizedBox(height: Space.s8),
+          documents,
+        ],
+      );
+    }
+    final files = snapshot.files;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Label('The frozen capture', count: files.isEmpty ? null : files.length),
+        const SizedBox(height: Space.s4),
+        Text(
+          'Snapshot ${_short(snapshot.id)} · digest ${_short(snapshot.sha256)}',
+          style: e.monoSmall.tint(e.muted),
+        ),
+        const SizedBox(height: Space.s2),
+        Text(
+          'Base commit ${_short(snapshot.baseCommit)}',
+          style: e.monoSmall.tint(e.muted),
+        ),
+        const SizedBox(height: Space.s8),
+        Label('The plan'),
+        const SizedBox(height: Space.s4),
+        documents,
+        const SizedBox(height: Space.s8),
+        if (files.isEmpty)
+          Text(
+            'No files selected: this capture froze the documents only.',
+            style: e.small.tint(e.muted),
+          )
+        else
+          for (final file in files) ...[
+            Padding(
+              padding: const EdgeInsets.only(bottom: Space.s6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // A path is an identifier, so it is set in mono (§3).
+                  Text(file.path, style: e.monoSmall),
+                  const SizedBox(height: Space.s2),
+                  Text(
+                    _operationWords(file.operation),
+                    style: e.small.tint(e.muted),
+                  ),
+                  const SizedBox(height: Space.s4),
+                  OutputBlock(
+                    text: file.diff.isEmpty
+                        ? 'No difference recorded for this file.'
+                        : file.diff,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        if (snapshot.rejected.isNotEmpty) ...[
+          const SizedBox(height: Space.s6),
+          Label('Not captured', count: snapshot.rejected.length),
+          const SizedBox(height: Space.s4),
+          for (final rejected in snapshot.rejected)
+            Padding(
+              padding: const EdgeInsets.only(bottom: Space.s4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(rejected.path, style: e.monoSmall),
+                  const SizedBox(height: Space.s2),
+                  Text(rejected.reason, style: e.small.tint(e.muted)),
+                ],
+              ),
+            ),
+        ],
+        const SizedBox(height: Space.s6),
+        Text(
+          'The draft is built from these frozen bytes: the bridge rewrites the '
+          'plan and the specification from the capture and checks every file '
+          'against its recorded hash. Changing the evidence needs a fresh '
+          'capture.',
+          style: e.small.tint(e.muted),
+        ),
+      ],
+    );
+  }
+
+  /// A captured file's operation in the sheet's words.
+  static String _operationWords(String operation) => switch (operation) {
+    'create' => 'Created',
+    'modify' => 'Modified',
+    'delete' => 'Deleted',
+    _ => operation.isEmpty ? 'Captured' : operation,
+  };
+
+  /// An id, a digest or a commit, short enough for one line.
+  static String _short(String value) =>
+      value.length <= 8 ? value : value.substring(0, 8);
 
   /// The fields the sheet states itself: the scope is drawn above, and the
   /// environment and authority are menus rather than typed values.

@@ -517,4 +517,94 @@ void main() {
       );
     },
   );
+
+  // The capture-bound handoff route: a review posts the draft the person
+  // approved, and the bridge rewrites its plan and specification from the
+  // frozen snapshot. Pinning the path, the method and the decoded answer here
+  // is what keeps that route from drifting behind the model's claims.
+  test('a snapshot handoff posts the capture and reads the item', () async {
+    const request = FactoryCreate(
+      requestID: 'req-1',
+      title: 'Work',
+      plan: '## Task 1\nFrozen plan.\n',
+      spec: 'Frozen specification.',
+      config: FactoryConfig(
+        repoID: 'repo-1',
+        projectRoot: '/home/u/alpha',
+        hostID: 'local',
+        targetBranch: '',
+        workspace: '',
+        native: true,
+        implementerRouting: null,
+        reviewerRouting: null,
+        reviewerInstructions: '',
+        implementerAuto: true,
+        expectedChecks: [],
+        noRequiredCIAcknowledged: true,
+        maxRounds: 3,
+        ciPollSeconds: 30,
+        ciWaitSeconds: 900,
+      ),
+      editSnapshot: EditSnapshot(
+        baseCommit: 'c0ffee1',
+        files: [],
+        sha256: 'a1b2c3d4',
+      ),
+    );
+    // The item the bridge answers carries the draft it stored.
+    fake.reply(
+      'POST',
+      '/api/planners/planner-7/snapshots/snap-1/handoff',
+      FakeReply(
+        201,
+        body: jsonEncode({
+          'item': {
+            'id': 'item-1',
+            'title': 'Work',
+            'state': 'draft',
+            'stage': 'plan',
+            'repoId': 'repo-1',
+            'projectRoot': '/home/u/alpha',
+            'hostId': 'local',
+            'branch': 'marshal/factory/item-1',
+            'baseSha': 'base-1',
+            'version': 1,
+            'draft': request.toJson(),
+            'approvals': <Object?>[],
+            'grants': <Object?>[],
+            'rounds': <Object?>[],
+            'workers': <Object?>[],
+            'prs': <Object?>[],
+            'effects': <Object?>[],
+            'history': <Object?>[],
+            'createdAt': '2026-11-17T04:00:00Z',
+            'approvedAt': '',
+            'updatedAt': '2026-11-17T04:00:00Z',
+          },
+        }),
+      ),
+    );
+
+    final item = await client.handoffPlannerSnapshot(
+      'planner-7',
+      'snap-1',
+      request,
+    );
+
+    expect(item.id, 'item-1');
+    expect(item.state, 'draft');
+    expect(fake.requests.single.method, 'POST');
+    expect(
+      fake.requests.single.uri,
+      '/api/planners/planner-7/snapshots/snap-1/handoff',
+    );
+    // The draft the review built travels, capture included.
+    final body = jsonDecode(fake.requests.single.body) as Map<String, dynamic>;
+    expect(body['requestId'], 'req-1');
+    expect(body['plan'], '## Task 1\nFrozen plan.\n');
+    final edit = body['editSnapshot'] as Map<String, dynamic>;
+    expect(edit['baseCommit'], 'c0ffee1');
+    expect(edit['sha256'], 'a1b2c3d4');
+    expect(edit['files'], isEmpty);
+  });
 }

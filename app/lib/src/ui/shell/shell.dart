@@ -712,8 +712,13 @@ class Studio extends StatefulWidget {
   State<Studio> createState() => _StudioState();
 }
 
-class _StudioState extends State<Studio> {
+class _StudioState extends State<Studio> with WidgetsBindingObserver {
   late Place _place = widget.initialPlace;
+
+  /// The place the page's own address names, once this screen has written it
+  /// (F8 decision 2). Null until then: a screen the page handed no place never
+  /// writes one, so a test and the tray's window leave the address alone.
+  Place? _written;
 
   /// What to say above the place when the link that opened this screen named
   /// nothing this build knows (F8 decision 2).
@@ -755,6 +760,17 @@ class _StudioState extends State<Studio> {
   @override
   void initState() {
     super.initState();
+    // A page with an address keeps one history entry per place the person
+    // opens, so Back walks them rather than leaving the Studio, and the
+    // address's own arrivals are this screen's to open (F8 decision 2).
+    //
+    // Only a page that was handed the address it opened at does either: a
+    // test, and a window the tray opened, have none to keep, and must not
+    // touch the platform's navigation at all.
+    if (widget.startPage != null) {
+      unawaited(SystemNavigator.selectMultiEntryHistory());
+      WidgetsBinding.instance.addObserver(this);
+    }
     _followPage();
     _reread();
   }
@@ -769,6 +785,9 @@ class _StudioState extends State<Studio> {
     final page = widget.startPage;
     if (page == null) return;
     _place = page.place;
+    // The address names this place already — by its path, or by a hash this
+    // build replaced with that path — so it is not written a second time.
+    _written = page.place;
     _notice = page.notice;
     if (page.fromHash) {
       SystemNavigator.routeInformationUpdated(
@@ -780,6 +799,9 @@ class _StudioState extends State<Studio> {
 
   @override
   void dispose() {
+    if (widget.startPage != null) {
+      WidgetsBinding.instance.removeObserver(this);
+    }
     _unsaved.dispose();
     super.dispose();
   }
@@ -916,6 +938,55 @@ class _StudioState extends State<Studio> {
       _notice = null;
       _place = next;
     });
+    _writeAddress(next);
+  }
+
+  /// Writes [place] into the page's address as a new history entry, so Back
+  /// returns to the place before it (F8 decision 2). A push, not a replace:
+  /// the place a person opens is a page they can go back from.
+  ///
+  /// A place the address already names is not written again, and a screen the
+  /// page handed no address writes nothing at all — a test and the tray's
+  /// window have no page to name.
+  void _writeAddress(Place place, {bool replace = false}) {
+    if (widget.startPage == null) return;
+    if (!replace && _written == place) return;
+    _written = place;
+    SystemNavigator.routeInformationUpdated(
+      uri: Uri.parse(formatPlace(place)),
+      replace: replace,
+    );
+  }
+
+  /// Opens the place the address has arrived at: Back, Forward and a reload
+  /// all come through here, so each lands on the place the address names
+  /// (F8 decision 2).
+  ///
+  /// The address names it already, so nothing is written back. A place with an
+  /// unsaved edit asks first, through the guard a click asks; a person who
+  /// keeps editing stays put, and the address that moved on is put back to the
+  /// place still on screen, replacing the entry that arrived.
+  @override
+  Future<bool> didPushRouteInformation(
+    RouteInformation routeInformation,
+  ) async {
+    final place = startPlace(path: routeInformation.uri.path).place;
+    if (place != _place && !await _mayLeave()) {
+      _writeAddress(_place, replace: true);
+      return true;
+    }
+    if (!mounted) return true;
+    _written = place;
+    _go(place);
+    return true;
+  }
+
+  /// Whether the place on screen may be left: yes when nothing is being
+  /// edited, and otherwise whatever the person says to the one guard every
+  /// place leaving this screen asks (F7 decision 3).
+  Future<bool> _mayLeave() async {
+    if (!_unsaved.hasUnsavedEdits) return true;
+    return _unsaved.confirm(context);
   }
 
   /// The shell's state, from what the store holds.

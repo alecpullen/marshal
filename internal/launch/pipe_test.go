@@ -180,9 +180,13 @@ func TestRunEndsWhenTheAgentsConnectionCloses(t *testing.T) {
 		}),
 	)
 
+	// The outer wait has to outlast the runner's own 2s guard: when it was
+	// 1s, a loaded CI runner reported "the context did not end" before the
+	// runner had even given up waiting (flake seen on main, run
+	// 44265693406).
 	select {
 	case <-ctxEnded:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("the program's context did not end after the agent's connection closed")
 	}
 	if runErr == nil {

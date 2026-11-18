@@ -706,4 +706,95 @@ constant time.
 
 ### Plan 4
 
-Not started.
+Written on `p8-4-relayed-studio`, stacked on Plan 2 and Plan 3.
+
+**What landed.** `fleet.toml` may name a relay: `Server.Relay` and
+`rawServer.Relay`, checked in `decode` after every server is built. A server
+has a `url` or a `relay`, never both and never neither; a relay must name a
+server that has its own `url` ("HUB is itself relayed" otherwise); a relayed
+server has no `ca_file`, because its TLS is the hub's; `token_cmd` and `notify`
+work as they do for any server. `AddServer` writes `relay = "HUB"` in place of
+`url`, `marshal fleet add NAME --relay HUB` takes no URL and refuses
+`--ca-file`, `marshal fleet servers --json` reports `relay` with an empty
+`url`, and `marshal fleet --server NAME` on a relayed profile refuses before
+`fleetServerRunner` with D20's words.
+
+`relayedTransport(relay, host:, token:)` puts every route under
+`/api/hosts/<name>` (the name percent-encoded once, as one segment) and the
+host's own token in `X-Marshal-Host-Token`; the relay's transport still sets
+its own `Authorization`. With no token it answers 401 with "sign in to <name>
+first", or fails a stream `Unauthorized` with the same words, and sends
+nothing. A failure from the relay passes through untouched.
+
+`via` travels `HostSpec` → `Host` → `HostView`; a relayed host's kind line
+reads "A server profile, through <via>", and while that relay is `unauthorized`
+its detail says "Sign in to the relay first." and offers no Sign in of its own.
+Native discovery reads `relay` from each row, builds the relayed host's
+transport over its hub's (`serverTransport` on the hub's URL and CA file, with
+the hub's token) and gives the host its own `_fleetToken`; a row whose hub is
+missing is skipped. A browser reads `relayHosts()`, lists each name as a
+`server` host whose `via` is the page's host over a `relayedTransport` on
+`WebTransport`, keeps each token under its own key
+(`marshal:bridge-token@<name>` through `TokenStoreWeb.forHost`), skips a name
+equal to the page's own host and adds none on any failure, 404 included. Sign
+in stores through `storeToken` and then retries; sign out clears and then
+retries, so the host reads "token refused" again, and only a relayed host
+offers it. The browser's add row stays planned with D22's note, and the route
+parity row for `GET /api/relay/hosts` now names `relayHosts`.
+
+**A gap in the plan's file list.** Task 4's `main.dart` step cannot be done
+inside its own list: `main.dart` compiles for both platforms, so it cannot name
+`TokenStoreWeb`, a `package:web` file. The executor proved it (a VM test
+importing that file fails to compile), stopped rather than pick a shape, and
+the controller added `app/lib/src/client/host_tokens.dart` plus its `_stub` and
+`_web` branches, following `fleet_profiles.dart`'s conditional import, and
+passed `storeToken`/`clearToken` from it. A native build gets null from that
+facade and keeps plan 2's `marshal fleet login` path; a browser writes the
+host's own key.
+
+Smaller decisions: `HostsModel.signIn` uses `storeToken` when given and
+`profiles.login` otherwise, which is what keeps both builds on one model; a
+relay row whose hub exists but has no `url` is skipped like a missing hub;
+browser discovery lists the page's own host first and swallows a relay failure
+to just that host; the `'settings · hosts · relayed'` screen draws its two
+relayed hosts in one `PageBody`, since a `ScreenCase` has a single `ready`
+builder.
+
+**Mutation checks.** The plan's four all ran and failed the test it named,
+then passed after restore: the relay-of-a-relay check dropped
+(`TestARelayMustNotBeRelayed`); the token in the wrong header slot
+(`with no token send answers 401 and sends nothing`); the host's token
+replaced by its hub's (`a relayed profile reaches its host through its hub`,
+which caught `token-hub` where `token-laptop` was due); and `forHost` given the
+page's key (`a host store keeps its own key`). The last is a browser-only test,
+and no browser suite loads in this environment — the mutation was restored and
+confirmed by reading the line back and re-running the desktop suite, but its
+failure was not observed.
+
+**The run.** Done as the temp-dir equivalent (this box has no desktop), with
+built `marshal` and `webbridge` and `HOME`/`XDG_CONFIG_HOME` in a throwaway
+directory, holding `[servers.studio] relay = "local-hub"`:
+- `fleet servers --json` reported `studio` as `"url": ""` with
+  `"relay": "local-hub"`, and `local-hub` with its own `url`.
+- `fleet --server studio` refused with `marshal fleet: studio is reached
+  through local-hub, and the fleet screen does not relay yet`.
+- `fleet add laptop --relay local-hub` appended `[servers.laptop]` with
+  `relay = "local-hub"`, keeping the two tables already there.
+- A file naming `c` through `b` through `a` was refused at load:
+  `servers.c.relay: b is itself relayed`.
+- The native app's four UI steps (add the second host, switch to it, start new
+  work on it, remove it) were not driven by hand, for want of a desktop; they
+  rest on the tests plan 2 and this plan name, and on the screens
+  `'settings · hosts · add'`, `'settings · hosts · sign in'` and
+  `'settings · hosts · relayed'`.
+- The browser step was not run: `flutter test --platform chrome` cannot load a
+  suite here — a three-minute stall in the CanvasKit fetch, which the untouched
+  `test/ui/thread/browser_selection_test.dart` reproduces identically. Recorded
+  as not run, not as passing.
+
+**Full verification.** `go test ./internal/fleetprofile ./cmd/marshal
+./web/...` passes, `go vet ./...` and `gofmt -l .` are clean, `cd app && flutter
+analyze` is clean, `dart format --output=none --set-exit-if-changed lib test`
+reports 358 files unchanged, and `flutter test` has 4020 passing. The macOS
+gallery goldens were not regenerated — this is not a macOS box, and no kit
+piece changed.

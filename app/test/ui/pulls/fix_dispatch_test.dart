@@ -157,6 +157,25 @@ void main() {
     await tester.pump();
   }
 
+  /// Pumps until [finder] matches, letting the real socket answer between
+  /// frames.
+  ///
+  /// A sheet shown after a bridge's answer needs two clocks at once: the read
+  /// that completes the request (real time, which `runAsync` alone turns) and
+  /// the frames that build the route it pushes (the fake clock, which only
+  /// `pump` turns). Waiting for the request to be *recorded* and then pumping
+  /// is a race the faster machine wins; here the two take turns.
+  Future<void> pumpUntil(WidgetTester tester, Finder finder) async {
+    for (var i = 0; i < 400; i++) {
+      if (finder.evaluate().isNotEmpty) return;
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 5)),
+      );
+      await tester.pump();
+    }
+    fail('$finder never appeared');
+  }
+
   testWidgets('one click dispatches with no further input', (tester) async {
     final (fixture, model) = await modelFor(tester, [record()]);
     final encoded = Uri.encodeComponent('acme/widgets#131');
@@ -335,7 +354,13 @@ void main() {
               '{"enabled":true,"repoId":"acme/widgets"}}}',
         ),
       )
-      ..reply('PUT', '/api/projects/settings', const FakeReply(200));
+      // Held, so the confirmation can only be drawn by a test that waits for
+      // the answer rather than for the request to be recorded.
+      ..reply(
+        'PUT',
+        '/api/projects/settings',
+        const FakeReply(200, delay: Duration(milliseconds: 40)),
+      );
     await pumpCard(tester, model);
     final autoFix = actionsOf(tester).fixChoices.last.onSelect;
 
@@ -347,7 +372,10 @@ void main() {
       );
       return null;
     });
-    // It says so: the item changes a project setting and confirms it.
+    // It says so: the item changes a project setting and confirms it. The
+    // sheet follows the bridge's answer, so frames and the real socket take
+    // turns until it is drawn.
+    await pumpUntil(tester, find.text('Automatic fixing is on'));
     await tester.pumpAndSettle();
     expect(find.text('Automatic fixing is on'), findsOneWidget);
 

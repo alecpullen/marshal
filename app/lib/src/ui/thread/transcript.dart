@@ -427,6 +427,10 @@ class _Row extends StatelessWidget {
         final message = node.message;
         if (message == null || compact) return const SizedBox.shrink();
         if (message.role == 'user') return TurnPrompt(text: message.content);
+        // A system message is the harness speaking: a snapshot warning, a
+        // rollback, a compaction. Drawn as narration it would read as the
+        // agent's own words (design-system.md §5).
+        if (message.role == 'system') return Notice(text: message.content);
         return Narration(text: message.content);
       case 'step':
         final step = node.step;

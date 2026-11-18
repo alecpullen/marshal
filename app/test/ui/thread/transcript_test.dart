@@ -381,6 +381,57 @@ void main() {
     view.dispose();
   });
 
+  testWidgets('a system message is a notice, not narration', (tester) async {
+    final store = StackStore.seeded(
+      StackSnapshot(
+        sessionID: 's-1',
+        rev: 1,
+        roots: const ['turn:1'],
+        nodes: const [
+          WireNode(
+            id: 'turn:1',
+            kind: 'turn',
+            children: ['msg:user', 'msg:agent', 'msg:system'],
+          ),
+          WireNode(
+            id: 'msg:user',
+            kind: 'message',
+            parent: 'turn:1',
+            message: WireMessage(role: 'user', content: 'Do the thing'),
+          ),
+          WireNode(
+            id: 'msg:agent',
+            kind: 'message',
+            parent: 'turn:1',
+            message: WireMessage(role: 'assistant', content: 'Doing it now'),
+          ),
+          WireNode(
+            id: 'msg:system',
+            kind: 'message',
+            parent: 'turn:1',
+            message: WireMessage(
+              role: 'system',
+              content:
+                  'Snapshot not recorded for acme-app (unrecorded).\n'
+                  'No rollback snapshot was recorded.',
+            ),
+          ),
+        ],
+      ),
+    );
+    final view = ThreadViewState();
+    await pumpThread(tester, store: store, view: view);
+
+    // The harness speaks in the notice's own voice, not the agent's.
+    expect(find.byType(TurnPrompt), findsOneWidget);
+    expect(find.byType(Narration), findsOneWidget);
+    expect(find.byType(Notice), findsOneWidget);
+    expect(find.textContaining('No rollback snapshot'), findsNothing);
+
+    store.dispose();
+    view.dispose();
+  });
+
   testWidgets('a session with no stack says it is unavailable', (tester) async {
     final store = StackStore(
       BridgeClient(_UnusedTransport()),

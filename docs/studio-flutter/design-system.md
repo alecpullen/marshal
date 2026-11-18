@@ -202,6 +202,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `StepHeader` | A step's ordinal, headline and duration | The running dot while it is worked on. Its disclosure folds the step's rows; the duration is mono |
 | `ToolRow` | One tool call | Verb and target in mono, the result at the right. Indented to the step's text; `err` colours only a failed result |
 | `Narration` | The agent's prose | Markdown, parsed and drawn with the text roles. No third-party widget sets a size, weight or colour |
+| `Notice` | Something the harness said in a conversation: a snapshot warning, a rollback, a compaction | Its first line in `small` `muted`; the rest folded behind *Details*. No icon, fill or border. Never the agent's words, which are `Narration` |
 | `OutputBlock` | Output the agent produced | The only filled block: `codeBg`, mono at every density. A capped block says so in words |
 | `LiveRow` | The row work is happening on | One running dot, the headline, the latest line. The only row that moves |
 | `StateMessage` | Empty, loading, stale, error, planned | The only way these states are shown (§7) |
@@ -263,6 +264,14 @@ as a dependency graph — dependency layers left to right, straight edges in
 chain, because that is the work the plan describes. The run's third view, the
 timeline, is not a component of its own: it is `Segments`' bar per role over the
 run's own span, so its colours are the ones `Segments` already states.
+
+Added for the visual fixes: `Notice`. A warning the harness writes into a
+conversation — a snapshot not recorded, a rollback, a compaction — was drawn
+as `Narration`, so it read as the agent speaking: six lines of paths in the
+reading role, all of them open, breaking mid-word. A `Notice` is the harness's
+own voice instead: one quiet line in `small` `muted`, and the rest of what it
+said folded behind *Details* until a person asks for it, because a notice is a
+fact to acknowledge and not prose to read.
 
 Supporting pieces, shared by the components and exported with them by
 `kit.dart`. None is drawn on its own, and none has variants:

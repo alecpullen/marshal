@@ -165,4 +165,118 @@ void main() {
     expect(headlineFor(agent(changedFiles: 4)), '4 files changed');
     expect(headlineFor(agent()), '');
   });
+
+  test('a session with a pending request needs you', () {
+    // The request wins over the turn in flight, as a parked agent's does.
+    expect(
+      statusOfSession(
+        sessionRow(
+          busy: true,
+          pending: const PendingRequest(
+            kind: PendingKind.pendingQuestion,
+            id: 'q-1',
+          ),
+        ),
+      ),
+      ThreadStatus.needsYou,
+    );
+  });
+
+  test('a busy session is running', () {
+    expect(statusOfSession(sessionRow(busy: true)), ThreadStatus.running);
+  });
+
+  test('an idle open session is idle', () {
+    expect(statusOfSession(sessionRow()), ThreadStatus.idle);
+  });
+
+  test('an untitled session is named by its short id', () {
+    // The id's own prefix is not part of the name, and only eight characters
+    // of what is left are.
+    expect(
+      threadOfSession(
+        'local',
+        '/home/u/alpha',
+        sessionRow(id: 'sess_0123456789abcdef'),
+      ).title,
+      'Session 01234567',
+    );
+    // An empty or whitespace title is no title.
+    expect(
+      threadOfSession('local', '/home/u/alpha', sessionRow(title: '   ')).title,
+      'Session 01234567',
+    );
+    // An id with no prefix is taken as it is.
+    expect(
+      threadOfSession('local', '/home/u/alpha', sessionRow(id: 'abc')).title,
+      'Session abc',
+    );
+    // A title is what the session is called.
+    expect(
+      threadOfSession(
+        'local',
+        '/home/u/alpha',
+        sessionRow(title: '  Fix the parser  '),
+      ).title,
+      'Fix the parser',
+    );
+    // The rest of the thread is the row's: its host, its root, its kind.
+    final thread = threadOfSession(
+      'studio',
+      '/srv/alpha',
+      sessionRow(id: 'sess_0123456789abcdef'),
+    );
+    expect(thread.host, 'studio');
+    expect(thread.project, '/srv/alpha');
+    expect(thread.id, 'sess_0123456789abcdef');
+    expect(thread.kind, ThreadKind.session);
+    expect(thread.lastActive, DateTime.utc(2026, 11, 17, 4));
+  });
+
+  test('an attached terminal is the headline', () {
+    expect(
+      threadOfSession(
+        'local',
+        '/home/u/alpha',
+        sessionRow(viewers: 1),
+      ).headline,
+      'A terminal is attached',
+    );
+    expect(
+      threadOfSession('local', '/home/u/alpha', sessionRow()).headline,
+      '',
+    );
+  });
+
+  test('a closed row is a closed thread', () {
+    expect(
+      threadOfSession('local', '/home/u/alpha', sessionRow(open: false)).closed,
+      isTrue,
+    );
+    expect(
+      threadOfSession('local', '/home/u/alpha', sessionRow()).closed,
+      isFalse,
+    );
+  });
 }
+
+/// One session row as a test writes one: open, idle, and untouched, except
+/// where a test says otherwise.
+SessionRow sessionRow({
+  String id = 'sess_0123456789abcdef',
+  String? title,
+  DateTime? lastActive,
+  bool open = true,
+  bool busy = false,
+  int viewers = 0,
+  PendingRequest? pending,
+}) => SessionRow(
+  sessionID: id,
+  title: title,
+  updatedAt:
+      (lastActive ?? DateTime.utc(2026, 11, 17, 4)).millisecondsSinceEpoch,
+  open: open,
+  viewers: viewers,
+  busy: busy,
+  pending: pending,
+);

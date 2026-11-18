@@ -361,6 +361,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
       InspectorTab.inspect,
     ],
     model.ThreadKind.workItem || model.ThreadKind.planRun => const [],
+    model.ThreadKind.session => const [InspectorTab.inspect],
   };
 
   /// Whether the inspector is a sheet below the medium breakpoint.

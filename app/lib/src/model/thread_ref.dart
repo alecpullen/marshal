@@ -2,10 +2,11 @@ import 'package:flutter/foundation.dart';
 
 import '../client/contract.g.dart';
 
-/// The three kinds of thread (design-system.md §6), told apart by icon and
+/// The four kinds of thread (design-system.md §6), told apart by icon and
 /// tooltip, never by colour. F2 lists every agent as an agent thread; work
-/// items and plan runs join the tree in F6 (F2 decision 5).
-enum ThreadKind { agent, workItem, planRun }
+/// items and plan runs join the tree in F6 (F2 decision 5), and a session is
+/// a thread of its own in P7.
+enum ThreadKind { agent, workItem, planRun, session }
 
 /// What a thread is doing (design-system.md §6), as the sidebar and the
 /// overview show it.
@@ -25,6 +26,7 @@ class ThreadRef {
     required this.headline,
     required this.lastActive,
     this.planning = false,
+    this.closed = false,
   });
 
   /// The host whose fleet reported it.
@@ -38,6 +40,9 @@ class ThreadRef {
   /// It is a flag rather than a fourth kind because a planning thread is an
   /// agent's session, drawn with the agent's own kind.
   final bool planning;
+
+  /// A closed session: stored, with no runtime on its daemon.
+  final bool closed;
 
   /// The project root it works in.
   final String project;
@@ -61,6 +66,7 @@ class ThreadRef {
       other.host == host &&
       other.id == id &&
       other.planning == planning &&
+      other.closed == closed &&
       other.project == project &&
       other.title == title &&
       other.kind == kind &&
@@ -73,6 +79,7 @@ class ThreadRef {
     host,
     id,
     planning,
+    closed,
     project,
     title,
     kind,
@@ -134,6 +141,48 @@ ThreadRef threadFor(String host, AgentStatus agent) {
     headline: headlineFor(agent),
     lastActive: lastActiveOf(agent),
   );
+}
+
+/// A session's status: needs you when it has a pending request, running when
+/// busy, idle otherwise.
+///
+/// The precedence is the one [statusOfAgent] gives a parked request: a
+/// session the bridge is holding a question for waits on a person whatever
+/// else it is doing.
+ThreadStatus statusOfSession(SessionRow row) {
+  if (row.pending != null) return ThreadStatus.needsYou;
+  return row.busy ? ThreadStatus.running : ThreadStatus.idle;
+}
+
+/// The thread one session row is, under [root] on [host] (P7 decisions 2–4).
+///
+/// A session is drawn as a thread of its own rather than folded into an
+/// agent: it is the same transcript the terminal and the TUI attach to. A
+/// row the index has closed keeps its place in the tree, and [ThreadRef.closed]
+/// is what sends it to the earlier work.
+ThreadRef threadOfSession(String host, String root, SessionRow row) =>
+    ThreadRef(
+      host: host,
+      id: row.sessionID,
+      project: root,
+      title: _sessionTitle(row),
+      kind: ThreadKind.session,
+      status: statusOfSession(row),
+      headline: row.viewers > 0 ? 'A terminal is attached' : '',
+      lastActive: DateTime.fromMillisecondsSinceEpoch(
+        row.updatedAt ?? 0,
+        isUtc: true,
+      ),
+      closed: !row.open,
+    );
+
+/// What a session is called: its own title, or its short id when it has none.
+String _sessionTitle(SessionRow row) {
+  final title = row.title?.trim() ?? '';
+  if (title.isNotEmpty) return title;
+  final id = row.sessionID;
+  final bare = id.startsWith('sess_') ? id.substring('sess_'.length) : id;
+  return 'Session ${bare.length > 8 ? bare.substring(0, 8) : bare}';
 }
 
 /// When an agent last did anything.

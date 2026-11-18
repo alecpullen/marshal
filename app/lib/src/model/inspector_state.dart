@@ -54,6 +54,7 @@ List<InspectorTab> tabsForThread(ThreadKind kind) => switch (kind) {
     InspectorTab.preview,
     InspectorTab.inspect,
   ],
+  ThreadKind.session => const [InspectorTab.inspect],
 };
 
 /// The inspector's view state: how wide it is, which tab is showing, whether

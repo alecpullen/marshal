@@ -149,6 +149,7 @@ class ThreadHeader extends StatelessWidget {
     model.ThreadKind.agent => 'Agent',
     model.ThreadKind.workItem => 'Work item',
     model.ThreadKind.planRun => 'Plan run',
+    model.ThreadKind.session => 'Session',
   };
 
   /// design-system.md §6: a thread's status is one of the five, and its word

@@ -1,5 +1,11 @@
 # Web Studio — docs index
 
+> **History.** The Studio's UI is now the Flutter app, described in
+> [`../studio-flutter/`](../studio-flutter/programme.md). F8's cutover retired
+> the Svelte client this directory's page specifications describe, and
+> `web/ui/` with it. Those specifications are kept as history; the backend and
+> contract sections here stay current.
+
 The Web Studio reworks `web/` into a self-hosted studio for agents,
 projects, workspaces and automations. It shares the TUI's view model, so
 both clients show the same transcript.

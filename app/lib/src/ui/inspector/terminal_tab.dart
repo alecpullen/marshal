@@ -79,6 +79,7 @@ class _TerminalTabState extends State<TerminalTab> {
         onTap: () => unawaited(widget.session.open()),
       ),
     ),
+    StateKind.unauthorized => const StateMessage.unauthorized(),
     StateKind.unavailable => StateMessage.unavailable(
       host: 'The bridge',
       lastSeen: '4m',

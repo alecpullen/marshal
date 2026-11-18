@@ -291,20 +291,5 @@ ci)
 
 	go build ./cmd/marshal
 	USABILITY_REQUIRE_BINARY=1 go test ./test/usability/... -run TestScripted -v -count=1 -timeout 5m
-
-	if command -v npm >/dev/null 2>&1; then
-		(
-			cd web/ui
-			npm ci
-			npm test
-			npm run build
-		)
-		git diff --exit-code -- web/bridge/static
-		if [ -n "$(git ls-files --others --exclude-standard -- web/bridge/static)" ]; then
-			die 'web/bridge/static has build output that was never committed'
-		fi
-	else
-		printf 'test.sh: npm not found, skipping the web UI job\n' >&2
-	fi
 	;;
 esac

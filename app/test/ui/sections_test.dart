@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/client/transport.dart';
+import 'package:marshal_app/src/model/attention.dart';
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/inbox_model.dart' as inbox;
 import 'package:marshal_app/src/model/nav_model.dart';
@@ -222,7 +223,7 @@ void main() {
 
     // The Inbox's own callback leaves the place, and it asks as the sidebar
     // does: a place's content is no way around the one guard.
-    await tester.tap(find.text('marshal › Reliable session recovery'));
+    await tester.tap(find.text('Fleet · Everyone'));
     await tester.pumpAndSettle();
     expect(find.text('Leave without saving?'), findsOneWidget);
     expect(opened, isEmpty);
@@ -278,6 +279,8 @@ inbox.Ask _ask(DateTime now) => inbox.Ask(
     inbox.AskAction('Deny'),
   ],
   since: now.subtract(const Duration(minutes: 12)),
+  source: AskSource.fleet,
+  scope: AskScope.everyone,
 );
 
 /// A place that edits [model]: it watches the model with the shell's guard

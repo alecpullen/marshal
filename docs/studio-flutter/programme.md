@@ -1,7 +1,8 @@
 # Marshal Studio in Flutter — build programme
 
-Status: **approved in outline**, 2026-11-17 (decisions 1–4). Authored against
-`main` at `f2ea2717`.
+Status: **complete**, 2026-11-17 (decisions 1–4). Authored against `main` at
+`f2ea2717`. F8 landed: the Flutter Studio is served at `/`, and the Svelte
+Studio with its Node toolchain is gone.
 
 The UI this builds is in [design.md](design.md), with the clickable mock in
 [`mock/`](mock/). This document is the order of work: the phases, what each
@@ -279,15 +280,17 @@ Done when: nothing in the Svelte Studio lacks a home in the app.
 
 ### F8 — cutover
 
-- The Flutter build is served at `/`; `/next/` redirects to it.
-- `web/ui`, its tests, its browser suite and the Node toolchain are removed.
-  The release workflow builds the web assets with Flutter.
+- The Flutter build is served at `/`; `/next/…` redirects to the place it names.
+- `web/ui`, its tests, its browser suite, `tsgen` and the Node toolchain are
+  removed. The release workflow builds the web assets with Flutter.
 - `AGENTS.md`, the architecture document and the web-studio documents are
   brought up to date. The public status page stays plain HTML.
-- The mock is deleted.
+- Not done: `mock/` and its `screenshots/` are kept. They are the design's
+  clickable reference, and nothing in the cutover depends on removing them.
 
-Done when: a release ships with no Svelte in it and the end-to-end suite
-runs against the Flutter Studio.
+Done: the cutover is taken and the end-to-end suite runs against the Flutter
+Studio. The size exception the trial raised is recorded in
+[f8-cutover.md](f8-cutover.md) decision 1.
 
 ## Testing
 

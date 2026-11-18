@@ -1,21 +1,20 @@
 # Route parity
 
-Every route either client calls, and where it lands in the app: the
+Every route the bridge serves, and where it lands in the Studio: the
 `BridgeClient` method that calls it (`app/lib/src/client/bridge_client.dart`),
 or `dropped:` and why it has no Dart caller.
 
-The Svelte client's routes come from `web/ui/src/lib/api.ts`, `factory.ts`,
-`planner.ts`, `working-drafts.ts` and `sse.ts`; the app's own — the terminal,
-pull, planner and factory routes the Svelte client never grew — are read from
-`bridge_client.dart` itself. A templated segment is written `X`, and a query
-string is dropped before a route is compared.
+The app's routes are read from `bridge_client.dart` itself. A templated segment
+is written `X`, and a query string is dropped before a route is compared.
 
-`app/test/route_parity_test.dart` checks the table against both clients. From
-the Dart side: a row with neither a method nor a `dropped:` reason fails it, so
-does a method that is not in `bridge_client.dart`, so does a `dropped:` row the
-client actually issues, and so does a route the client issues that has no row.
-From the Svelte side: a route the Svelte sources name and no row lists fails
-it, so a capability cannot be lost by neither client being asked about it.
+Until F8's cutover the table was a parity of two clients, and a row said which
+of them reached a route. The Svelte client is gone, so a row now answers one
+question: does the Studio reach this route, and if not, why not.
+
+`app/test/route_parity_test.dart` checks the table against the client: a row
+with neither a method nor a `dropped:` reason fails it, so does a method that is
+not in `bridge_client.dart`, so does a `dropped:` row the client actually
+issues, and so does a route the client issues that has no row.
 
 | Method | Path | BridgeClient | Note |
 |---|---|---|---|
@@ -93,10 +92,10 @@ it, so a capability cannot be lost by neither client being asked about it.
 | POST | `/api/library/skills/confirm` | confirmSkill |  |
 | POST | `/api/library/skills/discard` | discardSkill |  |
 | POST | `/api/library/skills/preview` | previewSkill |  |
-| GET | `/api/marshal/access?host=…` | — | dropped: nothing in the app sets the marshal-wide access choice; the web client stores it itself |
-| PUT | `/api/marshal/access/default` | — | dropped: nothing in the app sets the marshal-wide access choice; the web client stores it itself |
-| PUT | `/api/marshal/access/override` | — | dropped: nothing in the app sets the marshal-wide access choice; the web client stores it itself |
-| PUT | `/api/marshal/access/selection` | — | dropped: nothing in the app sets the marshal-wide access choice; the web client stores it itself |
+| GET | `/api/marshal/access?host=…` | — | dropped: nothing in the Studio sets the marshal-wide access choice |
+| PUT | `/api/marshal/access/default` | — | dropped: nothing in the Studio sets the marshal-wide access choice |
+| PUT | `/api/marshal/access/override` | — | dropped: nothing in the Studio sets the marshal-wide access choice |
+| PUT | `/api/marshal/access/selection` | — | dropped: nothing in the Studio sets the marshal-wide access choice |
 | GET | `/api/models` | models |  |
 | PUT | `/api/models/presets` | setPresets |  |
 | POST | `/api/models/probe` | probeProvider |  |
@@ -121,6 +120,7 @@ it, so a capability cannot be lost by neither client being asked about it.
 | POST | `/api/planners/X/requests/X` | answerPlanner |  |
 | POST | `/api/planners/X/snapshots` | createPlannerSnapshot |  |
 | GET | `/api/planners/X/snapshots/X` | plannerSnapshot |  |
+| POST | `/api/planners/X/snapshots/X/handoff` | handoffPlannerSnapshot |  |
 | DELETE | `/api/projects` | — | dropped: projects are discovered by the daemon, never created from the app |
 | GET | `/api/projects` | projects |  |
 | POST | `/api/projects` | — | dropped: projects are discovered by the daemon, never created from the app |

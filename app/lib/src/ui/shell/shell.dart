@@ -16,6 +16,7 @@ import '../../model/place.dart';
 import '../../model/planning_model.dart';
 import '../../model/project_model.dart';
 import '../../model/route_translation.dart';
+import '../../model/source_state.dart';
 import '../../model/pulls_model.dart';
 import '../../model/revision_model.dart';
 import '../../model/run_model.dart';
@@ -42,6 +43,19 @@ import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
 import 'placeholder.dart';
 import 'sidebar.dart';
+
+/// Builds the handoff review for a plan (F6 decision 8), bound to the frozen
+/// capture the review was opened from when the caller has one.
+///
+/// It is asynchronous because what the review inherits is the project's own
+/// settings, read when the person hands the plan off (F6 decision 12).
+typedef HandoffBuilder = Future<HandoffModel> Function(
+  model.ThreadRef thread,
+  String plan,
+  String spec, {
+  String? plannerID,
+  PlannerSnapshot? snapshot,
+});
 
 /// The Studio's frame (design-system.md §4): the sidebar, and the place's
 /// content beside it. Below 760 the navigation becomes a panel over the
@@ -303,6 +317,11 @@ class _ShellState extends State<Shell> {
         lastSeen: _oldestContact(),
         action: retry,
       ),
+      // A refused token is why nothing is here, and no retry clears one: the
+      // state names the host that refused and how to sign in again.
+      StateKind.unauthorized => StateMessage.unauthorized(
+        host: _refusingHost(),
+      ),
       StateKind.stale => StateMessage.stale(age: _oldestContact()),
       StateKind.planned => StateMessage.planned(
         name: placeTitle(widget.place, widget.nav),
@@ -321,6 +340,39 @@ class _ShellState extends State<Shell> {
     }
     return relativeAge(oldest ?? _now, _now);
   }
+
+  /// The host that refused this page's token, for the state that says so.
+  String _refusingHost() {
+    for (final host in widget.hosts) {
+      if (host.refused) return host.name;
+    }
+    return widget.hosts.isEmpty ? 'The daemon' : widget.hosts.first.name;
+  }
+}
+
+/// The shell's state, from what the fleet holds (§7).
+///
+/// A host whose token the bridge refused is `unauthorized`, never
+/// `unavailable`: the two look the same from the page — nothing arrives — but
+/// only one of them is about reachability, and sending a reader to check the
+/// network when they need to sign in is the wrong answer to give.
+StateKind? fleetStateKind({
+  required bool read,
+  required bool failed,
+  required bool anyAgents,
+  required List<HostView> hosts,
+}) {
+  if (!read) return StateKind.loading;
+  if (hosts.isEmpty) return failed ? StateKind.error : StateKind.empty;
+  if (!anyAgents && hosts.every((host) => !host.live)) {
+    // Nothing is showing, so the page says why. A refusal is the one cause a
+    // reader can act on, so it is named ahead of the silence beside it.
+    return hosts.any((host) => host.refused)
+        ? StateKind.unauthorized
+        : StateKind.unavailable;
+  }
+  if (hosts.any((host) => !host.live)) return StateKind.stale;
+  return null;
 }
 
 /// The Studio: what the fleet holds, drawn at one place.
@@ -394,12 +446,7 @@ class Studio extends StatefulWidget {
   ///
   /// It is asynchronous because what the review inherits is the project's own
   /// settings, read when the person hands the plan off (F6 decision 12).
-  final Future<HandoffModel> Function(
-    model.ThreadRef thread,
-    String plan,
-    String spec,
-  )?
-  handoffFor;
+  final HandoffBuilder? handoffFor;
 
   /// Builds a plan run's model for one agent (F6 decision 11). Null leaves a
   /// plan run's place unbuilt rather than drawing an empty run.
@@ -551,17 +598,12 @@ class _StudioState extends State<Studio> {
   }
 
   /// The shell's state, from what the store holds.
-  StateKind? _state(FleetStore store) {
-    if (!_read) return StateKind.loading;
-    if (store.hosts.isEmpty) {
-      return _failure == null ? StateKind.empty : StateKind.error;
-    }
-    if (store.agents().isEmpty && store.hosts.every((host) => !host.live)) {
-      return StateKind.unavailable;
-    }
-    if (store.hosts.any((host) => !host.live)) return StateKind.stale;
-    return null;
-  }
+  StateKind? _state(FleetStore store) => fleetStateKind(
+    read: _read,
+    failed: _failure != null,
+    anyAgents: store.agents().isNotEmpty,
+    hosts: store.hosts,
+  );
 
   /// What the place draws. A place whose screen a later step of F2 brings
   /// says so (design-system.md §7).
@@ -576,6 +618,7 @@ class _StudioState extends State<Studio> {
         now: widget.store.now,
         hosts: widget.store.hosts,
         pulls: widget.pulls?.views ?? const [],
+        state: _state(widget.store),
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
@@ -586,6 +629,8 @@ class _StudioState extends State<Studio> {
         asks: widget.inbox.asks,
         pulls: widget.pulls?.views ?? const [],
         now: widget.store.now,
+        state: _state(widget.store),
+        sources: sourceStates(widget.store, factory: widget.factory),
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
@@ -877,12 +922,7 @@ class _ThreadPlace extends StatefulWidget {
   final void Function(StartedPlanner planner)? onPlannerStarted;
 
   /// The handoff review's model, and where an approved item opens.
-  final Future<HandoffModel> Function(
-    model.ThreadRef thread,
-    String plan,
-    String spec,
-  )?
-  handoffFor;
+  final HandoffBuilder? handoffFor;
   final void Function(String itemID)? onOpenItem;
   final List<inbox.Ask> asks;
   final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
@@ -906,7 +946,27 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
     super.initState();
     _store.start();
     _composer = widget.composerFor?.call(widget.thread, _view);
+    // A thread opened while its agent is mid-turn offers Steer and Stop from
+    // the first frame, from the fleet's own report of the agent.
+    _composer?.setRunning(_turnRunning);
   }
+
+  @override
+  void didUpdateWidget(_ThreadPlace old) {
+    super.didUpdateWidget(old);
+    // The fleet's report of the agent is the session's own state: a turn that
+    // ended (ready, idle or failed) confirms a requested stop, and one that is
+    // running, or parked on a person, keeps Steer and Stop.
+    if (old.thread.status != widget.thread.status) {
+      _composer?.setRunning(_turnRunning);
+    }
+  }
+
+  /// Whether the thread's agent is mid-turn, as the fleet reports it. A
+  /// pending request means the turn is parked on a person, not finished.
+  bool get _turnRunning =>
+      widget.thread.status == model.ThreadStatus.running ||
+      widget.thread.status == model.ThreadStatus.needsYou;
 
   @override
   void dispose() {
@@ -1265,6 +1325,26 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
   }
 }
 
+/// The review a planning thread hands off to: the capture the person just
+/// reviewed, the plan and specification it froze, and the planner it belongs
+/// to.
+///
+/// It is a named function beside the place rather than three arguments written
+/// inline, because this binding is the whole of "the draft is built from the
+/// capture": a screen that passed no snapshot would still open a review, and
+/// only a test that reads these arguments can tell the difference.
+Future<HandoffModel> reviewForPlanner(
+  HandoffBuilder build,
+  model.ThreadRef thread,
+  PlanningModel plan,
+) => build(
+  thread,
+  plan.latest?.plan ?? '',
+  plan.latest?.spec ?? '',
+  plannerID: plan.plannerID,
+  snapshot: plan.latest,
+);
+
 /// One planning thread's place (F6 decision 8): the planner's conversation,
 /// the requests it is parked on, and the plan its last snapshot froze.
 ///
@@ -1282,12 +1362,7 @@ class _PlanningPlace extends StatefulWidget {
 
   final model.ThreadRef thread;
   final PlanningModel plan;
-  final Future<HandoffModel> Function(
-    model.ThreadRef thread,
-    String plan,
-    String spec,
-  )?
-  handoffFor;
+  final HandoffBuilder? handoffFor;
   final DateTime? now;
   final void Function(String itemID)? onOpenItem;
 
@@ -1302,16 +1377,13 @@ class _PlanningPlaceState extends State<_PlanningPlace> {
     super.dispose();
   }
 
-  /// Opens the handoff review for the plan the last snapshot froze.
+  /// Opens the handoff review for the plan the last snapshot froze, bound to
+  /// that capture: what the sheet shows as evidence and what the draft is
+  /// built from are the bytes the bridge froze, not a copy this screen holds.
   Future<void> _handOff(BuildContext context) async {
     final build = widget.handoffFor;
     if (build == null) return;
-    final latest = widget.plan.latest;
-    final model = await build(
-      widget.thread,
-      latest?.plan ?? '',
-      latest?.spec ?? '',
-    );
+    final model = await reviewForPlanner(build, widget.thread, widget.plan);
     // What the review inherits is read before the sheet opens, so the place
     // may be gone by now; the review is disposed rather than opened on a dead
     // context.
@@ -1379,19 +1451,39 @@ class _ProjectPlaceState extends State<_ProjectPlace> {
   /// The page's model: built once for this project, and disposed with it.
   late final ProjectModel _model = widget.build(widget.host, widget.root);
 
+  /// The repository the evidence beside the editor was last read for.
+  String _repo = '';
+
   @override
   void initState() {
     super.initState();
     widget.factory?.addListener(_changed);
     widget.store.addListener(_changed);
+    // The project's own settings are where its intake repository is, and that
+    // is what the evidence offered beside the editor is filtered by.
+    _model.addListener(_repositoryChanged);
   }
 
   @override
   void dispose() {
     widget.store.removeListener(_changed);
     widget.factory?.removeListener(_changed);
+    _model.removeListener(_repositoryChanged);
     _model.dispose();
     super.dispose();
+  }
+
+  /// Rebuilds when the project names another repository.
+  ///
+  /// Only that changes what the place hands the page: the page reads its own
+  /// model and draws itself, so a draft edit needs no rebuild here. It also
+  /// keeps the first read's notice — which the page posts while the place is
+  /// mounting — from rebuilding the tree mid-build, when nothing has changed
+  /// yet.
+  void _repositoryChanged() {
+    if (!mounted || _model.repoID == _repo) return;
+    _repo = _model.repoID;
+    setState(() {});
   }
 
   void _changed() {
@@ -1426,6 +1518,15 @@ class _ProjectPlaceState extends State<_ProjectPlace> {
       onOpenAgent: widget.onOpenAgent,
       onOpenRun: widget.onOpenRun,
       onOpenAutomations: widget.onOpenAutomations,
+      observedChecks:
+          factory?.observedChecks(
+            projectRoot: widget.root,
+            // Evidence comes from the same project *and* repository (F6
+            // decision 12), so the project's intake repository filters it; a
+            // project that names none filters by nothing.
+            repoID: _model.repoID,
+          ) ??
+          const [],
     );
   }
 }

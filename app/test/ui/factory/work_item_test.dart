@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart' hide CheckState;
 import 'package:marshal_app/src/ui/factory/work_item_screen.dart';
@@ -87,14 +89,27 @@ void main() {
     'createdAt': '2026-11-17T11:00:00Z',
   });
 
+  FactoryDecision decision() => FactoryDecision.fromJson({
+    'id': 'decision-1',
+    'kind': 'scope',
+    'question': 'Which inspection does the inspector show?',
+    'reason': 'the plan names both',
+    'effectId': 'effect-1',
+    'createdAt': '2026-11-17T11:00:00Z',
+  });
+
   FactoryItem item({
     String state = 'reviewing',
     String stage = '',
     List<FactoryRound> rounds = const [],
+    int version = 1,
+    FactoryDecision? pending,
   }) => factoryItem(
     state: state,
     stage: stage,
     rounds: rounds,
+    version: version,
+    decision: pending,
     workers: [factoryWorker(agentId: 'agent-imp', role: 'implementer')],
     effects: [effect()],
     history: [
@@ -126,6 +141,35 @@ void main() {
     );
     await tester.pump();
   }
+
+  /// One pump of the screen, with the whole tree the same every time so the
+  /// State survives a re-pump: [subject] and [center] vary, nothing else.
+  Future<void> show(
+    WidgetTester tester,
+    FactoryItem subject, {
+    Widget? center,
+    Future<void> Function(String answer)? onAnswer,
+    VoidCallback? onProposeChange,
+    double width = 1000,
+    double height = 2000,
+  }) => pumpKit(
+    tester,
+    WorkItemScreen(
+      item: WorkItemView.of('local', subject),
+      now: now,
+      pulls: const [],
+      center: center,
+      onBack: () {},
+      onAnswer: onAnswer,
+      onProposeChange: onProposeChange,
+    ),
+    width: width,
+    height: height,
+  );
+
+  /// The words in the answer field.
+  String answerText(WidgetTester tester) =>
+      tester.widget<EditableText>(find.byType(EditableText)).controller.text;
 
   testWidgets('strip shows the stage', (tester) async {
     await pump(tester, item(state: 'reviewing'));
@@ -168,7 +212,10 @@ void main() {
     await pump(tester, item());
     await openTab(tester, 'Agents');
     expect(find.text('agent-imp'), findsOneWidget);
-    expect(find.text('Working'), findsOneWidget);
+    // The word is the one the item's own effect supports, not "Working" by
+    // default.
+    expect(find.text('Finished'), findsOneWidget);
+    expect(find.text('Working'), findsNothing);
   });
 
   testWidgets('the Checks tab shows the observed checks and the review', (
@@ -255,6 +302,150 @@ void main() {
       tabs.tabs.any((tab) => tab.label == 'Files'),
       isFalse,
       reason: 'a work item has no file browser: its change is the Changes tab',
+    );
+  });
+
+  testWidgets('the Plan tab and its revision entry come before the activity', (
+    tester,
+  ) async {
+    await show(tester, item(), onProposeChange: () {}, height: 2400);
+
+    // The label is drawn in the kit's uppercase, so it is found as the label
+    // it is rather than by its text.
+    final activity = find.byWidgetPredicate(
+      (widget) => widget is Label && widget.text == 'Activity',
+    );
+    expect(activity, findsOneWidget);
+
+    final planTab = find.descendant(
+      of: find.byType(Tabs),
+      matching: find.text('Plan'),
+    );
+    expect(planTab, findsOneWidget);
+    expect(
+      tester.getTopLeft(planTab).dy,
+      lessThan(tester.getTopLeft(activity).dy),
+      reason: 'what the item is comes before what happened to it',
+    );
+
+    await openTab(tester, 'Plan');
+    final revise = find.text('Propose a change');
+    expect(revise, findsOneWidget);
+    expect(
+      tester.getTopLeft(revise).dy,
+      lessThan(tester.getTopLeft(activity).dy),
+      reason: 'revising the plan is not buried below the timeline',
+    );
+  });
+
+  testWidgets('a typed answer survives polling and a worker drill-in', (
+    tester,
+  ) async {
+    var answers = 0;
+    await show(
+      tester,
+      item(pending: decision()),
+      onAnswer: (_) async => answers++,
+    );
+    await tester.enterText(find.byType(EditableText), 'the rounds');
+    await tester.pump();
+    expect(answerText(tester), 'the rounds');
+
+    // The store polls: the item moves to a new version and the body rebuilds
+    // under the field. The ask card stays mounted here, so this half alone
+    // would also pass with a card-owned controller; the drill-in below is the
+    // proof that the draft outlives the card.
+    await show(
+      tester,
+      item(version: 2, pending: decision()),
+      onAnswer: (_) async => answers++,
+    );
+    await tester.pump();
+    expect(answerText(tester), 'the rounds', reason: 'a poll keeps the draft');
+
+    // A worker's own conversation replaces the body, then goes back.
+    await show(
+      tester,
+      item(version: 2, pending: decision()),
+      center: const Text('worker'),
+      onAnswer: (_) async => answers++,
+    );
+    await tester.pump();
+    expect(find.text('worker'), findsOneWidget);
+    expect(find.byType(EditableText), findsNothing);
+
+    await show(
+      tester,
+      item(version: 2, pending: decision()),
+      onAnswer: (_) async => answers++,
+    );
+    await tester.pump();
+    expect(answerText(tester), 'the rounds', reason: 'the drill-in keeps it');
+
+    expect(answers, 0, reason: 'nothing was decided for the person');
+  });
+
+  testWidgets('a decision still posts the person\u2019s exact words', (
+    tester,
+  ) async {
+    final posted = <String>[];
+    await show(
+      tester,
+      item(pending: decision()),
+      onAnswer: (answer) async => posted.add(answer),
+    );
+    expect(posted, isEmpty, reason: 'nothing is answered for the person');
+
+    await tester.enterText(find.byType(EditableText), 'the rounds');
+    await tester.pump();
+    expect(posted, isEmpty, reason: 'typing is not taking the action');
+
+    await tester.tap(find.text('Answer'));
+    await tester.pump();
+    expect(posted, ['the rounds'], reason: 'the words are sent as written');
+  });
+
+  testWidgets('leaving the item while an answer sends does not use a disposed '
+      'draft', (tester) async {
+    final gate = Completer<void>();
+    await show(tester, item(pending: decision()), onAnswer: (_) => gate.future);
+    await tester.enterText(find.byType(EditableText), 'the rounds');
+    await tester.pump();
+    await tester.tap(find.text('Answer'));
+    await tester.pump();
+    expect(find.text('Sending…'), findsOneWidget);
+
+    // The person leaves the item: its screen and draft are disposed while the
+    // command is still in flight.
+    await pumpKit(tester, const SizedBox.shrink());
+    gate.complete();
+    await tester.pump();
+
+    expect(
+      tester.takeException(),
+      isNull,
+      reason: 'the finished command must not notify a disposed draft',
+    );
+  });
+
+  testWidgets('the Plan tab and revision entry stay above the activity on a '
+      'phone', (tester) async {
+    await show(
+      tester,
+      item(),
+      onProposeChange: () {},
+      width: 390,
+      height: 2600,
+    );
+    await openTab(tester, 'Plan');
+    final activity = find.byWidgetPredicate(
+      (widget) => widget is Label && widget.text == 'Activity',
+    );
+    expect(find.text('Propose a change'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('Propose a change')).dy,
+      lessThan(tester.getTopLeft(activity).dy),
+      reason: 'a phone still reaches the revision entry before the timeline',
     );
   });
 }

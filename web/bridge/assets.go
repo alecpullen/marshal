@@ -12,47 +12,55 @@ import (
 	"time"
 )
 
-// svelteFS embeds the Svelte Studio's build output, which `/` keeps serving:
-// F8's cutover is deferred (decision 1, revised 2026-11-17), so the Svelte
-// Studio holds the root until the release that removes it. It is written here
-// by `npm run build` in web/ui, whose asset URLs are rooted at `/`; the
-// committed copy is checked against a fresh build in CI.
+// studioFS embeds the Flutter Studio's build output, which `/` serves since
+// F8's cutover retired the Svelte Studio. It is written here by
+// `flutter build web --base-href / --no-web-resources-cdn` in app/, whose asset
+// URLs are rooted at `/`.
+//
+// `--no-web-resources-cdn` is not optional: without it the build fetches the
+// CanvasKit engine from gstatic.com, and a private network that cannot reach
+// that CDN never starts the Studio at all.
+//
+// During Go-only development this holds a placeholder index.html — the real
+// build is a 10 MB engine plus assets, produced in CI and by the release's
+// studio-web job — so `go build ./cmd/webbridge` still embeds a page.
 //
 //go:embed static
-var svelteFS embed.FS
+var studioFS embed.FS
 
-// svelteRoot is the sub-tree rooted at "static". It is created once so path
+// studioRoot is the sub-tree rooted at "static". It is created once so path
 // cleaning is handled by the fs.Sub layer.
-var svelteRoot, _ = fs.Sub(svelteFS, "static")
+var studioRoot, _ = fs.Sub(studioFS, "static")
 
-// flutterFS embeds the Flutter Studio's build output, served under /next/
-// while the cutover is deferred. During Go-only development it holds a
-// placeholder index.html; the real Studio is written here by
-// `flutter build web --base-href /next/ --no-web-resources-cdn` in app/, so
-// the CanvasKit engine is fetched from the bridge rather than from a CDN —
-// without that flag a private network that cannot reach gstatic never starts
-// the Studio at all.
-//
-//go:embed static-next
-var flutterFS embed.FS
-
-// flutterRoot is the sub-tree rooted at "static-next".
-var flutterRoot, _ = fs.Sub(flutterFS, "static-next")
-
-// nextPrefix is where the Flutter Studio is served while the Svelte one holds
-// `/`: /next/, /next/inbox, /next/thread/local/a-1 and so on. Its build bakes
-// the prefix into every asset URL, so the prefix is stripped before the
-// embedded tree is read.
+// nextPrefix is where the Flutter Studio was served while the Svelte Studio
+// held `/`. The cutover moved it to the root, so the prefix now only redirects
+// an old link to the place it names.
 const nextPrefix = "/next"
 
-// isNextPath reports whether a request is for the Flutter Studio's prefix.
+// isNextPath reports whether a request is for the retired /next/ prefix.
 func isNextPath(p string) bool {
 	return p == nextPrefix || strings.HasPrefix(p, nextPrefix+"/")
 }
 
-// svelteHandler serves the Svelte Studio at the root. Its router reads the
-// hash, so a path that names no file falls back to its index.html.
-func svelteHandler() http.Handler {
+// nextRedirect is the permanent move off the retired prefix: /next and /next/
+// open the Studio, and /next/inbox carries its path to /inbox. The query rides
+// along, because a place may name its tab or filter there. The Studio's router
+// reads the path, so every place the old prefix addressed still resolves.
+func nextRedirect(w http.ResponseWriter, r *http.Request) {
+	target := strings.TrimPrefix(r.URL.Path, nextPrefix)
+	if target == "" {
+		target = "/"
+	}
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	http.Redirect(w, r, target, http.StatusPermanentRedirect)
+}
+
+// studioHandler serves the Flutter Studio at the root. A path that names no
+// asset falls back to its index.html, so the Studio's own router renders the
+// place (/inbox, /thread/local/a-1).
+func studioHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The bridge's API is the mux's: a static handler must never answer
 		// for it.
@@ -60,30 +68,7 @@ func svelteHandler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		serveFrom(w, r, svelteRoot, r.URL.Path, "index.html not found in embedded assets")
-	})
-}
-
-// flutterHandler serves the Flutter Studio under /next/. Its build bakes the
-// prefix into every asset URL, so the prefix is stripped before the embedded
-// tree is read; a path that names no asset falls back to its index.html, so
-// the Studio's own router renders the place (/next/inbox,
-// /next/thread/local/a-1).
-func flutterHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == nextPrefix {
-			// The build's base href is /next/, so its index is only coherent
-			// at the trailing-slash form; without it every relative asset URL
-			// would resolve a level too high.
-			http.Redirect(w, r, nextPrefix+"/", http.StatusPermanentRedirect)
-			return
-		}
-		rest := strings.TrimPrefix(r.URL.Path, nextPrefix)
-		if strings.HasPrefix(rest, "/api/") {
-			http.NotFound(w, r)
-			return
-		}
-		serveFrom(w, r, flutterRoot, rest, "index.html not found in the embedded Studio assets")
+		serveFrom(w, r, studioRoot, r.URL.Path, "index.html not found in the embedded Studio assets")
 	})
 }
 

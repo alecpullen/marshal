@@ -174,6 +174,7 @@ class _EnvironmentDesignerState extends State<EnvironmentDesigner> {
         message: widget.model.saveError ?? 'The template could not be read.',
         retry: retry,
       ),
+      StateKind.unauthorized => const StateMessage.unauthorized(),
       StateKind.unavailable => StateMessage.unavailable(
         host: 'The daemon',
         lastSeen: 'a minute',

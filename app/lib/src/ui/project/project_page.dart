@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '../../model/age.dart';
+import '../../model/expected_checks.dart';
 import '../../model/project_model.dart';
 import '../../model/section_model.dart' show SaveState;
 import '../../model/thread_ref.dart' as threads;
@@ -20,6 +21,11 @@ import 'status.dart';
 /// conditional write the bridge requires, asking before leaving an unsaved
 /// edit. Health reports what the bridge can see and offers discovery.
 ///
+/// The line above the sections names what the section is for, and the page's
+/// own header carries the project's name with its root, so two same-named
+/// projects are told apart. A project that cannot be reached is called out
+/// once, above the sections, whatever one is open.
+///
 /// The page takes the model and the views the shell holds and never fetches:
 /// the factory store is the one reader of the item list (F6 decision 14), and
 /// the model reads settings, health and runs behind its own interface (§5).
@@ -37,6 +43,7 @@ class ProjectPage extends StatefulWidget {
     this.onOpenAgent,
     this.onOpenRun,
     this.onOpenAutomations,
+    this.observedChecks = const <ObservedCheck>[],
   });
 
   final ProjectModel model;
@@ -68,12 +75,25 @@ class ProjectPage extends StatefulWidget {
   /// Opens the Automations place. Null leaves the summary without its link.
   final VoidCallback? onOpenAutomations;
 
+  /// The checks this project's recorded work has observed: the evidence the
+  /// Defaults tab may offer beside the editor, never a requirement.
+  final List<ObservedCheck> observedChecks;
+
   @override
   State<ProjectPage> createState() => _ProjectPageState();
 }
 
 class _ProjectPageState extends State<ProjectPage> {
   static const _labels = ['Work', 'Automations', 'Defaults', 'Health'];
+
+  /// What the line under the tab bar says about the section shown: one
+  /// short line per label, in the design's own words (§8).
+  static const _descriptions = [
+    'The project\'s work items, its agents and its plan runs',
+    'The forge automations configured for this project',
+    'What new agents of this project run as, and what a handoff inherits',
+    'What the bridge can see about this project, and the discovery it offers',
+  ];
 
   late int _tab = _clamped(widget.initialTab);
 
@@ -104,12 +124,20 @@ class _ProjectPageState extends State<ProjectPage> {
   @override
   Widget build(BuildContext context) {
     final model = widget.model;
+    final e = Ember.of(context);
     return PageBody(
       title: model.name,
       subtitle: model.root,
       width: PageWidth.full,
       actions: _actions(),
       children: [
+        if (widget.state == StateKind.unavailable) ...[
+          // An unreachable project is called out once, above the sections,
+          // whichever one is open (§7: unavailable replaces the content, so
+          // there is no second copy beneath and nothing half-read).
+          _stateMessage(StateKind.unavailable),
+          const SizedBox(height: Space.s12),
+        ],
         Tabs(
           tabs: [
             TabItem('Work', count: widget.items.length),
@@ -120,21 +148,32 @@ class _ProjectPageState extends State<ProjectPage> {
           index: _tab,
           onChanged: (index) => setState(() => _tab = index),
         ),
+        const SizedBox(height: Space.s8),
+        Text(_descriptions[_tab], style: e.small.tint(e.muted)),
         const SizedBox(height: Space.s20),
         // A tab is a page of its own: a fresh subtree per tab keeps one tab's
-        // open sheet and half-typed edit off the next.
+        // open sheet and half-typed edit off the next. An unreachable project
+        // shows the call-out above and nothing beneath it: the sections read
+        // that project, so what they would draw is not what is there.
         KeyedSubtree(
           key: ValueKey(_tab),
-          child: switch (_tab) {
-            0 => _work(context),
-            1 => _automations(context),
-            2 => DefaultsTab(
-              model: model,
-              state: widget.state,
-              now: widget.now,
-            ),
-            _ => HealthTab(model: model, state: widget.state, now: widget.now),
-          },
+          child: widget.state == StateKind.unavailable
+              ? const SizedBox.shrink()
+              : switch (_tab) {
+                  0 => _work(context),
+                  1 => _automations(context),
+                  2 => DefaultsTab(
+                    model: model,
+                    state: widget.state,
+                    now: widget.now,
+                    observedChecks: widget.observedChecks,
+                  ),
+                  _ => HealthTab(
+                    model: model,
+                    state: widget.state,
+                    now: widget.now,
+                  ),
+                },
         ),
       ],
     );
@@ -157,7 +196,11 @@ class _ProjectPageState extends State<ProjectPage> {
   /// Work: the factory's board, then the project's agents and its plan runs.
   Widget _work(BuildContext context) {
     final state = widget.state;
-    if (state != null && state != StateKind.stale) {
+    // Unavailable is the page's one call-out above the tabs; the tab draws
+    // its content, never a second copy.
+    if (state != null &&
+        state != StateKind.stale &&
+        state != StateKind.unavailable) {
       return _stateMessage(state);
     }
     final e = Ember.of(context);
@@ -239,7 +282,11 @@ class _ProjectPageState extends State<ProjectPage> {
   /// what the project links to.
   Widget _automations(BuildContext context) {
     final state = widget.state;
-    if (state != null && state != StateKind.stale) {
+    // Unavailable is the page's one call-out above the tabs; the tab draws
+    // its content, never a second copy.
+    if (state != null &&
+        state != StateKind.stale &&
+        state != StateKind.unavailable) {
       return _stateMessage(state);
     }
     final e = Ember.of(context);
@@ -319,6 +366,7 @@ class _ProjectPageState extends State<ProjectPage> {
         message: widget.model.error ?? 'The project could not be read.',
         retry: retry,
       ),
+      StateKind.unauthorized => const StateMessage.unauthorized(),
       StateKind.unavailable => StateMessage.unavailable(
         host: widget.model.name,
         lastSeen: relativeAge(widget.model.lastRead, _now),

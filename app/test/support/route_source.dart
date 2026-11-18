@@ -11,28 +11,19 @@
 /// `_secretPath`): the route it builds belongs to whichever caller hands the
 /// path to a request helper, so it is skipped rather than guessed.
 ///
-/// `svelteRoutePaths` reads the other client. It takes every `/api/` literal
-/// in a Svelte source file — builders included, since a builder's route is a
-/// route — and normalises it the way the table writes one. Comments are
-/// stripped first: `api.ts` names routes in its doc comments, and a route in
-/// prose is not a route a client calls.
-///
 /// `route_parity_test.dart` uses this to check
-/// `docs/studio-flutter/route-parity.md` in every direction.
+/// `docs/studio-flutter/route-parity.md` against the client. It used to read
+/// the Svelte client too; F8's cutover retired that client, so one client and
+/// one direction are left.
 library;
 
 const _quote = 0x27;
-const _doubleQuote = 0x22;
-const _backtick = 0x60;
 const _backslash = 0x5C;
 const _dollar = 0x24;
 const _braceOpen = 0x7B;
 const _braceClose = 0x7D;
 const _parenOpen = 0x28;
 const _parenClose = 0x29;
-const _slash = 0x2F;
-const _star = 0x2A;
-const _newline = 0x0A;
 
 final _helperCall = RegExp(
   r'\b(_post|_put|_listOf|_objectOf|_send|_delete|_patch|EventStream'
@@ -181,200 +172,3 @@ int _skipInterpolation(String source, int dollar) {
 
 bool _isSpace(int unit) =>
     unit == 0x20 || unit == 0x09 || unit == 0x0A || unit == 0x0D;
-
-// ---------------------------------------------------------------------------
-// The Svelte client
-// ---------------------------------------------------------------------------
-
-/// A path literal starts where one of these quotes is followed by `/api/`.
-final _svelteLiteral = RegExp(r'''['"`]/api/''');
-
-final _bareIdentifier = RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$');
-
-/// Expressions that build a query string, not a path segment.
-const _queryBuilders = ['query(', 'netQuery('];
-
-/// Every route path a Svelte source names, in the form the table writes one.
-///
-/// The literal is read the way JavaScript joins it: a `${…}` or `$name` is a
-/// path segment — `X` — unless it is the literal's tail and builds a query
-/// string. The suffixes in `api.ts` are one of three shapes: a local
-/// `'?path=…'` string, a ternary picking `?…` or `''`, or a `query(…)` /
-/// `netQuery(…)` call. Each is dropped; everything else is a segment.
-///
-/// Comments are stripped first. `api.ts` writes `GET /api/budgets` in its doc
-/// comments, and a route named in prose is not a route a client calls.
-Set<String> svelteRoutePaths(String source) {
-  final clean = stripJsComments(source);
-  final queryLocals = _queryLocals(clean);
-  final paths = <String>{};
-  for (final match in _svelteLiteral.allMatches(clean)) {
-    paths.add(_sveltePathAt(clean, match.start, queryLocals).split('?').first);
-  }
-  return paths;
-}
-
-/// Names a file declares as a query-string builder.
-///
-/// `const q = path ? \`?path=…\` : ''` makes `${q}` a query, while `${port}`
-/// is a parameter and stays a path segment. Only the former is a query local:
-/// the distinction is the declaration, not the name.
-Set<String> _queryLocals(String source) {
-  final names = <String>{};
-  for (final match in RegExp(
-    r'\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^\n;]+)',
-  ).allMatches(source)) {
-    final value = match.group(2)!.trim();
-    // A string that opens with `?` is a query prefix.
-    if (_queryPrefix.hasMatch(value) || value.startsWith('query(')) {
-      names.add(match.group(1)!);
-    }
-  }
-  return names;
-}
-
-final _queryPrefix = RegExp(r'''[`'"]\?''');
-
-/// The path written by the literal whose opening quote is at [quoteIndex].
-String _sveltePathAt(String source, int quoteIndex, Set<String> queryLocals) {
-  final quote = source.codeUnitAt(quoteIndex);
-  final buffer = StringBuffer();
-  var i = quoteIndex + 1;
-  while (i < source.length) {
-    final unit = source.codeUnitAt(i);
-    if (unit == _backslash) {
-      buffer.write(source.substring(i, i + 2));
-      i += 2;
-      continue;
-    }
-    if (unit == quote) break;
-    if (unit == _dollar) {
-      if (i + 1 < source.length && source.codeUnitAt(i + 1) == _braceOpen) {
-        final end = _skipInterpolation(source, i);
-        final expression = source.substring(i + 2, end - 1);
-        if (!_isQuerySuffix(source, end, quote, expression, queryLocals)) {
-          buffer.write('X');
-        }
-        i = end;
-        continue;
-      }
-      final name = _simpleInterpolation.matchAsPrefix(source, i);
-      if (name != null) {
-        final query =
-            _isLiteralTail(source, name.end, quote) &&
-            queryLocals.contains(name.group(0)!.substring(1));
-        if (!query) buffer.write('X');
-        i = name.end;
-        continue;
-      }
-    }
-    buffer.writeCharCode(unit);
-    i++;
-  }
-  return buffer.toString();
-}
-
-/// Whether the interpolation ending at [end] builds a query string.
-bool _isQuerySuffix(
-  String source,
-  int end,
-  int quote,
-  String expression,
-  Set<String> queryLocals,
-) {
-  if (!_isLiteralTail(source, end, quote)) return false;
-  final text = expression.trim();
-  // A ternary picks between `?…` and `''`: a query either way.
-  if (text.contains('?')) return true;
-  // A bare name is a query only where the file declares it as one.
-  if (_bareIdentifier.hasMatch(text)) return queryLocals.contains(text);
-  return _queryBuilders.any(text.startsWith);
-}
-
-/// Whether the literal closes at [from], whitespace aside.
-bool _isLiteralTail(String source, int from, int quote) {
-  var i = from;
-  while (i < source.length && _isSpace(source.codeUnitAt(i))) {
-    i++;
-  }
-  return i < source.length && source.codeUnitAt(i) == quote;
-}
-
-/// [source] with `//` and `/* */` comments removed.
-///
-/// A template literal nests: ``` `${a ? `?b=${c}` : ''}` ``` is a string, then
-/// code, then a string again. The walk keeps a stack so a `//` inside a
-/// nested string is not taken for a comment. A comment is replaced by a single
-/// space so the tokens either side do not fuse.
-String stripJsComments(String source) {
-  final out = StringBuffer();
-  final stack = <_JsFrame>[_JsFrame.code()];
-  var i = 0;
-  while (i < source.length) {
-    final top = stack.last;
-    final unit = source.codeUnitAt(i);
-    if (!top.isCode) {
-      if (unit == _backslash) {
-        out.write(source.substring(i, i + 2 <= source.length ? i + 2 : i + 1));
-        i += 2;
-        continue;
-      }
-      if (unit == top.quote) {
-        stack.removeLast();
-        out.writeCharCode(unit);
-        i++;
-        continue;
-      }
-      if (top.quote == _backtick &&
-          unit == _dollar &&
-          i + 1 < source.length &&
-          source.codeUnitAt(i + 1) == _braceOpen) {
-        out.write(r'${');
-        stack.add(_JsFrame.code());
-        i += 2;
-        continue;
-      }
-      out.writeCharCode(unit);
-      i++;
-      continue;
-    }
-    if (unit == _slash && i + 1 < source.length) {
-      final next = source.codeUnitAt(i + 1);
-      if (next == _slash) {
-        final end = source.indexOf('\n', i);
-        out.writeCharCode(_newline);
-        i = end < 0 ? source.length : end + 1;
-        continue;
-      }
-      if (next == _star) {
-        final end = source.indexOf('*/', i + 2);
-        out.write(' ');
-        i = end < 0 ? source.length : end + 2;
-        continue;
-      }
-    }
-    if (unit == _quote || unit == _doubleQuote || unit == _backtick) {
-      stack.add(_JsFrame.string(unit));
-    } else if (unit == _braceOpen) {
-      top.depth++;
-    } else if (unit == _braceClose && top.depth > 0) {
-      top.depth--;
-    } else if (unit == _braceClose && stack.length > 1) {
-      // The `}` that closes a `${`: back into the template it belongs to.
-      stack.removeLast();
-    }
-    out.writeCharCode(unit);
-    i++;
-  }
-  return out.toString();
-}
-
-class _JsFrame {
-  _JsFrame.code() : isCode = true, quote = 0, depth = 0;
-
-  _JsFrame.string(this.quote) : isCode = false, depth = 0;
-
-  final bool isCode;
-  final int quote;
-  int depth;
-}

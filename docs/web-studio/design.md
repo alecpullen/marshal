@@ -1,5 +1,10 @@
 # Marshal Web Studio — Design
 
+> **History.** The Studio's UI is now the Flutter app, described in
+> [`../studio-flutter/design.md`](../studio-flutter/design.md). The page
+> specifications and mockups below describe the Svelte client that F8's cutover
+> retired; they are kept as history. The bridge and API design stays current.
+
 Status: W1–W5 shipped (see §9). Decisions recorded 2026-10-03.
 Base: `main` at `2ddc09e`.
 Mockups:

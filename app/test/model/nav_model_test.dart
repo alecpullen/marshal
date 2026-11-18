@@ -254,10 +254,11 @@ void main() {
       ),
     ], now: now);
 
-    // Before the first read the queue is empty, and the row says nothing.
+    // Before the first read the queue is empty, and the row says nothing: an
+    // empty count is no count, so no `0` is drawn beside the label.
     expect(
       buildNavModel(const Place.overview(), fixture.store).fixed[1].count,
-      0,
+      isNull,
     );
 
     await fixture.refresh();
@@ -267,7 +268,8 @@ void main() {
     );
 
     // Nothing else carries the queue's size. Pull requests carries its own
-    // count — how many wait for review (F5 decision 14).
+    // count — how many wait for review (F5 decision 14) — and none does
+    // here, so only the Inbox rows with something waiting are counted.
     expect(
       [
         for (final row in buildNavModel(
@@ -276,7 +278,7 @@ void main() {
         ).fixed)
           if (row.count != null) row.label,
       ],
-      ['Inbox', 'Pull requests'],
+      ['Inbox'],
     );
   });
 

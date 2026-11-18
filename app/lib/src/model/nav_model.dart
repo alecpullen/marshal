@@ -30,7 +30,9 @@ class NavPlace {
   final PlaceKind kind;
   final String label;
 
-  /// What the row shows beside its label: the Inbox's queue length.
+  /// What the row shows beside its label: the Inbox's queue length. Null when
+  /// there is nothing to say — an empty inbox, no pull request waiting — so
+  /// the row draws no count at all.
   final int? count;
 
   /// This place is where the person is.
@@ -136,13 +138,13 @@ NavModel buildNavModel(
     NavPlace(
       kind: PlaceKind.inbox,
       label: 'Inbox',
-      count: inboxCount,
+      count: _countOrNull(inboxCount),
       active: place.kind == PlaceKind.inbox,
     ),
     NavPlace(
       kind: PlaceKind.pulls,
       label: _label(PlaceKind.pulls),
-      count: pullsReady,
+      count: _countOrNull(pullsReady),
       active: place.kind == PlaceKind.pulls,
     ),
     for (final kind in const [
@@ -203,6 +205,11 @@ NavModel buildNavModel(
 
   return NavModel(fixed: List.unmodifiable(fixed), projects: projects);
 }
+
+/// A count as a row draws it: zero is nothing to wait on, so it is no count
+/// at all rather than a `0` beside the label (design-system.md §2: faint never
+/// carries information).
+int? _countOrNull(int count) => count == 0 ? null : count;
 
 /// What each fixed place is called.
 String _label(PlaceKind kind) => switch (kind) {

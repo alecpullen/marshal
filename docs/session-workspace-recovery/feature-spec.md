@@ -113,12 +113,36 @@ five notices for one event.
 Lock order is `rootMu → accessMu (owner) → mu`, documented on the field.
 Nothing else takes `rootMu`, so the order cannot be violated by existing code.
 
+### D6 — A root a dispatcher bound is never recovered
+
+Recovery is for a root the session *chose*. A pipeline dispatch rebinds a
+child's active root to the dispatch's own worktree
+(`internal/pipeline/dispatch.go`), and that child was built from the parent's
+launch directory, so its `ProjectRoot` is the user's checkout rather than the
+work it was isolated to. Recovering such a child would land an unattended
+worker in the user's working tree — writing files outside the isolation the
+dispatch promised — while its commands, which are pinned to the dispatch
+worktree through `CommandDir`, kept failing there. Before this feature the
+child failed loudly in the missing directory and wrote nothing.
+
+So a dispatcher's binding is marked isolated (`BindIsolatedWorkspace`), and
+`EnsureWorkspaceRoot` returns it unchanged: no stat, no notice, no move. The
+session fails where it was told to work, which is the truth, and the pipeline
+reports that failure. An ordinary `SetWorkspace` clears the marking, because a
+direct rebinding is the session's own choice again.
+
+The guard has to live in the session rather than in `activeRoot()`, because
+admission (`shellInputFor`) runs before the tool and mutates the same state: a
+tool-layer-only guard would be defeated by the recovery that admission had
+already performed.
+
 ## Behaviour
 
 `EnsureWorkspaceRoot()` returns the workspace tools should operate in.
 
 | `ActiveRoot` | Directory state | Project root | Result |
 |---|---|---|---|
+| bound by a dispatcher (D6) | — | — | returned unchanged; no stat, no notice |
 | `== ProjectRoot` | — | — | returned unchanged; no stat, no notice |
 | `!= ProjectRoot` | is a directory | — | returned unchanged; no notice |
 | `!= ProjectRoot` | missing, or not a directory | is a directory | `ActiveRoot = ProjectRoot`, branch/base/target cleared, row persisted, **one** system notice, `WorkspaceEvent` published |
@@ -160,14 +184,22 @@ func staleWorktreeNotice(root string) string
 // unusedWorktreeRoot reports whether the session is isolated in a directory it
 // can no longer work in.
 func unusedWorktreeRoot(ws Workspace) bool
+
+// BindIsolatedWorkspace points the session at a root a dispatcher owns rather
+// than one the session chose. Such a session does not recover from that root
+// disappearing (D6).
+func (s *State) BindIsolatedWorkspace(root string)
 ```
 
 ```go
-// internal/app/session/session.go — State gains one field.
+// internal/app/session/session.go — State gains two fields.
 
 // rootMu serializes stale-active-root recovery. Lock order:
 // rootMu → accessMu (owner) → mu.
 rootMu sync.Mutex
+
+// isolatedRoot marks a workspace a dispatcher bound (D6); guarded by mu.
+isolatedRoot bool
 ```
 
 No exported wire, contract or config change.
@@ -186,6 +218,11 @@ Each name states the one behaviour it pins.
 | native | `TestShellRunRecoversAfterItsWorktreeIsRemoved` | the incident end to end: `shell.run` succeeds and its recorded `Dir` is the project root |
 | native | `TestActiveRootRecoveryReachesTheSharedWorkspaceState` | a child recovers the parent's workspace and the notice lands in the parent's transcript |
 | agent | `TestShellInputRecoversARemovedWorktree` | admission is judged against the recovered root |
+| session | `TestEnsureWorkspaceRootLeavesADispatchIsolatedRootAlone` | a dispatcher-bound root is never recovered and writes no notice (D6) |
+| session | `TestASetWorkspaceClearsDispatchIsolation` | a direct rebinding makes the session recoverable again |
+| session | `TestEnsureWorkspaceRootRecoversWhenTheRootIsAFile` | a path that exists as a non-directory is unusable, like a missing one |
+| native | `TestAPipelineToolsetDoesNotWriteOutsideItsDispatchWorktree` | a dispatch-bound toolset fails loudly instead of writing to the launch directory |
+| agent | `TestShellInputDoesNotRecoverADispatchIsolatedRoot` | admission leaves a dispatcher-bound root where it was |
 
 The three existing workspace tests (`TestResumeFallsBackWithNoticeWhenWorktreeGone`
 and its neighbours) stay green unchanged; the shared helper changes no text.
@@ -198,9 +235,13 @@ and its neighbours) stay green unchanged; the shared helper changes no text.
   a session its worktree binding for one call and write a notice. Narrow, and
   the same exposure `restoreWorkspace` has had since it was written; a shared
   predicate is the right place to fix it if it ever bites.
-- **A notice that arrives mid-turn.** It is a normal `RoleSystem` message in
-  the working-state tail, already rendered by the transcript's `Notice` row, so
-  a turn in flight sees it without any prompt-prefix change.
+- **A notice that arrives mid-turn.** It is a normal `RoleSystem` message,
+  rendered by the transcript's `Notice` row and streamed over ACP like any
+  other. It is *not* replayed into the model's context —
+  `internal/agent/history.go` builds history from `RoleUser` and
+  `RoleAssistant` only — so the turn is unblocked by the recovery itself, not
+  by the agent reading the sentence. Nothing is expected to act on it beyond
+  the person and the clients.
 
 ## Follow-ups
 

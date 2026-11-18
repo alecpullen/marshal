@@ -67,6 +67,9 @@ func (s *State) SetWorkspace(w Workspace) {
 	changed := s.workspace != w
 	rootChanged := s.workspace.ActiveRoot != w.ActiveRoot
 	s.workspace = w
+	// A direct rebinding is the session's own choice again, so a root a
+	// dispatcher had bound is no longer isolated: recovery applies to it.
+	s.isolatedRoot = false
 	broker := s.workspaceBroker
 	s.mu.Unlock()
 
@@ -107,6 +110,29 @@ func (s *State) SetWorkspaceBroker(b *pubsub.Broker[WorkspaceEvent]) {
 	s.workspaceBroker = b
 }
 
+// BindIsolatedWorkspace points the session at a root a dispatcher owns rather
+// than one the session chose: a pipeline dispatch bound to its own worktree.
+// Such a session does not recover from that root disappearing
+// (EnsureWorkspaceRoot), because its project root is the directory the run was
+// launched from, not the work it was isolated to: landing there would write
+// files outside the isolation the dispatch promised while its commands keep
+// failing in the bound worktree. It fails loudly instead, as it did before
+// recovery existed.
+func (s *State) BindIsolatedWorkspace(root string) {
+	s.SetWorkspace(Workspace{ActiveRoot: root})
+	s.mu.Lock()
+	s.isolatedRoot = true
+	s.mu.Unlock()
+}
+
+// workspaceAndIsolation returns the current workspace with the dispatcher-
+// bound flag, read under one lock so the pair cannot be observed torn.
+func (s *State) workspaceAndIsolation() (Workspace, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.workspace, s.isolatedRoot
+}
+
 // staleWorktreeNotice is the one sentence a session writes when it lands back
 // at the project root because the directory it was working in is gone. The
 // load-time restore (restoreWorkspace) and the mid-session recovery
@@ -145,17 +171,28 @@ func unusedWorktreeRoot(ws Workspace) bool {
 //
 // A project root that is also gone is not recovered: there is nowhere to land,
 // and the sandbox reports the truth about the directory the tool asked for.
+//
+// A root a dispatcher bound (BindIsolatedWorkspace) is never recovered: the
+// session did not choose it, and its project root is not where that work
+// belongs.
 func (s *State) EnsureWorkspaceRoot() Workspace {
-	ws := s.Workspace()
-	if !unusedWorktreeRoot(ws) {
+	ws, isolated := s.workspaceAndIsolation()
+	if isolated || !unusedWorktreeRoot(ws) {
 		return ws
 	}
 	s.rootMu.Lock()
 	defer s.rootMu.Unlock()
 	// Re-read under the lock: a concurrent caller may already have recovered
-	// while this one waited, and a second notice is the thing to avoid.
-	ws = s.Workspace()
-	if !unusedWorktreeRoot(ws) {
+	// while this one waited, and a second notice is the thing to avoid. The
+	// isolation flag is re-read with it, so a concurrent clear cannot slip
+	// past the first check.
+	//
+	// rootMu is held across SetWorkspace and AddMessage, which publish on
+	// brokers; pubsub.Publish never runs subscriber code on the publisher's
+	// goroutine, so no subscriber can re-enter this lock (same reason
+	// publishEvent publishes with mu released).
+	ws, isolated = s.workspaceAndIsolation()
+	if isolated || !unusedWorktreeRoot(ws) {
 		return ws
 	}
 	if info, err := os.Stat(ws.ProjectRoot); err != nil || !info.IsDir() {

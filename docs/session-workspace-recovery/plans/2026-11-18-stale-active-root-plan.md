@@ -446,8 +446,11 @@ CGO_ENABLED=1 go test ./internal/tools/native -run 'ActiveRoot|ShellRun' -count=
 
 Expected: `ok marshal/internal/tools/native`. `TestShellRunRecoversAfterItsWorktreeIsRemoved`
 is the regression test for the reported failure; with `activeRoot()` reverted to
-`ws.Workspace()` it must fail with a `shell.run` error naming the missing
-directory (do this revert check once, then restore).
+`ws.Workspace()` it must fail on the recorded shell directory pointing at the
+removed worktree (do this revert check once, then restore). The fixture runner
+records the request and never `chdir`s, so the incident's own sandbox message
+("working directory ... does not exist") is not reproduced here; it stays
+pinned by `internal/sandbox/restricted_test.go`.
 
 ---
 
@@ -565,3 +568,17 @@ required by the suite.
 - **The describing readers stay on `Workspace()`** (`snapshot_warning.go:422`,
   `helpers.go:354`) by design: they name history, not a decision (spec § D3).
   A reviewer who expects them to change should re-read that section first.
+- **Two fixtures in `activeroot_test.go` create their worktree directory**
+  (`TestActiveRootFollowsSessionWorkspace`, `TestShellRunUsesActiveRoot`). They
+  used to set `ActiveRoot` to a path that did not exist, which was harmless
+  while `activeRoot()` only read the field; it now stats the path, so a fixture
+  naming a worktree must model one that exists. Without the `MkdirAll` those
+  two tests see a recovery and fail.
+- **A dispatcher-bound root is never recovered** (spec § D6, added at review):
+  `internal/pipeline/dispatch.go` binds a child to its dispatch worktree
+  through `session.BindIsolatedWorkspace` instead of `SetWorkspace`, because
+  that child's `ProjectRoot` is the launch directory — recovering it would put
+  an unattended worker's file writes in the user's checkout while its commands
+  failed in the bound worktree. This is why the guard lives in the session
+  rather than in `activeRoot()`: admission recovers the same state before the
+  tool runs.

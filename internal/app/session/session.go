@@ -408,7 +408,11 @@ type State struct {
 	// workspace is the session's current project/active-root pair and the
 	// broker rebinds are published on. Guarded by mu like the rest of this
 	// block. See workspace.go.
-	workspace       Workspace
+	workspace Workspace
+	// isolatedRoot marks a workspace a dispatcher bound rather than one the
+	// session chose (BindIsolatedWorkspace). Such a session does not recover
+	// from that root disappearing. Guarded by mu.
+	isolatedRoot    bool
 	workspaceBroker *pubsub.Broker[WorkspaceEvent]
 
 	runningJobs            int

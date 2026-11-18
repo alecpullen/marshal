@@ -316,7 +316,7 @@ final List<SourceState> _staleSources = [
     host: 'local',
     loaded: true,
     lastRead: shellNow.subtract(const Duration(minutes: 4)),
-    failure: 'offline',
+    failureWords: 'offline',
   ),
 ];
 

@@ -386,3 +386,27 @@ func TestPendingParkTimeOutlivesStatusUpdates(t *testing.T) {
 		t.Fatalf("UpdatedAt did not move on the repeated observation: %v then %v", mid.updatedAt, again.updatedAt)
 	}
 }
+
+// TestPendingParkTimeIsStampedAnewForANewRequest: the park time belongs to the
+// ask, so a different request seen parked later on the same agent begins its
+// own wait rather than inheriting the one before it.
+func TestPendingParkTimeIsStampedAnewForANewRequest(t *testing.T) {
+	live := newLiveState()
+	live.observePending("a1", observedPending{kind: "question", id: "q-1", params: json.RawMessage(`{}`)})
+	first := live.get("a1")
+	if first.pending == nil || first.pending.at.IsZero() {
+		t.Fatalf("the ask was not recorded with a park time: %+v", first.pending)
+	}
+
+	// A different ask on the same agent: it was parked when it was seen, not
+	// when the ask before it was.
+	time.Sleep(2 * time.Millisecond)
+	live.observePending("a1", observedPending{kind: "question", id: "q-2", params: json.RawMessage(`{}`)})
+	next := live.get("a1")
+	if next.pending == nil || next.pending.id != "q-2" {
+		t.Fatalf("the new ask was not recorded: %+v", next.pending)
+	}
+	if !next.pending.at.After(first.pending.at) {
+		t.Fatalf("the new ask inherited the old park time: %v then %v", first.pending.at, next.pending.at)
+	}
+}

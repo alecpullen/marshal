@@ -185,26 +185,64 @@ void main() {
     ], 'a terminal-only colour used outside terminal_view.dart');
   });
 
-  test('models word their failures', () {
+  test('models and screens word their failures', () {
     // §7: what failed, in plain words. An exception's own text is not words —
     // `TypeError: null: type 'minified:xp' is not a subtype of type
     // 'List<dynamic>'` tells a reader nothing — so a model hands every failure
     // to describeFailure (fleet_store.dart) rather than interpolating the
     // exception into the message a screen shows.
     //
+    // Both trees: a screen shows a caught exception just as a model does
+    // (`'The shell could not be opened: $error'`), so the rule reads
+    // lib/src/ui as well as lib/src/model — everything but the helper itself.
+    //
     // Strings are kept and comments blanked here: the whole rule is about what
     // a message says, so it reads the file as written rather than `code`.
-    const models = 'lib/src/model';
-    final interpolated = RegExp(r'\$error\b|\$\{error\}|error\.toString\(\)');
+    const trees = ['lib/src/model', 'lib/src/ui'];
+    // The names this codebase catches an exception under — `catch (error)`,
+    // `on BridgeFailure catch (failure)` — in the three ways a value's own
+    // text is spliced into a message. A name followed by `.` is a member read
+    // (`'$e.body'` on an Ember), not its text; when the text is asked for
+    // explicitly, the `.toString()` branch catches it.
+    final interpolated = RegExp(
+      r'\$(?:error|e|err|ex|exception|failure)(?![\w.])'
+      r'|\$\{(?:error|e|err|ex|exception|failure)\}'
+      r'|\b(?:error|e|err|ex|exception|failure)\.toString\(\)',
+    );
+    // Self-proving, both ways: every shape the rule exists for must match, and
+    // the lookalikes that are not an exception's text must not. A typo in the
+    // pattern, or a branch that swallows everything, fails here rather than
+    // passing quietly over the trees.
+    for (final shape in [
+      r"'$error'",
+      r"'${error}'",
+      r"'The shell could not be opened: $e'",
+      r"'$err'",
+      r"'$ex'",
+      r"'$exception'",
+      r"'$failure'",
+      r"'${failure.toString()}'",
+      r'error.toString()',
+    ]) {
+      expect(interpolated.hasMatch(shape), isTrue, reason: shape);
+    }
+    for (final shape in [
+      r"'$e.body'", // an Ember, not an error
+      r"'$errors'", // a longer name
+      r"'value.toString()'", // a member called `e`: the name is `valu`
+    ]) {
+      expect(interpolated.hasMatch(shape), isFalse, reason: shape);
+    }
     final found = <String>[
-      for (final f in dartFilesUnder(models))
-        if (f.name != 'fleet_store.dart')
-          for (final m in interpolated.allMatches(f.withoutComments))
-            '${f.path}:${f.lineOf(m.start)}: ${m.group(0)}',
+      for (final tree in trees)
+        for (final f in dartFilesUnder(tree))
+          if (f.name != 'fleet_store.dart')
+            for (final m in interpolated.allMatches(f.withoutComments))
+              '${f.path}:${f.lineOf(m.start)}: ${m.group(0)}',
     ];
     expectNone(
       found,
-      'a model shows an error\'s own text; use describeFailure',
+      "a model or a screen shows an error's own text; use describeFailure",
     );
   });
 

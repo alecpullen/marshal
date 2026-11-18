@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../../model/fleet_store.dart' show describeFailure;
 import '../../model/terminal_session.dart';
 import '../kit/kit.dart';
 import 'inspector.dart';
@@ -104,7 +105,9 @@ class _TerminalTabState extends State<TerminalTab> {
     if (error != null) {
       return TabMessage(
         StateMessage.error(
-          message: 'The shell could not be opened: $error',
+          message:
+              'The shell could not be opened: '
+              '${describeFailure(error)}',
           retry: StateAction(
             'Try again',
             onTap: () => unawaited(widget.session.reopen()),

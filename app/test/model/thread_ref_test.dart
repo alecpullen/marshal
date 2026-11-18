@@ -89,6 +89,19 @@ void main() {
       threadFor('local', unnamed(title: '  Fix the flaky test  ')).title,
       'Fix the flaky test',
     );
+    // A name of nothing but spaces is no name, so the title is what is left.
+    expect(
+      threadFor(
+        'local',
+        unnamed(name: '  ', title: 'Read the cache layer'),
+      ).title,
+      'Read the cache layer',
+    );
+    // A title of nothing but spaces is no title either.
+    expect(
+      threadFor('local', unnamed(name: '  ', title: '   ')).title,
+      'Agent a-1',
+    );
   });
 
   test('an agent with neither is called by its short id', () {
@@ -97,6 +110,12 @@ void main() {
     expect(
       threadFor('local', unnamed(id: '03423874cb70374a')).title,
       'Agent 03423874',
+    );
+    // A name and a title of nothing but spaces are neither, so the id is.
+    expect(threadFor('local', unnamed(name: '  ')).title, 'Agent a-1');
+    expect(
+      threadFor('local', unnamed(name: ' ', title: '  ')).title,
+      'Agent a-1',
     );
     // An id shorter than that is taken as it is.
     expect(threadFor('local', unnamed(id: 'a-1')).title, 'Agent a-1');

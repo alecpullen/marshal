@@ -909,7 +909,27 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
     super.initState();
     _store.start();
     _composer = widget.composerFor?.call(widget.thread, _view);
+    // A thread opened while its agent is mid-turn offers Steer and Stop from
+    // the first frame, from the fleet's own report of the agent.
+    _composer?.setRunning(_turnRunning);
   }
+
+  @override
+  void didUpdateWidget(_ThreadPlace old) {
+    super.didUpdateWidget(old);
+    // The fleet's report of the agent is the session's own state: a turn that
+    // ended (ready, idle or failed) confirms a requested stop, and one that is
+    // running, or parked on a person, keeps Steer and Stop.
+    if (old.thread.status != widget.thread.status) {
+      _composer?.setRunning(_turnRunning);
+    }
+  }
+
+  /// Whether the thread's agent is mid-turn, as the fleet reports it. A
+  /// pending request means the turn is parked on a person, not finished.
+  bool get _turnRunning =>
+      widget.thread.status == model.ThreadStatus.running ||
+      widget.thread.status == model.ThreadStatus.needsYou;
 
   @override
   void dispose() {

@@ -173,15 +173,33 @@ class _TranscriptState extends State<Transcript> {
   }
 
   /// The asks pinned after one row: those whose step is this row, and — after
-  /// the last row — those whose request named no step.
+  /// the last row — those whose request named no step, or a step this tree
+  /// does not hold (a folded or pruned row cannot strand a pending ask).
   List<model.Ask> _asksFor(String rowId, bool last) {
     final now = widget.now ?? DateTime.now();
+    final held = <String>{};
+    for (final row in _rows) {
+      final at = row.id.lastIndexOf('step:');
+      if (at >= 0) held.add(row.id.substring(at + 'step:'.length));
+    }
     return [
       for (final ask in widget.asks)
         if ((ask.step != null && rowId.endsWith('step:${ask.step}')) ||
-            (ask.step == null && last))
+            (last && (ask.step == null || !held.contains(ask.step))))
           ask,
     ].where((ask) => ask.since.isBefore(now)).toList();
+  }
+
+  /// Every ask, for a transcript with no row to pin one to: with nothing to
+  /// attach a card to, all of them are shown, including one whose request
+  /// names a step this tree does not hold. What is waiting on the person is
+  /// never dropped because the transcript is still empty.
+  List<model.Ask> get _allAsks {
+    final now = widget.now ?? DateTime.now();
+    return [
+      for (final ask in widget.asks)
+        if (ask.since.isBefore(now)) ask,
+    ];
   }
 
   /// The live headline a "Jump to live" control carries: the newest row's
@@ -226,48 +244,83 @@ class _TranscriptState extends State<Transcript> {
             store: widget.store,
             order: [for (final row in _rows) row.id],
             controller: _controller,
-            child: ListView.builder(
-              controller: _controller,
-              padding: const EdgeInsets.symmetric(
-                horizontal: Layout.pageSide,
-                vertical: Space.s12,
-              ),
-              itemCount: _rows.length,
-              itemBuilder: (context, index) {
-                final row = _rows[index];
-                final pinned = _asksFor(row.id, index == _rows.length - 1);
-                return Align(
-                  alignment: Alignment.topCenter,
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: Layout.reading),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        SelectableRow(
-                          nodeId: row.id,
-                          child: _Row(
-                            nodeId: row.id,
-                            index: index,
-                            depth: row.depth,
-                            store: widget.store,
-                            view: widget.view,
-                            onOpen: widget.onOpenNode,
+            child: _rows.isEmpty
+                ? _asksAlone()
+                : ListView.builder(
+                    controller: _controller,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: Layout.pageSide,
+                      vertical: Space.s12,
+                    ),
+                    itemCount: _rows.length,
+                    itemBuilder: (context, index) {
+                      final row = _rows[index];
+                      final pinned = _asksFor(
+                        row.id,
+                        index == _rows.length - 1,
+                      );
+                      return Align(
+                        alignment: Alignment.topCenter,
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(
+                            maxWidth: Layout.reading,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              SelectableRow(
+                                nodeId: row.id,
+                                child: _Row(
+                                  nodeId: row.id,
+                                  index: index,
+                                  depth: row.depth,
+                                  store: widget.store,
+                                  view: widget.view,
+                                  onOpen: widget.onOpenNode,
+                                ),
+                              ),
+                              for (final ask in pinned)
+                                _PinnedAsk(
+                                  ask: ask,
+                                  now: widget.now,
+                                  onAnswer: widget.onAnswer,
+                                ),
+                            ],
                           ),
                         ),
-                        for (final ask in pinned)
-                          _PinnedAsk(
-                            ask: ask,
-                            now: widget.now,
-                            onAnswer: widget.onAnswer,
-                          ),
-                      ],
-                    ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
         ),
+      ],
+    );
+  }
+
+  /// The asks alone, when the transcript has no row to pin them to: the same
+  /// [_PinnedAsk] the rows carry, so a thread that has not happened yet still
+  /// offers what is waiting on the person.
+  Widget _asksAlone() {
+    final asks = _allAsks;
+    return ListView(
+      controller: _controller,
+      padding: const EdgeInsets.symmetric(
+        horizontal: Layout.pageSide,
+        vertical: Space.s12,
+      ),
+      children: [
+        for (final ask in asks)
+          Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: Layout.reading),
+              child: _PinnedAsk(
+                ask: ask,
+                now: widget.now,
+                onAnswer: widget.onAnswer,
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -437,6 +490,9 @@ class _Row extends StatelessWidget {
           completion.label,
           completion.outcome,
           if (completion.summary != null) completion.summary!,
+          // A failed completion says why: otherwise it reads exactly like one
+          // that finished (spec: reports and errors are distinct).
+          if ((completion.error ?? '').isNotEmpty) completion.error!,
         ].join(' · ');
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -456,8 +512,15 @@ class _Row extends StatelessWidget {
       case 'runEvent':
         final event = node.runEvent;
         if (event == null) return const SizedBox.shrink();
-        final text = [
+        // The kind leads the row, so a run event does not read as the agent
+        // narrating its own steps. Title, body (full density only) and detail
+        // keep their order beneath it.
+        final head = [
+          if (event.kind.trim().isNotEmpty) event.kind,
           if (event.title != null) event.title!,
+        ].join(' · ');
+        final text = [
+          if (head.isNotEmpty) head,
           if (full && event.body != null) event.body!,
           if (event.detail != null) event.detail!,
         ].join('\n');

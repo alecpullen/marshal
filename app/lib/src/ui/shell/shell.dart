@@ -31,6 +31,7 @@ import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
 import '../../model/work_item_model.dart'
     show WorkItemView, WorkItemWorker, threadOfItem;
+import '../inbox/answerable_ask.dart';
 import '../inbox/inbox.dart' show Inbox;
 import '../factory/handoff_sheet.dart';
 import '../factory/planning_screen.dart';
@@ -1433,7 +1434,7 @@ class _ThreadPlace extends StatefulWidget {
   /// dialog.
   final VoidCallback? onNewWork;
   final List<inbox.Ask> asks;
-  final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
+  final AnswerAsk? onAnswer;
   final DateTime? now;
 
   /// The pull requests this thread shipped: the review head or the failing

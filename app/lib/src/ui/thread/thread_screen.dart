@@ -10,6 +10,7 @@ import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
 import '../inspector/inspector.dart';
+import '../inbox/answerable_ask.dart';
 import '../kit/kit.dart';
 import '../pulls/pull_facts.dart';
 import 'review_head.dart';
@@ -159,8 +160,7 @@ class ThreadScreen extends StatefulWidget {
   final List<asks_model.Ask> asks;
 
   /// Answers an ask where it is pinned.
-  final void Function(asks_model.Ask ask, asks_model.AskAction action)?
-  onAnswer;
+  final AnswerAsk? onAnswer;
 
   /// What a waiting time is measured against.
   final DateTime? now;

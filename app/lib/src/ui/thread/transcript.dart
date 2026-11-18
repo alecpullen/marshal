@@ -3,6 +3,7 @@ import '../../model/inbox_model.dart' as model;
 import '../../model/selection.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_view_state.dart';
+import '../inbox/answerable_ask.dart';
 import '../kit/kit.dart';
 import 'selection_layer.dart';
 
@@ -86,7 +87,7 @@ class Transcript extends StatefulWidget {
   final List<model.Ask> asks;
 
   /// Answers an ask where it is pinned.
-  final void Function(model.Ask ask, model.AskAction action)? onAnswer;
+  final AnswerAsk? onAnswer;
 
   /// What a waiting time is measured against.
   final DateTime? now;
@@ -334,38 +335,17 @@ class _PinnedAsk extends StatelessWidget {
 
   final model.Ask ask;
   final DateTime? now;
-  final void Function(model.Ask ask, model.AskAction action)? onAnswer;
+  final AnswerAsk? onAnswer;
 
   @override
   Widget build(BuildContext context) {
-    final at = now ?? DateTime.now();
-    final onAnswer = this.onAnswer;
     return Padding(
       padding: const EdgeInsets.only(left: Sizes.row, bottom: Space.s12),
-      child: AskCard(
-        kind: switch (ask.kind) {
-          model.AskKind.approval => AskKind.approval,
-          model.AskKind.question => AskKind.question,
-          model.AskKind.intake => AskKind.intake,
-          model.AskKind.pull => AskKind.pull,
-          model.AskKind.reviewDraft => AskKind.review,
-          model.AskKind.network => AskKind.network,
-          model.AskKind.approvalDraft => AskKind.approval,
-          model.AskKind.decision => AskKind.decision,
-          model.AskKind.recovery => AskKind.decision,
-          model.AskKind.completion => AskKind.decision,
-        },
-        title: ask.title,
-        body: ask.body.isEmpty ? null : ask.body,
-        waiting: relativeAge(ask.since, at),
-        actions: [
-          for (final action in ask.actions)
-            AskAction(
-              action.label,
-              onTap: onAnswer == null ? null : () => onAnswer(ask, action),
-            ),
-        ],
+      child: AnswerableAsk(
+        ask: ask,
         placement: AskPlacement.thread,
+        now: now ?? DateTime.now(),
+        onAnswer: onAnswer,
       ),
     );
   }

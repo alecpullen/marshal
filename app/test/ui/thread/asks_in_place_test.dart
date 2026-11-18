@@ -20,6 +20,7 @@ model.Ask _ask({
   String title = 'Approve shell.run?',
   String approve = 'Approve once',
   model.AskKind kind = model.AskKind.approval,
+  List<model.AskAction>? actions,
 }) => model.Ask(
   host: 'local',
   id: id,
@@ -27,10 +28,9 @@ model.Ask _ask({
   thread: threadRef(),
   title: title,
   body: 'go test ./...',
-  actions: [
-    model.AskAction(approve, primary: true),
-    const model.AskAction('Deny'),
-  ],
+  actions:
+      actions ??
+      [model.AskAction(approve, primary: true), const model.AskAction('Deny')],
   since: _asked,
   source: model.AskSource.fleet,
   scope: model.AskScope.everyone,
@@ -95,7 +95,7 @@ void main() {
       view: view,
       asks: [_ask(step: '1')],
       now: _now,
-      onAnswer: (ask, action) {
+      onAnswer: (ask, action, {String? reply, List<String>? answers}) {
         answered = ask;
         withAction = action;
       },
@@ -109,6 +109,60 @@ void main() {
     expect(answered?.id, 'call-1');
     expect(answered?.step, '1');
     expect(withAction?.label, 'Approve once');
+
+    store.dispose();
+    view.dispose();
+  });
+
+  testWidgets('Reply in a thread posts the words typed', (tester) async {
+    final store = fixtureStore();
+    final view = ThreadViewState();
+    String? typedReply;
+    model.AskAction? withAction;
+    await pumpThread(
+      tester,
+      store: store,
+      view: view,
+      asks: [
+        _ask(
+          step: '1',
+          id: 'q-1',
+          title: 'Which branch?',
+          kind: model.AskKind.question,
+          actions: const [
+            model.AskAction(
+              'Reply',
+              primary: true,
+              kind: model.AskActionKind.reply,
+            ),
+            model.AskAction('Decline', kind: model.AskActionKind.decline),
+          ],
+        ),
+      ],
+      now: _now,
+      onAnswer: (ask, action, {reply, answers}) {
+        withAction = action;
+        typedReply = reply;
+      },
+    );
+    // A window tall enough to hold the card, its field and its Send button.
+    tester.view.physicalSize = const Size(900, 1400);
+    await tester.pumpAndSettle();
+
+    // The reply is opened where the ask is pinned, like the Inbox's.
+    await tester.tap(find.text('Reply'));
+    await tester.pumpAndSettle();
+    expect(find.byType(Field), findsOneWidget);
+
+    await tester.enterText(find.byType(Field), 'a topic branch');
+    await tester.tap(find.text('Send'));
+    await tester.pumpAndSettle();
+
+    // The recorded call carries the words: one answer path, wherever it is
+    // taken.
+    expect(withAction?.label, 'Reply');
+    expect(typedReply, 'a topic branch');
+    expect(find.byType(Field), findsNothing);
 
     store.dispose();
     view.dispose();
@@ -160,7 +214,7 @@ void main() {
       view: view,
       asks: asks,
       now: _now,
-      onAnswer: (ask, action) {
+      onAnswer: (ask, action, {String? reply, List<String>? answers}) {
         answeredAsks.add(ask);
         answeredActions.add(action);
       },
@@ -237,7 +291,8 @@ void main() {
       // pin it to, it is still shown rather than waiting for the row.
       asks: [_ask(step: '1')],
       now: _now,
-      onAnswer: (ask, action) => answered.add('${ask.id}:${action.label}'),
+      onAnswer: (ask, action, {reply, answers}) =>
+          answered.add('${ask.id}:${action.label}'),
     );
 
     expect(find.text('Nothing has happened in this thread yet.'), findsNothing);
@@ -265,7 +320,8 @@ void main() {
       view: view,
       asks: [_ask(step: '1')],
       now: _now,
-      onAnswer: (ask, action) => answered.add('${ask.id}:${action.label}'),
+      onAnswer: (ask, action, {reply, answers}) =>
+          answered.add('${ask.id}:${action.label}'),
       composer: ThreadComposer(model: composer, view: view),
     );
 
@@ -352,7 +408,8 @@ void main() {
       // the last row rather than dropped.
       asks: [_ask(step: '99', id: 'orphan-1')],
       now: _now,
-      onAnswer: (ask, action) => answered.add('${ask.id}:${action.label}'),
+      onAnswer: (ask, action, {reply, answers}) =>
+          answered.add('${ask.id}:${action.label}'),
     );
 
     expect(find.byType(AskCard), findsOneWidget);

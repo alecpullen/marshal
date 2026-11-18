@@ -8,6 +8,7 @@ import 'package:marshal_app/src/model/watches_model.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/model/pulls_model.dart';
 import 'package:marshal_app/src/model/source_state.dart';
+import 'package:marshal_app/src/ui/inbox/answerable_ask.dart';
 import 'package:marshal_app/src/ui/overview/overview.dart';
 
 import '../support/pulls.dart';
@@ -62,6 +63,7 @@ void main() {
     StateKind? state,
     List<TrippedWatch> automations = const [],
     bool manyHosts = false,
+    AnswerAsk? onAnswer,
   }) => EmberApp(
     brightness: Brightness.light,
     home: Overview(
@@ -72,6 +74,7 @@ void main() {
       manyHosts: manyHosts,
       state: state,
       onSelect: (place) => opened?.add(place),
+      onAnswer: onAnswer,
       onRetry: () {},
     ),
   );
@@ -253,6 +256,59 @@ void main() {
     expect(opened, [
       const Place(PlaceKind.thread, host: 'local', id: 'item-1'),
     ]);
+  });
+
+  testWidgets('Reply on the Overview posts the words typed', (tester) async {
+    String? typedReply;
+    model.AskAction? withAction;
+    final overview = OverviewModel(
+      needsYou: [
+        ask(
+          'q-1',
+          'Which branch?',
+          5,
+          kind: model.AskKind.question,
+          thread: thread('a-1', 'Reliable session recovery'),
+          actions: const [
+            model.AskAction(
+              'Reply',
+              primary: true,
+              kind: model.AskActionKind.reply,
+            ),
+            model.AskAction('Decline', kind: model.AskActionKind.decline),
+          ],
+        ),
+      ],
+      running: const [],
+      needsYouTotal: 1,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: null,
+    );
+    await tester.pumpWidget(
+      show(
+        overview,
+        onAnswer: (ask, action, {reply, answers}) {
+          withAction = action;
+          typedReply = reply;
+        },
+      ),
+    );
+
+    // The Overview answers in place, exactly as the Inbox does: one action
+    // opens the field, and Send carries its words.
+    await tester.tap(find.text('Reply'));
+    await tester.pump();
+    expect(find.byType(Field), findsOneWidget);
+
+    await tester.enterText(find.byType(Field), 'a topic branch');
+    await tester.tap(find.text('Send'));
+    await tester.pump();
+
+    expect(withAction?.label, 'Reply');
+    expect(typedReply, 'a topic branch');
+    expect(find.byType(Field), findsNothing);
   });
 
   testWidgets('every card names its source', (tester) async {

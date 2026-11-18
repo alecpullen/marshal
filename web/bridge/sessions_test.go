@@ -392,6 +392,49 @@ func TestResolveSessionSkipsFleetSessions(t *testing.T) {
 	}
 }
 
+// TestResolveSessionReadsAChildUnderItsLock: a child's registry and log are
+// written by a start under the child's own lock, so resolution reads them under
+// that lock rather than off the struct (F2). Taking the lock in the test makes
+// the read observable: an unlocked read answers while the start still holds it.
+func TestResolveSessionReadsAChildUnderItsLock(t *testing.T) {
+	f, _ := projectFleet(t)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	pc, err := f.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	id, err := pc.reg.New(ctx, AgentPath(root), "")
+	if err != nil {
+		t.Fatalf("session/new on the child: %v", err)
+	}
+
+	// One resolution, with the field write a start performs held.
+	pc.mu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.ResolveSession(id)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		pc.mu.Unlock()
+		t.Fatalf("ResolveSession answered while the child's lock was held (err %v)", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	pc.mu.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ResolveSession after the child's lock: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ResolveSession did not answer after the child's lock was released")
+	}
+}
+
 // TestResolveSessionNeverStartsAChild: an id only a listing names is unknown
 // to resolution, which never starts a project child to find it.
 func TestResolveSessionNeverStartsAChild(t *testing.T) {
@@ -572,18 +615,29 @@ func TestOpenSessionUnknownIs404(t *testing.T) {
 
 // TestListRootNormalises: the child's updatedAt becomes Unix milliseconds and
 // _meta.messageCount becomes messageCount, both 0 when absent or unreadable.
+// The ids a listing contributed are kept only as long as the listing: a drop
+// forgets them, and so does the successful re-list that replaces it (F4).
 func TestListRootNormalises(t *testing.T) {
 	root := t.TempDir()
+	// The child's page, so the test can replace it with a shorter one and see
+	// what the id→root map keeps.
+	var pageMu sync.Mutex
+	page := []map[string]any{
+		{"sessionId": "s-1", "title": "one",
+			"updatedAt": "2026-01-02T03:04:05Z", "_meta": map[string]any{"messageCount": 7}},
+		{"sessionId": "s-2", "title": "two"},
+		{"sessionId": "s-3", "updatedAt": "not a time"},
+	}
 	f, _, _ := controlFleet(t, func(string) (any, *rpcError) {
-		return listing(
-			map[string]any{"sessionId": "s-1", "title": "one",
-				"updatedAt": "2026-01-02T03:04:05Z", "_meta": map[string]any{"messageCount": 7}},
-			map[string]any{"sessionId": "s-2", "title": "two"},
-			map[string]any{"sessionId": "s-3", "updatedAt": "not a time"},
-		), nil
+		pageMu.Lock()
+		defer pageMu.Unlock()
+		return listing(page...), nil
 	})
+	now := time.Unix(1_760_000_000, 0)
+	f.listNow = func() time.Time { return now }
+	ctx := ctlContext(t)
 
-	rows, err := f.listRoot(ctlContext(t), root)
+	rows, err := f.listRoot(ctx, root)
 	if err != nil {
 		t.Fatalf("listRoot: %v", err)
 	}
@@ -603,6 +657,47 @@ func TestListRootNormalises(t *testing.T) {
 	for _, row := range rows[1:] {
 		if row.UpdatedAt != 0 || row.MessageCount != 0 {
 			t.Fatalf("%s = %+v, want zero updatedAt and messageCount", row.SessionID, row)
+		}
+	}
+
+	// The ids a listing contributed live only as long as the listing does, so
+	// the map does not grow as a project's sessions turn over.
+	recordedAt := func(id string) (string, bool) {
+		f.listMu.Lock()
+		defer f.listMu.Unlock()
+		owner, ok := f.sessionRoots[id]
+		return owner, ok
+	}
+	for _, id := range []string{"s-1", "s-2", "s-3"} {
+		if owner, ok := recordedAt(id); !ok || owner != root {
+			t.Fatalf("%s is recorded at %q (present %v), want %s", id, owner, ok, root)
+		}
+	}
+	f.dropListing(root)
+	for _, id := range []string{"s-1", "s-2", "s-3"} {
+		if owner, ok := recordedAt(id); ok {
+			t.Fatalf("dropping %s's listing kept %s recorded at %s", root, id, owner)
+		}
+	}
+
+	// A page that no longer names an id must not keep that id either, even
+	// when the cache entry is replaced without a drop.
+	if _, err := f.listRoot(ctx, root); err != nil {
+		t.Fatalf("listRoot after the drop: %v", err)
+	}
+	pageMu.Lock()
+	page = []map[string]any{{"sessionId": "s-4"}}
+	pageMu.Unlock()
+	now = now.Add(11 * time.Second)
+	if _, err := f.listRoot(ctx, root); err != nil {
+		t.Fatalf("listRoot with the replaced page: %v", err)
+	}
+	if owner, ok := recordedAt("s-4"); !ok || owner != root {
+		t.Fatalf("s-4 of the fresh page is recorded at %q (present %v), want %s", owner, ok, root)
+	}
+	for _, id := range []string{"s-1", "s-2", "s-3"} {
+		if owner, ok := recordedAt(id); ok {
+			t.Fatalf("the replaced listing kept %s recorded at %s", id, owner)
 		}
 	}
 }
@@ -633,6 +728,70 @@ func TestListRootCachesAFailedRoot(t *testing.T) {
 	}
 	if got := len(ctl.calls("session/list")); got != 2 {
 		t.Fatalf("session/list calls after 31 s = %d, want 2", got)
+	}
+}
+
+// TestACancelledListingIsNotCached: a caller that goes away mid-request is not
+// a failure of the root. The cancellation is not cached as that root's error,
+// so the next index read asks the child again and answers with its rows
+// instead of reporting the root dead for the whole failure TTL (F1).
+func TestACancelledListingIsNotCached(t *testing.T) {
+	root := t.TempDir()
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var mu sync.Mutex
+	calls := 0
+	f, _, ctl := controlFleet(t, func(string) (any, *rpcError) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			// The first listing is in flight, held until the caller is gone.
+			close(blocked)
+			<-release
+		}
+		// Not s-1: the fake control child numbers its own session s-1, and the
+		// index leaves the bridge's own sessions out.
+		return listing(map[string]any{"sessionId": "listed-1", "title": "one"}), nil
+	})
+	if err := f.ws.AddProject(root); err != nil {
+		t.Fatalf("AddProject: %v", err)
+	}
+
+	// The index read's own context, as serveSessionIndex passes r.Context(),
+	// cancelled while the child still holds the first listing.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan contract.SessionIndex, 1)
+	go func() { done <- f.SessionIndex(ctx, root) }()
+	<-blocked
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("a cancelled index read did not return")
+	}
+	close(release)
+
+	srv := NewServer(f, "")
+	rec := doReq(t, srv, http.MethodGet, "/api/sessions/all", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/sessions/all = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var index contract.SessionIndex
+	decodeBody(t, rec, &index)
+
+	group := groupOfRoot(t, index, root)
+	if group.Error != "" {
+		t.Fatalf("%s lists with error %q after a cancelled read, want the child's listing", root, group.Error)
+	}
+	if row := rowOfSession(t, group, "listed-1"); row.Title != "one" {
+		t.Fatalf("row = %+v, want the child's listed-1", row)
+	}
+	if got := len(ctl.calls("session/list")); got != 2 {
+		t.Fatalf("session/list calls = %d, want 2: a cancelled read must not be cached", got)
 	}
 }
 
@@ -989,7 +1148,7 @@ func TestTheIndexLeavesTheBridgesOwnOut(t *testing.T) {
 // group with an error, and every other root still lists (P7 D7).
 func TestTheIndexShowsADeadRootBesideItsSiblings(t *testing.T) {
 	dead, live := t.TempDir(), t.TempDir()
-	f, _, _ := controlFleet(t, func(cwd string) (any, *rpcError) {
+	f, fakeFor, _ := controlFleet(t, func(cwd string) (any, *rpcError) {
 		if cwd == dead {
 			return nil, &rpcError{Code: -32603, Message: "the index is unreadable"}
 		}
@@ -1000,6 +1159,26 @@ func TestTheIndexShowsADeadRootBesideItsSiblings(t *testing.T) {
 		if err := f.ws.AddProject(root); err != nil {
 			t.Fatalf("AddProject(%s): %v", root, err)
 		}
+	}
+	// The dead root has a live child tracking one client's session: a listing
+	// that cannot be read says nothing about a session in progress, so the
+	// group still carries it beside its error (contract/session.go). The id is
+	// named explicitly: the fake control child numbers its own session s-1,
+	// and the index leaves the bridge's own sessions out.
+	pc, err := f.projectChildFor(ctx, dead)
+	if err != nil {
+		t.Fatalf("projectChildFor(%s): %v", dead, err)
+	}
+	child := fakeFor(dead)
+	if child == nil {
+		t.Fatalf("no fake was built for %s", dead)
+	}
+	child.fakeAgent.mu.Lock()
+	child.fakeAgent.results["session/new"] = map[string]any{"sessionId": "client-open"}
+	child.fakeAgent.mu.Unlock()
+	open, err := pc.reg.New(ctx, AgentPath(dead), "")
+	if err != nil {
+		t.Fatalf("session/new on %s's child: %v", dead, err)
 	}
 	srv := NewServer(f, "")
 
@@ -1017,10 +1196,12 @@ func TestTheIndexShowsADeadRootBesideItsSiblings(t *testing.T) {
 	if broken.Sessions == nil {
 		t.Fatalf("%s answers a null sessions array, want []", dead)
 	}
+	if row := rowOfSession(t, broken, open); !row.Open {
+		t.Fatalf("%s's open row = %+v beside the root's error, want it still open", dead, row)
+	}
 	if got := groupOfRoot(t, index, live); len(got.Sessions) != 1 || got.Sessions[0].SessionID != "s-live" {
 		t.Fatalf("%s lists %+v beside a dead root, want s-live", live, got.Sessions)
 	}
-	_ = ctx
 }
 
 // TestTheIndexIsBoundedByASlowRoot: a root that never answers costs its own

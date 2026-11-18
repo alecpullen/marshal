@@ -66,10 +66,15 @@ func (f *Fleet) ResolveSession(id string) (ResolvedSession, error) {
 		return ResolvedSession{}, err
 	}
 	for _, pc := range f.projectChildrenInRootOrder() {
-		if pc.reg == nil || !pc.reg.tracksClient(id) {
+		// The child's registry and log are written under its own lock by a
+		// start, so they are read under it too, as every other reader does.
+		pc.mu.Lock()
+		reg, log := pc.reg, pc.log
+		pc.mu.Unlock()
+		if reg == nil || !reg.tracksClient(id) {
 			continue
 		}
-		return ResolvedSession{Reg: pc.reg, Log: pc.log, SessionID: id, Root: pc.root}, nil
+		return ResolvedSession{Reg: reg, Log: log, SessionID: id, Root: pc.root}, nil
 	}
 	return ResolvedSession{}, ErrUnknownSession
 }
@@ -248,6 +253,14 @@ func (f *Fleet) listRoot(ctx context.Context, root string) ([]contract.SessionSu
 
 	sessions, err := f.fetchListing(ctx, root)
 
+	// A caller that went away mid-request is not a failure of the root: the
+	// child may be perfectly healthy, and caching the cancellation would mark
+	// every session in this root dead for the whole failure TTL. Only the
+	// listing's own timeout is a fact about the root worth keeping (P7 D10).
+	if ctx.Err() != nil {
+		return sessions, err
+	}
+
 	f.listMu.Lock()
 	if f.listings == nil {
 		f.listings = make(map[string]listingEntry)
@@ -257,6 +270,7 @@ func (f *Fleet) listRoot(ctx context.Context, root string) ([]contract.SessionSu
 		if f.sessionRoots == nil {
 			f.sessionRoots = make(map[string]string)
 		}
+		f.forgetRootSessionsLocked(root)
 		for _, s := range sessions {
 			f.sessionRoots[s.SessionID] = root
 		}
@@ -322,13 +336,25 @@ func normaliseListing(raw json.RawMessage, root string) ([]contract.SessionSumma
 	return out, nil
 }
 
-// dropListing forgets root's cached listing; dropListings forgets every one,
-// failures included.
+// dropListing forgets root's cached listing and every id it contributed;
+// dropListings forgets every one, failures included.
 func (f *Fleet) dropListing(root string) {
 	root = filepath.Clean(root)
 	f.listMu.Lock()
 	defer f.listMu.Unlock()
 	delete(f.listings, root)
+	f.forgetRootSessionsLocked(root)
+}
+
+// forgetRootSessionsLocked drops every id the cache recorded for root, so a
+// dropped or replaced listing leaves no id pointing at it and the map does not
+// grow for the daemon's lifetime. The caller holds listMu.
+func (f *Fleet) forgetRootSessionsLocked(root string) {
+	for id, owner := range f.sessionRoots {
+		if owner == root {
+			delete(f.sessionRoots, id)
+		}
+	}
 }
 
 func (f *Fleet) dropListings() {

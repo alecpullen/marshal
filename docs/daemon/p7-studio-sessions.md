@@ -596,6 +596,61 @@ the landed tree for this record, and each failed as the plan requires:
   CI carries separately, and the re-run was green.
 - `cd app && flutter test` (Flutter 3.50.0): `+3288: All tests passed!`.
 
+**Post-review fixes.** Two branch reviews of this plan found four defects and
+one unreproduced flake. Each is fixed on their own with a test that fails when
+the fix is reverted; nothing else on the branch changed.
+
+1. **A caller leaving is not a root's failure.** `listRoot` runs `session/list`
+   on its caller's context — the index's `r.Context()`, and `rootOfSession`'s —
+   so a browser or client that went away mid-request had `context.Canceled`
+   stored as that root's error and served for the thirty-second failure TTL:
+   every index read then reported the root dead and every `OpenSession` in it
+   404'd, although the child was healthy. `listRoot` now returns a fetch made
+   under a context that is already done without writing it to the cache, and
+   leaves an existing entry alone. The `listTimeout` deadline still caches,
+   because it is a fact about the root. `TestACancelledListingIsNotCached`
+   gates the child on a channel, cancels the read, releases it, and asserts
+   the next index read asks the child again and answers with its rows.
+2. **`ResolveSession` reads a child under its lock.** It read `pc.reg`/`pc.log`
+   off the struct holding only `projMu`, while `startProjectChildLocked`
+   writes both under `pc.mu`. It now copies them under `pc.mu`, as `OpenSession`,
+   `ResolvePermission`, `sweepIdleSessions` and `SessionIndex` do, and skips a
+   child whose registry is nil. `TestResolveSessionReadsAChildUnderItsLock`.
+3. **The id→root map no longer grows for the daemon's lifetime.**
+   `dropListing` kept the dropped root's ids in `sessionRoots`, which only
+   `dropListings` cleared. Both a drop and the successful re-list that replaces
+   a listing now forget that root's own ids (`forgetRootSessionsLocked`),
+   asserted in `TestListRootNormalises`.
+4. **An error group still lists its open sessions.** `contract/session.go`
+   promises that a group with an `error` carries its open rows, and no test
+   covered it: the failing root had no live child.
+   `TestTheIndexShowsADeadRootBesideItsSiblings` now runs a project child for
+   the failing root and asserts that child's client session is listed, open,
+   beside the error.
+5. **One test-fixture data race.** The full package under `-race` fired in
+   `TestTheRegistryReportsEachChange`: its `OnChange` callback appends to a
+   slice from the child's read goroutine while the test reads it. The reports
+   are now read and written under a mutex; no assertion changed.
+
+The review's one unreproduced finding — `TestOpenSessionResumesOnTheProjectChild`
+failing once with the right root and id but another child's registry — did not
+reproduce: five `-race` runs of the open/resolve/list/index tests are clean and
+the identity assertion is left as the tripwire. (An unsynchronised read of
+`pc.reg`/`pc.log` is the one production-side way resolution could pair an entry
+with the wrong registry, which is what fix 2 removes.)
+
+Two `-race` failures in the full package belong to other subsystems and
+pre-date this plan: `TestFactoryRevisionEndToEndFollowUp` reports a data race
+in the factory controller, and
+`TestMarshalStudioRealSessionNoCredentialOrPathLeak` compares
+`filepath.Base(b.root)` — a random three-digit temp directory — against a tool
+result, so it fails by coincidence when the name appears in a hash. Both
+reproduce on `b2289d7b` untouched and are left for their own owners.
+
+Left alone deliberately: the `DeltaKind.deltaSessions` arm in
+`app/lib/src/model/fleet_store.dart` (decision 15, reviewed as correct), and the
+idle sweep's check-then-act window (accepted by design; `idle.go` says so).
+
 ### Plan 2
 
 Not started.

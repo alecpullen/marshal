@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,9 +23,27 @@ func TestTheRegistryReportsEachChange(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	var calls []changeCall
+	// A followed_run update arrives on the child's own read goroutine, so the
+	// reports are appended off the test's goroutine: the slice is read and
+	// written under a lock of its own.
+	var (
+		callsMu sync.Mutex
+		calls   []changeCall
+	)
+	reportCount := func() int {
+		callsMu.Lock()
+		defer callsMu.Unlock()
+		return len(calls)
+	}
+	reportsFrom := func(before int) []changeCall {
+		callsMu.Lock()
+		defer callsMu.Unlock()
+		return append([]changeCall(nil), calls[before:]...)
+	}
 	r.OnChange = func(sessionID string, change registryChange) {
+		callsMu.Lock()
 		calls = append(calls, changeCall{sessionID: sessionID, change: change})
+		callsMu.Unlock()
 	}
 	cwd := AgentPath("/tmp/work")
 	steps := []struct {
@@ -110,16 +129,16 @@ func TestTheRegistryReportsEachChange(t *testing.T) {
 		},
 	}
 	for _, step := range steps {
-		before := len(calls)
+		before := reportCount()
 		step.run(t)
 		if len(step.want) > 0 {
 			// A followed_run update arrives on the child's read goroutine,
 			// so wait for the report it makes.
 			waitFor(t, 2*time.Second, step.name+" report", func() bool {
-				return len(calls)-before >= len(step.want)
+				return reportCount()-before >= len(step.want)
 			})
 		}
-		got := calls[before:]
+		got := reportsFrom(before)
 		if len(got) != len(step.want) {
 			t.Fatalf("%s: reports = %+v, want %+v", step.name, got, step.want)
 		}

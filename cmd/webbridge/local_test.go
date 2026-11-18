@@ -27,6 +27,8 @@ func isolateWebbridgeEnv(t *testing.T) {
 		"WEBBRIDGE_CWD_ROOT", "WEBBRIDGE_STATE_DIR", "WEBBRIDGE_WORKSPACE",
 		"WEBBRIDGE_EGRESS", "WEBBRIDGE_SECRETS", "WEBBRIDGE_SECRETS_KEY_FILE",
 		"WEBBRIDGE_IDLE_SESSION_TIMEOUT", "WEBBRIDGE_OAUTH_REFRESH",
+		"WEBBRIDGE_RELAY_JOIN", "WEBBRIDGE_JOIN", "WEBBRIDGE_JOIN_NAME",
+		"WEBBRIDGE_JOIN_TOKEN_FILE", "WEBBRIDGE_JOIN_CA_FILE",
 	} {
 		t.Setenv(k, "")
 	}
@@ -124,8 +126,9 @@ func TestTheLocalProfilesDefaults(t *testing.T) {
 	}
 }
 
-// TestTheLocalProfileRefuses pins decision 3 and the settings that only
-// the local profile understands.
+// TestTheLocalProfileRefuses pins decision 3, the settings that only the
+// local profile understands, and the relay's flags, whose refusals sit beside
+// them.
 func TestTheLocalProfileRefuses(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
@@ -133,25 +136,49 @@ func TestTheLocalProfileRefuses(t *testing.T) {
 	if err := os.WriteFile(keyFile, make([]byte, 32), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A token and a join secret file: parseConfig only records where they
+	// are, so neither needs contents until a bridge reads it.
+	tokenFile := filepath.Join(t.TempDir(), "studio.token")
+	joinSecret := filepath.Join(t.TempDir(), "join.secret")
 
 	cases := []struct {
 		name string
 		args []string
 		env  map[string]string
-		// unparsable marks a case whose refusal is the variable's own
-		// parse error rather than a profile one.
-		unparsable bool
+		// want is the text the refusal must name. An empty want means the
+		// settings are accepted, which is what the join's token rule is
+		// pinned with.
+		want string
 	}{
-		{"egress flag", []string{"--profile", "local", "--egress", "on"}, nil, false},
-		{"egress env", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_EGRESS": "on"}, false},
-		{"secrets local", []string{"--profile", "local", "--secrets", "local", "--secrets-key-file", keyFile}, nil, false},
-		{"socket without the profile", []string{"--socket", "/tmp/x.sock"}, nil, false},
-		{"addr off without the profile", []string{"--addr", "off"}, nil, false},
-		{"idle timeout without the profile", []string{"--idle-session-timeout", "5m"}, nil, false},
-		{"idle timeout negative", []string{"--profile", "local", "--idle-session-timeout", "-5m"}, nil, false},
-		{"oauth refresh without the profile", []string{"--oauth-refresh"}, nil, false},
-		{"oauth refresh unparsable", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_OAUTH_REFRESH": "yes"}, true},
-		{"profile cloud", []string{"--profile", "cloud"}, nil, false},
+		{"egress flag", []string{"--profile", "local", "--egress", "on"}, nil, "local"},
+		{"egress env", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_EGRESS": "on"}, "local"},
+		{"secrets local", []string{"--profile", "local", "--secrets", "local", "--secrets-key-file", keyFile}, nil, "local"},
+		{"socket without the profile", []string{"--socket", "/tmp/x.sock"}, nil, "local"},
+		{"addr off without the profile", []string{"--addr", "off"}, nil, "local"},
+		{"idle timeout without the profile", []string{"--idle-session-timeout", "5m"}, nil, "local"},
+		{"idle timeout negative", []string{"--profile", "local", "--idle-session-timeout", "-5m"}, nil, "local"},
+		{"oauth refresh without the profile", []string{"--oauth-refresh"}, nil, "local"},
+		{"oauth refresh unparsable", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_OAUTH_REFRESH": "yes"}, "WEBBRIDGE_OAUTH_REFRESH"},
+		{"profile cloud", []string{"--profile", "cloud"}, nil, "local"},
+		// The token file is a listener's and a join's alike: with no
+		// listener and no join, there is nothing to hand it to.
+		{"token file without a listener or a join", []string{"--profile", "local", "--addr", "off", "--token-file", tokenFile}, nil, "the TCP listener or a join"},
+		// A join needs the url it dials, the name it joins under, the file
+		// holding that name's secret, and a token to check relayed requests
+		// with.
+		{"join without a name", []string{"--profile", "local", "--addr", "off", "--join", "http://127.0.0.1:7700", "--join-token-file", joinSecret, "--token-file", tokenFile}, nil, "--join-name"},
+		{"join without a token file", []string{"--profile", "local", "--addr", "off", "--join", "http://127.0.0.1:7700", "--join-name", "box", "--token-file", tokenFile}, nil, "--join-token-file"},
+		{"join without a bearer token", []string{"--profile", "local", "--addr", "off", "--join", "http://127.0.0.1:7700", "--join-name", "box", "--join-token-file", joinSecret}, nil, "--token or --token-file"},
+		{"join name without a join", []string{"--profile", "local", "--join-name", "box"}, nil, "--join"},
+		{"join token file without a join", []string{"--profile", "local", "--join-token-file", joinSecret}, nil, "--join"},
+		{"join ca file without a join", []string{"--profile", "local", "--join-ca-file", joinSecret}, nil, "--join"},
+		{"relay join without a pair", []string{"--profile", "local", "--relay-join", "box"}, nil, "expected NAME=PATH"},
+		{"relay join given twice", []string{"--profile", "local", "--relay-join", "box=" + joinSecret, "--relay-join", "box=" + tokenFile}, nil, "given twice"},
+		{"relay join twice from the variable", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_RELAY_JOIN": "box=" + joinSecret + ",box=" + tokenFile}, "given twice"},
+		// --addr off leaves the socket as the only listener, but a join
+		// still needs the token its relayed requests are checked with, so
+		// --token-file is accepted and read.
+		{"token file for a join", []string{"--profile", "local", "--addr", "off", "--join", "http://127.0.0.1:7700", "--join-name", "box", "--join-token-file", joinSecret, "--token-file", tokenFile}, nil, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -160,18 +187,20 @@ func TestTheLocalProfileRefuses(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			_, err := parseConfig(tc.args, io.Discard)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("parseConfig(%v) refused the settings: %v", tc.args, err)
+				}
+				return
+			}
 			if err == nil {
 				t.Fatalf("parseConfig(%v) accepted the setting", tc.args)
 			}
 			// Every refusal names what to use instead: the local
 			// profile. A variable that does not parse names the
-			// variable instead.
-			want := "local"
-			if tc.unparsable {
-				want = "WEBBRIDGE_OAUTH_REFRESH"
-			}
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("error %q does not name %s", err, want)
+			// variable instead, and a refusal about a flag names it.
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not name %s", err, tc.want)
 			}
 		})
 	}

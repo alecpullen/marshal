@@ -4,6 +4,7 @@ import 'package:flutter/services.dart' show SystemNavigator;
 
 import '../../model/age.dart';
 import '../../model/composer_model.dart';
+import '../../model/connect_repo_model.dart';
 import '../../model/factory_store.dart';
 import '../../model/handoff_model.dart';
 import '../../model/new_work_model.dart';
@@ -41,6 +42,7 @@ import '../sections/unsaved_guard.dart';
 import '../new_work/new_work_dialog.dart';
 import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
+import 'connect_repo_sheet.dart';
 import 'placeholder.dart';
 import 'sidebar.dart';
 
@@ -83,6 +85,7 @@ class Shell extends StatefulWidget {
     this.onRetry,
     this.unsaved,
     this.notice,
+    this.onConnectRepo,
   });
 
   final NavModel nav;
@@ -118,6 +121,11 @@ class Shell extends StatefulWidget {
   /// this build knows (F8 decision 2): one line, and never a state of its
   /// own.
   final String? notice;
+
+  /// Connects a repository (F9 B1): the plus beside *Projects*. Null leaves
+  /// the control out; the sheet is the Studio's, so the shell only offers the
+  /// way into it.
+  final VoidCallback? onConnectRepo;
 
   @override
   State<Shell> createState() => _ShellState();
@@ -164,6 +172,7 @@ class _ShellState extends State<Shell> {
       _panel = false;
     }),
     onSelect: (place) => _leave(() => widget.onSelect(place)),
+    onConnectRepo: widget.onConnectRepo,
     now: widget.now,
     inPanel: inPanel,
   );
@@ -398,6 +407,7 @@ class Studio extends StatefulWidget {
     this.threadStore,
     this.composerFor,
     this.newWorkFor,
+    this.connectRepoFor,
     this.planningFor,
     this.handoffFor,
     this.runFor,
@@ -446,6 +456,11 @@ class Studio extends StatefulWidget {
   /// entry points are the design's (design.md, "Starting work", and the mock's
   /// `Btn('New', primary: true, icon: plus)` in both page headers).
   final NewWorkModel Function(String host, String project)? newWorkFor;
+
+  /// Builds the connect-repository sheet's model for one host (F9 B1). Null
+  /// leaves the sidebar's plus out: a host that wires no bridge cannot
+  /// register a repository.
+  final ConnectRepoModel Function(String host)? connectRepoFor;
 
   /// Builds a planning thread's model, for a planner a person started (F6
   /// decision 8). Null leaves the planning place unbuilt rather than drawing
@@ -604,6 +619,9 @@ class _StudioState extends State<Studio> {
           now: store.now,
           unsaved: _unsaved,
           notice: _notice,
+          onConnectRepo: widget.connectRepoFor == null
+              ? null
+              : () => unawaited(_openConnectRepo(context)),
         );
       },
     );
@@ -638,8 +656,9 @@ class _StudioState extends State<Studio> {
         // first project the fleet lists, and the dialog's Project chip offers
         // the rest, so the default is a starting point rather than a limit.
         onNewWork: switch (_firstProject()) {
-          (final host, final project) => () =>
-            unawaited(_openNewWork(navigation, host, project)),
+          (final host, final project) => () => unawaited(
+            _openNewWork(navigation, host, project),
+          ),
           null => null,
         },
       );
@@ -897,6 +916,37 @@ class _StudioState extends State<Studio> {
       return (host.name, projects.first.root);
     }
     return null;
+  }
+
+  /// The host a repository connected from the sidebar is registered on: the
+  /// place's own, else the one that lists the first project, else the first
+  /// host there is. Null only when the fleet lists no host at all.
+  String? _hostForConnect() {
+    final place = _place;
+    if (place.kind == PlaceKind.thread) {
+      final thread = _threadRef(place);
+      if (thread != null) return thread.host;
+    }
+    if (place.kind == PlaceKind.project) {
+      final root = place.id;
+      if (root != null) return _hostOfProject(root);
+    }
+    final first = _firstProject();
+    if (first != null) return first.$1;
+    final hosts = widget.store.hosts;
+    return hosts.isEmpty ? null : hosts.first.name;
+  }
+
+  /// Opens the sheet that registers a repository for issue intake (F9 B1), on
+  /// the host the place belongs to.
+  Future<void> _openConnectRepo(BuildContext context) async {
+    final build = widget.connectRepoFor;
+    if (build == null) return;
+    final host = _hostForConnect();
+    if (host == null) return;
+    final model = build(host);
+    await showConnectRepoSheet(context, model);
+    model.dispose();
   }
 
   /// Opens the Studio's one new-work dialog for one project, and the place the

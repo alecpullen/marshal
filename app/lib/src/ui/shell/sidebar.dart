@@ -21,6 +21,7 @@ class Sidebar extends StatefulWidget {
     required this.onSelect,
     this.host,
     this.onHost,
+    this.onConnectRepo,
     this.now,
     this.inPanel = false,
   });
@@ -35,6 +36,10 @@ class Sidebar extends StatefulWidget {
   /// The host whose work the tree shows, or null for every host.
   final String? host;
   final void Function(String? host)? onHost;
+
+  /// Connects a repository (F9 B1): the plus beside *Projects*. Null leaves
+  /// the control out, so a host that wires no bridge offers no sheet.
+  final VoidCallback? onConnectRepo;
 
   /// What a host's age is measured against.
   final DateTime? now;
@@ -102,14 +107,24 @@ class _SidebarState extends State<Sidebar> {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(Space.s8, 0, Space.s8, Space.s8),
             children: [
-              const Padding(
-                padding: EdgeInsets.fromLTRB(
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
                   Space.s8,
                   Space.s6,
                   Space.s8,
                   Space.s4,
                 ),
-                child: Label('Projects'),
+                child: Row(
+                  children: [
+                    const Expanded(child: Label('Projects')),
+                    if (widget.onConnectRepo != null)
+                      IconBtn(
+                        Glyphs.plus,
+                        tooltip: 'Connect a repository',
+                        onTap: widget.onConnectRepo,
+                      ),
+                  ],
+                ),
               ),
               for (final project in tree) ..._project(project),
             ],

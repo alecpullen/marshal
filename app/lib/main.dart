@@ -22,6 +22,7 @@ import 'src/model/fleet_store.dart';
 import 'src/model/general_model.dart';
 import 'src/model/handoff_model.dart';
 import 'src/model/composer_model.dart';
+import 'src/model/connect_repo_model.dart';
 import 'src/model/hosts_model.dart';
 import 'src/model/inbox_model.dart';
 import 'src/model/library_model.dart';
@@ -157,6 +158,11 @@ Future<void> main() async {
                 ),
             hosts.hosts.firstWhere((owner) => owner.name == host).client,
             host: host,
+          ),
+          // Registers a repository for issue intake from the sidebar's plus
+          // (F9 B1): the sheet is the Studio's, the client is the host's.
+          connectRepoFor: (host) => ConnectRepoModel(
+            hosts.hosts.firstWhere((owner) => owner.name == host).client,
           ),
           // A planning thread reads its planner's journal on the client that
           // reaches its host, and captures the plan for review (F6 decision 8).

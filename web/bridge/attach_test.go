@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 	"unicode"
+
+	"marshal/web/bridge/contract"
 )
 
 // attachHarness is a local-profile bridge serving SocketHandler over a unix
@@ -1566,4 +1568,205 @@ func TestHeaderLineIsOneLine(t *testing.T) {
 	if got := headerLine("\n\r\n"); got != "" {
 		t.Fatalf("headerLine of newlines = %q, want empty", got)
 	}
+}
+
+// TestAnAttachFollowsItsSession: an attach asks the child to follow the session
+// it opened, and one it resumed, so a turn the terminal starts on it reports
+// itself to the bridge (P7 D4).
+func TestAnAttachFollowsItsSession(t *testing.T) {
+	t.Run("a new session", func(t *testing.T) {
+		root := t.TempDir()
+		h := newAttachHarness(t)
+
+		res := h.attach(http.MethodPost, root, "", true)
+		if res.status != http.StatusSwitchingProtocols {
+			t.Fatalf("attach = %d, want 101: %s", res.status, res.refusal(t))
+		}
+		sessionID := res.header.Get(sessionHeader)
+		fake := h.fake(root)
+		if fake == nil {
+			t.Fatal("no project child was built for the root")
+		}
+		follows := framesOf(t, fake, stdioConn, "session/follow")
+		if len(follows) != 1 {
+			t.Fatalf("session/follow sent %d times on the child's own connection, want 1", len(follows))
+		}
+		if got := paramsOf(t, follows[0].params)["sessionId"]; got != sessionID {
+			t.Fatalf("session/follow sessionId = %v, want the session just opened, %s", got, sessionID)
+		}
+	})
+
+	t.Run("a resumed session", func(t *testing.T) {
+		root := t.TempDir()
+		h := newAttachHarness(t)
+
+		res := h.attach(http.MethodPost, root, "stored-session", true)
+		if res.status != http.StatusSwitchingProtocols {
+			t.Fatalf("attach = %d, want 101: %s", res.status, res.refusal(t))
+		}
+		fake := h.fake(root)
+		if fake == nil {
+			t.Fatal("no project child was built for the root")
+		}
+		follows := framesOf(t, fake, stdioConn, "session/follow")
+		if len(follows) != 1 {
+			t.Fatalf("session/follow sent %d times on the child's own connection, want 1", len(follows))
+		}
+		if got := paramsOf(t, follows[0].params)["sessionId"]; got != "stored-session" {
+			t.Fatalf("session/follow sessionId = %v, want stored-session", got)
+		}
+	})
+}
+
+// sessionBusy reports a tracked session's busy flag. It reads under the
+// registry's lock so a test never races the followed run's update.
+func sessionBusy(reg *Registry, id string) bool {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	info, ok := reg.sessions[id]
+	return ok && info.Busy
+}
+
+// TestATerminalTurnMarksTheSessionBusy: a turn the terminal starts on a session
+// it attached reaches the bridge as a followed run, which sets Busy until it
+// ends — the state the Studio's index and a prompt's refusal read (P7 D4). The
+// fake reports a run only once it has been asked to follow the session, as a
+// real child does.
+func TestATerminalTurnMarksTheSessionBusy(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+	h.fleet.newProjectChild = func(root, socket string) (*Child, error) {
+		fake := newFakeProjectChild(socket)
+		fake.fakeAgent.mu.Lock()
+		fake.fakeAgent.handler = func(method string, params json.RawMessage) (any, *rpcError, bool) {
+			if method != "session/follow" {
+				return nil, nil, false
+			}
+			var p struct {
+				SessionID string `json:"sessionId"`
+			}
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, nil, false
+			}
+			// The update carries the id the follow named: a followed run is
+			// reported for the session being followed, never for another.
+			fake.notify("session/update", map[string]any{
+				"sessionId": p.SessionID,
+				"update":    map[string]any{"kind": "followed_run", "state": "started", "runId": "run-1"},
+			})
+			return map[string]any{}, nil, false
+		}
+		fake.fakeAgent.mu.Unlock()
+		h.mu.Lock()
+		h.fakes[root] = fake
+		h.mu.Unlock()
+		return &Child{Transport: fake}, nil
+	}
+	ctx := ctlContext(t)
+
+	res := h.attach(http.MethodPost, root, "", true)
+	if res.status != http.StatusSwitchingProtocols {
+		t.Fatalf("attach = %d, want 101: %s", res.status, res.refusal(t))
+	}
+	sessionID := res.header.Get(sessionHeader)
+
+	pc, err := h.fleet.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	eventually(t, "the followed run to mark the session busy", func() bool {
+		return sessionBusy(pc.reg, sessionID)
+	})
+
+	fake := h.fake(root)
+	fake.notify("session/update", map[string]any{
+		"sessionId": sessionID,
+		"update":    map[string]any{"kind": "followed_run", "state": "ended", "runId": "run-1", "outcome": "done"},
+	})
+	eventually(t, "the run's end to clear busy", func() bool {
+		return !sessionBusy(pc.reg, sessionID)
+	})
+	if _, tracked := pc.reg.lookup(sessionID); !tracked {
+		t.Fatalf("the terminal's session %s is no longer tracked", sessionID)
+	}
+}
+
+// sessionsDeltas returns the "sessions" deltas on the fleet stream, in order.
+func sessionsDeltas(f *Fleet) []contract.SessionsDelta {
+	var out []contract.SessionsDelta
+	for _, e := range f.fleetLog.Tail(fleetStreamKey) {
+		var d contract.SessionsDelta
+		if json.Unmarshal(e.Data, &d) == nil && d.Kind == contract.DeltaSessions {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// TestEachChangeAnnouncesItsProject: every change of a project child's sessions
+// appends one "sessions" delta naming its root to the fleet stream, which is
+// what tells the Studio to read the index again (decision 1).
+func TestEachChangeAnnouncesItsProject(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+	ctx := ctlContext(t)
+
+	pc, err := h.fleet.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	sessionID, err := pc.reg.New(ctx, AgentPath(root), "")
+	if err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+	fake := h.fake(root)
+	if fake == nil {
+		t.Fatal("no project child was built for the root")
+	}
+
+	// step runs one change and asserts it appended exactly one delta, naming
+	// the root.
+	step := func(name string, run func()) {
+		t.Helper()
+		before := len(sessionsDeltas(h.fleet))
+		run()
+		eventually(t, name+"'s sessions delta", func() bool {
+			return len(sessionsDeltas(h.fleet)) > before
+		})
+		got := sessionsDeltas(h.fleet)
+		if len(got) != before+1 {
+			t.Fatalf("%s appended %d sessions deltas, want exactly one", name, len(got)-before)
+		}
+		if got[before].Project != pc.root {
+			t.Fatalf("%s's delta names %q, want the root %q", name, got[before].Project, pc.root)
+		}
+	}
+
+	var attached *attachResult
+	// The session is tracked already, so this attach announces its viewer and
+	// nothing else: a new track would add a second delta.
+	step("an attach", func() {
+		attached = h.attach(http.MethodPost, root, sessionID, true)
+		if attached.status != http.StatusSwitchingProtocols {
+			t.Fatalf("attach = %d, want 101: %s", attached.status, attached.refusal(t))
+		}
+	})
+	step("a viewer leaving", func() { _ = attached.conn.Close() })
+	step("a followed run starting", func() {
+		fake.notify("session/update", map[string]any{
+			"sessionId": sessionID,
+			"update":    map[string]any{"kind": "followed_run", "state": "started", "runId": "run-1"},
+		})
+	})
+	step("a followed run ending", func() {
+		fake.notify("session/update", map[string]any{
+			"sessionId": sessionID,
+			"update":    map[string]any{"kind": "followed_run", "state": "ended", "runId": "run-1", "outcome": "done"},
+		})
+	})
+	step("a close", func() {
+		if err := pc.reg.Close(ctx, sessionID); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	})
 }

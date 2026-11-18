@@ -284,10 +284,9 @@ func Attach(l *EventLog, child *Child, reg *Registry) {
 }
 
 // attachSessions is Attach for the sessions keep accepts; a nil keep accepts
-// every session, which is what Attach passes (P4 D10 decision 3). A session
-// keep refuses is passed to the previous hook and not logged: a project
-// child's log holds the fleet's sessions, and a client's session belongs to
-// the client's own log.
+// every session, which is what Attach and a project child both pass (P4 D10
+// decision 3, P7 D4). A session keep refuses is passed to the previous hook
+// and not logged.
 //
 // It has Attach's constraint: install it before child.Start.
 func attachSessions(l *EventLog, child *Child, reg *Registry, keep func(sessionID string) bool) {

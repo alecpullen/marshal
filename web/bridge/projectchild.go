@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // projectLinger is how long a project child with no tracked session lives on
@@ -259,10 +261,11 @@ func (f *Fleet) startProjectChildLocked(ctx context.Context, pc *projectChild) (
 		pc.reg.ClientTrust = true
 		// One event log and one classifier for the child, installed before
 		// it starts, as Attach requires (P4 D10 decision 3). The log keeps
-		// every session that is not tracked as a client's: a fleet session is
-		// logged from its first notification, even before Spawn has tracked
-		// it. A restart reuses this Child, so the log and both hooks carry
-		// over to the next generation.
+		// every session the child serves, the fleet's and a client's alike:
+		// a followed run's events and the Studio's session index both read
+		// it (P7 D4). A restart reuses this Child and its hooks, so the log,
+		// the change hook and both of the others carry over to the next
+		// generation.
 		pc.log = NewEventLog()
 		reg := pc.reg
 		// An SSE client disconnecting from a session was watching it, so the
@@ -272,9 +275,20 @@ func (f *Fleet) startProjectChildLocked(ctx context.Context, pc *projectChild) (
 		// order: the log's mu, then the registry's. The registry never calls
 		// into the log while holding its own mu.
 		pc.log.OnUnsubscribe = func(sessionID string) { reg.touch(sessionID) }
-		attachSessions(pc.log, child, reg, func(sessionID string) bool {
-			return !reg.tracksClient(sessionID)
-		})
+		attachSessions(pc.log, child, reg, nil)
+		// Every change of the child's sessions is announced on the fleet's
+		// stream, so the Studio reads the index again (decision 1). A change
+		// that can move a title or a message count — a new track and a turn's
+		// end — also drops the root's cached listing. OnChange runs with the
+		// registry's locks released, and neither emit nor dropListing takes
+		// one back.
+		pc.reg.OnChange = func(sessionID string, change registryChange) {
+			f.emit(contract.SessionsDelta{Kind: contract.DeltaSessions, Project: pc.root})
+			switch change {
+			case changeTracked, changeTurnEnded:
+				f.dropListing(pc.root)
+			}
+		}
 		f.installClassifier(child, reg, f.agentForSession)
 		pc.ready, pc.version = false, ""
 		if err := child.Start(); err != nil {

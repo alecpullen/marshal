@@ -39,10 +39,11 @@ func waitLogged(t *testing.T, l *EventLog, sessionID string) {
 	}
 }
 
-// TestAProjectChildLogsTheFleetsSessionsOnly: the child's own log holds the
-// fleet's session and a session nothing has tracked yet, and not a client's
-// session, which belongs to the client's own log (P4 D10 decision 3).
-func TestAProjectChildLogsTheFleetsSessionsOnly(t *testing.T) {
+// TestAProjectChildLogsEverySession: the child's log holds every session it
+// serves — a fleet agent's, a client's opened through session/new, and one
+// nothing has tracked yet — because a followed run's events and the Studio's
+// session index both read it (P7 D4).
+func TestAProjectChildLogsEverySession(t *testing.T) {
 	f, fakeFor := projectFleet(t)
 	ctx := ctlContext(t)
 	root := t.TempDir()
@@ -59,27 +60,30 @@ func TestAProjectChildLogsTheFleetsSessionsOnly(t *testing.T) {
 		t.Fatal("the project child has no event log")
 	}
 
+	// A client's session, opened as an attach opens one.
 	clientSID, err := pc.reg.New(ctx, AgentPath(root), "")
 	if err != nil {
 		t.Fatalf("session/new: %v", err)
 	}
+	// A fleet agent's session.
 	pc.reg.TrackFleet("fleet-1", AgentPath(root))
 	// Untracked: a fleet session that Spawn has not reached yet. Its events
 	// must reach the log from its first notification.
 	const untracked = "untracked-1"
 
-	for _, sid := range []string{clientSID, "fleet-1", untracked} {
+	sessions := []string{clientSID, "fleet-1", untracked}
+	for _, sid := range sessions {
 		fake.notify("session/update", map[string]any{
 			"sessionId": sid,
 			"update":    map[string]any{"kind": "agent_message", "text": "hello"},
 		})
 	}
 
-	waitLogged(t, pc.log, "fleet-1")
-	waitLogged(t, pc.log, untracked)
-
-	if got := pc.log.Tail(clientSID); len(got) != 0 {
-		t.Fatalf("the client's session %s was logged on the project child: %d events", clientSID, len(got))
+	for _, sid := range sessions {
+		waitLogged(t, pc.log, sid)
+		if got := len(pc.log.Tail(sid)); got != 1 {
+			t.Errorf("session %s has %d logged events, want the one notification it got", sid, got)
+		}
 	}
 }
 

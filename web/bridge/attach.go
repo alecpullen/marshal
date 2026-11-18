@@ -161,6 +161,10 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sessionID, created = id, true
+		// A client session is followed as soon as it is opened, so a turn the
+		// terminal starts on it reports itself to the bridge and streams to
+		// the Studio (P7 D4).
+		s.fleet.followClientSession(ctx, pc.reg, sessionID)
 	default:
 		// A live fleet agent's session belongs to that agent: an attach would
 		// take its relay and answer its client as if it were the TUI (P4 D10
@@ -189,6 +193,9 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, ErrUnknownSession)
 				return
 			}
+			// A session already tracked was followed when it was tracked; one
+			// this attach resumed is followed here (P7 D4).
+			s.fleet.followClientSession(ctx, pc.reg, sessionID)
 		}
 	}
 

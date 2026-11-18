@@ -20,7 +20,8 @@ class Field extends StatefulWidget {
     this.onChanged,
     this.onSubmitted,
     this.mono = false,
-  }) : _multiline = false,
+  }) : focusNode = null,
+       _multiline = false,
        _search = false;
 
   /// A field for prose — a prompt, a body — that starts three lines tall and
@@ -39,7 +40,8 @@ class Field extends StatefulWidget {
     this.onChanged,
     this.onSubmitted,
     this.mono = false,
-  }) : _multiline = true,
+  }) : focusNode = null,
+       _multiline = true,
        _search = false;
 
   /// The sidebar's search: no label above it, and a magnifying glass leads it.
@@ -49,6 +51,7 @@ class Field extends StatefulWidget {
     super.key,
     this.controller,
     this.hint,
+    this.focusNode,
     this.enabled = true,
     this.onChanged,
     this.onSubmitted,
@@ -62,6 +65,12 @@ class Field extends StatefulWidget {
   /// its mark instead.
   final String? label;
   final TextEditingController? controller;
+
+  /// The node the field's keyboard belongs to, when it is not the field's own:
+  /// the sidebar hands its search one so `⌘K` can put the keyboard there from
+  /// anywhere. The field uses it instead of its own node and never disposes
+  /// it. Only [Field.search] takes one.
+  final FocusNode? focusNode;
 
   /// Set the text in mono: for a document a person edits line by line, never
   /// for prose.
@@ -85,19 +94,31 @@ class Field extends StatefulWidget {
 }
 
 class _FieldState extends State<Field> {
-  final _focus = FocusNode();
+  /// The field's own node. A field handed one uses that instead, and this one
+  /// goes unused.
+  final _own = FocusNode();
+
+  /// The node the keyboard belongs to: the one the caller gave, or the field's
+  /// own. A given node belongs to whoever made it, so it is never disposed
+  /// here.
+  FocusNode get _focus => widget.focusNode ?? _own;
 
   @override
   void initState() {
     super.initState();
-    _focus.addListener(() => setState(() {}));
+    _focus.addListener(_onFocusChanged);
   }
 
   @override
   void dispose() {
-    _focus.dispose();
+    _focus.removeListener(_onFocusChanged);
+    _own.dispose();
     super.dispose();
   }
+
+  /// The border is `accent` while the field has the keyboard, so a change of
+  /// focus is a change of what is drawn.
+  void _onFocusChanged() => setState(() {});
 
   @override
   Widget build(BuildContext context) {

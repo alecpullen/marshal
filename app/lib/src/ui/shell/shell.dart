@@ -139,6 +139,7 @@ class Shell extends StatefulWidget {
     this.signals,
     this.onConnectRepo,
     this.onNew,
+    this.searchFocus,
   });
 
   final NavModel nav;
@@ -201,6 +202,11 @@ class Shell extends StatefulWidget {
   /// leaves both out — there is no project to start work in.
   final VoidCallback? onNew;
 
+  /// The node the sidebar's search field draws its keyboard from, so `⌘K` can
+  /// put the keyboard there from anywhere on a wide window. Null leaves the
+  /// field its own node.
+  final FocusNode? searchFocus;
+
   @override
   State<Shell> createState() => _ShellState();
 }
@@ -255,6 +261,7 @@ class _ShellState extends State<Shell> {
     onNew: widget.onNew,
     now: widget.now,
     inPanel: inPanel,
+    searchFocus: widget.searchFocus,
   );
 
   /// The place's content, handed the shell's one way of leaving: the sidebar,
@@ -743,6 +750,12 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
   /// it, and a place that edits watches the models it holds (F7 decision 3).
   final _unsaved = UnsavedGuard();
 
+  /// The node the sidebar's search field draws its keyboard from. The screen
+  /// owns it so `⌘K` can put the keyboard there from anywhere — including
+  /// from inside another text field, which loses nothing typed by moving
+  /// focus.
+  final _searchFocus = FocusNode();
+
   /// The planning threads this screen started, by planner id (F6 decision 8).
   /// A planner is none of the things the fleet lists, so the screen that
   /// started it is the only one that can name its place.
@@ -807,6 +820,7 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
       WidgetsBinding.instance.removeObserver(this);
     }
     _unsaved.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
 
@@ -888,6 +902,7 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
           // the keyboard from a composer and a button that asked the key path
           // would do nothing while one held it.
           onNew: _firstProject() == null ? null : _newWork,
+          searchFocus: _searchFocus,
         );
         // The shell's keys (f9-parity decision 6): one Shortcuts above the
         // place, so `⌘N` and `⌘1/⌘2/⌘3` work wherever a person is rather than
@@ -923,6 +938,15 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
                 onInvoke: (_) {
                   if (_editingText()) return null;
                   _go(const Place(PlaceKind.pulls));
+                  return null;
+                },
+              ),
+              // `⌘K` is the one key a text field does not keep (f9-parity
+              // decision 6): moving the keyboard to the search loses nothing
+              // typed, so this asks no guard and works from a composer.
+              FocusSearchIntent: CallbackAction<FocusSearchIntent>(
+                onInvoke: (_) {
+                  _searchFocus.requestFocus();
                   return null;
                 },
               ),

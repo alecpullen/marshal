@@ -27,6 +27,7 @@ class Sidebar extends StatefulWidget {
     this.onNew,
     this.now,
     this.inPanel = false,
+    this.searchFocus,
   });
 
   final NavModel nav;
@@ -54,6 +55,10 @@ class Sidebar extends StatefulWidget {
   /// Drawn as the narrow layout's panel, which fills its own height rather
   /// than the window's.
   final bool inPanel;
+
+  /// The node the search field's keyboard belongs to, when the shell holds one
+  /// so `⌘K` can reach it from anywhere. Null leaves the field its own.
+  final FocusNode? searchFocus;
 
   @override
   State<Sidebar> createState() => _SidebarState();
@@ -130,6 +135,7 @@ class _SidebarState extends State<Sidebar> {
                         child: Field.search(
                           controller: _query,
                           hint: 'Search threads and places',
+                          focusNode: widget.searchFocus,
                           onChanged: (_) => setState(() {}),
                           onSubmitted: (text) =>
                               _openFirst(searchNav(fixed, tree, text)),

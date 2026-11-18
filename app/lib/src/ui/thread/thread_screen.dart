@@ -300,7 +300,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
       _moveCursor(shift ? 10 : 1);
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.keyK) {
+    if (!meta && !control && key == LogicalKeyboardKey.keyK) {
       _moveCursor(shift ? -10 : -1);
       return KeyEventResult.handled;
     }

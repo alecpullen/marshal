@@ -30,6 +30,7 @@ class BotsTab extends StatelessWidget {
       tabs: tabs?.items,
       tabIndex: tabs?.index ?? 0,
       onTab: tabs?.onChanged,
+      trailing: tabs?.trailing,
       state: state,
       readOnly: true,
       emptyMessage:

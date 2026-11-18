@@ -182,6 +182,22 @@ void main() {
     );
   });
 
+  testWidgets('the header New starts work in this project', (tester) async {
+    var opened = 0;
+    await _pumpTall(
+      tester,
+      ProjectPage(model: _model(), now: _now, onNewWork: () => opened++),
+    );
+
+    // The page's one primary action, in its header (design.md, "Starting
+    // work"), on every section: the page is where a project's next agent is
+    // started from.
+    final button = find.widgetWithText(Btn, 'New');
+    expect(button, findsOneWidget);
+    await tester.tap(button);
+    expect(opened, 1);
+  });
+
   testWidgets('discovery shows its report', (tester) async {
     final model = _model();
     await _pumpTall(

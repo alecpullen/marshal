@@ -29,6 +29,7 @@ class Overview extends StatelessWidget {
     this.onSelect,
     this.onAnswer,
     this.onRetry,
+    this.onNewWork,
   });
 
   final OverviewModel overview;
@@ -65,8 +66,21 @@ class Overview extends StatelessWidget {
   })?
   onAnswer;
 
+  /// Opens the studio's new-work dialog: the page's primary action
+  /// (design.md, "Starting work"). Null leaves the header without one rather
+  /// than drawing a button that opens nothing.
+  final VoidCallback? onNewWork;
+
   /// Reads the fleet again, for the one action a state offers.
   final VoidCallback? onRetry;
+
+  /// The header's one primary action: start work. It comes first, and it is
+  /// the only primary the page has (§5).
+  List<Widget> _actions() {
+    final newWork = onNewWork;
+    if (newWork == null) return const [];
+    return [Btn.primary('New', icon: Glyphs.plus, onTap: newWork)];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -75,13 +89,18 @@ class Overview extends StatelessWidget {
     // a dead feed must not hide the projects and asks a healthy one reported.
     final anyLoaded = overview.sources.any((source) => source.loaded);
     if (state != null && state != StateKind.stale && !anyLoaded) {
-      return PageBody(title: 'Overview', children: [_stateMessage(state)]);
+      return PageBody(
+        title: 'Overview',
+        actions: _actions(),
+        children: [_stateMessage(state)],
+      );
     }
     final freshness = _freshness();
     return PageBody(
       title: 'Overview',
       subtitle: _subtitle(),
       width: PageWidth.full,
+      actions: _actions(),
       children: [
         if (freshness.isNotEmpty) ...[
           ...freshness,

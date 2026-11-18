@@ -30,6 +30,7 @@ class RecipesTab extends StatelessWidget {
       tabs: tabs?.items,
       tabIndex: tabs?.index ?? 0,
       onTab: tabs?.onChanged,
+      trailing: tabs?.trailing,
       state: state,
       emptyMessage:
           'A recipe appears here once the bridge has one; copy a built-in '

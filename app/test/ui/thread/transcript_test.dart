@@ -4,6 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/client/transport.dart';
+import 'package:marshal_app/src/model/attention.dart' as asks_model;
+import 'package:marshal_app/src/model/inbox_model.dart' as asks_model;
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/model/thread_view_state.dart';
@@ -265,7 +267,11 @@ void main() {
         rev: 1,
         roots: const ['turn:1'],
         nodes: const [
-          WireNode(id: 'turn:1', kind: 'turn', children: ['done:1', 'done:2']),
+          WireNode(
+            id: 'turn:1',
+            kind: 'turn',
+            children: ['done:1', 'done:3', 'done:2'],
+          ),
           WireNode(
             id: 'done:1',
             kind: 'completion',
@@ -275,6 +281,20 @@ void main() {
               id: 'job-1',
               label: 'shell.run',
               outcome: 'done',
+            ),
+          ),
+          // An error that is the empty string: not a failure, and no second
+          // line to draw.
+          WireNode(
+            id: 'done:3',
+            kind: 'completion',
+            parent: 'turn:1',
+            completion: WireCompletion(
+              source: 'job',
+              id: 'job-3',
+              label: 'git.commit',
+              outcome: 'done',
+              error: '',
             ),
           ),
           WireNode(
@@ -297,7 +317,7 @@ void main() {
 
     // A finished job is not the agent talking: it is a notice, one per job.
     expect(find.byType(Narration), findsNothing);
-    expect(find.byType(Notice), findsNWidgets(2));
+    expect(find.byType(Notice), findsNWidgets(3));
     // The label and the outcome lead the line.
     expect(find.text('shell.run done'), findsOneWidget);
     expect(find.text('shell.run failed'), findsOneWidget);
@@ -313,6 +333,9 @@ void main() {
       'the suite failed at stack_test.go:41',
     ]);
     expect(notices.first, 'shell.run done');
+    // An error that is the empty string is not one: like a null, it leaves
+    // the notice at its single line.
+    expect(notices[1], 'git.commit done');
 
     await tester.tap(find.text('Details').last);
     await tester.pumpAndSettle();
@@ -363,10 +386,13 @@ void main() {
 
     view.density = Density.full;
     await tester.pumpAndSettle();
-    expect(
-      tester.widget<Notice>(find.byType(Notice)).text,
-      contains('The reviewer read four files.'),
-    );
+    // At full density the row is exactly three lines, in the order the event
+    // holds them: head, body, detail.
+    expect(tester.widget<Notice>(find.byType(Notice)).text.split('\n'), [
+      'Review · Reviewed task 3',
+      'The reviewer read four files.',
+      'task 3 of 4',
+    ]);
     expect(find.textContaining('The reviewer read four files.'), findsNothing);
 
     // Details unfolds what the event went on to say, body first.
@@ -377,6 +403,38 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('task 3 of 4'), findsOneWidget);
+
+    store.dispose();
+    view.dispose();
+  });
+
+  testWidgets('a run event with no title leads with its kind alone', (
+    tester,
+  ) async {
+    final store = StackStore.seeded(
+      StackSnapshot(
+        sessionID: 's-1',
+        rev: 1,
+        roots: const ['turn:1'],
+        nodes: const [
+          WireNode(id: 'turn:1', kind: 'turn', children: ['run:1']),
+          WireNode(
+            id: 'run:1',
+            kind: 'runEvent',
+            parent: 'turn:1',
+            runEvent: WireRunEvent(kind: 'compaction'),
+          ),
+        ],
+      ),
+    );
+    final view = ThreadViewState();
+    await pumpThread(tester, store: store, view: view);
+
+    // The kind is the whole head when the event names no title: a capital,
+    // and no separator left dangling after it.
+    final notice = tester.widget<Notice>(find.byType(Notice)).text;
+    expect(notice, 'Compaction');
+    expect(find.text('Compaction'), findsOneWidget);
 
     store.dispose();
     view.dispose();
@@ -528,7 +586,11 @@ void main() {
         rev: 1,
         roots: const ['turn:1'],
         nodes: const [
-          WireNode(id: 'turn:1', kind: 'turn', children: ['plan:1', 'plan:2']),
+          WireNode(
+            id: 'turn:1',
+            kind: 'turn',
+            children: ['plan:1', 'plan:2', 'plan:3'],
+          ),
           WireNode(
             id: 'plan:1',
             kind: 'plan',
@@ -541,6 +603,14 @@ void main() {
             parent: 'turn:1',
             plan: WirePlan(done: 3, total: 3),
           ),
+          // A plan that named an empty active task: nothing to append, and no
+          // separator left dangling after the count.
+          WireNode(
+            id: 'plan:3',
+            kind: 'plan',
+            parent: 'turn:1',
+            plan: WirePlan(done: 2, total: 3, activeText: ''),
+          ),
         ],
       ),
     );
@@ -548,9 +618,12 @@ void main() {
     await pumpThread(tester, store: store, view: view);
 
     // The count leads whether or not a task is active: the active task is
-    // what the plan is on, not a replacement for how far it has got.
+    // what the plan is on, not a replacement for how far it has got. A plan
+    // whose active text is empty is the count alone: the exact match below
+    // fails on a separator left dangling after it.
     expect(find.text('1 of 3 · Write the rows'), findsOneWidget);
     expect(find.text('3 of 3'), findsOneWidget);
+    expect(find.text('2 of 3'), findsOneWidget);
     expect(find.textContaining('done'), findsNothing);
 
     store.dispose();
@@ -560,14 +633,45 @@ void main() {
   testWidgets('the receipt stands apart', (tester) async {
     final store = fixtureStore();
     final view = ThreadViewState();
-    await pumpThread(tester, store: store, view: view);
+    // An ask with no step is pinned after the last row, so the receipt has a
+    // row below it and the space under it is measured rather than assumed.
+    await pumpThread(
+      tester,
+      store: store,
+      view: view,
+      asks: [
+        asks_model.Ask(
+          host: 'local',
+          id: 'call-1',
+          kind: asks_model.AskKind.approval,
+          thread: threadRef(),
+          title: 'Approve shell.run?',
+          body: 'go test ./...',
+          actions: [asks_model.AskAction('Approve once', primary: true)],
+          since: DateTime.utc(2026, 11, 17, 4, 10),
+          source: asks_model.AskSource.fleet,
+          scope: asks_model.AskScope.everyone,
+        ),
+      ],
+      now: DateTime.utc(2026, 11, 17, 4, 22),
+    );
 
-    // The row above the receipt in this fixture is the turn's last tool row:
-    // the receipt carries its own space on top of the row gap, so it does
-    // not sit against the last thing the agent did.
+    // What is measured: from the turn's last tool row to the receipt's first
+    // line, which is the previous row's gap plus the receipt's own space on
+    // top (`Space.s4 + Space.s8`), and from the receipt's last line to the ask
+    // under it, which is the receipt's own space below plus the gap its own
+    // row carries (`Space.s12 + Space.s4`). So it does not sit against the
+    // last thing the agent did, and what waits on the person does not sit
+    // against it.
     final above = tester.getBottomLeft(find.byType(ToolRow).last).dy;
-    final receipt = tester.getTopLeft(find.textContaining('4 steps')).dy;
-    expect(receipt - above, greaterThanOrEqualTo(Space.s8));
+    final receipt = find.textContaining('4 steps');
+    final receiptTop = tester.getTopLeft(receipt).dy;
+    final receiptBottom = tester.getBottomLeft(receipt).dy;
+    expect(receiptTop - above, Space.s4 + Space.s8);
+    expect(
+      tester.getTopLeft(find.byType(AskCard)).dy - receiptBottom,
+      Space.s12 + Space.s4,
+    );
 
     store.dispose();
     view.dispose();

@@ -8,7 +8,7 @@ import 'press.dart';
 /// a finished job.
 ///
 /// It is one quiet line — its first, in `small` tinted `muted`, wrapping but
-/// never truncated — and whatever the harness went on to say is folded
+/// never truncated — and whatever it went on to say is folded
 /// behind *Details*, so six lines of paths never read as six lines of the
 /// agent's prose. No icon, fill or border: a notice is quieter than a row,
 /// not louder than one.

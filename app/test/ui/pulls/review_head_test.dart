@@ -154,12 +154,16 @@ void main() {
         ),
         pullActions: PrActions(fix: () => fixed++),
       ),
-      width: 900,
+      width: 1440,
       height: 1000,
     );
 
     expect(find.byType(PrCard), findsOneWidget);
     expect(find.byType(ReviewHead), findsNothing);
+    // The failing card is the head's second consumer of the reading-column
+    // cap: on a wide window it is as wide as the conversation under it, not
+    // the page.
+    expect(tester.getSize(find.byType(PrCard)).width, Layout.reading);
     expect(find.text('1 failing: unit'), findsOneWidget);
     expect(
       find.text('--- FAIL: TestScriptedRecorderQuietMode (4.21s)'),

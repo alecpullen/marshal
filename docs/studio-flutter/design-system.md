@@ -277,7 +277,7 @@ said folded behind *Details* until a person asks for it, because a notice is a
 fact to acknowledge and not prose to read. What else is not the agent talking
 to the person is a `Notice` too: the agent's *Thinking* (hidden at outline
 density), a run event, whose kind leads its line as `Review · …`, and a
-finished job, whose line is its label and outcome. `Narration` stays the
+finished job, whose line leads with its label and outcome. `Narration` stays the
 agent's prose alone.
 
 Supporting pieces, shared by the components and exported with them by

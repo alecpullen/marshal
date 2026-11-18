@@ -546,7 +546,7 @@ class _Row extends StatelessWidget {
         return LiveRow(
           headline:
               '${plan.done} of ${plan.total}'
-              '${active == null ? '' : ' · $active'}',
+              '${active != null && active.isNotEmpty ? ' · $active' : ''}',
           failed: false,
         );
       case 'receipt':

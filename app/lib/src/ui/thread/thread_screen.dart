@@ -452,6 +452,10 @@ class _ThreadScreenState extends State<ThreadScreen> {
         // place's, and a thread that opens with one would say nothing new.
         return const SizedBox.shrink();
     }
+    // Centred and capped at the reading column, as the transcript's rows and
+    // the composer are: the head is as wide as the conversation under it. The
+    // page's side padding stays outside that cap, and the band's height cap
+    // stays outside both.
     return ConstrainedBox(
       constraints: const BoxConstraints(maxHeight: Layout.inspector),
       child: SingleChildScrollView(
@@ -461,7 +465,14 @@ class _ThreadScreenState extends State<ThreadScreen> {
           Layout.pageSide,
           0,
         ),
-        child: head,
+        child: Align(
+          alignment: Alignment.topCenter,
+          heightFactor: 1,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: Layout.reading),
+            child: head,
+          ),
+        ),
       ),
     );
   }

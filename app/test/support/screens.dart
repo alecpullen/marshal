@@ -1581,6 +1581,21 @@ final screens = <ScreenCase>[
     },
   ),
   ScreenCase(
+    name: 'session thread',
+    ready: () => _threadScreen(
+      thread: _sessionThreadRef,
+      inspector: _inspectorState(tab: InspectorTab.inspect),
+    ),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _threadScreen(
+          thread: _sessionThreadRef,
+          inspector: _inspectorState(tab: InspectorTab.inspect),
+          state: kind,
+        ),
+    },
+  ),
+  ScreenCase(
     name: 'inspector preview',
     ready: () =>
         PreviewTab(model: PreviewModel.seeded(ports: const [5173, 8080])),
@@ -1628,7 +1643,8 @@ final screens = <ScreenCase>[
 
 /// The inspector the screen cases show, with each tab's frame placeholder
 /// until the task that builds that tab supplies its body.
-InspectorState _inspectorState() => InspectorState();
+InspectorState _inspectorState({InspectorTab tab = InspectorTab.changes}) =>
+    InspectorState(tab: tab);
 
 /// The node the inspector's Inspect tab shows.
 InspectModel _inspectModel() => InspectModel.seeded(
@@ -1818,13 +1834,28 @@ PullView _threadPull() => _pull(
   report: 'The clock crossed midnight in the test, so it is pinned now.',
 );
 
+/// The session the session thread's cases show: a thread of its own kind, with
+/// no agent behind it.
+model.ThreadRef get _sessionThreadRef => model.ThreadRef(
+  host: 'local',
+  id: 'sess_1',
+  project: '/home/u/marshal',
+  title: 'Fix the login bug',
+  kind: model.ThreadKind.session,
+  status: model.ThreadStatus.idle,
+  headline: 'A terminal is attached',
+  lastActive: DateTime.utc(2026, 11, 17, 4, 10),
+);
+
 Widget _threadScreen({
   StateKind? state,
   InspectorState? inspector,
   PullView? pull,
+  model.ThreadRef? thread,
+  StackStore? store,
 }) => ThreadScreen(
-  thread: _threadRef,
-  store: StackStore.seeded(_threadSnapshot()),
+  thread: thread ?? _threadRef,
+  store: store ?? StackStore.seeded(_threadSnapshot()),
   view: ThreadViewState(),
   inspector: inspector,
   pull: pull,
@@ -2224,6 +2255,37 @@ Widget _projectScreen({int tab = 0, StateKind? state}) => ProjectPage(
         project: '/home/u/alpha',
         status: contract.AgentState.agentRunning,
         activity: 'Reading internal/acp',
+      ),
+    ),
+  ],
+  sessions: [
+    model.threadOfSession(
+      'local',
+      '/home/u/alpha',
+      contract.SessionRow(
+        sessionID: 'sess_1',
+        title: 'Fix the login bug',
+        updatedAt: shellNow
+            .subtract(const Duration(minutes: 12))
+            .millisecondsSinceEpoch,
+        messageCount: 18,
+        open: true,
+        viewers: 0,
+        busy: false,
+      ),
+    ),
+    model.threadOfSession(
+      'local',
+      '/home/u/alpha',
+      contract.SessionRow(
+        sessionID: 'sess_2',
+        title: 'Tidy the parser',
+        updatedAt: shellNow
+            .subtract(const Duration(days: 2))
+            .millisecondsSinceEpoch,
+        open: false,
+        viewers: 0,
+        busy: false,
       ),
     ),
   ],

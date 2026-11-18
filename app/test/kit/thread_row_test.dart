@@ -40,6 +40,15 @@ void main() {
     expect(tester.getSize(find.byType(ThreadRow)).height, Sizes.row);
   });
 
+  testWidgets("a session row's kind has its tooltip", (tester) async {
+    await pump(tester, kind: ThreadKind.session);
+    expect(find.byIcon(ThreadKind.session.icon), findsOneWidget);
+    expect(
+      hasTip(tester, find.byIcon(ThreadKind.session.icon), 'Session'),
+      isTrue,
+    );
+  });
+
   testWidgets('selected fills with selected; hover with hover', (tester) async {
     await pump(tester, selected: true, onTap: () {});
     expect(decorationUnder(tester, find.byType(ThreadRow)).color, e.selected);

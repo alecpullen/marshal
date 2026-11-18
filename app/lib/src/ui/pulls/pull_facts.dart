@@ -81,6 +81,7 @@ ThreadKind _kindOf(PullView view) {
       model.ThreadKind.agent => ThreadKind.agent,
       model.ThreadKind.workItem => ThreadKind.workItem,
       model.ThreadKind.planRun => ThreadKind.planRun,
+      model.ThreadKind.session => ThreadKind.session,
     };
   }
   return view.fromFactoryItem ? ThreadKind.workItem : ThreadKind.agent;

@@ -102,9 +102,13 @@ class NavModel {
 }
 
 /// Whether [thread] belongs under a project's "Earlier".
+///
+/// A closed session is earlier whatever its age: it is stored rather than
+/// running, and a row nobody can open again must not crowd the tree.
 bool isEarlier(ThreadRef thread, DateTime now) =>
-    thread.status == ThreadStatus.idle &&
-    now.difference(thread.lastActive) > earlierAfter;
+    thread.closed ||
+    (thread.status == ThreadStatus.idle &&
+        now.difference(thread.lastActive) > earlierAfter);
 
 /// The sidebar for [place], from what [store] holds.
 ///
@@ -163,10 +167,15 @@ NavModel buildNavModel(
           in factory?.items(host: host.name) ?? const <FactoryItem>[])
         threadOfItem(host.name, item),
     ];
+    final sessions = [
+      for (final hosted in store.sessions(host: host.name))
+        threadOfSession(hosted.host, hosted.root, hosted.row),
+    ];
     final threads = [
       for (final agent in store.agents(host: host.name))
         if (!workerIds.contains(agent.id)) threadFor(host.name, agent),
       ...items,
+      ...sessions,
     ];
     final grouped = <String>{};
     for (final project in store.projects(host: host.name)) {
@@ -175,9 +184,9 @@ NavModel buildNavModel(
           .putIfAbsent(project.root, () => _ProjectBuilder(project.root))
           .add(threads.where((thread) => thread.project == project.root));
     }
-    // A work item whose project the host has not listed still belongs to it:
-    // an item nothing shows is work nobody can find.
-    for (final thread in items) {
+    // A work item or a session whose project the host has not listed still
+    // belongs to it: a thread nothing shows is work nobody can find.
+    for (final thread in [...items, ...sessions]) {
       if (grouped.contains(thread.project)) continue;
       byProject
           .putIfAbsent(thread.project, () => _ProjectBuilder(thread.project))

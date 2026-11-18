@@ -36,14 +36,18 @@ class ProjectPage extends StatefulWidget {
     required this.model,
     this.items = const [],
     this.agents = const [],
+    this.sessions = const [],
+    this.sessionsError,
     this.state,
     this.now,
     this.initialTab = 0,
     this.guard,
     this.onOpenItem,
     this.onOpenAgent,
+    this.onOpenSession,
     this.onOpenRun,
     this.onOpenAutomations,
+    this.onRetrySessions,
     this.onNewWork,
     this.observedChecks = const <ObservedCheck>[],
   });
@@ -56,6 +60,14 @@ class ProjectPage extends StatefulWidget {
   /// The project's agents, the factory's workers already left out (F6
   /// decision 13).
   final List<threads.ThreadRef> agents;
+
+  /// The project's sessions, open first and then closed, each part newest
+  /// first (P7 decision 8).
+  final List<threads.ThreadRef> sessions;
+
+  /// Why the session index could not list this project's sessions; null when
+  /// it listed, or holds no group for it yet.
+  final String? sessionsError;
 
   /// The page's data state, when it is not ready (§7).
   final StateKind? state;
@@ -72,12 +84,16 @@ class ProjectPage extends StatefulWidget {
 
   final void Function(WorkItemView item)? onOpenItem;
   final void Function(threads.ThreadRef agent)? onOpenAgent;
+  final void Function(threads.ThreadRef session)? onOpenSession;
   final void Function(ProjectRun run)? onOpenRun;
 
   /// Opens the Automations place, at the tab [tab] names (its index into
   /// [automationsSections]) or at its first tab when it is null. Null leaves
   /// the summary without its link.
   final void Function(int? tab)? onOpenAutomations;
+
+  /// Reads the project's sessions again, after the index failed to list them.
+  final VoidCallback? onRetrySessions;
 
   /// Opens the Studio's new-work dialog for this project: the page's one
   /// primary action, "New" (design.md, "Starting work"). Null leaves the header
@@ -252,6 +268,10 @@ class _ProjectPageState extends State<ProjectPage> {
               ),
           ]),
         const SizedBox(height: Space.s20),
+        Label('Sessions', count: widget.sessions.length),
+        const SizedBox(height: Space.s8),
+        _sessions(context),
+        const SizedBox(height: Space.s20),
         Label('Plan runs', count: model.runs.length),
         const SizedBox(height: Space.s8),
         _runs(context),
@@ -293,6 +313,59 @@ class _ProjectPageState extends State<ProjectPage> {
         ),
     ]);
   }
+
+  /// The project's sessions: open first, then closed, each part newest first
+  /// (P7 decision 8). A root whose listing failed says so above the rows it
+  /// still has, and a group with no rows is one sentence.
+  Widget _sessions(BuildContext context) {
+    final e = Ember.of(context);
+    final error = widget.sessionsError;
+    final sessions = widget.sessions;
+    final retry = widget.onRetrySessions;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (error != null) ...[
+          StateMessage.error(
+            message: error,
+            retry: StateAction('Try again', onTap: retry ?? () {}),
+          ),
+          if (sessions.isNotEmpty) const SizedBox(height: Space.s12),
+        ] else if (sessions.isEmpty)
+          Text(
+            'Sessions started with marshal in this project appear here.',
+            style: e.small.tint(e.muted),
+          ),
+        if (sessions.isNotEmpty)
+          Rows([
+            for (final session in sessions)
+              RowItem(
+                name: session.title,
+                description: _sessionDescription(session),
+                onTap: widget.onOpenSession == null
+                    ? null
+                    : () => widget.onOpenSession!(session),
+              ),
+          ]),
+      ],
+    );
+  }
+
+  /// What a session's row says: whether it is open or closed, how long ago it
+  /// was last active, and — when the index said — how many messages it holds.
+  String _sessionDescription(threads.ThreadRef session) => [
+    session.closed ? 'Closed' : 'Open',
+    relativeAge(session.lastActive, _now),
+    ?_messageCount(session.messageCount),
+  ].join(' · ');
+
+  /// A session's transcript length in words, or null when the index carried
+  /// no count: a row that does not know says nothing about messages.
+  static String? _messageCount(int? count) => switch (count) {
+    null => null,
+    1 => '1 message',
+    final n => '$n messages',
+  };
 
   /// The automations as they are configured, read-only until F7's place is
   /// what the project links to.

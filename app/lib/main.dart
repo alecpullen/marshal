@@ -48,6 +48,7 @@ import 'src/model/share_model.dart';
 import 'src/model/signals_store.dart';
 import 'src/model/stack_store.dart';
 import 'src/model/thread_inspector_models.dart';
+import 'src/model/thread_ref.dart' as threads;
 import 'src/model/usage_model.dart';
 import 'src/model/watches_model.dart';
 import 'src/model/nav_model.dart' show projectName;
@@ -159,10 +160,21 @@ Future<void> main() async {
           signals: signals,
           // A thread place opens its own session's transcript on the client
           // that reaches its host (F3): the same client the inbox answers with.
-          threadStore: (thread) => StackStore(
-            hosts.hosts.firstWhere((host) => host.name == thread.host).client,
-            thread.id,
-          ),
+          // A session is opened on the bridge before it is followed, because a
+          // session the project no longer holds is closed and reopened rather
+          // than read (P7 decision 5); an agent's is followed as it is.
+          threadStore: (thread) {
+            final client = hosts.hosts
+                .firstWhere((host) => host.name == thread.host)
+                .client;
+            return StackStore(
+              client,
+              thread.id,
+              opener: thread.kind == threads.ThreadKind.session
+                  ? () => client.openSession(thread.id)
+                  : null,
+            );
+          },
           composerFor: (thread, view) => ComposerModel.forSession(
             hosts.hosts.firstWhere((host) => host.name == thread.host).client,
             thread.id,

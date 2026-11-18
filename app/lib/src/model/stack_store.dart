@@ -7,6 +7,7 @@ import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
 import '../client/event_stream.dart';
 import '../client/transport.dart';
+import 'fleet_store.dart' show describeFailure;
 
 // The transcript's wire types as the UI names them. `ui/` reads `model/` and
 // never reaches into `client/` (test/boundary_test.dart), so the types a row
@@ -38,6 +39,11 @@ enum StackStatus {
 
   /// The first fetch failed and nothing is held yet.
   error,
+
+  /// The session was closed while idle: the bridge no longer holds it. Only a
+  /// store that opens its session says this; an agent's 404 is an [error],
+  /// because an agent's session is not something this screen reopens.
+  gone,
 }
 
 /// One session transcript's tree, as the bridge relays it.
@@ -53,14 +59,19 @@ class StackStore extends ChangeNotifier {
   /// Holds one transcript: the parent's when [subagentId] is 0, a child's
   /// otherwise.
   ///
-  /// [fetcher] and [events] are the two seams a test drives without a socket;
-  /// production passes neither, and both come from [client].
+  /// [fetcher], [events] and [opener] are the seams a test drives without a
+  /// socket; production passes none, and all three come from [client].
+  ///
+  /// An [opener] is what a session has and an agent has not: the bridge is
+  /// asked to open the session before its stream is followed, so a session
+  /// that was closed while idle is reopened first (P7 decision 5).
   StackStore(
     BridgeClient client,
     this.sessionId, {
     this.subagentId = 0,
     Future<StackSnapshot> Function(String sessionId, int subagentId)? fetcher,
     EventStream Function()? events,
+    this.opener,
   }) : _fetcher =
            fetcher ??
            ((sessionId, subagentId) =>
@@ -74,7 +85,8 @@ class StackStore extends ChangeNotifier {
     : sessionId = snapshot.sessionID,
       subagentId = snapshot.subagentID ?? 0,
       _fetcher = null,
-      _openEvents = null {
+      _openEvents = null,
+      opener = null {
     _nodes.addEntries([
       for (final node in snapshot.nodes) MapEntry(node.id, node),
     ]);
@@ -93,16 +105,25 @@ class StackStore extends ChangeNotifier {
   final Future<StackSnapshot> Function(String, int)? _fetcher;
   final EventStream Function()? _openEvents;
 
+  /// Asks the bridge to open the session, when this store is a session's.
+  final Future<void> Function()? opener;
+
   StackStatus _status = StackStatus.loading;
   int _rev = 0;
   List<String> _roots = const [];
   final _nodes = <String, WireNode>{};
+
+  /// The bridge's words for the last failure, or null.
+  String? _failure;
 
   EventStream? _stream;
   StreamSubscription<StreamEvent>? _events;
   StreamSubscription<void>? _gaps;
   bool _wasLive = false;
   bool _disposed = false;
+
+  /// Whether the opener is in flight: the stream and the fetch wait for it.
+  bool _opening = false;
 
   Future<void>? _inflight;
   bool _again = false;
@@ -117,6 +138,12 @@ class StackStore extends ChangeNotifier {
   /// What the store has.
   StackStatus get status => _status;
 
+  /// The bridge's words for the last failure, or null (P7 decision 7).
+  ///
+  /// A screen says these in place of its own sentence, so a refusal that names
+  /// the reason — a session's owner, say — is not replaced by a generic one.
+  String? get failure => _failure;
+
   /// The node with [id], or null when the tree does not hold it.
   WireNode? node(String id) => _nodes[id];
 
@@ -130,17 +157,77 @@ class StackStore extends ChangeNotifier {
   ///
   /// A second call while running does nothing, so a screen that rebuilds does
   /// not open a second stream.
+  ///
+  /// A store given an [opener] is opened first, and only then does it follow:
+  /// the first event stream must not race the reopening (P7 decision 5).
   void start() {
-    if (_stream != null) return;
+    if (_stream != null || _opening) return;
     final open = _openEvents;
     // A seeded store was handed its transcript and has no session to follow.
     if (open == null) return;
+    if (opener == null) {
+      _follow(open);
+      unawaited(refresh());
+      return;
+    }
+    unawaited(_openThenFollow(open));
+  }
+
+  /// Runs the opener again, then opens the stream if it is not open and
+  /// refetches (P7 decision 5). A store with no opener has nothing to reopen.
+  Future<void> reopen() async {
+    if (opener == null || _opening) return;
+    final open = _openEvents;
+    if (open == null) return;
+    await _openThenFollow(open);
+  }
+
+  /// Opens the session, and follows it once the bridge has answered: a session
+  /// it could not open holds no transcript to read.
+  Future<void> _openThenFollow(EventStream Function() open) async {
+    _opening = true;
+    _setStatus(StackStatus.loading);
+    final opened = await _open();
+    _opening = false;
+    if (!opened || _disposed) return;
+    _follow(open);
+    await refresh();
+  }
+
+  /// Asks the bridge to open the session, keeping its words when it refuses.
+  /// False means nothing was opened.
+  Future<bool> _open() async {
+    final opener = this.opener;
+    if (opener == null) return true;
+    try {
+      await opener();
+    } catch (error) {
+      if (_disposed) return false;
+      _failure = error is BridgeFailure ? describeFailure(error) : null;
+      _setStatus(StackStatus.error);
+      return false;
+    }
+    if (_disposed) return false;
+    _failure = null;
+    return true;
+  }
+
+  /// Opens the session's stream and follows it. The snapshot is the caller's
+  /// to ask for, once it knows there is a session to read.
+  void _follow(EventStream Function() open) {
+    if (_stream != null) return;
     final stream = _stream = open();
     _events = stream.events.listen(_onEvent);
     _gaps = stream.gaps.listen((_) => onStreamGap());
     stream.state.addListener(_onStreamState);
     stream.start();
-    unawaited(refresh());
+  }
+
+  /// Sets [status], telling the screen only about a change.
+  void _setStatus(StackStatus status) {
+    if (_status == status) return;
+    _status = status;
+    notifyListeners();
   }
 
   /// Stops following the session: the stream is closed and no patch is taken.
@@ -193,15 +280,26 @@ class StackStore extends ChangeNotifier {
         _nodes.clear();
         _roots = const [];
         _rev = 0;
+        _failure = null;
         _status = StackStatus.unsupported;
         notifyListeners();
         return;
       }
-      _failed();
+      if (failure.status == 404 && opener != null) {
+        // Decision 6: a session the bridge no longer holds. An agent's 404
+        // stays an error, because an agent's session is not reopened here.
+        _gone();
+        return;
+      }
+      // The bridge's words are for a session's screen (P7 decision 7): an
+      // agent's store has its own sentence, and a session's keeps them.
+      _failed(opener == null ? null : describeFailure(failure));
       return;
     } catch (_) {
       if (_disposed || generation != _generation) return;
-      _failed();
+      // A transport exception is not the bridge speaking: a raw `toString()`
+      // is not the design system's plain words, so the screen says its own.
+      _failed(null);
       return;
     }
     if (_disposed || generation != _generation) return;
@@ -220,15 +318,28 @@ class StackStore extends ChangeNotifier {
     _collect(_nodes, snapshot.roots);
     _roots = snapshot.roots;
     _rev = snapshot.rev;
+    _failure = null;
     _status = StackStatus.ready;
     notifyListeners();
   }
 
   /// A failed fetch keeps a snapshot already held; only a store that holds
   /// nothing reports it, and the next event tries again.
-  void _failed() {
+  void _failed(String? message) {
     if (_status == StackStatus.ready) return;
+    _failure = message;
     _status = StackStatus.error;
+    notifyListeners();
+  }
+
+  /// The bridge no longer holds this session (P7 decision 6): it was closed
+  /// while idle. What is held, if anything, stays — a transcript read is never
+  /// thrown away — and the screen offers to open it again.
+  void _gone() {
+    if (_status == StackStatus.ready) return;
+    if (_status == StackStatus.gone) return;
+    _failure = null;
+    _status = StackStatus.gone;
     notifyListeners();
   }
 
@@ -279,6 +390,10 @@ class StackStore extends ChangeNotifier {
         // a reconnect or a stream gap, or the screen's Try again — not this
         // patch, which would fetch once per patch for as long as the route
         // kept failing.
+        return;
+      case StackStatus.gone:
+        // The bridge no longer holds this session, so nothing is followed and
+        // the screen's Reopen is what asks for it again (P7 decisions 5–6).
         return;
       case StackStatus.loading:
         // The snapshot in flight may or may not include this patch. Whatever

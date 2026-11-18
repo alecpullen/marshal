@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
+import 'package:marshal_app/src/client/event_stream.dart';
 import 'package:marshal_app/src/client/transport.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_view_state.dart';
@@ -19,6 +21,34 @@ class _UnusedTransport implements Transport {
   @override
   Stream<String> lines(Request request) =>
       throw StateError('the stack store test does not open streams');
+}
+
+/// The session stream a store follows, recorded rather than connected: it
+/// writes to [log] when it starts, so a test can say when the store followed
+/// against when the opener answered.
+class _RecordedStream extends EventStream {
+  _RecordedStream(this.log) : super(_UnusedTransport(), '/api/events');
+
+  final List<String> log;
+
+  final _events = StreamController<StreamEvent>.broadcast();
+  final _gaps = StreamController<void>.broadcast();
+  final _state = ValueNotifier<StreamState>(StreamState.connecting);
+
+  @override
+  Stream<StreamEvent> get events => _events.stream;
+
+  @override
+  Stream<void> get gaps => _gaps.stream;
+
+  @override
+  ValueListenable<StreamState> get state => _state;
+
+  @override
+  void start() => log.add('stream');
+
+  @override
+  void stop() {}
 }
 
 /// One recorded snapshot-and-patch sequence, as test/fixtures/stack holds it.
@@ -71,6 +101,14 @@ StackStore _store(_Fetcher fetcher) =>
 
 /// Lets the store's queued refetch run.
 Future<void> _settle() => Future<void>.delayed(Duration.zero);
+
+/// Lets an opener, an open stream and the fetch that follows both all run: one
+/// `_settle` covers one turn of the event loop, and opening takes several.
+Future<void> _settleAll() async {
+  for (var i = 0; i < 5; i++) {
+    await _settle();
+  }
+}
 
 /// A node map as the store holds it, for comparing with a snapshot.
 Map<String, Map<String, dynamic>> _held(StackStore store) => {
@@ -307,6 +345,206 @@ void main() {
       reason: 'a fold is the user\'s choice, not the node\'s',
     );
     view.dispose();
+    store.dispose();
+  });
+
+  test('a store with an opener opens before it follows', () async {
+    final sequence = _Sequence.load('turn-arrives.json');
+    final log = <String>[];
+    final store = StackStore(
+      BridgeClient(_UnusedTransport()),
+      's-1',
+      fetcher: (sessionId, subagentId) async {
+        log.add('fetch');
+        return sequence.snapshot;
+      },
+      events: () => _RecordedStream(log),
+      opener: () async {
+        log.add('open');
+        await Future<void>.delayed(Duration.zero);
+        log.add('opened');
+      },
+    );
+
+    expect(store.status, StackStatus.loading);
+    store.start();
+    // The opener is in flight: nothing is followed and nothing is read.
+    expect(log, [
+      'open',
+    ], reason: 'the opener runs before anything is followed');
+
+    await _settleAll();
+
+    expect(log, ['open', 'opened', 'stream', 'fetch']);
+    expect(store.status, StackStatus.ready);
+    expect(store.rev, sequence.snapshot.rev);
+    store.dispose();
+  });
+
+  test('a failed open is an error with the bridge\'s words', () async {
+    final sequence = _Sequence.load('turn-arrives.json');
+    final log = <String>[];
+    final store = StackStore(
+      BridgeClient(_UnusedTransport()),
+      's-1',
+      fetcher: (sessionId, subagentId) async {
+        log.add('fetch');
+        return sequence.snapshot;
+      },
+      events: () => _RecordedStream(log),
+      opener: () async => throw BridgeFailure(
+        409,
+        '{"error":"sess_1 is open in a terminal on studio"}',
+      ),
+    );
+
+    store.start();
+    await _settleAll();
+
+    expect(store.status, StackStatus.error);
+    expect(store.failure, 'sess_1 is open in a terminal on studio');
+    expect(log, isEmpty, reason: 'a failed open opens nothing');
+    store.dispose();
+  });
+
+  test('a 404 for an opened session is gone', () async {
+    var opens = 0;
+    final store = StackStore(
+      BridgeClient(_UnusedTransport()),
+      's-1',
+      fetcher: (sessionId, subagentId) async =>
+          throw BridgeFailure(404, '{"error":"no such session"}'),
+      events: () => _RecordedStream(<String>[]),
+      opener: () async {
+        opens++;
+      },
+    );
+
+    store.start();
+    await _settleAll();
+
+    expect(opens, 1, reason: 'the session was opened before it was followed');
+    expect(store.status, StackStatus.gone);
+    store.dispose();
+  });
+
+  test('a 404 for an agent is still an error', () async {
+    // No opener: an agent's session is not something this screen reopens, so
+    // its 404 is the failed read it always was (P7 decision 6).
+    final store = StackStore(
+      BridgeClient(_UnusedTransport()),
+      'a-1',
+      fetcher: (sessionId, subagentId) async =>
+          throw BridgeFailure(404, '{"error":"no such session"}'),
+    );
+
+    await store.refresh();
+
+    expect(store.status, StackStatus.error);
+    expect(
+      store.failure,
+      isNull,
+      reason: 'the bridge’s words are a session’s, so an agent keeps its own',
+    );
+    store.dispose();
+  });
+
+  test('a transport outage keeps the plain sentence', () async {
+    // A session's store, opened and followed, whose read throws something
+    // that is not the bridge answering at all.
+    final store = StackStore(
+      BridgeClient(_UnusedTransport()),
+      's-1',
+      fetcher: (sessionId, subagentId) async =>
+          throw Exception('connection refused'),
+      events: () => _RecordedStream(<String>[]),
+      opener: () async {},
+    );
+
+    store.start();
+    await _settleAll();
+
+    expect(store.status, StackStatus.error);
+    expect(
+      store.failure,
+      isNull,
+      reason:
+          'a raw exception is not the bridge speaking: the screen keeps '
+          'the design system’s plain words',
+    );
+    store.dispose();
+  });
+
+  test('a second 404 on a gone session says nothing new', () async {
+    final store = StackStore(
+      BridgeClient(_UnusedTransport()),
+      's-1',
+      fetcher: (sessionId, subagentId) async =>
+          throw BridgeFailure(404, '{"error":"no such session"}'),
+      events: () => _RecordedStream(<String>[]),
+      opener: () async {},
+    );
+    var notifications = 0;
+    store.addListener(() => notifications++);
+
+    store.start();
+    await _settleAll();
+    expect(store.status, StackStatus.gone);
+    final told = notifications;
+
+    // The store keeps following its stream, so a gap refetches again and the
+    // 404 arrives a second time.
+    await store.refresh();
+    await _settleAll();
+
+    expect(store.status, StackStatus.gone);
+    expect(
+      notifications,
+      told,
+      reason: 'nothing changed, so there is nothing to say',
+    );
+    store.dispose();
+  });
+
+  test('reopen opens again and refetches', () async {
+    final sequence = _Sequence.load('turn-arrives.json');
+    final log = <String>[];
+    var opens = 0;
+    var calls = 0;
+    var closed = true;
+    final store = StackStore(
+      BridgeClient(_UnusedTransport()),
+      's-1',
+      fetcher: (sessionId, subagentId) async {
+        calls++;
+        if (closed) throw BridgeFailure(404, '{"error":"closed"}');
+        return sequence.snapshot;
+      },
+      events: () => _RecordedStream(log),
+      opener: () async {
+        opens++;
+      },
+    );
+
+    store.start();
+    await _settleAll();
+    expect(store.status, StackStatus.gone);
+    expect(opens, 1);
+
+    closed = false;
+    final reopening = store.reopen();
+    expect(store.status, StackStatus.loading);
+    await reopening;
+
+    expect(opens, 2, reason: 'the opener runs again');
+    expect(calls, 2, reason: 'and the transcript is read again');
+    expect(store.status, StackStatus.ready);
+    expect(store.failure, isNull);
+    expect(
+      log.where((entry) => entry == 'stream'),
+      hasLength(1),
+      reason: 'the stream was open, so it is not opened a second time',
+    );
     store.dispose();
   });
 }

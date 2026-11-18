@@ -1,9 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/hosts_model.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as inbox;
 import 'package:marshal_app/src/model/new_work_model.dart';
+import 'package:marshal_app/src/client/contract.g.dart';
+import 'package:marshal_app/src/client/event_stream.dart';
+import 'package:marshal_app/src/client/transport.dart';
+import 'package:marshal_app/src/model/stack_store.dart';
+import 'package:marshal_app/src/ui/thread/thread_screen.dart';
+import 'package:marshal_app/src/model/inbox_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/sections/unsaved_guard.dart';
@@ -19,6 +27,105 @@ import '../support/screens.dart';
 /// narrow layout reaches the same navigation through the app bar, a place a
 /// later phase brings says so, and a host that is away is listed with the
 /// time it was last seen.
+/// The session a thread place opens: one row of the fleet's index, with the
+/// title the thread is called by.
+SessionRow _sessionRow() => const SessionRow(
+  sessionID: 'sess_1',
+  title: 'Fix the login bug',
+  updatedAt: 1763300000000,
+  messageCount: 3,
+  open: true,
+  viewers: 0,
+  busy: false,
+);
+
+/// One host listing [_sessionRow], read through the real client: the shell's
+/// session place resolves against the fleet's index, not against a fixture it
+/// is handed.
+Future<ModelFixture> _fixtureListingSession(WidgetTester tester) async {
+  final fixture = (await tester.runAsync(
+    () => ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/marshal')],
+        // One agent keeps the shell from reading the host as unreachable: the
+        // session's own place does not depend on it.
+        agents: [agent(id: 'a-1', project: '/home/u/marshal')],
+      ),
+    ]),
+  ))!;
+  fixture.serve(
+    'local',
+    '/api/sessions/all',
+    SessionIndex(
+      projects: [
+        ProjectSessions(root: '/home/u/marshal', sessions: [_sessionRow()]),
+      ],
+    ),
+  );
+  await tester.runAsync(() => fixture.refresh());
+  return fixture;
+}
+
+/// A store that already holds a transcript with nothing in it: the session
+/// thread's chrome is what the test reads.
+StackStore _emptyStore(String sessionId) => StackStore.seeded(
+  StackSnapshot(sessionID: sessionId, rev: 0, roots: const [], nodes: const []),
+);
+
+/// A session stream that never connects: its transport fails at once and its
+/// backoff never comes due, so the test leaves no timer pending.
+EventStream _quietStream() => EventStream(
+  _DeadTransport(),
+  '/api/events',
+  wait: (_) => Completer<void>().future,
+  jitter: 0,
+);
+
+class _DeadTransport implements Transport {
+  @override
+  Future<Response> send(Request request) async =>
+      throw StateError('the shell test does not send requests');
+
+  @override
+  Stream<String> lines(Request request) =>
+      throw StateError('the shell test does not open streams');
+}
+
+/// The session thread's place, pumped through the Studio: the only widget that
+/// resolves a thread place to a session (F2 decision 1).
+Future<void> _pumpSessionPlace(
+  WidgetTester tester,
+  ModelFixture fixture, {
+  required StackStore Function(String sessionId) storeFor,
+}) async {
+  final inbox = InboxModel(fixture.store, client: fixture.clientFor);
+  addTearDown(inbox.dispose);
+  await tester.pumpWidget(
+    EmberApp(
+      brightness: Brightness.light,
+      home: Studio(
+        store: fixture.store,
+        inbox: inbox,
+        threadStore: (thread) => storeFor(thread.id),
+        initialPlace: const Place(
+          PlaceKind.thread,
+          host: 'local',
+          id: 'sess_1',
+        ),
+      ),
+    ),
+  );
+  // The fleet's read and the place's own store settle over two frames.
+  await tester.pump();
+  await tester.pump();
+}
+
+/// The shell's rules (F2 decision 1 and §4): a row opens its place, the
+/// narrow layout reaches the same navigation through the app bar, a place a
+/// later phase brings says so, and a host that is away is listed with the
+/// time it was last seen.
+
 void main() {
   /// The shell with a recorder for the place it opened.
   (Widget, List<Place>) shellAt(
@@ -516,5 +623,65 @@ void main() {
         StateKind.loading,
       );
     });
+  });
+
+  testWidgets('a session\'s thread place opens the session thread', (
+    tester,
+  ) async {
+    // The session's id is not an agent's: the place resolves through the
+    // fleet's index, which lists the sessions the bridge holds (P7).
+    final fixture = await _fixtureListingSession(tester);
+    await _pumpSessionPlace(tester, fixture, storeFor: _emptyStore);
+
+    final screen = find.byType(ThreadScreen);
+    expect(screen, findsOneWidget, reason: 'a session is a thread of its own');
+    expect(
+      find.descendant(of: screen, matching: find.text('Fix the login bug')),
+      findsWidgets,
+      reason: 'the session is called by its own title',
+    );
+    expect(
+      find.descendant(of: screen, matching: find.textContaining('Session')),
+      findsWidgets,
+      reason: 'the header names the thread\'s kind',
+    );
+  });
+
+  testWidgets('a gone session offers reopen', (tester) async {
+    // The session was closed while idle: the bridge answers the snapshot with
+    // a 404, so the thread screen offers to open it again (P7 decisions 5–7).
+    final fixture = await _fixtureListingSession(tester);
+    var opens = 0;
+    final store = StackStore(
+      fixture.clientFor('local'),
+      'sess_1',
+      fetcher: (sessionId, subagentId) async =>
+          throw BridgeFailure(404, '{"error":"no such session"}'),
+      events: _quietStream,
+      opener: () async {
+        opens++;
+      },
+    );
+
+    await _pumpSessionPlace(tester, fixture, storeFor: (_) => store);
+    // The open, the fetch and the store's notification take more than the two
+    // frames the place itself needs.
+    await tester.pump();
+    await tester.pump();
+    expect(store.status, StackStatus.gone);
+    expect(opens, 1, reason: 'the place opened the session before reading it');
+
+    // The screen reads its store when it builds, and the store answered after
+    // those frames: one more build of the same place draws its answer.
+    await _pumpSessionPlace(tester, fixture, storeFor: (_) => store);
+
+    expect(find.text('This session was closed while idle.'), findsOneWidget);
+    expect(find.text('Reopen'), findsOneWidget);
+
+    await tester.tap(find.text('Reopen'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(opens, 2, reason: 'Reopen opens the session again');
   });
 }

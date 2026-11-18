@@ -80,6 +80,7 @@ class PullsStore extends ChangeNotifier {
     final id = switch (thread.kind) {
       ThreadKind.agent || ThreadKind.planRun => record.agentID,
       ThreadKind.workItem => record.factoryItem,
+      ThreadKind.session => null,
     };
     return id != null && id.isNotEmpty && id == thread.id;
   }

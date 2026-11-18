@@ -968,6 +968,18 @@ class BridgeClient {
     Roster.fromJson,
   );
 
+  /// GET /api/sessions/all: every project's sessions on this host, or [root]'s.
+  Future<SessionIndex> sessionIndex({String? root}) => _objectOf(
+    '/api/sessions/all',
+    SessionIndex.fromJson,
+    query: {'root': ?root},
+  );
+
+  /// POST /api/sessions/{id}/load: opens a closed session on its project's
+  /// child; an open one is answered as it is.
+  Future<void> openSession(String sessionId) =>
+      _post('/api/sessions/${Uri.encodeComponent(sessionId)}/load', null);
+
   /// POST /api/agents: starts an agent, which is a new thread.
   Future<SpawnResult> spawn(SpawnRequest request) async {
     final response = await _send(

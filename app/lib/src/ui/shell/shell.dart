@@ -1013,6 +1013,9 @@ class _StudioState extends State<Studio> {
             navigation.go(Place(PlaceKind.thread, host: host, id: item.id)),
         onOpenAgent: (agent) =>
             navigation.go(Place(PlaceKind.thread, host: host, id: agent.id)),
+        onOpenSession: (session) => navigation.go(
+          Place(PlaceKind.thread, host: session.host, id: session.id),
+        ),
         onOpenRun: (run) => _openRun(navigation, host, run),
         // The tab a row names, or the place's first tab when it names none.
         onOpenAutomations: (tab) => navigation.go(
@@ -1143,6 +1146,14 @@ class _StudioState extends State<Studio> {
     if (run != null && run.host == host) return run;
     final item = widget.factory?.byId(host, id);
     if (item != null) return threadOfItem(host, item);
+    // A session the bridge's index lists is a thread of its own (P7). The two
+    // cannot collide: the index leaves out the sessions agents run in, so an
+    // agent's id and a session's name the same thread only by impossible
+    // accident.
+    final session = widget.store.session(host, id);
+    if (session != null) {
+      return model.threadOfSession(host, session.root, session.row);
+    }
     for (final agent in widget.store.agents(host: host)) {
       if (agent.id == id) return model.threadFor(host, agent);
     }
@@ -1907,6 +1918,7 @@ class _ProjectPlace extends StatefulWidget {
     this.now,
     this.onOpenItem,
     this.onOpenAgent,
+    this.onOpenSession,
     this.onOpenRun,
     this.onOpenAutomations,
     this.onNewWork,
@@ -1921,6 +1933,7 @@ class _ProjectPlace extends StatefulWidget {
   final DateTime? now;
   final void Function(WorkItemView item)? onOpenItem;
   final void Function(model.ThreadRef agent)? onOpenAgent;
+  final void Function(model.ThreadRef session)? onOpenSession;
   final void Function(ProjectRun run)? onOpenRun;
   final void Function(int? tab)? onOpenAutomations;
 
@@ -1996,12 +2009,18 @@ class _ProjectPlaceState extends State<_ProjectPlace> {
       model: _model,
       items: items,
       agents: agents,
+      sessions: _sessions(),
+      sessionsError: widget.store.sessionsError(widget.host, widget.root),
       guard: widget.guard,
       now: widget.now,
       onOpenItem: widget.onOpenItem,
       onOpenAgent: widget.onOpenAgent,
+      onOpenSession: widget.onOpenSession,
       onOpenRun: widget.onOpenRun,
       onOpenAutomations: widget.onOpenAutomations,
+      onRetrySessions: () => unawaited(
+        widget.store.refreshSessions(widget.host, root: widget.root),
+      ),
       onNewWork: widget.onNewWork,
       observedChecks:
           factory?.observedChecks(
@@ -2013,6 +2032,23 @@ class _ProjectPlaceState extends State<_ProjectPlace> {
           ) ??
           const [],
     );
+  }
+
+  /// This project's sessions on this host: open first, then closed, each part
+  /// newest first, and a tie broken by id as the sidebar breaks one
+  /// (P7 decision 8).
+  List<model.ThreadRef> _sessions() {
+    final sessions = [
+      for (final hosted in widget.store.sessions(host: widget.host))
+        if (hosted.root == widget.root)
+          model.threadOfSession(hosted.host, hosted.root, hosted.row),
+    ];
+    sessions.sort((a, b) {
+      if (a.closed != b.closed) return a.closed ? 1 : -1;
+      final byTime = b.lastActive.compareTo(a.lastActive);
+      return byTime != 0 ? byTime : a.id.compareTo(b.id);
+    });
+    return sessions;
   }
 }
 

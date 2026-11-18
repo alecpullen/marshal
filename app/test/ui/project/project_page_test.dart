@@ -10,6 +10,7 @@ import 'package:marshal_app/src/model/factory_store.dart';
 import 'package:marshal_app/src/model/inbox_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/project_model.dart';
+import 'package:marshal_app/src/model/thread_ref.dart' as threads;
 import 'package:marshal_app/src/model/section_model.dart' show SaveState;
 import 'package:marshal_app/src/model/work_item_model.dart'
     show Stage, WorkItemView;
@@ -125,6 +126,27 @@ Future<void> _enter(WidgetTester tester, String label, String text) async {
   );
   await tester.pump();
 }
+
+/// One session as the page draws it: an index row read as a session's thread.
+threads.ThreadRef _session(
+  String id, {
+  String? title,
+  bool open = true,
+  int? messageCount,
+  Duration age = const Duration(minutes: 5),
+}) => threads.threadOfSession(
+  'local',
+  '/home/u/alpha',
+  contract.SessionRow(
+    sessionID: id,
+    title: title,
+    updatedAt: _now.subtract(age).millisecondsSinceEpoch,
+    messageCount: messageCount,
+    open: open,
+    viewers: 0,
+    busy: false,
+  ),
+);
 
 void main() {
   testWidgets('board columns follow stage', (tester) async {
@@ -980,6 +1002,180 @@ void main() {
     expect(model.draft!.expectedChecks, [
       const ExpectedCheck(kind: 'check_run', name: 'build', appID: 42),
     ]);
+  });
+
+  testWidgets('sessions list open first, then closed', (tester) async {
+    // The order is the shell's: the page draws the list it is given, so the
+    // test drives the place that sorts the index's rows.
+    final fixture = (await tester.runAsync(
+      () => ModelFixture.start([
+        FixtureHost(
+          name: 'local',
+          projects: [project('/home/u/alpha')],
+          agents: [agent(id: 'a-1', project: '/home/u/alpha')],
+        ),
+      ], now: _now),
+    ))!;
+    fixture.serve('local', '/api/sessions/all', {
+      'projects': [
+        contract.ProjectSessions(
+          root: '/home/u/alpha',
+          sessions: [
+            // The closed session is the newest of the three, and still comes
+            // last.
+            contract.SessionRow(
+              sessionID: 'sess_3',
+              title: 'Tidy the parser',
+              updatedAt: _now
+                  .subtract(const Duration(minutes: 1))
+                  .millisecondsSinceEpoch,
+              open: false,
+              viewers: 0,
+              busy: false,
+            ),
+            contract.SessionRow(
+              sessionID: 'sess_1',
+              title: 'Older open session',
+              updatedAt: _now
+                  .subtract(const Duration(hours: 2))
+                  .millisecondsSinceEpoch,
+              open: true,
+              viewers: 0,
+              busy: false,
+            ),
+            contract.SessionRow(
+              sessionID: 'sess_2',
+              title: 'Newer open session',
+              updatedAt: _now
+                  .subtract(const Duration(minutes: 5))
+                  .millisecondsSinceEpoch,
+              open: true,
+              viewers: 0,
+              busy: false,
+            ),
+          ],
+        ).toJson(),
+      ],
+    });
+    await tester.runAsync(() => fixture.refresh());
+
+    tester.view.physicalSize = const Size(1440, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final inbox = InboxModel(fixture.store, client: fixture.clientFor);
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inbox,
+          projectFor: (host, root) => _model(),
+          initialPlace: const Place(PlaceKind.project, id: '/home/u/alpha'),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    final page = find.byType(ProjectPage);
+    double topOf(String title) => tester
+        .getTopLeft(find.descendant(of: page, matching: find.text(title)))
+        .dy;
+    expect(topOf('Newer open session'), lessThan(topOf('Older open session')));
+    expect(topOf('Older open session'), lessThan(topOf('Tidy the parser')));
+  });
+
+  testWidgets('a row says open or closed, its age and its messages', (
+    tester,
+  ) async {
+    await _pumpTall(
+      tester,
+      ProjectPage(
+        model: _model(),
+        sessions: [
+          _session(
+            'sess_1',
+            title: 'Fix the login bug',
+            messageCount: 18,
+            age: const Duration(minutes: 8),
+          ),
+          _session(
+            'sess_2',
+            title: 'Tidy the parser',
+            open: false,
+            messageCount: 1,
+            age: const Duration(hours: 3),
+          ),
+          _session(
+            'sess_3',
+            title: 'Sketch the importer',
+            open: false,
+            age: const Duration(days: 2, hours: 5),
+          ),
+        ],
+        now: _now,
+      ),
+    );
+
+    expect(find.text('Fix the login bug'), findsOneWidget);
+    expect(find.text('Open · 8m · 18 messages'), findsOneWidget);
+    expect(find.text('Closed · 3h · 1 message'), findsOneWidget);
+    // A session whose index entry carried no count says nothing about
+    // messages rather than "0 messages".
+    expect(find.text('Closed · 2d'), findsOneWidget);
+  });
+
+  testWidgets('no sessions shows the sentence', (tester) async {
+    await _pumpTall(tester, ProjectPage(model: _model(), now: _now));
+
+    expect(
+      find.text('Sessions started with marshal in this project appear here.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets("a root's error shows with try again", (tester) async {
+    var retries = 0;
+    await _pumpTall(
+      tester,
+      ProjectPage(
+        model: _model(),
+        sessions: [_session('sess_1', title: 'Fix the login bug')],
+        sessionsError: "This project's sessions could not be listed.",
+        onRetrySessions: () => retries++,
+        now: _now,
+      ),
+    );
+
+    expect(
+      find.text("This project's sessions could not be listed."),
+      findsOneWidget,
+    );
+    // The rows it still has, under the error.
+    expect(find.text('Fix the login bug'), findsOneWidget);
+
+    await tester.tap(find.text('Try again'));
+    await tester.pump();
+    expect(retries, 1);
+  });
+
+  testWidgets('choosing a session opens it', (tester) async {
+    threads.ThreadRef? opened;
+    await _pumpTall(
+      tester,
+      ProjectPage(
+        model: _model(),
+        sessions: [_session('sess_1', title: 'Fix the login bug')],
+        onOpenSession: (session) => opened = session,
+        now: _now,
+      ),
+    );
+
+    await tester.tap(find.text('Fix the login bug'));
+    await tester.pump();
+
+    expect(opened?.id, 'sess_1');
+    expect(opened?.host, 'local');
   });
 
   testWidgets('a project lists its schedules and watches', (tester) async {

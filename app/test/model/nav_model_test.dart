@@ -13,6 +13,35 @@ import 'support.dart';
 void main() {
   final now = DateTime.utc(2026, 11, 17, 12);
 
+  /// One session row as a host's index reports one.
+  Map<String, Object?> session({
+    String id = 'sess_0123456789abcdef',
+    String? title,
+    DateTime? lastActive,
+    bool open = true,
+    bool busy = false,
+    int viewers = 0,
+  }) => {
+    'sessionId': id,
+    'title': ?title,
+    'updatedAt': (lastActive ?? now).millisecondsSinceEpoch,
+    'open': open,
+    'viewers': viewers,
+    'busy': busy,
+  };
+
+  /// Serves [host]'s session index: each project root and its rows.
+  void serveSessions(
+    ModelFixture fixture,
+    String host,
+    Map<String, List<Map<String, Object?>>> byRoot,
+  ) => fixture.serve(host, '/api/sessions/all', {
+    'projects': [
+      for (final entry in byRoot.entries)
+        {'root': entry.key, 'sessions': entry.value},
+    ],
+  });
+
   test('the fixed places are the design\'s order', () async {
     final fixture = await ModelFixture.start([
       const FixtureHost(name: 'local'),
@@ -276,5 +305,124 @@ void main() {
     );
     final alpha = model.projects.firstWhere((row) => row.id == '/srv/alpha');
     expect(alpha.current.single.host, 'studio');
+  });
+
+  test('an open session is a current thread under its project', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    serveSessions(fixture, 'local', {
+      '/home/u/alpha': [
+        session(
+          title: 'Cache the reads',
+          lastActive: now.subtract(const Duration(minutes: 3)),
+        ),
+      ],
+    });
+    await fixture.refresh();
+
+    final row = buildNavModel(
+      const Place.overview(),
+      fixture.store,
+    ).projects.single;
+    expect(
+      [for (final thread in row.current) thread.id],
+      ['sess_0123456789abcdef'],
+    );
+    final thread = row.current.single;
+    expect(thread.kind, ThreadKind.session);
+    expect(thread.title, 'Cache the reads');
+    expect(thread.project, '/home/u/alpha');
+    expect(thread.host, 'local');
+    expect(row.earlier, 0);
+  });
+
+  test('a closed session counts toward earlier', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    serveSessions(fixture, 'local', {
+      '/home/u/alpha': [
+        // Active a minute ago, and closed: age does not keep it current.
+        session(
+          open: false,
+          lastActive: now.subtract(const Duration(minutes: 1)),
+        ),
+        session(
+          id: 'sess_ffffffffffffffff',
+          lastActive: now.subtract(const Duration(minutes: 2)),
+        ),
+      ],
+    });
+    await fixture.refresh();
+
+    final row = buildNavModel(
+      const Place.overview(),
+      fixture.store,
+    ).projects.single;
+    expect(row.earlier, 1);
+    expect(
+      [for (final thread in row.current) thread.id],
+      ['sess_ffffffffffffffff'],
+    );
+  });
+
+  test('a session on an unlisted project still has its project row', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: []),
+    ], now: now);
+    serveSessions(fixture, 'local', {
+      '/home/u/gamma': [session()],
+    });
+    await fixture.refresh();
+
+    final row = buildNavModel(
+      const Place.overview(),
+      fixture.store,
+    ).projects.single;
+    expect(row.id, '/home/u/gamma');
+    expect(row.name, 'gamma');
+    expect(
+      [for (final thread in row.current) thread.kind],
+      [ThreadKind.session],
+    );
+  });
+
+  test('sessions on two hosts share one project row', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+      FixtureHost(name: 'studio', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    serveSessions(fixture, 'local', {
+      '/home/u/alpha': [
+        session(
+          id: 'sess_1111111111111111',
+          lastActive: now.subtract(const Duration(minutes: 2)),
+        ),
+      ],
+    });
+    serveSessions(fixture, 'studio', {
+      '/home/u/alpha': [
+        session(
+          id: 'sess_2222222222222222',
+          lastActive: now.subtract(const Duration(minutes: 4)),
+        ),
+      ],
+    });
+    await fixture.refresh();
+
+    final row = buildNavModel(
+      const Place.overview(),
+      fixture.store,
+    ).projects.single;
+    expect(row.id, '/home/u/alpha');
+    expect(
+      [for (final thread in row.current) thread.id],
+      ['sess_1111111111111111', 'sess_2222222222222222'],
+    );
+    expect(
+      [for (final thread in row.current) thread.host],
+      ['local', 'studio'],
+    );
   });
 }

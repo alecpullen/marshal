@@ -637,4 +637,60 @@ void main() {
     expect(edit['sha256'], 'a1b2c3d4');
     expect(edit['files'], isEmpty);
   });
+
+  test('sessionIndex reads the index', () async {
+    fake.reply(
+      'GET',
+      '/api/sessions/all',
+      const FakeReply(
+        200,
+        body:
+            '{"projects":[{"root":"/home/u/src/marshal",'
+            '"sessions":[{"sessionId":"s-1","title":"Fix it",'
+            '"updatedAt":1763300000000,"messageCount":3,'
+            '"open":true,"viewers":1,"busy":false}]}]}',
+      ),
+    );
+
+    final index = await client.sessionIndex();
+
+    final project = index.projects.single;
+    expect(project.root, '/home/u/src/marshal');
+    final row = project.sessions.single;
+    expect(row.sessionID, 's-1');
+    expect(row.title, 'Fix it');
+    expect(row.messageCount, 3);
+    expect(row.open, isTrue);
+    expect(row.viewers, 1);
+    expect(row.busy, isFalse);
+    expect(fake.requests.single.method, 'GET');
+    expect(fake.requests.single.uri, '/api/sessions/all');
+  });
+
+  test('sessionIndex narrows to a root', () async {
+    fake.reply(
+      'GET',
+      '/api/sessions/all',
+      const FakeReply(200, body: '{"projects":[]}'),
+    );
+
+    final index = await client.sessionIndex(root: '/home/u/alpha');
+
+    expect(index.projects, isEmpty);
+    expect(
+      fake.requests.single.uri,
+      '/api/sessions/all?root=%2Fhome%2Fu%2Falpha',
+    );
+  });
+
+  test('openSession posts load', () async {
+    fake.reply('POST', '/api/sessions/s-1/load', const FakeReply(200));
+
+    await client.openSession('s-1');
+
+    final request = fake.requests.single;
+    expect(request.method, 'POST');
+    expect(request.uri, '/api/sessions/s-1/load');
+    expect(request.body, isEmpty);
+  });
 }

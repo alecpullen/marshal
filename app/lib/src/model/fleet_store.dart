@@ -71,6 +71,32 @@ class FleetStore extends ChangeNotifier {
   /// Today's spend against the caps on [host], or null before it answered.
   BudgetReport? budgets(String host) => _state(host).budgets;
 
+  /// The sessions every host's index lists, or one host's: each row with the
+  /// host it came from and the root it lives under, as the bridge sorted
+  /// them.
+  List<HostedSession> sessions({String? host}) => List.unmodifiable([
+    for (final name in _names(host))
+      for (final group in _state(name).sessions)
+        for (final row in group.sessions) HostedSession(name, group.root, row),
+  ]);
+
+  /// Finds one session by its host and id, or null when no index holds one.
+  HostedSession? session(String host, String sessionId) {
+    for (final hosted in sessions(host: host)) {
+      if (hosted.row.sessionID == sessionId) return hosted;
+    }
+    return null;
+  }
+
+  /// Why [host]'s listing of [root] failed, or null when it listed or the
+  /// index holds no group for [root] yet.
+  String? sessionsError(String host, String root) {
+    for (final group in _state(host).sessions) {
+      if (group.root == root) return group.error;
+    }
+    return null;
+  }
+
   /// What the app can reach of [host] now. A host nothing discovered is
   /// still connecting: nothing has been heard from it yet.
   HostReach reach(String host) => _ownerOf(host)?.reach ?? HostReach.connecting;
@@ -83,10 +109,12 @@ class FleetStore extends ChangeNotifier {
   /// to empty them, and it is not a claim that the host is gone.
   String? failure(String host) => _state(host).failure;
 
-  /// Reads one host's snapshot: its agents, projects, inbox and budgets.
+  /// Reads one host's snapshot: its agents, projects, inbox and budgets,
+  /// and, beside the budgets, the session index.
   ///
   /// The four are read together so the rows and the queue describe the same
-  /// moment. A failed read leaves the last data in place and records why.
+  /// moment. The index is a second, independent read ([_sessions]), so an
+  /// older bridge's refusal of it never fails the snapshot.
   ///
   /// A snapshot takes time to arrive and the stream does not wait for it: a
   /// delta that landed while the read was in flight is newer than any answer
@@ -97,12 +125,14 @@ class FleetStore extends ChangeNotifier {
     final state = _state(host);
     final generation = ++state.generation;
     final agentsRead = ++state.agentsReads;
+    final sessionsRead = ++state.sessionsReads;
     final since = state.deltaSeq;
     try {
       final agents = await owner.client.agents();
       final projects = await owner.client.projects();
       final inbox = await owner.client.inbox();
       final budgets = await _budgets(owner.client, state);
+      final sessions = await _sessions(owner.client, state);
       if (_disposed || generation != state.generation) return;
       state
         ..projects = _projectsFrom(projects, state, since)
@@ -117,6 +147,13 @@ class FleetStore extends ChangeNotifier {
       // a different list.
       if (agentsRead == state.agentsReads) {
         state.agents = _agentsFrom(agents, state, since);
+      }
+      // The same rule for the index: a root read again by a delta while this
+      // snapshot was in flight answers for its group afterwards, so this
+      // answer — asked for before that read — must not put the older groups
+      // back over it.
+      if (sessionsRead == state.sessionsReads) {
+        state.sessions = _sessionsFrom(sessions, state, null);
       }
       notifyListeners();
     } catch (error) {
@@ -170,6 +207,25 @@ class FleetStore extends ChangeNotifier {
       return await client.budgets();
     } catch (_) {
       return state.budgets;
+    }
+  }
+
+  /// The session index's groups, or what the store already holds: a bridge
+  /// that does not serve the route at all — its 404 and 501, an older build
+  /// (a server profile behind this one) — leaves the groups empty, and any
+  /// other failure keeps the ones held, as [_budgets] keeps its report.
+  /// Neither fails the snapshot.
+  Future<List<ProjectSessions>> _sessions(
+    BridgeClient client,
+    _HostState state,
+  ) async {
+    try {
+      return (await client.sessionIndex()).projects;
+    } on BridgeFailure catch (failure) {
+      if (failure.status == 404 || failure.status == 501) return const [];
+      return state.sessions;
+    } catch (_) {
+      return state.sessions;
     }
   }
 
@@ -278,6 +334,16 @@ class FleetStore extends ChangeNotifier {
           unawaited(_refreshBudgets(host));
         case 'project_removed':
           _applyProjectRemoved(state, ProjectRemovedDelta.fromJson(decoded));
+        case 'sessions':
+          // A project's sessions changed and the delta carries no rows: the
+          // index is the account of them, so its root is read again rather
+          // than patched from a frame that names only that.
+          unawaited(
+            refreshSessions(
+              host,
+              root: SessionsDelta.fromJson(decoded).project,
+            ),
+          );
         default:
           _applyFleetDelta(host, state, FleetDelta.fromJson(decoded));
       }
@@ -334,8 +400,8 @@ class FleetStore extends ChangeNotifier {
       case DeltaKind.deltaInbox:
       case DeltaKind.deltaSessions:
         // Handled elsewhere, or a kind this build does not know. A project's
-        // sessions changed (P7 D9): the project tree reads the session index,
-        // which is P7 plan 2's, and no agent row changes here.
+        // sessions changed (P7 D9): its index is read in `_applyDelta`, and
+        // no agent row changes here.
         return;
       case DeltaKind.deltaPull:
         // Pull requests are not agent rows: `PullsStore` follows the same
@@ -489,6 +555,94 @@ class FleetStore extends ChangeNotifier {
     }
   }
 
+  /// Reads one host's session index again, without touching the other rows.
+  ///
+  /// [root] narrows the read to one project's group — what a `sessions` delta
+  /// names — and a read with no root replaces them all.
+  ///
+  /// One read runs at a time per host. A request that arrives while one is in
+  /// flight is not dropped: its root is carried into a follow-up read when
+  /// the first finishes, so a burst of deltas costs at most two reads. The
+  /// follow-up accumulates roots, not ids, and a null among them — a read of
+  /// them all — means it reads them all.
+  Future<void> refreshSessions(String host, {String? root}) async {
+    final owner = _ownerOf(host);
+    if (owner == null) return;
+    final state = _state(host);
+    if (state.sessionsRefetching) {
+      state
+        ..sessionsRefetchRoots.add(root)
+        ..sessionsRefetchPending = true;
+      return;
+    }
+    state.sessionsRefetching = true;
+    // What this read must answer for, plus whatever a coalesced request adds
+    // before the next pass.
+    var answerFor = <String?>{root};
+    try {
+      do {
+        state.sessionsRefetchPending = false;
+        answerFor = {...answerFor, ...state.sessionsRefetchRoots};
+        state.sessionsRefetchRoots.clear();
+        await _readSessions(owner, state, answerFor);
+        if (_disposed) return;
+      } while (state.sessionsRefetchPending);
+    } finally {
+      state
+        ..sessionsRefetching = false
+        ..sessionsRefetchPending = false
+        ..sessionsRefetchRoots.clear();
+    }
+  }
+
+  /// One pass of [refreshSessions]: one read, one root — or all of them —
+  /// applied at once.
+  Future<void> _readSessions(
+    Host owner,
+    _HostState state,
+    Set<String?> roots,
+  ) async {
+    final read = ++state.sessionsReads;
+    try {
+      // A single root is the rooted read a delta asked for; several
+      // coalesced roots, or a read of them all in the set, answer for every
+      // project, which is this route's other mode.
+      final root = roots.contains(null) || roots.length > 1
+          ? null
+          : roots.single;
+      final index = await owner.client.sessionIndex(root: root);
+      if (_disposed || read != state.sessionsReads) return;
+      state.sessions = _sessionsFrom(index.projects, state, root);
+      notifyListeners();
+    } catch (_) {
+      // A failed re-read leaves the groups as they were; the next delta or
+      // the next reconnect reads them again.
+    }
+  }
+
+  /// The groups one index answer leaves in place. A rooted read answers for
+  /// its root only: that root's group is replaced — or added when the store
+  /// holds none yet, or removed when the answer has none for it — and the
+  /// other roots' groups are kept as they were. A read with no root replaces
+  /// them all.
+  static List<ProjectSessions> _sessionsFrom(
+    List<ProjectSessions> answer,
+    _HostState state,
+    String? root,
+  ) {
+    if (root == null) return List.unmodifiable(answer);
+    ProjectSessions? answered;
+    for (final group in answer) {
+      if (group.root == root) answered = group;
+    }
+    return List.unmodifiable([
+      for (final held in state.sessions)
+        if (held.root != root) held else ?answered,
+      if (answered != null && !state.sessions.any((held) => held.root == root))
+        answered,
+    ]);
+  }
+
   /// Reads one host's budget report again.
   ///
   /// A delta says which way the spend moved, and the report is read rather
@@ -529,6 +683,11 @@ class _HostState {
   List<AgentStatus> agents = const [];
   List<ProjectStatus> projects = const [];
   List<InboxItem> queue = const [];
+
+  /// The host's session groups, empty until read: every project's sessions
+  /// as the index sorted them, held until a later read replaces them.
+  List<ProjectSessions> sessions = const [];
+
   BudgetReport? budgets;
   String? failure;
 
@@ -544,6 +703,11 @@ class _HostState {
   /// the one that stands, however late an earlier answer arrives.
   int agentsReads = 0;
 
+  /// Bumped by each read of the session index. Two reads feed that one list —
+  /// the snapshot's and a delta's rooted re-read — so the answer asked for
+  /// last is the one that stands, however late an earlier answer arrives.
+  int sessionsReads = 0;
+
   /// A pending delta's re-read is in flight.
   bool agentsRefetching = false;
 
@@ -553,6 +717,17 @@ class _HostState {
 
   /// The agents the next pass must answer for: a coalesced request's ids.
   final agentsRefetchFrom = <String>{};
+
+  /// A sessions delta's re-read is in flight.
+  bool sessionsRefetching = false;
+
+  /// Another re-read was asked for while one was in flight, and runs when it
+  /// finishes.
+  bool sessionsRefetchPending = false;
+
+  /// The roots the next pass must answer for: a coalesced request's, with a
+  /// null among them naming all of them.
+  final sessionsRefetchRoots = <String?>{};
 
   /// Bumped by every delta applied to this host: the clock a snapshot is
   /// compared against, so an answer asked for before a delta cannot put back
@@ -616,6 +791,15 @@ String describeFailure(Object error) {
     // Not JSON: the body is the message.
   }
   return message;
+}
+
+/// One session row and where it lives.
+@immutable
+class HostedSession {
+  const HostedSession(this.host, this.root, this.row);
+  final String host;
+  final String root;
+  final SessionRow row;
 }
 
 /// One host as a view lists it: its name, which kind of bridge it is, and

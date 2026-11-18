@@ -649,6 +649,21 @@ class InboxModel extends ChangeNotifier {
         final ask = _askForPending(host.name, agent, pending, null);
         if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
       }
+      // A session the bridge is holding a request for waits on a person just
+      // as a parked agent does (P7 decision 8). Its ask sits on the session's
+      // own thread, and its age is the transcript's last activity.
+      for (final hosted in _store.sessions(host: host.name)) {
+        final pending = hosted.row.pending;
+        if (pending == null) continue;
+        final thread = threadOfSession(host.name, hosted.root, hosted.row);
+        final ask = _askForPendingOn(
+          host.name,
+          thread,
+          pending,
+          thread.lastActive,
+        );
+        if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
+      }
       for (final draft in _drafts[host.name] ?? const <ReviewDraft>[]) {
         final ask = _askForDraft(host.name, draft);
         if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
@@ -777,6 +792,20 @@ class InboxModel extends ChangeNotifier {
     AgentStatus agent,
     PendingRequest pending,
     DateTime? since,
+  ) => _askForPendingOn(
+    host,
+    threadFor(host, agent),
+    pending,
+    since ?? lastActiveOf(agent),
+  );
+
+  /// One parked request as an ask on [thread]: an agent's, or a hosted
+  /// session's (P7 decision 8).
+  Ask _askForPendingOn(
+    String host,
+    ThreadRef thread,
+    PendingRequest pending,
+    DateTime since,
   ) {
     final approval = pending.kind != PendingKind.pendingQuestion;
     final questions = approval ? const <AskQuestion>[] : _questionsOf(pending);
@@ -784,14 +813,14 @@ class InboxModel extends ChangeNotifier {
       host: host,
       id: pending.id,
       kind: approval ? AskKind.approval : AskKind.question,
-      thread: threadFor(host, agent),
+      thread: thread,
       title: describePending(pending),
       body: approval ? _approvalBody(pending) : _questionBody(questions),
       actions: approval ? _approvalActions : _questionActions(questions),
       questions: questions,
-      since: since ?? lastActiveOf(agent),
+      since: since,
       source: AskSource.fleet,
-      project: agent.project,
+      project: thread.project,
       scope: AskScope.everyone,
       step: _stepOf(pending),
     );

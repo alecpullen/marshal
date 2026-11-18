@@ -190,6 +190,24 @@ class _ThreadScreenState extends State<ThreadScreen> {
       widget.selection ?? TranscriptSelection(textOf: widget.store.plainText);
 
   @override
+  void initState() {
+    super.initState();
+    // The place's screen owns the keyboard (F9 decision 6). The shell's
+    // shortcut anchor autofocuses too, and a scope grants focus to the first
+    // autofocus it registered, so ask for it once this screen is mounted —
+    // unless something below is already being typed in, which keeps it.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final focused = FocusManager.instance.primaryFocus?.context;
+      if (focused != null &&
+          focused.findAncestorWidgetOfExactType<EditableText>() != null) {
+        return;
+      }
+      _focus.requestFocus();
+    });
+  }
+
+  @override
   void dispose() {
     _focus.dispose();
     if (widget.selection == null) _selection.dispose();

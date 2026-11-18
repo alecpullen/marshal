@@ -616,7 +616,7 @@ class FleetStore extends ChangeNotifier {
     }
     return List.unmodifiable([
       for (final held in state.sessions)
-        if (held.root != root) held else if (answered != null) answered,
+        if (held.root != root) held else ?answered,
       if (answered != null && !state.sessions.any((held) => held.root == root))
         answered,
     ]);

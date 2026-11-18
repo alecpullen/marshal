@@ -540,21 +540,31 @@ class _Row extends StatelessWidget {
       case 'plan':
         final plan = node.plan;
         if (plan == null) return const SizedBox.shrink();
+        // How far the plan has got leads, always: the active task is the
+        // addition to the count, not a replacement for it (spec finding 3).
+        final active = plan.activeText;
         return LiveRow(
-          headline: plan.activeText ?? '${plan.done} of ${plan.total} done',
+          headline:
+              '${plan.done} of ${plan.total}'
+              '${active == null ? '' : ' · $active'}',
           failed: false,
         );
       case 'receipt':
         final receipt = node.receipt;
         if (receipt == null || compact) return const SizedBox.shrink();
-        return Text(
-          [
-            '${receipt.steps} steps',
-            '${receipt.tools} calls',
-            '${receipt.files} files',
-            if (receipt.usage != null) receipt.usage!,
-          ].join(' · '),
-          style: Ember.of(context).monoSmall.tint(Ember.of(context).muted),
+        // The receipt closes the turn, so it stands apart from the rows above
+        // it and from the ask pinned beneath it (spec finding 4).
+        return Padding(
+          padding: const EdgeInsets.only(top: Space.s8, bottom: Space.s12),
+          child: Text(
+            [
+              '${receipt.steps} steps',
+              '${receipt.tools} calls',
+              '${receipt.files} files',
+              if (receipt.usage != null) receipt.usage!,
+            ].join(' · '),
+            style: Ember.of(context).monoSmall.tint(Ember.of(context).muted),
+          ),
         );
       default:
         final text = store.plainText(nodeId);

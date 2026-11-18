@@ -521,6 +521,58 @@ void main() {
     view.dispose();
   });
 
+  testWidgets('the plan row counts while a task is active', (tester) async {
+    final store = StackStore.seeded(
+      StackSnapshot(
+        sessionID: 's-1',
+        rev: 1,
+        roots: const ['turn:1'],
+        nodes: const [
+          WireNode(id: 'turn:1', kind: 'turn', children: ['plan:1', 'plan:2']),
+          WireNode(
+            id: 'plan:1',
+            kind: 'plan',
+            parent: 'turn:1',
+            plan: WirePlan(done: 1, total: 3, activeText: 'Write the rows'),
+          ),
+          WireNode(
+            id: 'plan:2',
+            kind: 'plan',
+            parent: 'turn:1',
+            plan: WirePlan(done: 3, total: 3),
+          ),
+        ],
+      ),
+    );
+    final view = ThreadViewState();
+    await pumpThread(tester, store: store, view: view);
+
+    // The count leads whether or not a task is active: the active task is
+    // what the plan is on, not a replacement for how far it has got.
+    expect(find.text('1 of 3 · Write the rows'), findsOneWidget);
+    expect(find.text('3 of 3'), findsOneWidget);
+    expect(find.textContaining('done'), findsNothing);
+
+    store.dispose();
+    view.dispose();
+  });
+
+  testWidgets('the receipt stands apart', (tester) async {
+    final store = fixtureStore();
+    final view = ThreadViewState();
+    await pumpThread(tester, store: store, view: view);
+
+    // The row above the receipt in this fixture is the turn's last tool row:
+    // the receipt carries its own space on top of the row gap, so it does
+    // not sit against the last thing the agent did.
+    final above = tester.getBottomLeft(find.byType(ToolRow).last).dy;
+    final receipt = tester.getTopLeft(find.textContaining('4 steps')).dy;
+    expect(receipt - above, greaterThanOrEqualTo(Space.s8));
+
+    store.dispose();
+    view.dispose();
+  });
+
   testWidgets('a session with no stack says it is unavailable', (tester) async {
     final store = StackStore(
       BridgeClient(_UnusedTransport()),

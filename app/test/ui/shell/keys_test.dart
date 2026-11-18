@@ -195,4 +195,58 @@ void main() {
 
     expect(find.text('Start a new agent'), findsNothing);
   });
+
+  testWidgets('⌘2 does nothing while a composer has focus', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final fixture = await fixtureWithProject(tester);
+    final inboxModel = inbox.InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+    );
+    addTearDown(inboxModel.dispose);
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inboxModel,
+          initialPlace: const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
+          threadStore: (thread) => StackStore.seeded(_snapshot()),
+          composerFor: (thread, view) => ComposerModel(
+            prompt: (text) async {},
+            steer: (text) async {},
+            cancel: () async {},
+            setMode: (mode) async {},
+            access: () async => const AccessState(
+              mode: 'act',
+              auto: false,
+              system: false,
+              revision: 1,
+            ),
+            view: view,
+          ),
+        ),
+      ),
+    );
+    await settleIo(tester);
+
+    // `⌘2` typed into a focused composer belongs to the field, not to the
+    // shell: the thread stays on screen instead of navigating to the Inbox
+    // mid-sentence.
+    await tester.tap(
+      find.descendant(
+        of: find.byType(ThreadComposer),
+        matching: find.byType(EditableText),
+      ),
+    );
+    await tester.pump();
+    await sendMeta(tester, LogicalKeyboardKey.digit2);
+
+    expect(find.widgetWithText(PageBody, 'Inbox'), findsNothing);
+    expect(find.byType(ThreadComposer), findsOneWidget);
+  });
 }

@@ -647,20 +647,26 @@ class _StudioState extends State<Studio> {
                   return null;
                 },
               ),
+              // A text field keeps its own keys, so `⌘1/⌘2/⌘3` typed into a
+              // composer are text rather than navigation, exactly as `⌘N` is
+              // (f9-parity decision 6). One guard, one spelling.
               GoOverviewIntent: CallbackAction<GoOverviewIntent>(
                 onInvoke: (_) {
+                  if (_editingText()) return null;
                   _go(const Place.overview());
                   return null;
                 },
               ),
               GoInboxIntent: CallbackAction<GoInboxIntent>(
                 onInvoke: (_) {
+                  if (_editingText()) return null;
                   _go(const Place(PlaceKind.inbox));
                   return null;
                 },
               ),
               GoPullsIntent: CallbackAction<GoPullsIntent>(
                 onInvoke: (_) {
+                  if (_editingText()) return null;
                   _go(const Place(PlaceKind.pulls));
                   return null;
                 },
@@ -713,12 +719,16 @@ class _StudioState extends State<Studio> {
         // The Overview's "New" (design.md, "Starting work"): it starts in the
         // first project the fleet lists, and the dialog's Project chip offers
         // the rest, so the default is a starting point rather than a limit.
-        onNewWork: switch (_firstProject()) {
-          (final host, final project) => () => unawaited(
-            _openNewWork(navigation, host, project),
-          ),
-          null => null,
-        },
+        // A place without a builder draws no button: the same guard the
+        // thread and the project place use.
+        onNewWork: widget.newWorkFor == null
+            ? null
+            : switch (_firstProject()) {
+                (final host, final project) => () => unawaited(
+                  _openNewWork(navigation, host, project),
+                ),
+                null => null,
+              },
       );
     }
     if (place.kind == PlaceKind.inbox) {
@@ -1006,19 +1016,26 @@ class _StudioState extends State<Studio> {
     model.dispose();
   }
 
+  /// Whether a text field has the keyboard, so that a key the shell would
+  /// otherwise act on belongs to the field instead.
+  ///
+  /// A text field keeps its own keys. In this Flutter the field's focus node
+  /// is attached by a Focus widget inside EditableText, so the field is an
+  /// ancestor of the focused context rather than that context's own widget.
+  /// `⌘N` and `⌘1/⌘2/⌘3` all ask here, so a composer that has the keyboard is
+  /// not navigated away from mid-sentence.
+  bool _editingText() {
+    final focused = FocusManager.instance.primaryFocus?.context;
+    return focused != null &&
+        focused.findAncestorWidgetOfExactType<EditableText>() != null;
+  }
+
   /// ⌘N from anywhere (f9-parity decision 6): it opens the new-work dialog for
   /// the project in view — the thread's, the project place's, else the first
   /// the fleet lists — and does nothing at all while a text field has the
   /// keyboard, so typing a `⌘N` into a composer is not a key press.
   void _newWorkFromKeys() {
-    // A text field keeps its own keys. In this Flutter the field's focus node
-    // is attached by a Focus widget inside EditableText, so the field is an
-    // ancestor of the focused context rather than that context's own widget.
-    final focused = FocusManager.instance.primaryFocus?.context;
-    if (focused != null &&
-        focused.findAncestorWidgetOfExactType<EditableText>() != null) {
-      return;
-    }
+    if (_editingText()) return;
     final place = _place;
     String? host;
     String? project;

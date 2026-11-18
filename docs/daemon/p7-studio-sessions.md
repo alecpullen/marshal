@@ -277,9 +277,14 @@ Phase 1 must not foreclose this. Phase 2's spec settles the rest.
   its last contact (F1 decision 8). The index's per-project `error` stays a
   fact about one root's listing.
 - **Known gaps for operating across daemons,** for Phase 2's spec:
-  - The watches, schedules and bots models read one host. The fleet, factory
-    and pull-request stores already read them all.
-  - The composer has no host chip (design.md §2).
+  - Automations, Library and Settings read the first host discovery found
+    (`app/lib/main.dart:308`, `_Sections._host`). That is every model in their
+    sections, from watches, schedules, bots and recipes to skills, plugins,
+    MCP, memory, environments, secrets, models, network and usage. The fleet,
+    factory and pull-request stores already read every host.
+  - New work cannot choose a host: its Host field is a note
+    (`new_work_model.dart:243`), and the composer has no host chip
+    (design.md §2).
   - Settings › Hosts cannot add a host yet; that row is planned
     (`hosts_model.dart`). Nor is there anywhere for a browser to keep each
     host's token.

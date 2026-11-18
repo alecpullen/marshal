@@ -19,8 +19,12 @@ func AddServer(path string, s Server) error {
 	if err := checkName(s.Name); err != nil {
 		return err
 	}
-	if err := checkURL(s.Name, s.URL); err != nil {
+	if err := checkURLOrRelay(s.Name, s.URL, s.Relay); err != nil {
 		return err
+	}
+	if s.Relay != "" && s.CAFile != "" {
+		// D20: a relayed server's TLS is the one it is reached through.
+		return fmt.Errorf("fleet.toml: servers.%s.ca_file: a relayed server has no ca_file; its TLS is %s's", s.Name, s.Relay)
 	}
 	if s.TokenCmd != "" {
 		return fmt.Errorf("fleet.toml: servers.%s.token_cmd: the Studio adds no token_cmd profile; edit %s by hand", s.Name, path)
@@ -106,8 +110,8 @@ func serverHeader(line string) (string, bool) {
 }
 
 // appendTable answers src with s's table written after it (decision 2): one
-// blank line, then the header, url, ca_file when set, and notify = false only
-// when notifications are off. No token_cmd is written.
+// blank line, then the header, url or relay, ca_file when set, and notify =
+// false only when notifications are off. No token_cmd is written.
 func appendTable(src []byte, s Server) []byte {
 	var b strings.Builder
 	b.Write(src)
@@ -115,7 +119,13 @@ func appendTable(src []byte, s Server) []byte {
 		b.WriteByte('\n')
 	}
 	fmt.Fprintf(&b, "\n[servers.%s]\n", headerKey(s.Name))
-	fmt.Fprintf(&b, "url = %s\n", tomlString(s.URL))
+	if s.Relay != "" {
+		// A relayed server names where it is reached, in place of its url
+		// (D20).
+		fmt.Fprintf(&b, "relay = %s\n", tomlString(s.Relay))
+	} else {
+		fmt.Fprintf(&b, "url = %s\n", tomlString(s.URL))
+	}
 	if s.CAFile != "" {
 		// As given: a relative path stays relative to the file.
 		fmt.Fprintf(&b, "ca_file = %s\n", tomlString(s.CAFile))

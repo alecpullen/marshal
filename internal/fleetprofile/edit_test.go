@@ -351,3 +351,43 @@ func TestEditsRefuseAFileOthersCanRead(t *testing.T) {
 		}
 	})
 }
+
+// TestAddServerWritesARelay holds D20's edit: a relayed server is written with
+// relay = "HUB" in place of url, and reads back with no url of its own.
+func TestAddServerWritesARelay(t *testing.T) {
+	body := "[servers.hub]\nurl = \"https://fleet.example.com\"\n"
+	path := writeFleet(t, body)
+
+	if err := AddServer(path, Server{Name: "edge", Relay: "hub", Notify: true}); err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+
+	want := body + "\n[servers.edge]\nrelay = \"hub\"\n"
+	if got := readText(t, path); got != want {
+		t.Fatalf("fleet.toml =\n%s\nwant\n%s", got, want)
+	}
+	f, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	edge := f.Servers["edge"]
+	if edge.Relay != "hub" || edge.URL != "" {
+		t.Fatalf("edge = %+v, want relay hub and no url", edge)
+	}
+	if !edge.Notify {
+		t.Fatal("edge's absent notify reads false, want true")
+	}
+
+	// A relay names its hub, so one naming no server is refused, and the file
+	// stays as the add before it wrote it.
+	err = AddServer(path, Server{Name: "other", Relay: "nope", Notify: true})
+	if err == nil {
+		t.Fatal("a relay naming no server was added, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "nope") {
+		t.Fatalf("error = %q, want it to name the missing server", err)
+	}
+	if got := readText(t, path); got != want {
+		t.Fatalf("the refused add changed the file:\n%s", got)
+	}
+}

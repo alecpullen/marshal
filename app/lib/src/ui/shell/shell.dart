@@ -661,6 +661,9 @@ class _StudioState extends State<Studio> {
             navigation.go(Place(PlaceKind.thread, host: host, id: item.id)),
         onOpenAgent: (agent) =>
             navigation.go(Place(PlaceKind.thread, host: host, id: agent.id)),
+        onOpenSession: (session) => navigation.go(
+          Place(PlaceKind.thread, host: session.host, id: session.id),
+        ),
         onOpenRun: (run) => _openRun(navigation, host, run),
         onOpenAutomations: () =>
             navigation.go(const Place(PlaceKind.automations)),
@@ -1402,6 +1405,7 @@ class _ProjectPlace extends StatefulWidget {
     this.now,
     this.onOpenItem,
     this.onOpenAgent,
+    this.onOpenSession,
     this.onOpenRun,
     this.onOpenAutomations,
   });
@@ -1415,6 +1419,7 @@ class _ProjectPlace extends StatefulWidget {
   final DateTime? now;
   final void Function(WorkItemView item)? onOpenItem;
   final void Function(model.ThreadRef agent)? onOpenAgent;
+  final void Function(model.ThreadRef session)? onOpenSession;
   final void Function(ProjectRun run)? onOpenRun;
   final VoidCallback? onOpenAutomations;
 
@@ -1467,13 +1472,36 @@ class _ProjectPlaceState extends State<_ProjectPlace> {
       model: _model,
       items: items,
       agents: agents,
+      sessions: _sessions(),
+      sessionsError: widget.store.sessionsError(widget.host, widget.root),
       guard: widget.guard,
       now: widget.now,
       onOpenItem: widget.onOpenItem,
       onOpenAgent: widget.onOpenAgent,
+      onOpenSession: widget.onOpenSession,
       onOpenRun: widget.onOpenRun,
       onOpenAutomations: widget.onOpenAutomations,
+      onRetrySessions: () => unawaited(
+        widget.store.refreshSessions(widget.host, root: widget.root),
+      ),
     );
+  }
+
+  /// This project's sessions on this host: open first, then closed, each part
+  /// newest first, and a tie broken by id as the sidebar breaks one
+  /// (P7 decision 8).
+  List<model.ThreadRef> _sessions() {
+    final sessions = [
+      for (final hosted in widget.store.sessions(host: widget.host))
+        if (hosted.root == widget.root)
+          model.threadOfSession(hosted.host, hosted.root, hosted.row),
+    ];
+    sessions.sort((a, b) {
+      if (a.closed != b.closed) return a.closed ? 1 : -1;
+      final byTime = b.lastActive.compareTo(a.lastActive);
+      return byTime != 0 ? byTime : a.id.compareTo(b.id);
+    });
+    return sessions;
   }
 }
 

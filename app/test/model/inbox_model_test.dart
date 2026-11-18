@@ -3,6 +3,7 @@ import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/model/attention.dart';
 import 'package:marshal_app/src/model/factory_store.dart';
 import 'package:marshal_app/src/model/inbox_model.dart';
+import 'package:marshal_app/src/model/thread_ref.dart' show ThreadKind;
 
 import '../support/fake_bridge.dart';
 import 'support.dart';
@@ -38,6 +39,40 @@ void main() {
     agentID: id,
     at: now.subtract(age).toIso8601String(),
   );
+
+  /// One session row as the index reports one (P7 D7).
+  SessionRow sessionRow({
+    String id = 'sess_1',
+    String? title = 'Fix the login bug',
+    bool open = true,
+    int? messageCount,
+    PendingRequest? pending,
+    Duration age = const Duration(minutes: 7),
+  }) => SessionRow(
+    sessionID: id,
+    title: title,
+    updatedAt: now.subtract(age).millisecondsSinceEpoch,
+    messageCount: messageCount,
+    open: open,
+    viewers: 0,
+    busy: false,
+    pending: pending,
+  );
+
+  /// The index answer [fixture]'s host serves: one project's sessions.
+  void serveSessions(
+    ModelFixture fixture,
+    List<SessionRow> sessions, {
+    String? error,
+  }) => fixture.serve('local', '/api/sessions/all', {
+    'projects': [
+      ProjectSessions(
+        root: '/home/u/alpha',
+        sessions: sessions,
+        error: error,
+      ).toJson(),
+    ],
+  });
 
   Future<InboxModel> inboxFor(ModelFixture fixture) async {
     await fixture.refresh();
@@ -916,5 +951,56 @@ void main() {
       (ask) => ask.kind == AskKind.approval,
     );
     expect(agentAsk.answeredInThread, isFalse);
+  });
+
+  test("a session's parked approval is an ask on its thread", () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    serveSessions(fixture, [sessionRow(pending: approval(), messageCount: 4)]);
+    final inbox = await inboxFor(fixture);
+
+    final ask = inbox.asks.single;
+    expect(ask.kind, AskKind.approval);
+    expect(ask.title, 'git push');
+    // The ask sits on the session's own thread, not on an agent's (P7 D8),
+    // and it is as old as the transcript's last activity.
+    expect(ask.thread?.kind, ThreadKind.session);
+    expect(ask.thread?.id, 'sess_1');
+    expect(ask.thread?.project, '/home/u/alpha');
+    expect(ask.project, '/home/u/alpha');
+    expect(ask.since, now.subtract(const Duration(minutes: 7)));
+  });
+
+  test('answering it posts the permission', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    serveSessions(fixture, [sessionRow(pending: approval())]);
+    final inbox = await inboxFor(fixture);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/permissions/tc-1',
+      const FakeReply(200),
+    );
+
+    final ask = inbox.asks.single;
+    await inbox.answer(ask, ask.actions.first);
+
+    // An answer posts by the request's id, whatever thread asked.
+    final posted = fixture.requests('local').last;
+    expect(posted.method, 'POST');
+    expect(posted.uri, '/api/permissions/tc-1');
+    expect(posted.body, '{"approved":true}');
+  });
+
+  test('a session without pending asks nothing', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    serveSessions(fixture, [sessionRow(messageCount: 4)]);
+    final inbox = await inboxFor(fixture);
+
+    expect(inbox.asks, isEmpty);
   });
 }

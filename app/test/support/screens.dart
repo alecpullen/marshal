@@ -2109,6 +2109,37 @@ Widget _projectScreen({int tab = 0, StateKind? state}) => ProjectPage(
       ),
     ),
   ],
+  sessions: [
+    model.threadOfSession(
+      'local',
+      '/home/u/alpha',
+      contract.SessionRow(
+        sessionID: 'sess_1',
+        title: 'Fix the login bug',
+        updatedAt: shellNow
+            .subtract(const Duration(minutes: 12))
+            .millisecondsSinceEpoch,
+        messageCount: 18,
+        open: true,
+        viewers: 0,
+        busy: false,
+      ),
+    ),
+    model.threadOfSession(
+      'local',
+      '/home/u/alpha',
+      contract.SessionRow(
+        sessionID: 'sess_2',
+        title: 'Tidy the parser',
+        updatedAt: shellNow
+            .subtract(const Duration(days: 2))
+            .millisecondsSinceEpoch,
+        open: false,
+        viewers: 0,
+        busy: false,
+      ),
+    ),
+  ],
   state: state,
   now: shellNow,
   initialTab: tab,

@@ -270,6 +270,17 @@ Future<void> main() async {
                   if (run.project == root) run,
               ],
               discover: (repoID) => client.discoverRepo(repoID),
+              // The Automations tab lists what this project actually has: its
+              // own schedules, and the watches its agents started. The fleet
+              // already knows which project an agent belongs to.
+              readSchedules: client.schedules,
+              readWatches: client.watches,
+              projectOfAgent: (agentID) {
+                for (final agent in store.agents()) {
+                  if (agent.id == agentID) return agent.project;
+                }
+                return null;
+              },
             );
           },
         ),

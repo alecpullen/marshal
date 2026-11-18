@@ -632,4 +632,93 @@ void main() {
       },
     );
   });
+
+  test('the project\'s schedules are its own', () async {
+    final fixture = Scripted();
+    final model = ProjectModel(
+      root: '/home/u/alpha',
+      name: 'alpha',
+      now: () => DateTime.utc(2026, 11, 17, 4, 12),
+      read: () async => ProjectSettingsVersion(
+        settings: fixture.current,
+        etag: fixture.currentTag,
+      ),
+      write: (settings, etag) async =>
+          ProjectSettingsVersion(settings: settings, etag: etag),
+      // The bridge lists every schedule and every watch it holds; the project
+      // takes the ones that are its own.
+      readSchedules: () async => const [
+        Schedule(
+          id: 's-1',
+          name: 'nightly gate',
+          recipe: 'gate',
+          project: '/home/u/alpha',
+          cron: '0 3 * * *',
+          enabled: true,
+          lastResult: 'passed',
+          ownerID: 'owner-1',
+        ),
+        Schedule(
+          id: 's-2',
+          name: 'weekly review',
+          recipe: 'review',
+          project: '/home/u/alpha',
+          cron: '0 9 * * 1',
+          enabled: false,
+          ownerID: 'owner-1',
+        ),
+        Schedule(
+          id: 's-3',
+          name: 'another project\'s',
+          recipe: 'gate',
+          project: '/home/u/beta',
+          cron: '0 1 * * *',
+          enabled: true,
+          ownerID: 'owner-1',
+        ),
+      ],
+      readWatches: () async => [
+        WatchInfo(
+          agentID: 'a-1',
+          id: 'w-1',
+          name: 'the gate',
+          kind: 'command',
+          state: 'watching',
+          mode: 'interval',
+          intervalMs: 5000,
+          fireCount: 0,
+          createdAt: 1763352000000,
+          samples: const [],
+        ),
+        WatchInfo(
+          agentID: 'a-2',
+          id: 'w-2',
+          name: 'another project\'s watch',
+          kind: 'file',
+          state: 'watching',
+          mode: 'interval',
+          intervalMs: 5000,
+          fireCount: 0,
+          createdAt: 1763352000000,
+          samples: const [],
+        ),
+      ],
+      projectOfAgent: (agentID) => switch (agentID) {
+        'a-1' => '/home/u/alpha',
+        'a-2' => '/home/u/beta',
+        _ => null,
+      },
+    );
+    addTearDown(model.dispose);
+
+    await model.load();
+
+    expect([for (final schedule in model.automationSchedules) schedule.id], [
+      's-1',
+      's-2',
+    ]);
+    // A watch belongs to the project its agent belongs to, not to whoever
+    // asked for the list.
+    expect([for (final watch in model.automationWatches) watch.id], ['w-1']);
+  });
 }

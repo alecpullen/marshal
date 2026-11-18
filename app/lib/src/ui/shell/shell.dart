@@ -753,8 +753,15 @@ class _StudioState extends State<Studio> {
         onOpenAgent: (agent) =>
             navigation.go(Place(PlaceKind.thread, host: host, id: agent.id)),
         onOpenRun: (run) => _openRun(navigation, host, run),
-        onOpenAutomations: () =>
-            navigation.go(const Place(PlaceKind.automations)),
+        // The tab a row names, or the place's first tab when it names none.
+        onOpenAutomations: (tab) => navigation.go(
+          tab == null
+              ? const Place(PlaceKind.automations)
+              : Place(
+                  PlaceKind.automations,
+                  section: automationsSections[tab],
+                ),
+        ),
       );
     }
     if (place.kind == PlaceKind.thread) {
@@ -1499,7 +1506,7 @@ class _ProjectPlace extends StatefulWidget {
   final void Function(WorkItemView item)? onOpenItem;
   final void Function(model.ThreadRef agent)? onOpenAgent;
   final void Function(ProjectRun run)? onOpenRun;
-  final VoidCallback? onOpenAutomations;
+  final void Function(int? tab)? onOpenAutomations;
 
   @override
   State<_ProjectPlace> createState() => _ProjectPlaceState();

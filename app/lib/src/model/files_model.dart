@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
+import 'fleet_store.dart' show describeFailure;
 
 /// One file's text as the viewer reads it.
 @immutable
@@ -141,7 +142,7 @@ class FilesModel extends ChangeNotifier {
       if (list.root.isNotEmpty) root = list.root;
     } catch (error) {
       _expanded.remove(path);
-      _errors[path] = '$error';
+      _errors[path] = describeFailure(error);
     } finally {
       _loading.remove(path);
       notifyListeners();

@@ -463,7 +463,7 @@ class InboxModel extends ChangeNotifier {
       _reflow();
       return;
     } catch (error) {
-      _overlays[key] = (state: AskState.failed, error: error.toString());
+      _overlays[key] = (state: AskState.failed, error: describeFailure(error));
       _reflow();
       return;
     }

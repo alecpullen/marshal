@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../client/contract.g.dart';
 import 'drafts_model.dart';
 import 'expected_checks.dart';
+import 'fleet_store.dart' show describeFailure;
 import 'planning_model.dart';
 
 // The create route and the defaults are passed in, so their fields stay
@@ -651,7 +652,7 @@ class HandoffModel extends ChangeNotifier {
           ? await handoff!(planner, snapshot.id, request)
           : await _create(request);
     } catch (error) {
-      _failure = '$error';
+      _failure = describeFailure(error);
       notifyListeners();
       return null;
     }

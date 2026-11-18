@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/client/host.dart';
+import 'package:marshal_app/src/model/fleet_store.dart';
 
 import '../support/fake_bridge.dart';
 import 'support.dart';
@@ -988,4 +989,35 @@ void main() {
       reason: 'a delta for a host the fleet lists again is applied',
     );
   });
+
+  test('a decode failure is worded, not dumped', () {
+    // A bridge whose answer is not the shape this Studio read it as: the
+    // failure is a TypeError, and its own text names a Dart type, which is
+    // nothing a reader can act on (§7: in plain words).
+    final failure = _decodeFailure();
+    expect(failure, isA<TypeError>());
+    expect(
+      describeFailure(failure),
+      'The bridge sent an answer this Studio cannot read. The bridge and '
+      'the Studio may be different versions.',
+    );
+  });
+
+  test('an unknown error keeps its own words', () {
+    expect(
+      describeFailure(StateError('the gate is not a list')),
+      'Bad state: the gate is not a list',
+    );
+  });
+}
+
+/// The failure a decode raises: a value that is not the shape the contract
+/// read it as (a null where the contract's `List` was expected).
+Object _decodeFailure() {
+  try {
+    final Object? value = null;
+    return value as List<Object?>;
+  } on TypeError catch (error) {
+    return error;
+  }
 }

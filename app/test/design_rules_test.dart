@@ -185,6 +185,29 @@ void main() {
     ], 'a terminal-only colour used outside terminal_view.dart');
   });
 
+  test('models word their failures', () {
+    // §7: what failed, in plain words. An exception's own text is not words —
+    // `TypeError: null: type 'minified:xp' is not a subtype of type
+    // 'List<dynamic>'` tells a reader nothing — so a model hands every failure
+    // to describeFailure (fleet_store.dart) rather than interpolating the
+    // exception into the message a screen shows.
+    //
+    // Strings are kept and comments blanked here: the whole rule is about what
+    // a message says, so it reads the file as written rather than `code`.
+    const models = 'lib/src/model';
+    final interpolated = RegExp(r'\$error\b|\$\{error\}|error\.toString\(\)');
+    final found = <String>[
+      for (final f in dartFilesUnder(models))
+        if (f.name != 'fleet_store.dart')
+          for (final m in interpolated.allMatches(f.withoutComments))
+            '${f.path}:${f.lineOf(m.start)}: ${m.group(0)}',
+    ];
+    expectNone(
+      found,
+      'a model shows an error\'s own text; use describeFailure',
+    );
+  });
+
   test('the rules read real code', () {
     // A guard against the rules going quiet: the kit is where the tokens
     // are used, so the scan must see it, and must see tokens.dart's own

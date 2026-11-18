@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/contract.g.dart' show DaemonInfo;
 import 'age.dart';
+import 'fleet_store.dart' show describeFailure;
 import 'section_model.dart';
 import 'thread_view_state.dart' show Density;
 
@@ -190,7 +191,7 @@ class GeneralModel extends SectionModel<GeneralSetting> {
         // A daemon that does not answer is not the section failing: the rest
         // of General still sets what it sets, and the row says what it found.
         _reported = null;
-        _daemonError = error.toString();
+        _daemonError = describeFailure(error);
       }
     }
     return _settings();
@@ -320,8 +321,8 @@ class GeneralModel extends SectionModel<GeneralSetting> {
       return 'The same document `marshal daemon status --json` prints, which '
           'the tray reads.';
     }
-    final error = _daemonError;
-    if (error == null) return 'The daemon has not been asked yet.';
-    return 'The daemon did not answer: $error';
+    final note = _daemonError;
+    if (note == null) return 'The daemon has not been asked yet.';
+    return 'The daemon did not answer: $note';
   }
 }

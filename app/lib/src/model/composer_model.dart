@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
+import 'fleet_store.dart' show describeFailure;
 import 'thread_view_state.dart';
 
 /// One thread's composer: whether a turn is running, whether the session can
@@ -191,6 +192,5 @@ class ComposerModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  static String _words(Object error) =>
-      error is Exception ? error.toString() : '$error';
+  static String _words(Object error) => describeFailure(error);
 }

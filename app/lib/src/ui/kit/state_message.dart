@@ -6,7 +6,15 @@ import 'pill.dart';
 import 'vocabulary.dart';
 
 /// The states every screen that shows data has (design-system.md §7).
-enum StateKind { loading, empty, stale, error, unavailable, unauthorized, planned }
+enum StateKind {
+  loading,
+  empty,
+  stale,
+  error,
+  unavailable,
+  unauthorized,
+  planned,
+}
 
 /// The one action a state offers: "Try again", "Start an agent".
 @immutable

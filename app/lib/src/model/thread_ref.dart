@@ -24,6 +24,7 @@ class ThreadRef {
     required this.status,
     required this.headline,
     required this.lastActive,
+    this.stepsDone,
     this.planning = false,
   });
 
@@ -52,6 +53,12 @@ class ThreadRef {
   /// there is nothing to say beyond the status.
   final String headline;
 
+  /// How many steps the turn in flight has taken, or null when the agent has
+  /// not reported one. A turn's steps are discovered as the model narrates,
+  /// so there is no total: a tile shows a step number, never a fraction (F9
+  /// decision 3).
+  final int? stepsDone;
+
   /// When it was last active: the agent's own last update.
   final DateTime lastActive;
 
@@ -66,6 +73,7 @@ class ThreadRef {
       other.kind == kind &&
       other.status == status &&
       other.headline == headline &&
+      other.stepsDone == stepsDone &&
       other.lastActive == lastActive;
 
   @override
@@ -78,6 +86,7 @@ class ThreadRef {
     kind,
     status,
     headline,
+    stepsDone,
     lastActive,
   );
 
@@ -132,6 +141,7 @@ ThreadRef threadFor(String host, AgentStatus agent) {
     kind: ThreadKind.agent,
     status: statusOfAgent(agent),
     headline: headlineFor(agent),
+    stepsDone: agent.stepsDone,
     lastActive: lastActiveOf(agent),
   );
 }

@@ -64,6 +64,11 @@ class InspectModel extends ChangeNotifier {
   bool _loading = false;
   String? _error;
 
+  /// Whether the thread that owned this model closed it: a read still in
+  /// flight when the place closes answers into nothing rather than into a
+  /// disposed notifier.
+  bool _disposed = false;
+
   /// What the tab draws.
   InspectFacts get facts => _facts;
 
@@ -79,17 +84,17 @@ class InspectModel extends ChangeNotifier {
     modelRequest = null;
     if (nodeId == null) {
       _facts = const InspectFacts();
-      notifyListeners();
+      _notify();
       return;
     }
     final client = _client;
     if (client == null) {
-      notifyListeners();
+      _notify();
       return;
     }
     _loading = true;
     _error = null;
-    notifyListeners();
+    _notify();
     try {
       final answer = await client.node(sessionId, nodeId, subagentId);
       _facts = _factsOf(answer);
@@ -97,7 +102,7 @@ class InspectModel extends ChangeNotifier {
       _error = '$error';
     } finally {
       _loading = false;
-      notifyListeners();
+      _notify();
     }
   }
 
@@ -106,21 +111,34 @@ class InspectModel extends ChangeNotifier {
     final client = _client;
     if (client == null || modelRequest != null) return;
     _loadingRequest = true;
-    notifyListeners();
+    _notify();
     try {
       final request = await client.lastRequest(sessionId);
       final model = request?.request;
       modelRequest = model == null
           ? 'This session has made no request.'
           : _requestSummary(model);
-      notifyListeners();
+      _notify();
     } catch (error) {
       modelRequest = 'The request could not be read: $error';
-      notifyListeners();
+      _notify();
     } finally {
       _loadingRequest = false;
-      notifyListeners();
+      _notify();
     }
+  }
+
+  /// Notifies the tab, unless the thread that owned this model has closed
+  /// it: a read already in flight still lands, and its answer must not reach
+  /// a disposed notifier.
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 
   static InspectFacts _factsOf(NodeDetailResponse answer) {

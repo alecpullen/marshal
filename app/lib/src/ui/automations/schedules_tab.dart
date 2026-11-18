@@ -27,6 +27,7 @@ class SchedulesTab extends StatelessWidget {
       tabs: tabs?.items,
       tabIndex: tabs?.index ?? 0,
       onTab: tabs?.onChanged,
+      trailing: tabs?.trailing,
       state: state,
       createLabel: 'New schedule',
       blank: SchedulesModel.blank,
@@ -41,6 +42,18 @@ class SchedulesTab extends StatelessWidget {
       ),
       detail: (context, schedule) =>
           _ScheduleForm(model: model, schedule: schedule),
+    );
+  }
+
+  /// Opens a new schedule's form — the one the section page's own New opens.
+  static void create(BuildContext context, SchedulesModel model) {
+    openSectionDetail<Schedule>(
+      context,
+      model: model,
+      detail: (context, schedule) =>
+          _ScheduleForm(model: model, schedule: schedule),
+      item: SchedulesModel.blank(),
+      title: 'New schedule',
     );
   }
 

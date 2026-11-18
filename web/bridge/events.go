@@ -69,7 +69,9 @@ type EventLog struct {
 	// disconnect drains that session's pending permission/question waits
 	// instead of leaking them — but only when no client is still
 	// connected, so a duplicate tab or reconnect does not deny pending
-	// requests for active clients.
+	// requests for active clients. A project child's log wires it to
+	// Registry.touch instead: the client was watching that session, so the
+	// idle sweep gives it a full timeout from the disconnect (P4 D7a).
 	OnUnsubscribe func(sessionID string)
 
 	mu       sync.Mutex
@@ -226,6 +228,13 @@ func (l *EventLog) Subscribe(sessionID string) (<-chan Event, func()) {
 	return s.ch, unsub
 }
 
+// Subscribers is how many live subscribers sessionID has.
+func (l *EventLog) Subscribers(sessionID string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.subCount[sessionID]
+}
+
 // deliver performs a non-blocking send to one subscriber. When the
 // subscriber's buffer is full the event is dropped and the subscriber
 // is marked lagged; the next delivery attempt first tries to push a
@@ -275,10 +284,9 @@ func Attach(l *EventLog, child *Child, reg *Registry) {
 }
 
 // attachSessions is Attach for the sessions keep accepts; a nil keep accepts
-// every session, which is what Attach passes (P4 D10 decision 3). A session
-// keep refuses is passed to the previous hook and not logged: a project
-// child's log holds the fleet's sessions, and a client's session belongs to
-// the client's own log.
+// every session, which is what Attach and a project child both pass (P4 D10
+// decision 3, P7 D4). A session keep refuses is passed to the previous hook
+// and not logged.
 //
 // It has Attach's constraint: install it before child.Start.
 func attachSessions(l *EventLog, child *Child, reg *Registry, keep func(sessionID string) bool) {

@@ -43,16 +43,18 @@ void main() {
     scope: scope,
   );
 
-  model.ThreadRef thread(String id, String title) => model.ThreadRef(
-    host: 'local',
-    id: id,
-    project: '/home/u/marshal',
-    title: title,
-    kind: model.ThreadKind.agent,
-    status: model.ThreadStatus.running,
-    headline: 'Reading internal/acp',
-    lastActive: shellNow.subtract(const Duration(minutes: 3)),
-  );
+  model.ThreadRef thread(String id, String title, {int? stepsDone}) =>
+      model.ThreadRef(
+        host: 'local',
+        id: id,
+        project: '/home/u/marshal',
+        title: title,
+        kind: model.ThreadKind.agent,
+        status: model.ThreadStatus.running,
+        headline: 'Reading internal/acp',
+        stepsDone: stepsDone,
+        lastActive: shellNow.subtract(const Duration(minutes: 3)),
+      );
 
   Widget show(
     OverviewModel overview, {
@@ -318,7 +320,7 @@ void main() {
     expect(find.textContaining('offline'), findsOneWidget);
     // A dead feed does not replace the page: the projects stay.
     expect(find.text('marshal'), findsOneWidget);
-    expect(find.text('2 needs you · 1 running'), findsOneWidget);
+    expect(find.text('3 threads · 2 needs you · 1 running'), findsOneWidget);
   });
 
   testWidgets('a loaded factory is not hidden by an unreachable fleet', (
@@ -495,5 +497,216 @@ void main() {
     // One host, so its name would repeat on every row: the row carries none.
     expect(find.text('the gate'), findsOneWidget);
     expect(find.text('local · the gate'), findsNothing);
+  });
+
+  testWidgets('the Activity card names an event', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: null,
+      activity: [
+        AuditEvent(
+          ts: shellNow.subtract(const Duration(minutes: 4)).toIso8601String(),
+          event: 'agent.spawn',
+          detail: 'spawned a reviewer',
+        ),
+      ],
+    );
+    await tester.pumpWidget(show(overview));
+
+    expect(find.text('ACTIVITY'), findsOneWidget);
+    // The event's kind is worded for a person, and the detail and the age sit
+    // beside it.
+    expect(find.text('Agent spawn'), findsOneWidget);
+    expect(find.text('spawned a reviewer'), findsOneWidget);
+    expect(find.text('4m'), findsOneWidget);
+  });
+
+  testWidgets('the spend rail draws the day spark', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: const SpendSummary(
+        day: '2026-11-17',
+        spentUSD: 6,
+        capUSD: 20,
+        blocked: false,
+      ),
+      spendDays: const [
+        UsagePoint(key: '2026-11-15', costUSD: 1, tokens: 10),
+        UsagePoint(key: '2026-11-16', costUSD: 2.5, tokens: 20),
+        UsagePoint(key: '2026-11-17', costUSD: 6, tokens: 30),
+      ],
+    );
+    await tester.pumpWidget(show(overview));
+
+    // The spark is the days behind today, oldest first, and says what it is
+    // of for a reader who cannot see the shape.
+    final spark = tester.widget<Spark>(find.byType(Spark));
+    expect(spark.semanticLabel, 'Daily spend');
+    expect(spark.values, [1.0, 2.5, 6.0]);
+  });
+
+  testWidgets('the split names the top three roles', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: const SpendSummary(
+        day: '2026-11-17',
+        spentUSD: 100,
+        capUSD: 200,
+        blocked: false,
+      ),
+      spendByRole: const [
+        UsagePoint(key: 'implementer', costUSD: 61, tokens: 0),
+        UsagePoint(key: 'reviewer', costUSD: 24, tokens: 0),
+        UsagePoint(key: 'planner', costUSD: 15, tokens: 0),
+      ],
+    );
+    await tester.pumpWidget(show(overview));
+
+    expect(
+      find.text('Implementer 61% · reviewer 24% · planner 15%'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a running tile names its step', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: [thread('a-1', 'Reliable session recovery', stepsDone: 3)],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: null,
+    );
+    await tester.pumpWidget(show(overview));
+
+    // A step is a number, never a fraction: the turn's total is not known
+    // while it runs (F9 decision 3).
+    expect(find.text('step 3 · Reading internal/acp'), findsOneWidget);
+  });
+
+  testWidgets('a thread with no step reports nothing', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: [thread('a-1', 'Reliable session recovery')],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: null,
+    );
+    await tester.pumpWidget(show(overview));
+
+    expect(find.text('Reading internal/acp'), findsOneWidget);
+    expect(find.textContaining('step'), findsNothing);
+  });
+
+  testWidgets('the projects table names CI and spend', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [
+        ProjectSummary(
+          id: '/home/u/marshal',
+          name: 'marshal',
+          needsYou: 0,
+          running: 1,
+          ready: 0,
+          failed: 0,
+          idle: 2,
+          ciReady: 3,
+          ciFailing: 1,
+          spendUSD: 5.92,
+        ),
+        ProjectSummary(
+          id: '/home/u/ledger',
+          name: 'ledger',
+          needsYou: 1,
+          running: 0,
+          ready: 0,
+          failed: 0,
+          idle: 0,
+          spendUSD: 2.5,
+        ),
+        ProjectSummary(
+          id: '/home/u/quiet',
+          name: 'quiet',
+          needsYou: 0,
+          running: 0,
+          ready: 0,
+          failed: 0,
+          idle: 2,
+        ),
+      ],
+      capacity: const [],
+      spend: null,
+    );
+    await tester.pumpWidget(show(overview));
+
+    // The thread total moved into the description, and the value carries what
+    // the bridge answered: CI first, then the week's spend.
+    expect(find.text('3 threads · 1 running · 2 idle'), findsOneWidget);
+    expect(find.text('3 ready · 1 failing · \$5.92 this week'), findsOneWidget);
+    // A project with nothing to report draws an em dash, never a blank slot.
+    expect(find.text('2 threads · 2 idle'), findsOneWidget);
+    expect(find.text('—'), findsOneWidget);
+    // Only the parts that are not zero are named.
+    expect(
+      find.text('1 thread · 1 needs you').evaluate().length +
+          find.text('\$2.50 this week').evaluate().length,
+      2,
+    );
+  });
+
+  testWidgets('more in progress is one line', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: null,
+      moreInProgress: 2,
+    );
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Overview(
+          overview: overview,
+          now: shellNow,
+          hosts: shellHosts,
+          pulls: [
+            pullView(number: 133, group: PullGroup.inProgress),
+            pullView(number: 134, group: PullGroup.beingFixed),
+          ],
+          onRetry: () {},
+        ),
+      ),
+    );
+
+    // Neither is a card: they are one line, in the mock's words.
+    expect(find.byType(PrCard), findsNothing);
+    expect(
+      find.text('2 more in progress with checks passing or running'),
+      findsOneWidget,
+    );
   });
 }

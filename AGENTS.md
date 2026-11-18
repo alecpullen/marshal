@@ -98,6 +98,9 @@ ID, and `marshal daemon restart [--now]` asks for that restart at once. Plain
 A session screen whose connection closes reconnects to its session for up to a
 minute, keeping its draft. A watch a client started that fires while no screen is attached
 resumes its session itself, and the next screen to attach sees the run.
+The Studio lists every session a daemon's projects hold, the TUI's included,
+and opens any of them on its project's child; the bridge follows each one, so a
+turn typed in the terminal shows in the Studio (P7).
 `marshal fleet` opens an agent's or a daemon
 session's screen with `⏎`, and `/fleet` returns to the fleet from any daemon
 session. A

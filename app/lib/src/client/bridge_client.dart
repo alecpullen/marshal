@@ -80,7 +80,7 @@ class BridgeClient {
         query: {'range': range, 'by': by},
       );
 
-  /// GET /api/audit?limit=: the audit log, newest first.
+  /// GET /api/audit?limit=: the audit log, oldest first.
   Future<List<AuditEvent>> audit({int limit = 50}) =>
       _listOf('/api/audit', AuditEvent.fromJson, query: {'limit': '$limit'});
 

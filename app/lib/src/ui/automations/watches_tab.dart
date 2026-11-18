@@ -31,6 +31,7 @@ class WatchesTab extends StatelessWidget {
       tabs: tabs?.items,
       tabIndex: tabs?.index ?? 0,
       onTab: tabs?.onChanged,
+      trailing: tabs?.trailing,
       state: state,
       readOnly: true,
       actions: [Btn('New watch', onTap: () => showWatchForm(context, model))],

@@ -261,6 +261,10 @@ func deltaRecordings() []wireRecording {
 		{name: "delta_activity", record: func(t *testing.T) []byte {
 			return emitSampleNotification(t, `{"sessionId":"s-1","update":{"kind":"tool_call","toolName":"file.read"}}`, "")
 		}},
+		{name: "delta_steps", record: func(t *testing.T) []byte {
+			return emitSampleNotification(t,
+				`{"sessionId":"s-1","update":{"kind":"session_telemetry","steps":{"done":3}}}`, "")
+		}},
 		{name: "delta_mode", record: func(t *testing.T) []byte {
 			return emitSampleNotification(t,
 				`{"sessionId":"s-1","update":{"kind":"mode_changed","mode":"act","auto":true,"system_access":true,"access_revision":3}}`,

@@ -831,6 +831,12 @@ class _GalleryState extends State<Gallery> {
             kind: ThreadKind.planRun,
             onTap: () {},
           ),
+          ThreadRow(
+            status: Status.idle,
+            title: 'Terminal session',
+            kind: ThreadKind.session,
+            onTap: () {},
+          ),
         ],
       ),
     ),

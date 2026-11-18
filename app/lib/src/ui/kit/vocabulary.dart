@@ -29,12 +29,13 @@ enum Status {
   };
 }
 
-/// design-system.md §6: the three kinds of thread, told apart by icon and
+/// design-system.md §6: the four kinds of thread, told apart by icon and
 /// tooltip, never by colour.
 enum ThreadKind {
   agent('Agent', CupertinoIcons.chat_bubble),
   workItem('Work item', CupertinoIcons.square_stack_3d_up),
-  planRun('Plan run', CupertinoIcons.arrow_branch);
+  planRun('Plan run', CupertinoIcons.arrow_branch),
+  session('Session', CupertinoIcons.desktopcomputer);
 
   const ThreadKind(this.word, this.icon);
 

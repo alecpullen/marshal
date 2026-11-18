@@ -299,8 +299,10 @@ Five statuses, used for threads, agents, checks and pull requests alike:
 | Failed | `err` | filled dot or cross | Failed |
 | Idle | `faint` | hollow dot | Idle |
 
-Three kinds of thread, told apart by icon and tooltip, never by colour:
-agent, work item, plan run.
+Four kinds of thread, told apart by icon and tooltip, never by colour:
+agent, work item, plan run, session. A session is a conversation a daemon's
+project holds that no agent owns, usually one a terminal started, and its
+icon is the desktop computer.
 
 A new status or kind is a change to this document first.
 

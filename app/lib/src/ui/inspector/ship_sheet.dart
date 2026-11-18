@@ -199,7 +199,7 @@ class ShipOutcomeView extends StatelessWidget {
     final (title, next) = switch (result.outcome) {
       ShipOutcome.pullRequest => (
         'Pull request opened',
-        'Its checks and reviews arrive in F5. The link is below.',
+        'Its checks run on the forge; Pull requests shows them as they finish.',
       ),
       ShipOutcome.pushed => (
         'Branch pushed',

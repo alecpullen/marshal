@@ -435,6 +435,31 @@ class Overview extends StatelessWidget {
     ].join(' · ');
   }
 
+  /// The day's spend against its cap. The bar is `muted` unless the spend is
+  /// holding work back — a host reported the cap blocking work, or the cap is
+  /// used up — which is when a meter reports a fault (design-system.md §5).
+  Widget _spendMeter(SpendSummary spend) {
+    final value =
+        '\$${spend.spentUSD.toStringAsFixed(2)} of '
+        '\$${spend.capUSD.toStringAsFixed(2)}';
+    final tooltip = spend.blocked
+        ? 'The daily cap is holding work back'
+        : 'Today’s spend against the daily cap';
+    return spend.blocked || spend.fraction >= 1
+        ? Meter.fault(
+            label: 'Today',
+            value: value,
+            fraction: spend.fraction,
+            tooltip: tooltip,
+          )
+        : Meter(
+            label: 'Today',
+            value: value,
+            fraction: spend.fraction,
+            tooltip: tooltip,
+          );
+  }
+
   /// The side rail: what each host is carrying, and the day's spend.
   Widget _rail(BuildContext context) {
     final spend = overview.spend;
@@ -459,16 +484,7 @@ class Overview extends StatelessWidget {
           const SizedBox(height: Space.s12),
           const Label('Spend'),
           const SizedBox(height: Space.s12),
-          Meter.fault(
-            label: 'Today',
-            value:
-                '\$${spend.spentUSD.toStringAsFixed(2)} of '
-                '\$${spend.capUSD.toStringAsFixed(2)}',
-            fraction: spend.fraction,
-            tooltip: spend.blocked
-                ? 'The daily cap is holding work back'
-                : 'Today’s spend against the daily cap',
-          ),
+          _spendMeter(spend),
           // The days behind today, as the mock's rail draws them: a shape,
           // not a table (the spark says nothing about values).
           if (overview.spendDays.isNotEmpty) ...[

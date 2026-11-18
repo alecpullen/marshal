@@ -611,6 +611,76 @@ void main() {
     expect(spark.values, [1.0, 2.5, 6.0]);
   });
 
+  testWidgets('spend under its cap is not a fault', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: const SpendSummary(
+        day: '2026-11-17',
+        spentUSD: 0.1,
+        capUSD: 10,
+        blocked: false,
+      ),
+    );
+    await tester.pumpWidget(show(overview));
+
+    // A bar that is barely filled reports no fault (design-system.md §5), so
+    // it is drawn muted: the reading itself is the same either way.
+    final meter = tester.widget<Meter>(find.byType(Meter));
+    expect(meter.fault, isFalse);
+    expect(meter.value, '\$0.10 of \$10.00');
+    expect(meter.tooltip, 'Today’s spend against the daily cap');
+  });
+
+  testWidgets('spend that blocks work is a fault', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: const SpendSummary(
+        day: '2026-11-17',
+        spentUSD: 0.1,
+        capUSD: 10,
+        blocked: true,
+      ),
+    );
+    await tester.pumpWidget(show(overview));
+
+    // A host reported the cap holding work back: that is a fault, whatever
+    // the bar's fill says.
+    final blocked = tester.widget<Meter>(find.byType(Meter));
+    expect(blocked.fault, isTrue);
+    expect(blocked.tooltip, 'The daily cap is holding work back');
+
+    // A cap that is used up holds work back even with no host reporting it.
+    await tester.pumpWidget(
+      show(
+        const OverviewModel(
+          needsYou: [],
+          running: [],
+          needsYouTotal: 0,
+          sources: [],
+          projects: [],
+          capacity: [],
+          spend: SpendSummary(
+            day: '2026-11-17',
+            spentUSD: 10,
+            capUSD: 10,
+            blocked: false,
+          ),
+        ),
+      ),
+    );
+    expect(tester.widget<Meter>(find.byType(Meter)).fault, isTrue);
+  });
+
   testWidgets('the split names the top three roles', (tester) async {
     final overview = OverviewModel(
       needsYou: const [],

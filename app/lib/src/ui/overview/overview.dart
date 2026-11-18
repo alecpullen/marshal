@@ -1,6 +1,5 @@
 import '../../model/age.dart';
 import '../../model/fleet_store.dart' show HostView;
-import '../../model/inbox_model.dart' as model;
 import '../../model/overview_model.dart';
 import '../../model/place.dart';
 import '../../model/pulls_model.dart';

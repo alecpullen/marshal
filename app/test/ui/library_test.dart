@@ -69,7 +69,8 @@ void main() {
     await model.load();
 
     await pump(tester, SkillsTab(model: model));
-    await tester.tap(find.text('Add a skill'));
+    // The header's create: the empty list offers the same one below it.
+    await tester.tap(find.text('Add a skill').first);
     await tester.pumpAndSettle();
     await tester.enterText(
       find.byType(EditableText).first,

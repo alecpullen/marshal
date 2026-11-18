@@ -21,8 +21,14 @@ class _Section extends SectionModel<String> {
   List<String> rows;
   Future<String> Function(String item) write = (item) async => item;
 
+  /// How many times the section has been read, so a test can see a re-read.
+  int reads = 0;
+
   @override
-  Future<List<String>> fetch() async => rows;
+  Future<List<String>> fetch() async {
+    reads++;
+    return rows;
+  }
 
   @override
   Object keyOf(String item) => item;
@@ -39,6 +45,8 @@ Future<void> _pump(
   WidgetTester tester,
   _Section model, {
   double width = 1000,
+  String? createLabel,
+  String Function()? blank,
 }) async {
   tester.view.physicalSize = Size(width, 900);
   tester.view.devicePixelRatio = 1;
@@ -49,6 +57,8 @@ Future<void> _pump(
       home: SectionPage<String>(
         title: 'Schedules',
         model: model,
+        createLabel: createLabel,
+        blank: blank,
         row: (item, onTap) => RowItem(
           name: item,
           description: 'The nightly gate, on a cron',
@@ -256,6 +266,43 @@ void main() {
     // The detail's own page; the list's is offstage behind it.
     expect(find.byType(PageBody), findsOneWidget);
     expect(find.text('Editing nightly'), findsOneWidget);
+  });
+
+  testWidgets('an empty list with a create offers the create', (tester) async {
+    final model = _Section([]);
+    await model.load();
+    await _pump(
+      tester,
+      model,
+      createLabel: 'New schedule',
+      blank: () => 'a new schedule',
+    );
+
+    // The header's create and the empty state's are the same one, so the
+    // empty list offers it too (§7).
+    expect(find.text('New schedule'), findsNWidgets(2));
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(StateMessage),
+        matching: find.text('New schedule'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Editing a new schedule'), findsOneWidget);
+  });
+
+  testWidgets('an empty list without one reads again', (tester) async {
+    final model = _Section([]);
+    await model.load();
+    final reads = model.reads;
+    await _pump(tester, model);
+
+    // Nothing creates the section's rows, so its one action re-reads it.
+    expect(find.text('Read the section again'), findsOneWidget);
+    await tester.tap(find.text('Read the section again'));
+    await tester.pumpAndSettle();
+    expect(model.reads, reads + 1);
   });
 }
 

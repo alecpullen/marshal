@@ -129,7 +129,8 @@ void main() {
     await model.load();
 
     await pump(tester, EnvironmentsSection(model: model));
-    await tester.tap(find.text('Import devcontainer.json'));
+    // The header's import: the empty list offers the same one below it.
+    await tester.tap(find.text('Import devcontainer.json').first);
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(EditableText).at(0), 'go-service');

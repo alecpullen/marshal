@@ -147,10 +147,7 @@ class SectionPage<T> extends StatelessWidget {
   /// The rows, or the state that stands in for them.
   List<Widget> _content(BuildContext context) {
     final retry = StateAction('Read the section again', onTap: model.load);
-    final empty = StateAction(
-      emptyAction?.label ?? 'Read the section again',
-      onTap: emptyAction?.onTap ?? model.load,
-    );
+    final empty = _emptyAction(context);
     switch (state) {
       case StateKind.loading:
         return const [StateMessage.loading(lines: 5)];
@@ -193,6 +190,20 @@ class SectionPage<T> extends StatelessWidget {
       return [StateMessage.empty(message: emptyMessage, action: empty)];
     }
     return [_rows(context)];
+  }
+
+  /// The empty state's one action, which is the one that fills the list
+  /// (design-system.md §7): the section's own, else — when it has a create in
+  /// its header — that same create, opening the same blank; else a read.
+  StateAction _emptyAction(BuildContext context) {
+    final given = emptyAction;
+    if (given != null) return given;
+    final create = createLabel;
+    final blank = this.blank;
+    if (create != null && blank != null) {
+      return StateAction(create, onTap: () => _open(context, blank()));
+    }
+    return StateAction('Read the section again', onTap: model.load);
   }
 
   Widget _rows(BuildContext context) => Rows([

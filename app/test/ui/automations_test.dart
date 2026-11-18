@@ -94,7 +94,8 @@ void main() {
     await model.load();
 
     await pump(tester, SchedulesTab(model: model));
-    await tester.tap(find.text('New schedule'));
+    // The header's create: the empty list offers the same one below it.
+    await tester.tap(find.text('New schedule').first);
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(EditableText).at(0), 'nightly gate');
     await tester.enterText(find.byType(EditableText).at(1), 'gate');
@@ -344,9 +345,10 @@ void main() {
     );
 
     // Schedules draws its own New in the page header, so the place's one New
-    // is not drawn beside it: the tab offers exactly one way to create.
+    // is not drawn beside it: the tab offers exactly one way to create. The
+    // list is empty, so the empty state offers that same create too (§7).
     expect(find.text('New automation'), findsNothing);
-    expect(find.text('New schedule'), findsOneWidget);
+    expect(find.text('New schedule'), findsNWidgets(2));
   });
 
   testWidgets('the menu offers only the kinds that can be made', (

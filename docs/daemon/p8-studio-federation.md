@@ -506,7 +506,68 @@ Not started.
 
 ### Plan 3
 
-Not started.
+Landed as six commits, one per task, on `p8-3-relay` (stacked on this branch):
+the wire types and their fixture, with the regenerated Dart contract; the
+relay's table, join route and newest-instance takeover (`hostrelay.go`); the
+forward and hosts routes; the joiner and its pool (`hostjoin.go`); `webbridge`'s
+`--relay-join` and `--join` flags; and the local daemon's join — the three
+`[daemon]` keys, `marshal daemon join-token`, `marshal daemon token`, and the
+`relay:` line in `status`.
+
+Decisions the executor made:
+
+- **The config plumbing.** The plan's task 6 file list named
+  `internal/app/config/types.go` alone, but `[daemon]` decodes into
+  `fileDaemon`, is copied key by key in `merge.go`, and is rendered in
+  `save.go`. Without those lines the three keys reach nothing, `daemonUnitSpec`
+  never sees a join, and a config save erases one. Added (three files, ten
+  lines), and recorded here because the list did not name them.
+- **The joiner's server carries no `ReadHeaderTimeout`.** The plan asks for one
+  "as `main.go`'s servers do", and that was built first. The run by hand found
+  why it cannot stay: a spare connection is idle by design, so a header
+  deadline closes both spares when it expires; the pool redials, and the relay's
+  queue fills with connections it has already been sent a FIN on. A forward then
+  takes one and answers 502 `{"error":"EOF"}` — with two fresh spares and eight
+  half-closed sockets in any forty-second window. Only the relay writes to a
+  joined connection, and D15 already asks that it be trusted as much as the
+  daemons that join it, so the deadline bought nothing.
+  `TestTheSparesOutliveAnIdleWait` pins both the stable pool and the absent
+  deadline.
+- **The joiner lives on the `Server`**, beside `refresh`, set once at start as
+  `SetRefreshHelper` is. It was first kept in a package-global map keyed by
+  `*Server` — the shape AGENTS.md forbids — because `Server`'s fields live in
+  `http.go`, which task 3 owned at the time.
+- **The plan's task 6 file list is five files short** in total: the three config
+  files above, plus nothing else outside a task's list except that one field.
+
+Mutation checks: all six ran and each failed the test the plan names before its
+line was restored — the secret compared against the first name's (another
+name's secret), the caller's `Authorization` forwarded instead of the host's
+token, a replacement dialled on accept rather than on the first read, `--join`
+dropped from the `--token-file` rule, and `--token-file` written only with a
+Studio address. Each restored by inverse edit, since the work was uncommitted.
+
+The run by hand used a temporary home, data dir and state dirs with the built
+binaries, and two `webbridge` processes: a relay on `127.0.0.1:7711` naming
+`local`, and a joining bridge on `127.0.0.1:7712`. It did not reconfigure this
+box's development daemon and Studio, which would have rewritten the user's own
+config; the same two binaries and flags are what `scripts/dev-loop.md`'s recipe
+gives a developer.
+
+| Step | Answer |
+|---|---|
+| `GET /api/relay/hosts` with the relay's token | `{"hosts":[{"name":"local","connected":true,"since":…,"lastContact":…}]}` |
+| `GET /api/hosts/local/api/agents`, both tokens | 200 `[]`, `X-Marshal-Relayed: local` |
+| the same, a wrong host token | 401 `{"error":"unauthorized"}`, `X-Marshal-Relayed: local` |
+| the same, no host token | 401 `{"error":"unauthorized"}`, no `X-Marshal-Relayed` |
+| `GET /api/hosts/nobody/api/agents` | 404 `{"error":"no relayed host nobody"}` |
+| `GET /api/hosts/local/healthz` | 404, the relay's: a path outside `api/` is never forwarded |
+| the first forward, after twelve seconds idle | 200 `[]` — before the fix above this answered 502 `EOF` |
+
+Not done: no daemon was installed, so the `relay:` line of `marshal daemon
+status` is covered by `TestDaemonStatusPrintsTheJoin` alone, and `join-token`
+and `token` were exercised by their tests rather than against a running unit.
+A relayed agent attach, and relay chains, are out of scope by the plan.
 
 ### Plan 4
 

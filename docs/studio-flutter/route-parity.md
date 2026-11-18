@@ -76,6 +76,7 @@ issues, and so does a route the client issues that has no row.
 | PUT | `/api/factory/working-drafts/X` | saveWorkingDraft |  |
 | DELETE | `/api/factory/working-drafts/X` | deleteWorkingDraft |  |
 | GET | `/api/factory/working-drafts/installation` | — | dropped: the installation draft is the web client’s onboarding; the app has no onboarding screen |
+| * | `/api/hosts/X/…` | — | dropped: the relayed transport prefixes every route; no method names it |
 | GET | `/api/inbox` | inbox |  |
 | GET | `/api/library/memory` | memory |  |
 | DELETE | `/api/library/memory/X` | deleteMemory |  |
@@ -139,6 +140,8 @@ issues, and so does a route the client issues that has no row.
 | PUT | `/api/recipes/X` | saveRecipe |  |
 | POST | `/api/recipes/X/copy` | copyRecipe |  |
 | POST | `/api/recipes/X/run` | runRecipe |  |
+| GET | `/api/relay/hosts` | — | dropped: the Studio reads it from P8 plan 4 |
+| POST | `/api/relay/join` | — | dropped: a daemon joins; the Studio never does |
 | GET | `/api/repos` | repos |  |
 | POST | `/api/repos` | registerRepo |  |
 | DELETE | `/api/repos/X` | removeRepo |  |

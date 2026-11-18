@@ -77,6 +77,13 @@ Dart module, `app/lib/src/client/contract.g.dart`: regenerate with
 `go test ./web/bridge/contract/dartgen -run TestDartContractIsCurrent -update`.
 That currency test fails on a contract change that is not regenerated.
 
+A bridge given `--relay-join NAME=PATH` is a relay for the hosts that join it:
+each forwarded request arrives under `/api/hosts/<name>/` and is decided by
+that host's own token, never the relay's. `--join URL` — the local daemon's
+`daemon.join_url`, its secret stored by `marshal daemon join-token` — makes a
+bridge dial out and join one, where the joining bridge serves and the relay is
+its client.
+
 `webbridge --profile local` is the user's local daemon (P4): a unix socket,
 host processes only, and no container machinery. Each project runs its own
 `marshal acp --viewers` child, started on the first attach and stopped 30s

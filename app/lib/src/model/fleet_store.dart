@@ -46,6 +46,7 @@ class FleetStore extends ChangeNotifier {
         kind: owner.kind,
         reach: owner.reach,
         lastContact: owner.lastContact,
+        via: owner.via,
       ),
   ]);
 
@@ -629,12 +630,16 @@ class HostView {
     required this.kind,
     required this.reach,
     required this.lastContact,
+    this.via,
   });
 
   final String name;
 
   /// A local daemon, or a server profile.
   final HostKind kind;
+
+  /// The relay's host name this host is reached through, or null.
+  final String? via;
 
   /// Live, stale, unreachable or unauthorized.
   final HostReach reach;

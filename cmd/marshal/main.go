@@ -289,11 +289,11 @@ func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 				return fmt.Errorf("marshal fleet: --server requires a server name")
 			}
 		case len(rest) > 0 && rest[0] == "add" &&
-			(args[i] == "--ca-file" || strings.HasPrefix(args[i], "--ca-file=") || args[i] == "--no-notify"):
+			(args[i] == "--ca-file" || strings.HasPrefix(args[i], "--ca-file=") || args[i] == "--relay" || strings.HasPrefix(args[i], "--relay=") || args[i] == "--no-notify"):
 			// add is the one subcommand with flags of its own, and they follow
 			// the name, so they are handed to runFleetAdd rather than read here.
 			rest = append(rest, args[i])
-			if args[i] == "--ca-file" && i+1 < len(args) {
+			if (args[i] == "--ca-file" || args[i] == "--relay") && i+1 < len(args) {
 				rest = append(rest, args[i+1])
 				i++
 			}
@@ -369,6 +369,11 @@ func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if err != nil {
 		return fmt.Errorf("marshal fleet: %w", err)
 	}
+	if srv.Relay != "" {
+		// D20: the screen runs on a server's own url, and a relayed profile
+		// has none to dial.
+		return fmt.Errorf("marshal fleet: %s is reached through %s, and the fleet screen does not relay yet", srv.Name, srv.Relay)
+	}
 	return fleetServerRunner(ctx, stdout, srv, notifyOption(srv.Notify))
 }
 
@@ -380,10 +385,12 @@ type FleetServers struct {
 	Servers       []FleetServer `json:"servers"`
 }
 
-// FleetServer is one server profile as that document lists it.
+// FleetServer is one server profile as that document lists it. A relayed
+// profile carries a relay and no url (D20).
 type FleetServer struct {
 	Name   string `json:"name"`
 	URL    string `json:"url"`
+	Relay  string `json:"relay,omitempty"`
 	CAFile string `json:"caFile,omitempty"`
 }
 
@@ -426,6 +433,7 @@ func runFleetServers(ctx context.Context, args []string, stdout io.Writer, home 
 		doc.Servers = append(doc.Servers, FleetServer{
 			Name:   name,
 			URL:    srv.URL,
+			Relay:  srv.Relay,
 			CAFile: srv.CAFile,
 		})
 	}
@@ -437,18 +445,19 @@ func runFleetServers(ctx context.Context, args []string, stdout io.Writer, home 
 	return nil
 }
 
-// runFleetAdd is `marshal fleet add NAME URL [--ca-file PATH] [--no-notify]`:
-// it writes the profile to the fleet file, which keeps its comments, and says
-// how to store the token that profile now needs.
+// runFleetAdd is `marshal fleet add NAME URL [--ca-file PATH] [--no-notify]`,
+// or `marshal fleet add NAME --relay HUB [--no-notify]` for a relayed server
+// (D20): it writes the profile to the fleet file, which keeps its comments,
+// and says how to store the token that profile now needs.
 func runFleetAdd(ctx context.Context, args []string, stderr io.Writer, home string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	var name, rawURL, caFile string
+	var name, rawURL, relay, caFile string
 	notify := true
-	// A path may follow --ca-file, so the flags are read by position and the
-	// rest are the name and the url.
+	// A path may follow --ca-file and a name --relay, so the flags are read by
+	// position and the rest are the name and the url.
 	positionals := make([]string, 0, 2)
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -470,6 +479,23 @@ func runFleetAdd(ctx context.Context, args []string, stderr io.Writer, home stri
 			if caFile == "" {
 				return fmt.Errorf("marshal fleet add: --ca-file requires a path")
 			}
+		case args[i] == "--relay":
+			if i+1 >= len(args) || args[i+1] == "" {
+				return fmt.Errorf("marshal fleet add: --relay requires a server name")
+			}
+			if relay != "" {
+				return fmt.Errorf("marshal fleet add: --relay given more than once")
+			}
+			relay = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--relay="):
+			if relay != "" {
+				return fmt.Errorf("marshal fleet add: --relay given more than once")
+			}
+			relay = strings.TrimPrefix(args[i], "--relay=")
+			if relay == "" {
+				return fmt.Errorf("marshal fleet add: --relay requires a server name")
+			}
 		case args[i] == "--no-notify":
 			notify = false
 		case strings.HasPrefix(args[i], "-"):
@@ -478,19 +504,30 @@ func runFleetAdd(ctx context.Context, args []string, stderr io.Writer, home stri
 			positionals = append(positionals, args[i])
 		}
 	}
+	if relay != "" && caFile != "" {
+		// D20: a relayed server's TLS is the one it is reached through.
+		return fmt.Errorf("marshal fleet add: --ca-file cannot be combined with --relay: a relayed server has no ca_file; its TLS is %s's", relay)
+	}
 	switch {
+	case len(positionals) == 0 && relay != "":
+		return fmt.Errorf("marshal fleet add: a server name is required")
 	case len(positionals) == 0:
 		return fmt.Errorf("marshal fleet add: a server name and a url are required")
-	case len(positionals) == 1:
+	case relay != "" && len(positionals) > 1:
+		return fmt.Errorf("marshal fleet add: --relay takes no url: %s is reached through %s", positionals[0], relay)
+	case relay == "" && len(positionals) == 1:
 		return fmt.Errorf("marshal fleet add: a url is required for %s", positionals[0])
-	case len(positionals) > 2:
+	case relay == "" && len(positionals) > 2:
 		return fmt.Errorf("marshal fleet add: unexpected argument %q", positionals[2])
 	}
-	name, rawURL = positionals[0], positionals[1]
+	name = positionals[0]
+	if relay == "" {
+		rawURL = positionals[1]
+	}
 
 	// Notify is a bool that reads as on when the file omits it, so the absent
 	// flag writes nothing and --no-notify writes notify = false.
-	srv := fleetprofile.Server{Name: name, URL: rawURL, CAFile: caFile, Notify: notify}
+	srv := fleetprofile.Server{Name: name, URL: rawURL, Relay: relay, CAFile: caFile, Notify: notify}
 	if err := fleetprofile.AddServer(fleetprofile.Path(home), srv); err != nil {
 		return fmt.Errorf("marshal fleet add: %w", err)
 	}

@@ -6,6 +6,7 @@ import 'src/client/bridge_client.dart';
 import 'src/client/contract.g.dart';
 import 'src/client/fleet_profiles.dart';
 import 'src/client/host.dart';
+import 'src/client/host_tokens.dart';
 import 'src/client/host_discovery_stub.dart'
     if (dart.library.io) 'src/client/host_discovery_io.dart';
 import 'src/client/studio_code_stub.dart'
@@ -729,6 +730,10 @@ class _Settings {
          rediscover: registry.discover,
          forget: registry.forget,
          retry: registry.retry,
+         // A browser writes the host's own key; a native build leaves both
+         // unset and signs in through `marshal fleet login` (spec D21).
+         storeToken: hostTokenWriters?.store,
+         clearToken: hostTokenWriters?.clear,
        ),
        environments = EnvironmentsModel(client),
        connections = ConnectionsModel(client),

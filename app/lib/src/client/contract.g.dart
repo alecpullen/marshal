@@ -1786,6 +1786,7 @@ class DaemonInfo {
     required this.pinned,
     required this.children,
     this.refresh,
+    this.join,
     this.restart,
   });
 
@@ -1810,6 +1811,8 @@ class DaemonInfo {
   final List<DaemonChild> children;
   /// filled per request
   final DaemonRefresh? refresh;
+  /// filled per request
+  final DaemonJoin? join;
   /// the daemon's own; filled per request
   final DaemonRestart? restart;
 
@@ -1838,6 +1841,10 @@ class DaemonInfo {
         json['refresh'],
         DaemonRefresh.fromJson,
       ),
+      join: _objectOrNull(
+        json['join'],
+        DaemonJoin.fromJson,
+      ),
       restart: _objectOrNull(
         json['restart'],
         DaemonRestart.fromJson,
@@ -1865,6 +1872,9 @@ class DaemonInfo {
     ];
     if (refresh != null) {
       json['refresh'] = refresh!.toJson();
+    }
+    if (join != null) {
+      json['join'] = join!.toJson();
     }
     if (restart != null) {
       json['restart'] = restart!.toJson();
@@ -11989,6 +11999,106 @@ class RecipeCopy {
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{};
     json['name'] = name;
+    return json;
+  }
+}
+
+/// RelayHosts is GET /api/relay/hosts (P8 D16): every host the relay names.
+class RelayHosts {
+  const RelayHosts({
+    required this.hosts,
+  });
+
+  final List<RelayHost> hosts;
+
+  factory RelayHosts.fromJson(Map<String, dynamic> json) {
+    return RelayHosts(
+      hosts: _list(
+        json['hosts'],
+        (value) => _object(value, RelayHost.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['hosts'] = [
+      for (final value in hosts) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// RelayHost is one host a relay names, joined or not.
+class RelayHost {
+  const RelayHost({
+    required this.name,
+    required this.connected,
+    this.since,
+    this.lastContact,
+  });
+
+  final String name;
+  final bool connected;
+  /// Unix ms the current instance joined
+  final int? since;
+  /// Unix ms of the last join or forwarded response
+  final int? lastContact;
+
+  factory RelayHost.fromJson(Map<String, dynamic> json) {
+    return RelayHost(
+      name: json['name'] as String,
+      connected: json['connected'] as bool,
+      since: (json['since'] as num?)?.toInt(),
+      lastContact: (json['lastContact'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['connected'] = connected;
+    if (since != null) {
+      json['since'] = since;
+    }
+    if (lastContact != null) {
+      json['lastContact'] = lastContact;
+    }
+    return json;
+  }
+}
+
+/// DaemonJoin is a joining bridge's join, as GET /api/daemon reports it (D17).
+class DaemonJoin {
+  const DaemonJoin({
+    required this.url,
+    required this.name,
+    required this.connected,
+    this.lastError,
+  });
+
+  final String url;
+  final String name;
+  final bool connected;
+  final String? lastError;
+
+  factory DaemonJoin.fromJson(Map<String, dynamic> json) {
+    return DaemonJoin(
+      url: json['url'] as String,
+      name: json['name'] as String,
+      connected: json['connected'] as bool,
+      lastError: json['lastError'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['url'] = url;
+    json['name'] = name;
+    json['connected'] = connected;
+    if (lastError != null) {
+      json['lastError'] = lastError;
+    }
     return json;
   }
 }

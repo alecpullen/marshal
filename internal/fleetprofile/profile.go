@@ -36,6 +36,7 @@ type File struct {
 type Server struct {
 	Name     string
 	URL      string // an origin: https, or http on a loopback host
+	Relay    string // the server profile this one is reached through, or ""
 	TokenCmd string
 	CAFile   string // absolute once loaded
 	Notify   bool
@@ -62,6 +63,7 @@ type rawFile struct {
 
 type rawServer struct {
 	URL      string  `toml:"url"`
+	Relay    string  `toml:"relay"`
 	TokenCmd string  `toml:"token_cmd"`
 	CAFile   string  `toml:"ca_file"`
 	Notify   *bool   `toml:"notify"`
@@ -128,6 +130,13 @@ func decode(path string, src []byte) (File, error) {
 		}
 		f.Servers[name] = srv
 	}
+	// A relay names another server, so it is checked once they are all built
+	// (D20).
+	for _, name := range sortedNames(f.Servers) {
+		if err := checkRelay(f.Servers, f.Servers[name]); err != nil {
+			return File{}, err
+		}
+	}
 	return f, nil
 }
 
@@ -156,11 +165,11 @@ func buildServer(path, name string, raw rawServer) (Server, error) {
 	if err := checkName(name); err != nil {
 		return Server{}, err
 	}
-	if err := checkURL(name, raw.URL); err != nil {
+	if err := checkURLOrRelay(name, raw.URL, raw.Relay); err != nil {
 		return Server{}, err
 	}
 
-	srv := Server{Name: name, URL: raw.URL, TokenCmd: raw.TokenCmd, Notify: true}
+	srv := Server{Name: name, URL: raw.URL, Relay: raw.Relay, TokenCmd: raw.TokenCmd, Notify: true}
 	if raw.Notify != nil {
 		srv.Notify = *raw.Notify
 	}
@@ -186,7 +195,48 @@ func checkName(name string) error {
 	if !serverNameRe.MatchString(name) {
 		return fmt.Errorf("fleet.toml: servers.%s: a server's name may hold only letters, digits, '.', '_' and '-'", name)
 	}
+	// Dots alone pass the character rule but are a path segment in every URL
+	// the name builds: ".." would climb out of /api/hosts/<name> and answer
+	// from the relay's own API. Neither is a server name.
+	if name == "." || name == ".." {
+		return fmt.Errorf("fleet.toml: servers.%s: a server's name may not be dots alone", name)
+	}
 	return nil
+}
+
+// checkRelay applies D20's rules for a relayed server: its relay names a
+// server that holds a url and is not itself relayed — there are no chains —
+// and a relayed server carries no ca_file, because its TLS is the one it is
+// reached through.
+func checkRelay(servers map[string]Server, srv Server) error {
+	if srv.Relay == "" {
+		return nil
+	}
+	hub, ok := servers[srv.Relay]
+	if !ok {
+		return fmt.Errorf("fleet.toml: servers.%s.relay: fleet.toml names no server %s; it names %s", srv.Name, srv.Relay, strings.Join(sortedNames(servers), ", "))
+	}
+	if hub.Relay != "" {
+		return fmt.Errorf("fleet.toml: servers.%s.relay: %s is itself relayed", srv.Name, srv.Relay)
+	}
+	if srv.CAFile != "" {
+		return fmt.Errorf("fleet.toml: servers.%s.ca_file: a relayed server has no ca_file; its TLS is %s's", srv.Name, srv.Relay)
+	}
+	return nil
+}
+
+// checkURLOrRelay applies D20's rule that a server has a url or a relay, never
+// both and never neither.
+func checkURLOrRelay(name, rawURL, relay string) error {
+	switch {
+	case rawURL != "" && relay != "":
+		return fmt.Errorf("fleet.toml: servers.%s.url: a relayed server has no url; it is reached through relay %q", name, relay)
+	case rawURL == "" && relay == "":
+		return fmt.Errorf("fleet.toml: servers.%s: a server needs a url, or a relay naming one", name)
+	case relay != "":
+		return nil
+	}
+	return checkURL(name, rawURL)
 }
 
 // checkURL applies decision 2's rule for a server's url: an origin, https, or

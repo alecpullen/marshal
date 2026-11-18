@@ -32,6 +32,8 @@ class HostsModel extends SectionModel<HostView> {
     this.rediscover,
     this.forget,
     this.retry,
+    this.storeToken,
+    this.clearToken,
   });
 
   /// A model already holding [hosts], for a test or the gallery.
@@ -41,6 +43,8 @@ class HostsModel extends SectionModel<HostView> {
     this.rediscover,
     this.forget,
     this.retry,
+    this.storeToken,
+    this.clearToken,
   }) : _read = (() => hosts) {
     replaceItems(hosts);
   }
@@ -62,6 +66,16 @@ class HostsModel extends SectionModel<HostView> {
 
   /// Asks a host to try its stream again after its token changed.
   final void Function(String host)? retry;
+
+  /// Stores [host]'s token: `marshal fleet login` in a native build, and the
+  /// host's own browser store in a page (decision 6). Null when this build has
+  /// neither, which is what [signIn] falls back on [profiles] for.
+  final Future<void> Function(String host, String token)? storeToken;
+
+  /// Forgets [host]'s token. It is the browser's alone: a native build keeps no
+  /// token of its own, and `marshal fleet token` resolves one when a request
+  /// needs it (decision 6).
+  final void Function(String host)? clearToken;
 
   /// What a failed sign-in said, by host: the add already worked, and only
   /// the token is wrong (decision 5).
@@ -151,13 +165,38 @@ class HostsModel extends SectionModel<HostView> {
 
   /// Signs in to [host] with [token], then asks it to try again: a refused
   /// token stopped its stream, and waiting would never clear it (decision 6).
+  ///
+  /// Where the build keeps a token of its own the token is stored through
+  /// [storeToken] — a browser writes the host's own key (spec D21) — and
+  /// everywhere else through `marshal fleet login`, as plan 2 built it.
   Future<void> signIn(String host, String token) async {
-    final runner = profiles;
-    if (runner == null) {
-      throw const FleetProfileFailure('This build cannot sign in to a host');
+    final store = storeToken;
+    if (store == null) {
+      final runner = profiles;
+      if (runner == null) {
+        throw const FleetProfileFailure('This build cannot sign in to a host');
+      }
+      await runner.login(host, token);
+    } else {
+      await store(host, token);
     }
-    await runner.login(host, token);
     _loginFailures.remove(host);
+    retry?.call(host);
+    notifyListeners();
+  }
+
+  /// Whether [host] can be signed out of: a relayed host, in a build that keeps
+  /// the token that reached it (decision 6). A native build has nothing to
+  /// clear, and a host reached directly carries the page's own token.
+  bool canSignOut(HostView host) => clearToken != null && host.via != null;
+
+  /// Forgets [host]'s token, then asks it to try again, so the host reads
+  /// "token refused" again until it is signed in to with a new one
+  /// (decision 6, spec D22).
+  Future<void> signOut(String host) async {
+    final clear = clearToken;
+    if (clear == null) return;
+    clear(host);
     retry?.call(host);
     notifyListeners();
   }

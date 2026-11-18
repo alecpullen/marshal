@@ -55,6 +55,14 @@ type Server struct {
 	// refresh, when set, is the daemon's refresh helper, reported per
 	// request by GET /api/daemon (see SetRefreshHelper).
 	refresh *Helper
+	// relay, when set, is the table of the hosts that may join this bridge:
+	// the network listener then answers the join route, and the forward and
+	// hosts routes sit behind the bearer check (hostrelay.go).
+	relay *HostRelay
+	// join, when set, is the relay this bridge joins, reported per request
+	// by GET /api/daemon (see SetJoiner). Like refresh it is set once, at
+	// start, before the listeners serve.
+	join *Joiner
 	// factoryAuth is the one factory policy lock: grant management, client
 	// deletion, project removal, delegation settings and the authorization
 	// guarding a durable factory mutation all take it. It is created with the
@@ -158,15 +166,24 @@ func (s *Server) publicURL(path string) string {
 // ServeHTTP implements http.Handler. Non-API paths are served by the
 // embedded SPA (index.html fallback for client-side routing); /api paths
 // go through the mux (with optional bearer auth) so method mismatches
-// still produce 405. The agent attach is the one /api route that is not
-// on the mux: it goes to networkAttach, which owns the bearer check and
-// the transport rule, and is absent without a token (decision 7).
+// still produce 405. The agent attach is on the mux's side of the bearer
+// check only: it goes to networkAttach, which owns the bearer check and
+// the transport rule, and is absent without a token (decision 7). A
+// bridge that is a relay answers the join route here too, before the
+// bearer check (hostrelay.go).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.networkAttach != nil {
 		if _, ok := agentAttachID(r.URL.Path); ok {
 			s.networkAttach.ServeHTTP(w, r)
 			return
 		}
+	}
+	if s.relay != nil && r.URL.Path == relayJoinPath {
+		// A join is a host's half of a handover, as the sign-in exchange is a
+		// page's, so it answers before the bearer check — and only here: over
+		// the owner's own socket a join means nothing (P8 decision 8).
+		s.relayJoin(w, r)
+		return
 	}
 	// The sign-in exchange and the identity probe answer before the bearer
 	// check: a page with no token yet is the caller they exist for. Minting a

@@ -51,7 +51,7 @@ class HostsSection extends StatelessWidget {
               name: 'Add a host',
               description:
                   'A browser reaches the hosts the bridge that served it '
-                  'relays, so a host is added from the desktop app.',
+                  'relays: join a daemon to it with `webbridge --join`.',
             ),
         ]),
       ],
@@ -75,10 +75,14 @@ class HostsSection extends StatelessWidget {
     model.draftChanged(null);
   }
 
-  /// What the host is, in one line: a local daemon, or a server profile.
+  /// What the host is, in one line: a local daemon, or a server profile — and
+  /// a relayed profile says where it is reached (spec D23).
   static String _kind(HostView host) => switch (host.kind.name) {
     'local' => 'A local daemon, on this machine',
-    _ => 'A server profile, over TLS',
+    _ =>
+      host.via == null
+          ? 'A server profile, over TLS'
+          : 'A server profile, through ${host.via}',
   };
 }
 
@@ -243,11 +247,29 @@ class _HostDetailState extends State<HostDetail> {
   /// sign-in failure.
   String? _removeFailure;
   bool _signingIn = false;
+  bool _signingOut = false;
 
   @override
   void dispose() {
     _token.dispose();
     super.dispose();
+  }
+
+  /// Whether the relay this host is reached through is one the bridge refused.
+  /// While it is, signing in here cannot help: the relay's own token is what is
+  /// refused, so the detail says so and offers no Sign in of its own (D23).
+  ///
+  /// A `via` the section does not list is read as not refused: both real
+  /// compositions always list the relay's own row (the page's host first in a
+  /// browser, the hub's row in a native build), so this only answers a
+  /// fixture that withholds it.
+  bool get _relayRefused {
+    final via = widget.host.via;
+    if (via == null) return false;
+    for (final other in widget.model.items) {
+      if (other.name == via) return other.refused;
+    }
+    return false;
   }
 
   /// A refused token is not a silence: a server profile that refused one is
@@ -260,6 +282,7 @@ class _HostDetailState extends State<HostDetail> {
     final seen = host.lastContact;
     final server = host.kind.name != 'local';
     final loginFailure = widget.model.loginFailure(host.name);
+    final relayRefused = _relayRefused;
     final failure = _failure;
     final removeFailure = _removeFailure;
     return Column(
@@ -283,20 +306,33 @@ class _HostDetailState extends State<HostDetail> {
                     'heard from.',
           style: e.small.tint(e.muted),
         ),
+        if (relayRefused) ...[
+          const SizedBox(height: Space.s12),
+          Text('Sign in to the relay first.', style: e.small.tint(e.err)),
+        ],
         // A browser cannot remove a profile any more than it can add one, so
         // the affordance follows the runner rather than the host's kind.
         if (server && widget.model.canAdd) ...[
           const SizedBox(height: Space.s16),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Btn('Remove…', onTap: () => _remove(context)),
+          Row(
+            children: [
+              Btn('Remove…', onTap: () => _remove(context)),
+              // Signing out is the browser's alone: it is what holds the token
+              // that reached a relayed host (decision 6, spec D22).
+              if (widget.model.canSignOut(host)) ...[
+                const SizedBox(width: Space.s12),
+                Btn('Sign out', onTap: _signingOut ? null : _signOut),
+              ],
+            ],
           ),
           if (removeFailure != null) ...[
             const SizedBox(height: Space.s12),
             Text(removeFailure, style: e.small.tint(e.err)),
           ],
         ],
-        if (server && (host.refused || loginFailure != null)) ...[
+        if (server &&
+            !relayRefused &&
+            (host.refused || loginFailure != null)) ...[
           const SizedBox(height: Space.s20),
           if (loginFailure != null) ...[
             Text(loginFailure, style: e.small.tint(e.err)),
@@ -351,6 +387,19 @@ class _HostDetailState extends State<HostDetail> {
         _failure = describeFailure(failure);
       });
     }
+  }
+
+  /// Forgets the token this browser kept for the host, then asks it to try
+  /// again: it reads "token refused" until it is signed in to with a new one
+  /// (decision 6, spec D22).
+  Future<void> _signOut() async {
+    setState(() {
+      _signingOut = true;
+      _failure = null;
+    });
+    await widget.model.signOut(widget.host.name);
+    if (!mounted) return;
+    setState(() => _signingOut = false);
   }
 
   /// Removes the profile and its stored token, after the confirmation Access

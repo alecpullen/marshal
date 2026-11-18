@@ -10,6 +10,7 @@ import '../../model/new_work_model.dart';
 import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
 import '../../model/inbox_model.dart' as inbox;
+import '../../model/inspector_state.dart';
 import '../../model/nav_model.dart';
 import '../../model/overview_model.dart' show buildOverview;
 import '../../model/place.dart';
@@ -58,6 +59,34 @@ typedef HandoffBuilder = Future<HandoffModel> Function(
   String? plannerID,
   PlannerSnapshot? snapshot,
 });
+
+/// One open thread's inspector: the view state the frame animates, what each
+/// tab draws, and how to release both.
+class ThreadInspector {
+  const ThreadInspector({
+    required this.state,
+    required this.body,
+    required this.start,
+    this.dispose,
+  });
+
+  final InspectorState state;
+  final Widget Function(InspectorTab tab) body;
+
+  /// Starts the reads the tab models own. Called once, when the thread place
+  /// opens: a tab that draws what its model holds has nothing to draw until
+  /// the holder's own read runs.
+  final VoidCallback start;
+
+  /// Releases the tab models and the state. Called when the thread place
+  /// closes.
+  final VoidCallback? dispose;
+}
+
+/// Builds a thread's inspector, from the host's client. Null leaves a thread
+/// without the panel, which is what every thread had before F9.
+typedef InspectorBuilder =
+    ThreadInspector Function(String host, model.ThreadRef thread);
 
 /// The Studio's frame (design-system.md §4): the sidebar, and the place's
 /// content beside it. Below 760 the navigation becomes a panel over the
@@ -394,6 +423,7 @@ class Studio extends StatefulWidget {
     this.composerFor,
     this.newWorkFor,
     this.shareFor,
+    this.inspectorFor,
     this.planningFor,
     this.handoffFor,
     this.runFor,
@@ -442,6 +472,11 @@ class Studio extends StatefulWidget {
   /// Null leaves the header's Share disabled: a control that cannot work is
   /// shown as unavailable, never as working.
   final ShareModel Function(String host, String agentId)? shareFor;
+
+  /// Builds a thread's inspector, from the host's client (F9 decision 4).
+  /// Null leaves a thread without the panel, which is what every thread had
+  /// before F9.
+  final InspectorBuilder? inspectorFor;
 
   /// Builds a planning thread's model, for a planner a person started (F6
   /// decision 8). Null leaves the planning place unbuilt rather than drawing
@@ -768,6 +803,7 @@ class _StudioState extends State<Studio> {
           composerFor: widget.composerFor,
           newWorkFor: widget.newWorkFor,
           shareFor: widget.shareFor,
+          inspectorFor: widget.inspectorFor,
           onThreadStarted: (id) =>
               navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
           handoffFor: widget.handoffFor,
@@ -908,6 +944,7 @@ class _ThreadPlace extends StatefulWidget {
     this.composerFor,
     this.newWorkFor,
     this.shareFor,
+    this.inspectorFor,
     this.onThreadStarted,
     this.onPlannerStarted,
     this.handoffFor,
@@ -930,6 +967,11 @@ class _ThreadPlace extends StatefulWidget {
   /// Builds this thread's Share model, once, when the place opens. Null
   /// leaves the header's Share disabled.
   final ShareModel Function(String host, String agentId)? shareFor;
+
+  /// Builds this thread's inspector, once, when the place opens: the panel
+  /// beside the transcript (F9 decision 4). Null leaves the thread without
+  /// one, as every thread was before F9.
+  final InspectorBuilder? inspectorFor;
   final void Function(String agentId)? onThreadStarted;
 
   /// Opens the planning thread a "Plan first" started (F6 decision 8).
@@ -953,6 +995,13 @@ class _ThreadPlace extends StatefulWidget {
 class _ThreadPlaceState extends State<_ThreadPlace> {
   late final StackStore _store = widget.buildStore(widget.thread);
   late final ThreadViewState _view = ThreadViewState();
+
+  /// The inspector this thread's tabs read, built once so a rebuild does not
+  /// rebuild five models (F9 decision 4).
+  late final ThreadInspector? _inspector = widget.inspectorFor?.call(
+    widget.thread.host,
+    widget.thread,
+  );
   ComposerModel? _composer;
   ShareModel? _share;
 
@@ -960,6 +1009,9 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
   void initState() {
     super.initState();
     _store.start();
+    // The holder owns its five models, so it starts their first read: nothing
+    // else would, and Changes would draw loading forever.
+    _inspector?.start();
     _composer = widget.composerFor?.call(widget.thread, _view);
     _share = widget.shareFor?.call(widget.thread.host, widget.thread.id);
     // A thread opened while its agent is mid-turn offers Steer and Stop from
@@ -986,6 +1038,9 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
 
   @override
   void dispose() {
+    // The inspector's tab models and its state outlive no thread: they are
+    // released before the store the screen was reading.
+    _inspector?.dispose?.call();
     _store
       ..stop()
       ..dispose();
@@ -1060,6 +1115,10 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
           ? null
           : () => _sendBack(context),
       onNewWork: widget.newWorkFor == null ? null : () => _openNewWork(context),
+      // The panel beside the transcript, when a host built one (F9
+      // decision 4). Null leaves the screen as it was before F9.
+      inspector: _inspector?.state,
+      inspectorBody: _inspector?.body,
       // Share mints this thread's status link on the host's client. Null
       // leaves the header's Share disabled (F7 decision 7).
       onShare: _share == null

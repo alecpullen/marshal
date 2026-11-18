@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart';
 
 import '../../model/share_model.dart';
 import '../kit/kit.dart';

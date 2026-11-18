@@ -929,6 +929,8 @@ class _GalleryState extends State<Gallery> {
         children: [
           Field(label: 'Branch', hint: 'main'),
           SizedBox(height: Space.s16),
+          Field.search(hint: 'Search or jump to'),
+          SizedBox(height: Space.s16),
           Field(
             label: 'Base branch',
             error: 'That branch does not exist on the forge',

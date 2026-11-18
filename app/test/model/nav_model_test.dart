@@ -221,7 +221,26 @@ void main() {
     },
   );
 
-  test('an open thread lights its project row', () async {
+  test('an open thread lights only its own row', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha'), project('/home/u/beta')],
+        agents: [agent(id: 'a-1')],
+      ),
+    ], now: now);
+    await fixture.refresh();
+
+    // The thread is open, not its project: the thread's row is where the
+    // person is, so no project row is filled.
+    final model = buildNavModel(
+      const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
+      fixture.store,
+    );
+    expect([for (final row in model.projects) row.active], [false, false]);
+  });
+
+  test('the project page lights its project row', () async {
     final fixture = await ModelFixture.start([
       FixtureHost(
         name: 'local',
@@ -232,10 +251,10 @@ void main() {
     await fixture.refresh();
 
     final model = buildNavModel(
-      const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
+      const Place(PlaceKind.project, id: '/home/u/beta'),
       fixture.store,
     );
-    expect([for (final row in model.projects) row.active], [true, false]);
+    expect([for (final row in model.projects) row.active], [false, true]);
   });
 
   test('inbox count follows the store', () async {

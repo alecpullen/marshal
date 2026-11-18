@@ -63,6 +63,39 @@ void main() {
     expect(styleOf(tester, 'That branch does not exist').color, e.err);
   });
 
+  testWidgets('the search field has no label above it', (tester) async {
+    final handle = tester.ensureSemantics();
+    await pump(tester, const Field.search(hint: 'Search or jump to'));
+
+    // No label is drawn and no room is left for one: the border starts at the
+    // field's own top.
+    expect(find.text('Search'), findsNothing);
+    final box = find
+        .ancestor(
+          of: find.byType(EditableText),
+          matching: find.byType(Container),
+        )
+        .first;
+    expect(tester.getSize(box).height, Sizes.row);
+    expect(tester.getTopLeft(box).dy, tester.getTopLeft(find.byType(Field)).dy);
+
+    // A magnifying glass leads the input, in muted, with Space.s8 before the
+    // text.
+    final mark = find.byIcon(Glyphs.search);
+    expect(mark, findsOneWidget);
+    final icon = tester.widget<Icon>(mark);
+    expect(icon.size, Sizes.iconRow);
+    expect(icon.color, e.muted);
+    final input = tester.getTopLeft(find.byType(EditableText)).dx;
+    expect(input - tester.getTopRight(mark).dx, Space.s8);
+    expect(tester.getTopLeft(mark).dx, lessThan(input));
+
+    // The mark names it for assistive technology, as a label would (§9): the
+    // field's semantics label leads with `Search`, and its hint follows.
+    expect(find.bySemanticsLabel(RegExp('^Search')), findsOneWidget);
+    handle.dispose();
+  });
+
   testWidgets('disabled takes no input', (tester) async {
     await pump(tester, const Field(label: 'Branch', enabled: false));
     expect(

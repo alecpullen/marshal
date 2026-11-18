@@ -80,7 +80,8 @@ class NavProject {
   /// How many of its threads are idle and older than a day.
   final int earlier;
 
-  /// A thread of this project, or the project itself, is open.
+  /// The project's own page is open. A project whose thread is open is not
+  /// filled: the thread's row is where the person is, and one place is lit.
   final bool active;
 
   @override
@@ -242,10 +243,7 @@ class _ProjectBuilder {
       return byTime != 0 ? byTime : a.id.compareTo(b.id);
     });
     final earlier = _threads.length - current.length;
-    final active =
-        (place.kind == PlaceKind.project && place.id == root) ||
-        (place.kind == PlaceKind.thread &&
-            current.any((thread) => _isOpen(place, thread)));
+    final active = place.kind == PlaceKind.project && place.id == root;
     return NavProject(
       id: root,
       name: projectName(root),
@@ -254,9 +252,6 @@ class _ProjectBuilder {
       active: active,
     );
   }
-
-  static bool _isOpen(Place place, ThreadRef thread) =>
-      place.id == thread.id && place.host == thread.host;
 }
 
 /// What a project's row calls it: its directory's name.

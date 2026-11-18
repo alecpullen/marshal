@@ -25,6 +25,7 @@ import 'src/model/composer_model.dart';
 import 'src/model/connect_repo_model.dart';
 import 'src/model/hosts_model.dart';
 import 'src/model/inbox_model.dart';
+import 'src/model/inspector_state.dart';
 import 'src/model/library_model.dart';
 import 'src/model/models_model.dart';
 import 'src/model/network_model.dart';
@@ -39,7 +40,9 @@ import 'src/model/route_translation.dart';
 import 'src/model/schedules_model.dart';
 import 'src/model/secrets_model.dart';
 import 'src/model/section_model.dart';
+import 'src/model/share_model.dart';
 import 'src/model/stack_store.dart';
+import 'src/model/thread_inspector_models.dart';
 import 'src/model/usage_model.dart';
 import 'src/model/watches_model.dart';
 import 'src/model/nav_model.dart' show projectName;
@@ -50,6 +53,7 @@ import 'src/ui/automations/recipes_tab.dart';
 import 'src/ui/automations/schedules_tab.dart';
 import 'src/ui/automations/watch_form.dart';
 import 'src/ui/automations/watches_tab.dart';
+import 'src/ui/inspector/host.dart';
 import 'src/ui/kit/kit.dart';
 import 'src/ui/library/library_place.dart';
 import 'src/ui/library/mcp_tab.dart';
@@ -165,6 +169,33 @@ Future<void> main() async {
           connectRepoFor: (host) => ConnectRepoModel(
             hosts.hosts.firstWhere((owner) => owner.name == host).client,
           ),
+          // A thread's Share mints a read-only status link for its agent on
+          // the client that reaches its host (F7 decision 7): a running
+          // thread's id is its agent id, which the route takes.
+          shareFor: (host, agentId) => ShareModel(
+            hosts.hosts.firstWhere((owner) => owner.name == host).client,
+            agentId: agentId,
+          ),
+          // A thread's inspector reads the five models its tabs draw on the
+          // client that reaches its host (F9 decision 4). A thread's id is
+          // both its agent id and its session id, and the root is the project
+          // its files are read under.
+          inspectorFor: (host, thread) {
+            final models = ThreadInspectorModels(
+              hosts.hosts.firstWhere((owner) => owner.name == host).client,
+              agentId: thread.id,
+              sessionId: thread.id,
+              root: thread.project,
+            );
+            return ThreadInspector(
+              state: InspectorState(),
+              body: (tab) => inspectorBody(models, tab),
+              start: models.start,
+              dispose: () {
+                models.dispose();
+              },
+            );
+          },
           // A planning thread reads its planner's journal on the client that
           // reaches its host, and captures the plan for review (F6 decision 8).
           planningFor: (host, plannerID) {

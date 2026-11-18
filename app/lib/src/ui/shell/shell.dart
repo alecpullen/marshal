@@ -11,6 +11,7 @@ import '../../model/new_work_model.dart';
 import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
 import '../../model/inbox_model.dart' as inbox;
+import '../../model/inspector_state.dart';
 import '../../model/nav_model.dart';
 import '../../model/overview_model.dart' show buildOverview;
 import '../../model/place.dart';
@@ -21,6 +22,7 @@ import '../../model/source_state.dart';
 import '../../model/pulls_model.dart';
 import '../../model/revision_model.dart';
 import '../../model/run_model.dart';
+import '../../model/share_model.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
@@ -40,6 +42,7 @@ import '../pulls/merge_control.dart';
 import '../pulls/pulls_place.dart';
 import '../sections/unsaved_guard.dart';
 import '../new_work/new_work_dialog.dart';
+import '../thread/share_sheet.dart';
 import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
 import 'connect_repo_sheet.dart';
@@ -66,6 +69,36 @@ typedef HandoffBuilder = Future<HandoffModel> Function(
   String? plannerID,
   PlannerSnapshot? snapshot,
 });
+
+/// One open thread's inspector: the view state the frame animates, what each
+/// tab draws, and how to release both.
+class ThreadInspector {
+  const ThreadInspector({
+    required this.state,
+    required this.body,
+    required this.start,
+    this.dispose,
+  });
+
+  final InspectorState state;
+  final Widget Function(InspectorTab tab) body;
+
+  /// Starts the reads the tab models own. Called once, when the thread place
+  /// opens: a tab that draws what its model holds has nothing to draw until
+  /// the holder's own read runs.
+  final VoidCallback start;
+
+  /// Releases the tab models and the state. Called when the thread place
+  /// closes.
+  final VoidCallback? dispose;
+}
+
+/// Builds a thread's inspector, from the host's client. Null leaves a thread
+/// without the panel, which is what every thread had before F9.
+typedef InspectorBuilder = ThreadInspector Function(
+  String host,
+  model.ThreadRef thread,
+);
 
 /// The Studio's frame (design-system.md §4): the sidebar, and the place's
 /// content beside it. Below 760 the navigation becomes a panel over the
@@ -419,6 +452,8 @@ class Studio extends StatefulWidget {
     this.threadStore,
     this.composerFor,
     this.newWorkFor,
+    this.shareFor,
+    this.inspectorFor,
     this.connectRepoFor,
     this.planningFor,
     this.handoffFor,
@@ -473,6 +508,16 @@ class Studio extends StatefulWidget {
   /// leaves the sidebar's plus out: a host that wires no bridge cannot
   /// register a repository.
   final ConnectRepoModel Function(String host)? connectRepoFor;
+
+  /// Builds a thread's Share model, from the host's client (F7 decision 7).
+  /// Null leaves the header's Share disabled: a control that cannot work is
+  /// shown as unavailable, never as working.
+  final ShareModel Function(String host, String agentId)? shareFor;
+
+  /// Builds a thread's inspector, from the host's client (F9 decision 4).
+  /// Null leaves a thread without the panel, which is what every thread had
+  /// before F9.
+  final InspectorBuilder? inspectorFor;
 
   /// Builds a planning thread's model, for a planner a person started (F6
   /// decision 8). Null leaves the planning place unbuilt rather than drawing
@@ -868,6 +913,19 @@ class _StudioState extends State<Studio> {
           thread: thread,
           buildStore: build,
           composerFor: widget.composerFor,
+          shareFor: widget.shareFor,
+          inspectorFor: widget.inspectorFor,
+          onThreadStarted: (id) =>
+              navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
+          handoffFor: widget.handoffFor,
+          onOpenItem: (id) =>
+              navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
+          onPlannerStarted: (planner) {
+            _rememberPlanner(thread.host, thread.project, planner);
+            navigation.go(
+              Place(PlaceKind.thread, host: thread.host, id: planner.id),
+            );
+          },
           // The thread's own ⌘N resolves to the shell's one call, so it obeys
           // the same rule about a composer that has the keyboard (F9 decision
           // 6).
@@ -1167,6 +1225,12 @@ class _ThreadPlace extends StatefulWidget {
     required this.thread,
     required this.buildStore,
     this.composerFor,
+    this.shareFor,
+    this.inspectorFor,
+    this.onThreadStarted,
+    this.onPlannerStarted,
+    this.handoffFor,
+    this.onOpenItem,
     this.onNewWork,
     this.asks = const [],
     this.onAnswer,
@@ -1178,6 +1242,23 @@ class _ThreadPlace extends StatefulWidget {
   final StackStore Function(model.ThreadRef thread) buildStore;
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
+
+  /// Builds this thread's Share model, once, when the place opens. Null
+  /// leaves the header's Share disabled.
+  final ShareModel Function(String host, String agentId)? shareFor;
+
+  /// Builds this thread's inspector, once, when the place opens: the panel
+  /// beside the transcript (F9 decision 4). Null leaves the thread without
+  /// one, as every thread was before F9.
+  final InspectorBuilder? inspectorFor;
+  final void Function(String agentId)? onThreadStarted;
+
+  /// Opens the planning thread a "Plan first" started (F6 decision 8).
+  final void Function(StartedPlanner planner)? onPlannerStarted;
+
+  /// The handoff review's model, and where an approved item opens.
+  final HandoffBuilder? handoffFor;
+  final void Function(String itemID)? onOpenItem;
 
   /// Opens the Studio's one new-work dialog for this thread's project: `⌘N`,
   /// and the empty transcript's "Start an agent". Null leaves both without a
@@ -1199,13 +1280,25 @@ class _ThreadPlace extends StatefulWidget {
 class _ThreadPlaceState extends State<_ThreadPlace> {
   late final StackStore _store = widget.buildStore(widget.thread);
   late final ThreadViewState _view = ThreadViewState();
+
+  /// The inspector this thread's tabs read, built once so a rebuild does not
+  /// rebuild five models (F9 decision 4).
+  late final ThreadInspector? _inspector = widget.inspectorFor?.call(
+    widget.thread.host,
+    widget.thread,
+  );
   ComposerModel? _composer;
+  ShareModel? _share;
 
   @override
   void initState() {
     super.initState();
     _store.start();
+    // The holder owns its five models, so it starts their first read: nothing
+    // else would, and Changes would draw loading forever.
+    _inspector?.start();
     _composer = widget.composerFor?.call(widget.thread, _view);
+    _share = widget.shareFor?.call(widget.thread.host, widget.thread.id);
     // A thread opened while its agent is mid-turn offers Steer and Stop from
     // the first frame, from the fleet's own report of the agent.
     _composer?.setRunning(_turnRunning);
@@ -1230,11 +1323,15 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
 
   @override
   void dispose() {
+    // The inspector's tab models and its state outlive no thread: they are
+    // released before the store the screen was reading.
+    _inspector?.dispose?.call();
     _store
       ..stop()
       ..dispose();
     _view.dispose();
     _composer?.dispose();
+    _share?.dispose();
     super.dispose();
   }
 
@@ -1260,6 +1357,19 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
           ? null
           : () => _sendBack(context),
       onNewWork: widget.onNewWork,
+      // The panel beside the transcript, when a host built one (F9
+      // decision 4). Null leaves the screen as it was before F9.
+      inspector: _inspector?.state,
+      inspectorBody: _inspector?.body,
+      // Share mints this thread's status link on the host's client. Null
+      // leaves the header's Share disabled (F7 decision 7).
+      onShare: _share == null
+          ? null
+          : () => unawaited(showShareSheet(context, _share!)),
+      // Stop ends the turn through the composer's own route. Hold is not
+      // passed: no bridge route holds an agent, so the header would offer an
+      // item that cannot work (f9-parity.md decision 2).
+      onStop: _composer == null ? null : () => unawaited(_composer!.stop()),
       composer: composer == null
           ? null
           : ThreadComposer(model: composer, view: _view),

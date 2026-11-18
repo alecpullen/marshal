@@ -29,8 +29,8 @@ class ThreadHeader extends StatelessWidget {
   /// The environment it runs in, when the fleet reports one.
   final String? environment;
 
-  /// Shares a read-only status link for this thread. Null disables the
-  /// control and its tooltip says why.
+  /// Shares a read-only status link for this thread. The icon is drawn faint
+  /// when this is null, and its tooltip names the action either way.
   final VoidCallback? onShare;
 
   /// Stops the thread. Null hides the action.
@@ -115,11 +115,12 @@ class ThreadHeader extends StatelessWidget {
             ),
           IconBtn(
             Glyphs.share,
-            tooltip: onShare == null
-                ? 'Share a read-only status link: arrives in F7'
-                : 'Share a read-only status link',
+            tooltip: 'Share a read-only status link',
             onTap: onShare,
           ),
+          // `onHold` is null everywhere today because no route holds an agent
+          // (f9-parity.md decision 2), so Stop is the only item the menu can
+          // carry; a null callback is already omitted.
           if (onStop != null || onHold != null)
             Menu(
               choices: [

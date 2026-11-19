@@ -154,6 +154,14 @@ type Fleet struct {
 	// all (decision 4). Set through SetHostProcessesOnly before anything
 	// starts.
 	hostOnly bool
+	// stateOnHost makes every state mount a bind of stateDir rather than a
+	// subpath of stateVolume, and userConfigDir the container agents' config
+	// home. Set through SetStateOnHost before anything starts.
+	stateOnHost bool
+	// userConfigDir is the host directory bound read-only as container
+	// agents' config home when stateOnHost is set ("" keeps the state
+	// subpath).
+	userConfigDir string
 	// projectEnv resolves a project's environment for its child (P4 D7).
 	// Nil means children inherit the bridge's environment. Set through
 	// SetProjectEnv before anything starts.
@@ -629,6 +637,10 @@ func (f *Fleet) containerConfigWith(a Agent, runtime, runtimeName string, wiring
 	if a.ContainerName != "" {
 		cfg.Name = a.ContainerName
 	}
+	if f.stateOnHost {
+		cfg.StateDir = f.stateDir
+		cfg.HomeConfigDir = f.userConfigDir
+	}
 	if a.WorkSubpath != "" {
 		cfg.WorkSubpath = a.WorkSubpath
 	}
@@ -868,6 +880,25 @@ func detectedRuntime() (path, name string, ok bool) {
 // host process, and stops the fleet from ever probing for a container
 // runtime (decision 4). Call it before anything starts.
 func (f *Fleet) SetHostProcessesOnly() { f.hostOnly = true }
+
+// SetStateOnHost makes the fleet's state mounts binds of its state
+// directory, and binds userConfigDir read-only as container agents' config
+// home ("" keeps the state subpath). On Linux it also requires a rootless
+// container runtime. Call it before anything starts.
+func (f *Fleet) SetStateOnHost(userConfigDir string) {
+	f.stateOnHost = true
+	f.userConfigDir = userConfigDir
+}
+
+// stateMount is the package stateMount with this fleet's volume and, when
+// its state is on the host, its state directory.
+func (f *Fleet) stateMount(runtimeName, target, subpath string, readonly bool) []string {
+	stateDir := ""
+	if f.stateOnHost {
+		stateDir = f.stateDir
+	}
+	return stateMount(runtimeName, f.stateVolume, stateDir, target, subpath, readonly)
+}
 
 // SetProjectEnv makes project children start with their project's
 // environment (P4 D7). Without it they inherit the bridge's.

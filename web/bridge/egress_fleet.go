@@ -151,7 +151,11 @@ func (f *Fleet) ensureSidecar(ctx context.Context, h *egressHost, rt string) err
 		}
 		_, _ = f.runRuntime(rt, "rm", "-f", egressContainer)
 	}
-	if out, err := f.runRuntime(rt, egressSidecarArgs(rt, f.stateVolume, tag)...); err != nil {
+	stateDir := ""
+	if f.stateOnHost {
+		stateDir = f.stateDir
+	}
+	if out, err := f.runRuntime(rt, egressSidecarArgs(rt, f.stateVolume, stateDir, tag)...); err != nil {
 		return fmt.Errorf("start %s: %w (%s)", egressContainer, err, out)
 	}
 	// The sidecar needs a route out: attach it to the default network too.
@@ -213,12 +217,12 @@ func egressImageTag(version string) string {
 // egressSidecarArgs is the `run` invocation for the sidecar. It joins the
 // internal network only; ensureSidecar attaches the outside network
 // afterwards.
-func egressSidecarArgs(rtName, volume, image string) []string {
+func egressSidecarArgs(rtName, volume, stateDir, image string) []string {
 	args := []string{"run", "-d", "--rm", "--name", egressContainer, "--network", egressNetwork,
 		// The preview listener is published on loopback only; the bridge
 		// reads the chosen host port with `port`.
 		"-p", fmt.Sprintf("127.0.0.1::%d", egressPreviewPort)}
-	args = append(args, volumeMount(rtName, volume, egressMountDir, egressSubpath, false)...)
+	args = append(args, stateMount(rtName, volume, stateDir, egressMountDir, egressSubpath, false)...)
 	return append(args, image, "egress",
 		"--listen", fmt.Sprintf(":%d", egressPort),
 		"--preview-listen", fmt.Sprintf(":%d", egressPreviewPort),

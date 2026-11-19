@@ -68,6 +68,81 @@ func TestStateVolumeIsConfigurable(t *testing.T) {
 	}
 }
 
+// dockerProbe is a container-runtime probe that always answers docker, so
+// the container path is reachable without a daemon.
+func dockerProbe() (string, string, bool) { return "/usr/bin/docker", "docker", true }
+
+// hostStateFleet builds a fleet as testFleetWithStateVolume does, turns
+// its state onto the host, and returns it with an agent that reaches the
+// container path: the workspace's extras are already computed, so no
+// workspace store is needed.
+func hostStateFleet(t *testing.T, userConfigDir string) (*Fleet, Agent) {
+	t.Helper()
+	f := testFleetWithStateVolume(t, "marshal-state")
+	f.SetStateOnHost(userConfigDir)
+	f.probe = dockerProbe
+	a := Agent{
+		ID: "a1", SourceKind: "git", Profile: DefaultRuntimeProfile(),
+		Workspace: &AgentWorkspace{Name: "w"},
+	}
+	f.wsMu.Lock()
+	f.wsExtras[a.ID] = wsExtras{}
+	f.wsMu.Unlock()
+	return f, a
+}
+
+func TestAHostStateFleetBindsItsAgentsState(t *testing.T) {
+	userConfigDir := t.TempDir()
+	f, a := hostStateFleet(t, userConfigDir)
+	child, err := f.newRuntime(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, ok := child.Transport.(*containerTransport)
+	if !ok {
+		t.Fatalf("newRuntime gave a %T, want a container transport", child.Transport)
+	}
+	if tr.cfg.StateDir != f.stateDir {
+		t.Errorf("cfg.StateDir = %q, want the fleet's state dir %q", tr.cfg.StateDir, f.stateDir)
+	}
+	if tr.cfg.HomeConfigDir != userConfigDir {
+		t.Errorf("cfg.HomeConfigDir = %q, want %q", tr.cfg.HomeConfigDir, userConfigDir)
+	}
+	joined := strings.Join(tr.buildRunArgs(), " ")
+	if strings.Contains(joined, "type=volume") {
+		t.Fatalf("a host-state fleet still mounts a volume:\n%s", joined)
+	}
+}
+
+func TestAHostStateFleetBindsTheSidecarsState(t *testing.T) {
+	stateDir := t.TempDir()
+	args := strings.Join(egressSidecarArgs("docker", "marshal-state", stateDir, "marshal-egress:dev"), " ")
+	want := "--mount type=bind,source=" + filepath.Join(stateDir, egressSubpath) + ",target=" + egressMountDir
+	if !strings.Contains(args, want) {
+		t.Fatalf("sidecar args lack %q:\n%s", want, args)
+	}
+}
+
+func TestAVolumeStateFleetIsUnchanged(t *testing.T) {
+	f := testFleetWithStateVolume(t, "marshal-state")
+	f.probe = dockerProbe
+	child, err := f.newRuntime(Agent{ID: "a1", SourceKind: "git", Profile: DefaultRuntimeProfile()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, ok := child.Transport.(*containerTransport)
+	if !ok {
+		t.Fatalf("newRuntime gave a %T, want a container transport", child.Transport)
+	}
+	if tr.cfg.StateDir != "" {
+		t.Errorf("cfg.StateDir = %q, want none without SetStateOnHost", tr.cfg.StateDir)
+	}
+	joined := strings.Join(tr.buildRunArgs(), " ")
+	if !strings.Contains(joined, "source=marshal-state") {
+		t.Fatalf("the shared state volume is no longer used:\n%s", joined)
+	}
+}
+
 // testFleetWithProjectMounts builds a Fleet with the given declared
 // project mounts, so localMountFor's decision can be exercised directly.
 func testFleetWithProjectMounts(t *testing.T, mounts []ProjectMount) *Fleet {

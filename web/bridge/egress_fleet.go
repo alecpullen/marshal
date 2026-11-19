@@ -32,8 +32,8 @@ type VolumeSubpath struct {
 	ReadOnly bool
 }
 
-// egressRuntimeName is the container runtime's name, or false in process
-// mode.
+// egressRuntimeName is the container runtime's name, or false when there
+// is none.
 func (f *Fleet) egressRuntimeName() (string, bool) {
 	if f.egressRuntime != nil {
 		return f.egressRuntime()
@@ -48,9 +48,9 @@ func (f *Fleet) egressRuntimeName() (string, bool) {
 }
 
 // StartEgress brings up the egress proxy: a sidecar container on an
-// internal network when a container runtime exists, an in-process proxy
-// on loopback otherwise. A failure is logged and leaves egress off, so
-// agents spawn as they did before rather than not at all.
+// internal network. Without a usable container runtime it fails and
+// egress stays off, so agents spawn as they did before rather than not
+// at all.
 // egressSecretRefresh is how often injected secret values are re-read.
 var egressSecretRefresh = time.Minute
 
@@ -70,38 +70,33 @@ func (f *Fleet) StartEgress(ctx context.Context) (err error) {
 		}
 		f.egressMu.Unlock()
 	}()
+	if _, ok := f.egressRuntimeName(); !ok {
+		return fmt.Errorf("egress: the proxy runs as a sidecar container: %w", f.needsRuntime())
+	}
 	h := newEgressHost(f)
 	if err := h.loadTokenKey(); err != nil {
 		return fmt.Errorf("egress: %w", err)
 	}
-	rtName, containers := f.egressRuntimeName()
-	if containers {
-		h.mode = egressModeContainer
-		h.proxyAddr = fmt.Sprintf("%s:%d", egressContainer, egressPort)
-		if err := h.listenControl(); err != nil {
-			return err
-		}
-		if err := f.ensureSidecar(ctx, h, rtName); err != nil {
-			h.close()
-			return fmt.Errorf("egress sidecar: %w", err)
-		}
-		interval := egressMonitorInterval
-		h.wg.Add(1)
-		go func() {
-			defer h.wg.Done()
-			f.monitorSidecar(h, rtName, interval)
-		}()
-	} else {
-		h.mode = egressModeProcess
-		if err := h.startProcessProxy(); err != nil {
-			return fmt.Errorf("egress: %w", err)
-		}
+	rtName, _ := f.egressRuntimeName()
+	h.proxyAddr = fmt.Sprintf("%s:%d", egressContainer, egressPort)
+	if err := h.listenControl(); err != nil {
+		return err
 	}
+	if err := f.ensureSidecar(ctx, h, rtName); err != nil {
+		h.close()
+		return fmt.Errorf("egress sidecar: %w", err)
+	}
+	interval := egressMonitorInterval
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		f.monitorSidecar(h, rtName, interval)
+	}()
 	f.egress = h
 	h.loadCAGens(ctx)
 	h.wg.Add(1)
 	go h.refreshLoop(egressSecretRefresh)
-	slog.Default().Info("webbridge: egress proxy started", "mode", h.mode, "addr", h.proxyAddr)
+	slog.Default().Info("webbridge: egress proxy started", "addr", h.proxyAddr)
 	return nil
 }
 
@@ -373,22 +368,13 @@ func (f *Fleet) egressWire(ctx context.Context, a Agent, ws string, spec EgressS
 			}
 		}
 		h.setCA(id, gen)
-		if h.mode == egressModeContainer {
-			const dir = "/marshal/ca"
-			for k, v := range caEnv(dir+"/"+ws+"-bundle.pem", dir+"/"+ws+".pem") {
-				w.Env[k] = v
-			}
-			w.Volumes = append(w.Volumes, VolumeSubpath{Subpath: "ca", Target: dir, ReadOnly: true})
-		} else {
-			ca := filepath.Join(f.stateDir, "ca")
-			for k, v := range caEnv(filepath.Join(ca, ws+"-bundle.pem"), filepath.Join(ca, ws+".pem")) {
-				w.Env[k] = v
-			}
+		const dir = "/marshal/ca"
+		for k, v := range caEnv(dir+"/"+ws+"-bundle.pem", dir+"/"+ws+".pem") {
+			w.Env[k] = v
 		}
+		w.Volumes = append(w.Volumes, VolumeSubpath{Subpath: "ca", Target: dir, ReadOnly: true})
 	}
-	if h.mode == egressModeContainer {
-		w.Network = egressNetwork
-	}
+	w.Network = egressNetwork
 	return w, nil
 }
 
@@ -415,7 +401,7 @@ func (f *Fleet) egressAttached(a Agent) {
 // egressAttachedAs pins the policy entry id to the address of container.
 func (f *Fleet) egressAttachedAs(id, container string) {
 	h := f.egress
-	if h == nil || h.mode != egressModeContainer {
+	if h == nil {
 		return
 	}
 	rt, ok := f.egressRuntimeName()
@@ -435,7 +421,7 @@ func (f *Fleet) egressAttachedAs(id, container string) {
 // egressProcessMode reports whether enforcement is advisory: there is no
 // container isolation, so a process may bypass the proxy.
 func (f *Fleet) egressProcessMode() bool {
-	return f.egress == nil || f.egress.mode != egressModeContainer
+	return f.egress == nil
 }
 
 // egressRefresh re-derives live agents' policies after a secret changed.

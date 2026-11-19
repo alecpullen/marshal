@@ -603,7 +603,6 @@ func TestPreviewForwardContainerModeGoesThroughTheSidecar(t *testing.T) {
 
 	p := newPreviewEnv(t, port)
 	h := newEgressHost(p.f)
-	h.mode = egressModeContainer
 	h.tokenKey = []byte("0123456789abcdef0123456789abcdef")
 	p.f.egress = h
 	px := NewEgressProxy(nil, nil, nil, nil)

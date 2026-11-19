@@ -177,7 +177,6 @@ func TestNetworkHTTPViews(t *testing.T) {
 	h.agents["a1"].policy = EgressAgentPolicy{Mode: EgressModeAllowlist, Allow: []string{"listed.com"}, Grants: []string{"granted.com"},
 		Inject: map[string]EgressInjection{"api.example.com": {Header: "X", Value: "v"}}}
 	h.agents["a1"].policy.Allow = append(h.agents["a1"].policy.Allow, "api.example.com")
-	h.mode = egressModeContainer
 	f.egress = h
 	for _, q := range []string{"/api/network?workspace=dev", "/api/network?agent=a1&view=hosts"} {
 		decodeBody(t, doReq(t, s, http.MethodGet, q, nil, nil), &res)

@@ -541,53 +541,20 @@ func waitCond(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-func TestEgressProcessMode(t *testing.T) {
+func TestEgressNeedsAContainerRuntime(t *testing.T) {
 	ctx := context.Background()
 	f, _ := testEgressFleet(t, false)
 	f.runner = nil
 	f.egressRuntime = func() (string, bool) { return "", false }
-	if err := f.StartEgress(ctx); err != nil {
-		t.Fatal(err)
+	err := f.StartEgress(ctx)
+	if !errors.Is(err, ErrWorkspaceNeedsRuntime) {
+		t.Fatalf("StartEgress = %v, want it to wrap ErrWorkspaceNeedsRuntime", err)
 	}
-	if !f.egressProcessMode() || f.egress.proxy == nil {
-		t.Fatal("process mode not active")
+	if f.egress != nil {
+		t.Fatal("egress must stay off without a container runtime")
 	}
-	if !strings.HasPrefix(f.egress.proxyAddr, "127.0.0.1:") {
-		t.Fatalf("proxy addr = %q", f.egress.proxyAddr)
-	}
-	w, ok, err := f.egressPrepare(ctx, Agent{ID: "ag1"})
-	if err != nil || !ok {
-		t.Fatal(err)
-	}
-	if w.Network != "" || len(w.Volumes) != 0 {
-		t.Fatalf("process mode must not use a container network: %+v", w)
-	}
-	want := "http://ag1:" + f.egress.tokenFor("ag1") + "@" + f.egress.proxyAddr
-	if w.Env["HTTPS_PROXY"] != want {
-		t.Fatalf("HTTPS_PROXY = %q, want %q", w.Env["HTTPS_PROXY"], want)
-	}
-	// The in-process proxy enforces the policy it was given.
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "hi") }))
-	defer up.Close()
-	pu, _ := url.Parse(w.Env["HTTP_PROXY"])
-	c := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
-	resp, err := c.Get(up.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("open mode request = %d", resp.StatusCode)
-	}
-	waitCond(t, "record in network log", func() bool { return len(f.netlog.Hosts("default", "")) == 1 })
-	f.egress.register(ctx, "ag1", "default", EgressSpec{Mode: EgressModeOff})
-	resp, err = c.Get(up.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("off mode request = %d", resp.StatusCode)
+	if !f.egressProcessMode() {
+		t.Fatal("no proxy means not isolated")
 	}
 }
 

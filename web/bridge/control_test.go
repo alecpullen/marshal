@@ -93,29 +93,25 @@ func TestControlMapsMethodNotFoundToUnsupported(t *testing.T) {
 	}
 }
 
-func TestControlContainerConfigUsesControlName(t *testing.T) {
-	f := testFleetWithProjectMounts(t, []ProjectMount{{Host: "/host/projects", Container: "/projects"}})
-	cfg, bound := f.controlContainerConfig("/usr/bin/docker", "docker")
-	tr := newContainerTransport(cfg)
-	joined := strings.Join(tr.buildRunArgs(), " ")
-	for _, want := range []string{
-		"--name marshal-control",
-		"target=/marshal/config,volume-subpath=home/config --mount",
-		"-v /host/projects:/projects",
-		"volume-subpath=control",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("run args missing %q\n%s", want, joined)
-		}
+// TestTheControlAgentIsAHostProcess: the control agent has no workspace, and
+// a workspace is what makes a container, so even a fleet whose probe answers
+// Docker builds it as a host process.
+func TestTheControlAgentIsAHostProcess(t *testing.T) {
+	f := testFleetWithRunner(t, func(string, ...string) ([]byte, error) { return nil, nil })
+	f.probe = dockerProbe
+
+	child, err := f.buildControlChild()
+	if err != nil {
+		t.Fatalf("buildControlChild: %v", err)
 	}
-	if strings.Contains(joined, "home/config,readonly") {
-		t.Errorf("control config home must be writable:\n%s", joined)
+	if child.Containerized {
+		t.Fatal("the control agent's child is containerized; it is a host process")
 	}
-	if len(bound) != 1 || bound[0] != "/projects" {
-		t.Errorf("bound = %v", bound)
+	if child.Transport != nil {
+		t.Fatalf("the control agent's child has a %T transport, want the host-process default", child.Transport)
 	}
-	if strings.HasPrefix(controlContainerName, containerNamePrefix) {
-		t.Error("control container name must not match the agent prefix")
+	if child.MarshalBin != f.marshalBin {
+		t.Fatalf("MarshalBin = %q, want %q", child.MarshalBin, f.marshalBin)
 	}
 }
 
@@ -138,24 +134,5 @@ func TestProjectSessionIsCachedPerRoot(t *testing.T) {
 	}
 	if got := agent.calls("session/new")[1]; !strings.Contains(got, `"cwd":"/home/u/a"`) {
 		t.Fatalf("project session cwd wrong: %s", got)
-	}
-}
-
-func TestProjectSessionRefusesAnUnmountedRootInContainerMode(t *testing.T) {
-	f := ctlFleet(t, newFakeAgent())
-	if _, err := f.control(ctlContext(t)); err != nil {
-		t.Fatal(err)
-	}
-	f.ctl.mu.Lock()
-	f.ctl.containerized, f.ctl.boundRoots = true, []string{"/projects"}
-	f.ctl.mu.Unlock()
-
-	if _, err := f.projectSession(ctlContext(t), "/projects/a"); err != nil {
-		t.Fatalf("a mounted root was refused: %v", err)
-	}
-	_, err := f.projectSession(ctlContext(t), "/projects-evil/a")
-	var un ErrUnsupported
-	if !errors.As(err, &un) || un.Feature != "project_library" {
-		t.Fatalf("err = %v, want ErrUnsupported{project_library}", err)
 	}
 }

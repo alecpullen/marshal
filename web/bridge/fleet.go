@@ -550,18 +550,10 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	f.workspaceEgress = f.agentWorkspaceEgress
 	f.addToWorkspace = f.addAgentHostToWorkspace
 	f.newRuntime = func(a Agent) (*Child, error) {
-		// The proxy wiring is prepared up front: a refusal (credential
-		// injection that cannot work) must stop the spawn.
-		pctx, pcancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer pcancel()
-		wiring, proxied, err := f.egressPrepare(pctx, a)
-		if err != nil {
-			return nil, err
-		}
-		runtime, name, ok := f.containerRuntime()
-		if !ok {
-			// No container runtime: fall back to a host process so a
-			// laptop without docker still works.
+		// A workspace is what makes a container: only an agent that has one
+		// runs in a container and is wired to egress. Every other agent is
+		// a host process.
+		if a.Workspace == nil {
 			child := &Child{MarshalBin: marshalBin}
 			// The own child serves viewers on a socket of its own, beside
 			// the project children's (decision 1). The directory is created
@@ -575,13 +567,19 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 				}
 				child.Args = []string{"--viewers", "unix://" + socket}
 			}
-			if proxied {
-				child.Env = os.Environ()
-				for k, v := range wiring.Env {
-					child.Env = append(child.Env, k+"="+v)
-				}
-			}
 			return child, nil
+		}
+		// The proxy wiring is prepared up front: a refusal (credential
+		// injection that cannot work) must stop the spawn.
+		pctx, pcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer pcancel()
+		wiring, _, err := f.egressPrepare(pctx, a)
+		if err != nil {
+			return nil, err
+		}
+		runtime, name, ok := f.containerRuntime()
+		if !ok {
+			return nil, f.needsRuntime()
 		}
 		cfg, err := f.containerConfigWith(a, runtime, name, wiring)
 		if err != nil {
@@ -1053,21 +1051,14 @@ func (f *Fleet) runtimeForRoot(root string) (*agentRuntime, error) {
 }
 
 // onProjectChild reports whether a runs on its project's child (P4 D10
-// decision 2): the local profile's plain host agents only. A git agent's tree
-// is deleted with the agent, a workspace needs a container, and a proxied
-// agent needs an environment of its own, so each of those keeps a child of its
-// own.
+// decision 2): a plain local agent of a local profile. A git agent's tree is
+// deleted with the agent, and a workspace is what makes a container, so each
+// of those keeps a child of its own.
 func (f *Fleet) onProjectChild(a Agent) bool {
-	if !f.hostOnly || a.Project == "" {
+	if !f.hostOnly || a.Project == "" || a.Workspace != nil {
 		return false
 	}
-	if a.SourceKind == "git" || a.Workspace != nil {
-		return false
-	}
-	f.egressMu.Lock()
-	proxied := f.egress != nil
-	f.egressMu.Unlock()
-	return !proxied
+	return a.SourceKind != "git"
 }
 
 // projectRuntime is startRuntime for an agent whose session runs on its
@@ -1636,22 +1627,6 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 		a.Workspace = &AgentWorkspace{Name: wsRes.Name, Version: wsRes.Version, Source: contract.WorkspaceSource(wsRes.Source), Timeout: wsRes.Doc.Resources.Timeout}
 		a.Profile.Image = wsImage
 		applyResources(&a.Profile, wsRes.Doc.Resources)
-	}
-
-	// A declared base (e.g. node:20) carries no marshal. Derive an image
-	// that adds marshal on top, and run the agent against that. A marshal
-	// image is used as-is. A build failure refuses the spawn — running an
-	// agent in an environment the repo did not ask for is worse than
-	// refusing to run it.
-	if wsRes == nil && !strings.HasPrefix(a.Profile.Image, agentImageRepo) {
-		derived, err := f.ensureDerivedImage(ctx, a.Profile.Image)
-		if err != nil {
-			if src.kind == "git" && f.git != nil {
-				_ = f.git.RemoveTree(f.stateDir, a.ID)
-			}
-			return "", err
-		}
-		a.Profile.Image = derived
 	}
 
 	// Enforce the disk budget before acquiring a slot: refusing a new

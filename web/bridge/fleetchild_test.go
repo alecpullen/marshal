@@ -397,18 +397,6 @@ func TestOnlyPlainLocalAgentsMove(t *testing.T) {
 	if f.onProjectChild(workspace) {
 		t.Error("a workspace agent moved onto a project child")
 	}
-
-	f.egressMu.Lock()
-	f.egress = &egressHost{}
-	f.egressMu.Unlock()
-	t.Cleanup(func() {
-		f.egressMu.Lock()
-		f.egress = nil
-		f.egressMu.Unlock()
-	})
-	if f.onProjectChild(local) {
-		t.Error("an agent moved onto a project child while the egress proxy runs")
-	}
 }
 
 // TestAnAgentsEventsReachItsOwnLog: an agent on a project child reads the

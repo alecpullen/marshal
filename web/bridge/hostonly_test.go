@@ -53,7 +53,7 @@ func TestAHostOnlyFleetNeverProbes(t *testing.T) {
 		t.Fatal("a host-only fleet built a containerized agent child")
 	}
 
-	ctl, _, err := f.buildControlChild()
+	ctl, err := f.buildControlChild()
 	if err != nil {
 		t.Fatalf("buildControlChild: %v", err)
 	}

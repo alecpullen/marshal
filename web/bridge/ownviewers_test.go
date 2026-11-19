@@ -96,7 +96,10 @@ func TestAContainerChildNamesItsViewerSocket(t *testing.T) {
 	f.probe = func() (path, name string, ok bool) {
 		return "/usr/local/bin/docker", "docker", true
 	}
-	a := Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile()}
+	a := Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile(), Workspace: &AgentWorkspace{Name: "w"}}
+	f.wsMu.Lock()
+	f.wsExtras[a.ID] = wsExtras{}
+	f.wsMu.Unlock()
 
 	child, err := f.newRuntime(a)
 	if err != nil {

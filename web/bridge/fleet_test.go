@@ -54,10 +54,18 @@ func testFleetWithStateVolume(t *testing.T, vol string) *Fleet {
 
 func TestStateVolumeIsConfigurable(t *testing.T) {
 	f := testFleetWithStateVolume(t, "custom-state")
-	child, _ := f.newRuntime(Agent{ID: "a1", SourceKind: "git", Profile: DefaultRuntimeProfile()})
+	f.probe = dockerProbe
+	a := Agent{ID: "a1", SourceKind: "git", Profile: DefaultRuntimeProfile(), Workspace: &AgentWorkspace{Name: "w"}}
+	f.wsMu.Lock()
+	f.wsExtras[a.ID] = wsExtras{}
+	f.wsMu.Unlock()
+	child, err := f.newRuntime(a)
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
 	tr, ok := child.Transport.(*containerTransport)
 	if !ok {
-		t.Skip("no container runtime; newRuntime fell back to a host process")
+		t.Fatalf("newRuntime gave a %T, want a container transport", child.Transport)
 	}
 	joined := strings.Join(tr.buildRunArgs(), " ")
 	if !strings.Contains(joined, "source=custom-state") {
@@ -65,6 +73,68 @@ func TestStateVolumeIsConfigurable(t *testing.T) {
 	}
 	if strings.Contains(joined, "source=marshal-state") {
 		t.Fatalf("the hardcoded default leaked through:\n%s", joined)
+	}
+}
+
+// TestAPlainAgentIsAHostProcessWhenARuntimeAnswers: an agent with no
+// workspace is a host process even when a container runtime answers, and the
+// probe is never asked.
+func TestAPlainAgentIsAHostProcessWhenARuntimeAnswers(t *testing.T) {
+	f := testFleetWithStateVolume(t, "marshal-state")
+	probes := 0
+	f.probe = func() (path, name string, ok bool) {
+		probes++
+		return "/usr/bin/docker", "docker", true
+	}
+
+	child, err := f.newRuntime(Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile()})
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
+	if child.Containerized {
+		t.Fatal("a plain agent's child is containerized; it is a host process")
+	}
+	if child.Transport != nil {
+		t.Fatalf("a plain agent's child has a %T transport, want the host-process default", child.Transport)
+	}
+	if probes != 0 {
+		t.Fatalf("the runtime probe ran %d times for a plain agent; it must not be asked", probes)
+	}
+}
+
+// TestAWorkspaceAgentWithNoRuntimeIsRefused: a workspace is what needs a
+// container, so with no runtime the spawn is refused rather than quietly run
+// on the host.
+func TestAWorkspaceAgentWithNoRuntimeIsRefused(t *testing.T) {
+	f := testFleetWithStateVolume(t, "marshal-state")
+	f.probe = func() (path, name string, ok bool) { return "", "", false }
+	a := Agent{ID: "a1", SourceKind: "git", Profile: DefaultRuntimeProfile(), Workspace: &AgentWorkspace{Name: "w"}}
+	f.wsMu.Lock()
+	f.wsExtras[a.ID] = wsExtras{}
+	f.wsMu.Unlock()
+
+	child, err := f.newRuntime(a)
+	if child != nil {
+		t.Fatalf("newRuntime returned a %T child, want none", child)
+	}
+	if !errors.Is(err, ErrWorkspaceNeedsRuntime) {
+		t.Fatalf("newRuntime error = %v, want it to wrap ErrWorkspaceNeedsRuntime", err)
+	}
+}
+
+// TestAPlainLocalAgentRunsOnItsProjectChildWhileEgressRuns: a plain local
+// agent keeps its project's child even while the egress proxy is up. Only a
+// workspace needs a child of its own.
+func TestAPlainLocalAgentRunsOnItsProjectChildWhileEgressRuns(t *testing.T) {
+	f := testFleetWithStateVolume(t, "marshal-state")
+	f.SetHostProcessesOnly()
+	f.egress = newEgressHost(f)
+
+	if !f.onProjectChild(Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local"}) {
+		t.Fatal("a plain local agent was not put on its project's child while egress runs")
+	}
+	if f.onProjectChild(Agent{ID: "a2", Project: t.TempDir(), SourceKind: "local", Workspace: &AgentWorkspace{Name: "w"}}) {
+		t.Fatal("a workspace agent was put on its project's child; a workspace needs a container")
 	}
 }
 
@@ -129,7 +199,11 @@ func TestAHostStateFleetBindsTheSidecarsState(t *testing.T) {
 func TestAVolumeStateFleetIsUnchanged(t *testing.T) {
 	f := testFleetWithStateVolume(t, "marshal-state")
 	f.probe = dockerProbe
-	child, err := f.newRuntime(Agent{ID: "a1", SourceKind: "git", Profile: DefaultRuntimeProfile()})
+	a := Agent{ID: "a1", SourceKind: "git", Profile: DefaultRuntimeProfile(), Workspace: &AgentWorkspace{Name: "w"}}
+	f.wsMu.Lock()
+	f.wsExtras[a.ID] = wsExtras{}
+	f.wsMu.Unlock()
+	child, err := f.newRuntime(a)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -554,13 +628,18 @@ func TestSpawnPassesAgentEnvToContainer(t *testing.T) {
 	// Invoke the production newRuntime closure directly so no real
 	// container or session/new round-trip is needed. The closure must
 	// copy f.agentEnv into the ContainerConfig.
-	child, _ := f.newRuntime(Agent{ID: "abc", Project: "/p", Profile: RuntimeProfile{Image: "img"}})
+	f.probe = dockerProbe
+	a := Agent{ID: "abc", Project: "/p", Profile: RuntimeProfile{Image: "img"}, Workspace: &AgentWorkspace{Name: "w"}}
+	f.wsMu.Lock()
+	f.wsExtras[a.ID] = wsExtras{}
+	f.wsMu.Unlock()
+	child, err := f.newRuntime(a)
+	if err != nil {
+		t.Fatalf("newRuntime: %v", err)
+	}
 	tr, ok := child.Transport.(*containerTransport)
 	if !ok {
-		// No container runtime on this host: the production closure falls
-		// back to a host process, so the container env path is not
-		// exercised. Skip rather than fail.
-		t.Skip("no container runtime detected; container env path not exercised")
+		t.Fatalf("newRuntime gave a %T, want a container transport", child.Transport)
 	}
 	if tr.cfg.Env["ANTHROPIC_API_KEY"] != "sk-test" {
 		t.Fatalf("agent env = %v, want the provider key to reach the container", tr.cfg.Env)

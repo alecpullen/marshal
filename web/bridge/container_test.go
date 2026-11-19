@@ -390,28 +390,24 @@ func TestContainerSignalStillStopsTheContainer(t *testing.T) {
 
 func TestBuildRunArgsMountsSharedHomes(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		writable bool
-		wantCfg  string
+		name string
 	}{
-		{"agent", false, "volume-subpath=home/config,readonly"},
-		{"control", true, "volume-subpath=home/config"},
+		{"agent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tr := newContainerTransport(ContainerConfig{
 				Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
 				StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
 				HomeConfigSubpath: "home/config", HomeDataSubpath: "home/data",
-				HomeConfigWritable: tc.writable,
-				Env:                map[string]string{"A": "1"},
+				Env: map[string]string{"A": "1"},
 			})
 			args := tr.buildRunArgs()
 			joined := strings.Join(args, " ")
-			if !strings.Contains(joined, "target=/marshal/config,"+tc.wantCfg) {
-				t.Errorf("config mount wrong:\n%s", joined)
+			if !strings.Contains(joined, "target=/marshal/config,volume-subpath=home/config,readonly") {
+				t.Errorf("config mount must be read-only:\n%s", joined)
 			}
-			if tc.writable && strings.Contains(joined, "home/config,readonly") {
-				t.Errorf("control config mount must be writable:\n%s", joined)
+			if strings.Contains(joined, "target=/marshal/config,volume-subpath=home/config ") {
+				t.Errorf("the config home was mounted writable:\n%s", joined)
 			}
 			if !strings.Contains(joined, "target=/marshal/data,volume-subpath=home/data") ||
 				strings.Contains(joined, "home/data,readonly") {

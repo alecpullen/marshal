@@ -64,11 +64,14 @@ func (d Dispatcher) runExec(ctx context.Context, role agent.AgentRole, scope swa
 	// reads its authority: the registry factory and the native tools it
 	// registers close over the same root, and an admission made by this
 	// actor must claim the worktree rather than the parent's project root.
+	// The binding is isolated — a dispatcher's root, not one this session
+	// chose — so a dispatch worktree that vanishes fails the child loudly
+	// instead of recovering it to the launch directory and writing there.
 	// A runner that streams into the parent session (swarm-style) is left
 	// alone — its workspace IS the parent's, and retargeting it here would
 	// move the owner.
 	if runner.State != nil && runner.State != d.State && d.ExecCtx.WorkspaceRoot != "" {
-		runner.State.SetWorkspace(session.Workspace{ActiveRoot: d.ExecCtx.WorkspaceRoot})
+		runner.State.BindIsolatedWorkspace(d.ExecCtx.WorkspaceRoot)
 	}
 	// When an execution context and registry factory are wired, bind the
 	// runner to a fresh registry scoped to the worktree and artifact root

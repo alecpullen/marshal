@@ -394,6 +394,11 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 // Reading through the session on each call avoids a second, racy source
 // of truth.
 //
+// The read is also where a worktree that has been removed underneath the
+// session is noticed: EnsureWorkspaceRoot returns the session to its project
+// root and writes one notice, so the tool runs where the session can work
+// instead of failing in the sandbox on a directory that is gone.
+//
 // The empty-ActiveRoot fallback is defensive: SetWorkspace coerces an
 // empty ActiveRoot to ProjectRoot before storing, so the only way to
 // observe ActiveRoot == "" here is if a future caller bypasses the
@@ -401,7 +406,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 // that case.
 func (t *toolSet) activeRoot() string {
 	if ws := t.wsState(); ws != nil {
-		if w := ws.Workspace(); w.ActiveRoot != "" {
+		if w := ws.EnsureWorkspaceRoot(); w.ActiveRoot != "" {
 			return w.ActiveRoot
 		}
 	}

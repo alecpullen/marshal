@@ -251,7 +251,11 @@ type State struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu         sync.Mutex
+	mu sync.Mutex
+	// rootMu serializes stale-active-root recovery; see EnsureWorkspaceRoot.
+	// Lock order: rootMu → accessMu (owner) → mu, so nothing may take rootMu
+	// while holding either of the others.
+	rootMu     sync.Mutex
 	todoMu     sync.Mutex    // serializes todo reconciliation and persistence
 	hold       bool          // guarded by mu; see hold.go
 	holdCh     chan struct{} // closed and cleared on release; guarded by mu
@@ -404,7 +408,11 @@ type State struct {
 	// workspace is the session's current project/active-root pair and the
 	// broker rebinds are published on. Guarded by mu like the rest of this
 	// block. See workspace.go.
-	workspace       Workspace
+	workspace Workspace
+	// isolatedRoot marks a workspace a dispatcher bound rather than one the
+	// session chose (BindIsolatedWorkspace). Such a session does not recover
+	// from that root disappearing. Guarded by mu.
+	isolatedRoot    bool
 	workspaceBroker *pubsub.Broker[WorkspaceEvent]
 
 	runningJobs            int

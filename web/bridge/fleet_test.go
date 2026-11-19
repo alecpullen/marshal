@@ -81,6 +81,9 @@ func hostStateFleet(t *testing.T, userConfigDir string) (*Fleet, Agent) {
 	f := testFleetWithStateVolume(t, "marshal-state")
 	f.SetStateOnHost(userConfigDir)
 	f.probe = dockerProbe
+	// On Linux SetStateOnHost requires a rootless runtime; answer that here
+	// so the test does not depend on the host's own runtime.
+	f.rootless = func() bool { return true }
 	a := Agent{
 		ID: "a1", SourceKind: "git", Profile: DefaultRuntimeProfile(),
 		Workspace: &AgentWorkspace{Name: "w"},

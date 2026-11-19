@@ -319,7 +319,7 @@ func (f *Fleet) OpenTerminal(ctx context.Context, agentID string, cols, rows int
 	if rt.child != nil && rt.child.Containerized {
 		path, _, ok := f.runtimeInfo()
 		if !ok {
-			return "", ErrWorkspaceNeedsRuntime
+			return "", f.needsRuntime()
 		}
 		name := containerNameFor(agentID)
 		if a, ok := f.ws.Agent(agentID); ok && a.ContainerName != "" {
@@ -872,7 +872,7 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 	}
 	rtPath, rtName, ok := f.runtimeInfo()
 	if !ok {
-		return "", ErrWorkspaceNeedsRuntime
+		return "", f.needsRuntime()
 	}
 	cols, rows = clampTerm(cols, 80), clampTerm(rows, 24)
 	t := &terminal{id: newTerminalID(), owner: workspaceOwner(res.Name), done: make(chan struct{})}

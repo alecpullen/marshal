@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -162,6 +163,12 @@ type Fleet struct {
 	// agents' config home when stateOnHost is set ("" keeps the state
 	// subpath).
 	userConfigDir string
+	// requireRootless makes a host-state fleet on Linux use only a rootless
+	// container runtime: a rootful one is refused. Set by SetStateOnHost.
+	requireRootless bool
+	// rootless answers whether the detected runtime is rootless. Nil means
+	// probeRuntime's answer; tests inject one.
+	rootless func() bool
 	// projectEnv resolves a project's environment for its child (P4 D7).
 	// Nil means children inherit the bridge's environment. Set through
 	// SetProjectEnv before anything starts.
@@ -847,9 +854,10 @@ func (f *Fleet) spawnFromRequest(ctx context.Context, req SpawnRequest) (string,
 
 // runtimeProbe is the memoised result of looking for a container runtime.
 type runtimeProbe struct {
-	path string // absolute path, pinned at detect time
-	name string // "docker" or "podman", for user-facing messages
-	ok   bool
+	path     string // absolute path, pinned at detect time
+	name     string // "docker" or "podman", for user-facing messages
+	ok       bool
+	rootless bool // whether the runtime runs rootless
 }
 
 // probeRuntime resolves the container runtime once per process.
@@ -859,15 +867,32 @@ var probeRuntime = sync.OnceValue(func() runtimeProbe {
 		if err != nil {
 			continue
 		}
+		format := "{{json .SecurityOptions}}"
+		if candidate == "podman" {
+			format = "{{.Host.Security.Rootless}}"
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		err = exec.CommandContext(ctx, abs, "info").Run()
+		out, err := exec.CommandContext(ctx, abs, "info", "--format", format).Output()
 		cancel()
 		if err == nil {
-			return runtimeProbe{path: abs, name: candidate, ok: true}
+			return runtimeProbe{path: abs, name: candidate, ok: true, rootless: rootlessFromInfo(candidate, out)}
 		}
 	}
 	return runtimeProbe{}
 })
+
+// rootlessFromInfo reads whether the runtime named name ("docker" or
+// "podman") is rootless from the output of its info command, as
+// probeRuntime runs it.
+func rootlessFromInfo(name string, out []byte) bool {
+	switch name {
+	case "docker":
+		return strings.Contains(string(out), "rootless")
+	case "podman":
+		return strings.TrimSpace(string(out)) == "true"
+	}
+	return false
+}
 
 // detectedRuntime reports the container runtime's absolute path, its
 // name, and whether one is usable at all.
@@ -888,6 +913,7 @@ func (f *Fleet) SetHostProcessesOnly() { f.hostOnly = true }
 func (f *Fleet) SetStateOnHost(userConfigDir string) {
 	f.stateOnHost = true
 	f.userConfigDir = userConfigDir
+	f.requireRootless = runtime.GOOS == "linux"
 }
 
 // stateMount is the package stateMount with this fleet's volume and, when
@@ -905,15 +931,53 @@ func (f *Fleet) stateMount(runtimeName, target, subpath string, readonly bool) [
 func (f *Fleet) SetProjectEnv(p *ProjectEnv) { f.projectEnv = p }
 
 // containerRuntime is the fleet's container runtime: none when host-only,
-// without probing; otherwise the probe's answer.
+// without probing; none when a host-state fleet on Linux needs a rootless
+// runtime and this one is not; otherwise the probe's answer.
 func (f *Fleet) containerRuntime() (path, name string, ok bool) {
 	if f.hostOnly {
 		return "", "", false
 	}
 	if f.probe != nil {
-		return f.probe()
+		path, name, ok = f.probe()
+	} else {
+		path, name, ok = detectedRuntime()
 	}
-	return detectedRuntime()
+	if !ok {
+		return "", "", false
+	}
+	if f.requireRootless && !f.runtimeIsRootless() {
+		return "", "", false
+	}
+	return path, name, true
+}
+
+// runtimeIsRootless is whether the runtime the probe finds is rootless: the
+// injected answer when a test set one, else the process-wide probe's.
+func (f *Fleet) runtimeIsRootless() bool {
+	if f.rootless != nil {
+		return f.rootless()
+	}
+	return probeRuntime().rootless
+}
+
+// needsRuntime is the error a container-only operation returns when
+// containerRuntime answers none: ErrWorkspaceNeedsRuntime, wrapped with
+// the reason when a runtime was found and refused.
+func (f *Fleet) needsRuntime() error {
+	if f.requireRootless {
+		var name string
+		var ok bool
+		if f.probe != nil {
+			_, name, ok = f.probe()
+		} else {
+			_, name, ok = detectedRuntime()
+		}
+		if ok && !f.runtimeIsRootless() {
+			return fmt.Errorf("%w: %s runs as root, and a daemon on the host needs a rootless runtime on Linux (rootless Docker or Podman)",
+				ErrWorkspaceNeedsRuntime, name)
+		}
+	}
+	return ErrWorkspaceNeedsRuntime
 }
 
 // socketDirFor is the per-agent ACP socket directory.
@@ -1603,7 +1667,7 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 		_, rtName, ok := f.runtimeInfo()
 		if !ok {
 			cleanTree()
-			return "", ErrWorkspaceNeedsRuntime
+			return "", f.needsRuntime()
 		}
 		ex, err := f.buildWorkspaceExtras(ctx, a, wsRes.Doc, wsRes.ImageName, rtName)
 		if err != nil {

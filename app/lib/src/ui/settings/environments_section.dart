@@ -38,6 +38,10 @@ class EnvironmentsSection extends StatelessWidget {
           'No environment exists yet. Import a devcontainer to make '
           'one.',
       actions: [Btn('Import devcontainer.json', onTap: () => _import(context))],
+      emptyAction: StateAction(
+        'Import devcontainer.json',
+        onTap: () => _import(context),
+      ),
       row: (row, onTap) => RowItem(
         name: row.name,
         description: row.contents,

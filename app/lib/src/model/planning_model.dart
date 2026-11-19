@@ -72,10 +72,11 @@ class PlannerRequest {
   /// Whether it is a permission request rather than a question.
   final bool permission;
 
-  /// What is being asked: "Permission requested", "Question from the planner".
+  /// What is being asked: the question itself, or "Permission requested".
   final String title;
 
-  /// The command, the question, or whatever the payload still carried.
+  /// The command a permission asks to run. Empty for a question, whose title
+  /// is the question.
   final String detail;
 
   /// Every question the request asks, in the order they must be answered. A
@@ -277,6 +278,10 @@ class PlanningModel extends ChangeNotifier {
 
   /// The planner as the bridge last reported it, for what its session can do.
   PlannerView? get view => _view;
+
+  /// Whether the planner's record has been read. False until a read lands, so
+  /// nothing is stated as a fact the bridge has not reported.
+  bool get reported => _view != null;
 
   /// The session's connection, from the record alone: a record that says the
   /// planner ended is ended, one that says it is live is live, and anything
@@ -552,6 +557,10 @@ class PlanningModel extends ChangeNotifier {
     }
     final permission = kind == 'turn.permission';
     final payload = _payload(data['params'] ?? data['update']);
+    // The question is the card's title, so a question's body is empty; a
+    // permission keeps its wording as the title and its command as the body.
+    final asked = permission ? '' : _questionLine(payload);
+    final titled = asked.isNotEmpty;
     _requests.add(
       PlannerRequest(
         requestID: requestID,
@@ -559,8 +568,14 @@ class PlanningModel extends ChangeNotifier {
         permission: permission,
         title: permission
             ? 'Permission requested'
+            : titled
+            ? asked
             : 'Question from the planner',
-        detail: permission ? _permissionLine(payload) : _questionLine(payload),
+        detail: permission
+            ? _permissionLine(payload)
+            : titled
+            ? ''
+            : asked,
         questions: permission ? const [] : _questionTexts(payload),
       ),
     );
@@ -641,7 +656,9 @@ class PlanningModel extends ChangeNotifier {
   }
 
   /// A question request in one line: the first question's text, else the
-  /// message the payload carried.
+  /// message the payload carried, else empty. Empty is a real answer here: a
+  /// payload that asks nothing gets the card's own wording rather than a
+  /// question nobody asked.
   static String _questionLine(Map<String, Object?> payload) {
     final asked = _questionTexts(payload);
     if (asked.isNotEmpty) return asked.first;
@@ -649,7 +666,7 @@ class PlanningModel extends ChangeNotifier {
       final text = _str(payload[key]);
       if (text.isNotEmpty) return text;
     }
-    return 'The planner is waiting for an answer.';
+    return '';
   }
 
   /// Every question text a payload asks, in its own order.

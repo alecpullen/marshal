@@ -86,7 +86,10 @@ class Lanes extends StatelessWidget {
   Widget _header(BuildContext context) {
     final e = Ember.of(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: Space.s6),
+      padding: const EdgeInsets.symmetric(
+        horizontal: Space.s16,
+        vertical: Space.s6,
+      ),
       child: Row(
         children: [
           const Expanded(flex: 3, child: SizedBox.shrink()),
@@ -101,7 +104,10 @@ class Lanes extends StatelessWidget {
     final e = Ember.of(context);
     final detail = row.detail;
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: Space.s8),
+      padding: const EdgeInsets.symmetric(
+        horizontal: Space.s16,
+        vertical: Space.s8,
+      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

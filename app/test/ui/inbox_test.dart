@@ -348,7 +348,11 @@ void main() {
     }
 
     // The source line is the way to the thread they are answered in.
-    await tester.tap(find.text('Factory · Everyone').first);
+    await tester.tap(
+      find
+          .text('marshal › Reliable session recovery · Factory · Everyone')
+          .first,
+    );
     await tester.pump();
     expect(opened.single.id, 'a-1');
   });

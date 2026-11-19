@@ -21,8 +21,14 @@ class _Section extends SectionModel<String> {
   List<String> rows;
   Future<String> Function(String item) write = (item) async => item;
 
+  /// How many times the section has been read, so a test can see a re-read.
+  int reads = 0;
+
   @override
-  Future<List<String>> fetch() async => rows;
+  Future<List<String>> fetch() async {
+    reads++;
+    return rows;
+  }
 
   @override
   Object keyOf(String item) => item;
@@ -39,6 +45,9 @@ Future<void> _pump(
   WidgetTester tester,
   _Section model, {
   double width = 1000,
+  String? createLabel,
+  String Function()? blank,
+  String Function(String item)? group,
 }) async {
   tester.view.physicalSize = Size(width, 900);
   tester.view.devicePixelRatio = 1;
@@ -49,6 +58,9 @@ Future<void> _pump(
       home: SectionPage<String>(
         title: 'Schedules',
         model: model,
+        createLabel: createLabel,
+        blank: blank,
+        group: group,
         row: (item, onTap) => RowItem(
           name: item,
           description: 'The nightly gate, on a cron',
@@ -223,7 +235,9 @@ void main() {
 
     // The Inbox's own callback leaves the place, and it asks as the sidebar
     // does: a place's content is no way around the one guard.
-    await tester.tap(find.text('Fleet · Everyone'));
+    await tester.tap(
+      find.text('marshal › Reliable session recovery · Fleet · Everyone'),
+    );
     await tester.pumpAndSettle();
     expect(find.text('Leave without saving?'), findsOneWidget);
     expect(opened, isEmpty);
@@ -254,6 +268,90 @@ void main() {
     // The detail's own page; the list's is offstage behind it.
     expect(find.byType(PageBody), findsOneWidget);
     expect(find.text('Editing nightly'), findsOneWidget);
+  });
+
+  testWidgets('an empty list with a create offers the create', (tester) async {
+    final model = _Section([]);
+    await model.load();
+    await _pump(
+      tester,
+      model,
+      createLabel: 'New schedule',
+      blank: () => 'a new schedule',
+    );
+
+    // The header's create and the empty state's are the same one, so the
+    // empty list offers it too (§7).
+    expect(find.text('New schedule'), findsNWidgets(2));
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(StateMessage),
+        matching: find.text('New schedule'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Editing a new schedule'), findsOneWidget);
+  });
+
+  testWidgets('an empty list without one reads again', (tester) async {
+    final model = _Section([]);
+    await model.load();
+    final reads = model.reads;
+    await _pump(tester, model);
+
+    // Nothing creates the section's rows, so its one action re-reads it.
+    expect(find.text('Read the section again'), findsOneWidget);
+    await tester.tap(find.text('Read the section again'));
+    await tester.pumpAndSettle();
+    expect(model.reads, reads + 1);
+  });
+
+  testWidgets('grouped rows sit under their labels', (tester) async {
+    final model = _Section(['nightly', 'weekly', 'hourly']);
+    await model.load();
+    await _pump(
+      tester,
+      model,
+      group: (item) => item == 'hourly' ? 'Later' : 'Earlier',
+    );
+
+    // One label per run of neighbours, and each run in one list of its own.
+    expect(find.text('EARLIER'), findsOneWidget);
+    expect(find.text('LATER'), findsOneWidget);
+    expect(find.byType(Rows), findsNWidgets(2));
+
+    final firstRun = find.byType(Rows).first;
+    final secondRun = find.byType(Rows).last;
+    expect(
+      find.descendant(of: firstRun, matching: find.text('nightly')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: secondRun, matching: find.text('hourly')),
+      findsOneWidget,
+    );
+    // A run's rows are its own: the other group's row is not in it.
+    expect(
+      find.descendant(of: firstRun, matching: find.text('hourly')),
+      findsNothing,
+    );
+
+    // The label sits above its rows, s8 between, and the next group's label
+    // clears the last group's rows by s20.
+    final labels = find.byType(Label);
+    expect(
+      tester.getTopLeft(firstRun).dy,
+      tester.getBottomLeft(labels.first).dy + Space.s8,
+    );
+    expect(
+      tester.getTopLeft(labels.last).dy,
+      tester.getBottomLeft(firstRun).dy + Space.s20,
+    );
+    expect(
+      tester.getTopLeft(find.text('hourly')).dy,
+      greaterThan(tester.getTopLeft(labels.last).dy),
+    );
   });
 }
 

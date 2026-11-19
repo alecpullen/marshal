@@ -208,6 +208,24 @@ void main() {
     expect(find.text('main'), findsOneWidget);
   });
 
+  testWidgets('the plan is drawn as Markdown', (tester) async {
+    await pump(tester, item());
+    await openTab(tester, 'Plan');
+
+    // A plan is prose its reader scans by its headings, so it is drawn with
+    // the kit's Markdown rather than as the bytes it was approved as.
+    expect(
+      find.text('Task 1'),
+      findsOneWidget,
+      reason: 'the heading is read as a heading, not as its markup',
+    );
+    expect(
+      find.textContaining('##'),
+      findsNothing,
+      reason: 'no line of the plan shows its Markdown syntax',
+    );
+  });
+
   testWidgets('the Agents tab lists each worker by role', (tester) async {
     await pump(tester, item());
     await openTab(tester, 'Agents');

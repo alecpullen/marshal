@@ -144,6 +144,38 @@ void main() {
     );
   });
 
+  testWidgets('a row’s name is inset from the box', (tester) async {
+    await pumpKit(
+      tester,
+      SizedBox(
+        width: 600,
+        child: lanesBox(const Lanes(lanes: lanes, rows: rows)),
+      ),
+    );
+
+    // The box draws its own border; the rows inside it sit `s16` in from it,
+    // which is the inset `Rows` uses in a `Box.flush`.
+    final box = tester.getTopLeft(find.byType(Box)).dx;
+    final inset = box + Sizes.border + Space.s16;
+    expect(
+      tester.getTopLeft(find.text(rows.first.title)).dx,
+      moreOrLessEquals(inset),
+      reason: 'the first task’s name',
+    );
+    expect(
+      tester.getTopLeft(find.text(rows.last.title)).dx,
+      moreOrLessEquals(inset),
+      reason: 'every task’s name',
+    );
+
+    // The header shares the rows' geometry: a lane's name starts where that
+    // lane's column starts.
+    expect(
+      tester.getTopLeft(find.text('Implement')).dx,
+      moreOrLessEquals(tester.getTopLeft(find.byType(Dot).first).dx),
+    );
+  });
+
   testWidgets('a note is its own mono line, and a long cell ellipsizes', (
     tester,
   ) async {

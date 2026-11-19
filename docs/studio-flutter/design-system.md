@@ -195,7 +195,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Rows` | A list of name, description, value, and optionally a day's `Spark` | Every settings-style list |
 | `NavRow` | A row of the sidebar | An icon, a label, an optional count; a project's row has a disclosure chevron instead of an icon. Only threads carry a status, in a `ThreadRow` |
 | `PageBody` | Title, subtitle, actions, content | Every page that is not a thread |
-| `AskCard` | Something waiting on the user | The only way an ask is shown |
+| `AskCard` | Something waiting on the user | The only way an ask is shown. Primary is the action the caller marks, at most one and first; a question's options are equals, so none of them is |
 | `PrCard` | A pull request with its CI | The only way a pull request is shown in a list |
 | `ThreadRow` | A thread in a list | Dot, title, kind icon |
 | `TurnPrompt` | What the user said | Right-aligned, bordered, no fill. A row of the transcript, never a chat bubble |
@@ -209,13 +209,15 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Field` | A text input | Border only; the label is above it. `Field.multiline` is the same input for prose, taller and growing with what it holds; its `mono` flag sets the text in `mono` for a document a person edits line by line. `Field.search` is the one without a label above it, led by a magnifying glass |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
 | `Sheet` | A dialog or bottom sheet; it dims what is behind it with `scrim` | One per screen at most |
-| `Composer` | The field a thread is driven from | The draft, the mode and model chips, Stop while running, Send or Steer. A read-only session is one line saying why |
+| `Composer` | The field a thread is driven from | The draft, the mode and model chips, Stop while running, Send or Steer; the mode chip is left out while the mode is not known, as the model chip is when no model is named. A read-only session is one line saying why |
 
 Added in F2: `NavRow`, the sidebar's row (an icon or a disclosure chevron, a
 label, an optional count; the selected row is filled and its icon is
 `accent`). The selected row is the open place alone: a project whose thread is
 open is not filled, because the thread's row is where the person is. A thread
-is never a `NavRow`: it is a `ThreadRow`, which carries its status.
+is never a `NavRow`: it is a `ThreadRow`, which carries its status. A project's
+`Earlier` row is a `NavRow` with a disclosure chevron and the count of the
+threads it holds, and the threads it opens are `ThreadRow`s.
 
 Added in F4: `DiffView` and `GateList`, the inspector's two read-only views of
 a change. Both are reused by the work item's inspector (F6), so neither knows

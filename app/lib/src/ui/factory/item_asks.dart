@@ -155,7 +155,18 @@ class _ItemAsksState extends State<ItemAsks> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        AskCard(
+          kind: _kind(ask.kind),
+          placement: AskPlacement.thread,
+          title: ask.title,
+          body: body.isEmpty ? null : body,
+          waiting: waiting,
+          actions: [
+            for (final action in ask.actions) _action(ask, action, enabled),
+          ],
+        ),
         if (ask.kind == model.AskKind.decision) ...[
+          const SizedBox(height: Space.s8),
           // At most one decision ask is built from asksOf (it is gated on the
           // item's single pending decision), so one answer controller is
           // enough; a second decision would need its own.
@@ -167,18 +178,7 @@ class _ItemAsksState extends State<ItemAsks> {
             // the card is rebuilt as the person types.
             onChanged: (_) => setState(() {}),
           ),
-          const SizedBox(height: Space.s8),
         ],
-        AskCard(
-          kind: _kind(ask.kind),
-          placement: AskPlacement.thread,
-          title: ask.title,
-          body: body.isEmpty ? null : body,
-          waiting: waiting,
-          actions: [
-            for (final action in ask.actions) _action(ask, action, enabled),
-          ],
-        ),
         if (ask.kind == model.AskKind.recovery) ...[
           const SizedBox(height: Space.s12),
           RecoveryForm(
@@ -217,6 +217,7 @@ class _ItemAsksState extends State<ItemAsks> {
         _draft.answer.text.trim().isEmpty;
     return AskAction(
       action.label,
+      primary: action.primary,
       onTap: enabled && !blocked && !unanswered
           ? () => _act(ask, action)
           : null,

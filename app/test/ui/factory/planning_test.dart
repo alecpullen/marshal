@@ -7,6 +7,8 @@ import 'package:marshal_app/src/ui/factory/handoff_sheet.dart';
 import 'package:marshal_app/src/ui/factory/planning_screen.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 
+import '../../support/kit.dart';
+
 /// A planner whose routes a test can inspect, with one conversation turn and
 /// one question waiting on a person.
 ///
@@ -212,8 +214,10 @@ void main() {
 
     final card = tester.widget<AskCard>(find.byType(AskCard));
     expect(card.kind, AskKind.question);
-    expect(card.title, 'Question from the planner');
-    expect(card.body, 'Which tab comes first?');
+    // The question is the card's title; it has no body, so the card draws no
+    // empty line under it.
+    expect(card.title, 'Which tab comes first?');
+    expect(card.body, isNull);
     expect(find.text('Which tab comes first?'), findsWidgets);
   });
 
@@ -375,7 +379,8 @@ void main() {
   testWidgets('a pending request is counted beside the conversation', (
     tester,
   ) async {
-    final planner = _planner(question: 'Which tab comes first?');
+    // A reported record: the count is drawn in the strip the record fills.
+    final planner = _planner(question: 'Which tab comes first?', view: _view());
     addTearDown(planner.model.dispose);
     await tester.pumpWidget(_screen(planner.model));
     await _settle(tester);
@@ -418,20 +423,24 @@ void main() {
     expect(find.text('Send'), findsOneWidget);
   });
 
-  testWidgets('a planner whose record has not been read claims nothing', (
-    tester,
-  ) async {
-    // No read route: the model never has a record, which is unknown, not
-    // connected.
+  testWidgets('before the record, the strip is one line', (tester) async {
+    // No read route: the model never has a record, so the strip has no fact
+    // to state and says only that.
     final planner = _planner();
     addTearDown(planner.model.dispose);
     await tester.pumpWidget(_screen(planner.model));
     await _settle(tester);
 
-    final pills = _pills(tester);
-    expect(pills, contains('Planner state unknown'));
-    expect(pills, contains('Mode unknown'));
-    expect(pills, contains('Workspace unknown'));
+    final e = tokens();
+    final style = styleOf(tester, 'The planner has not reported yet');
+    expect(style.color, e.muted);
+    expect(style.fontSize, e.small.fontSize);
+    // None of the chips is drawn, and no chip is replaced by a made-up fact.
+    expect(find.byType(Pill), findsNothing);
+    expect(find.textContaining('Mode unknown'), findsNothing);
+    expect(find.textContaining('Workspace unknown'), findsNothing);
+    // The field carries no mode chip either, and still sends.
+    expect(tester.widget<Composer>(find.byType(Composer)).mode, isNull);
     expect(find.text('Send'), findsOneWidget);
     expect(find.text('Steer'), findsNothing);
     expect(find.text('Stop'), findsNothing);

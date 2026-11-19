@@ -335,7 +335,10 @@ void main() {
     );
     await tester.pumpWidget(show(overview));
 
-    expect(find.text('Factory · marshal · Project-wide'), findsOneWidget);
+    expect(
+      find.text('marshal › Reliable session recovery · Factory · Project-wide'),
+      findsOneWidget,
+    );
     expect(find.text('Fleet · Everyone'), findsOneWidget);
   });
 

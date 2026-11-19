@@ -141,4 +141,58 @@ void main() {
       expect(row.description.contains(key), isFalse);
     }
   });
+
+  testWidgets('the page is grouped as roles, presets, keys and spending', (
+    tester,
+  ) async {
+    final transport = _Scripted({
+      'GET /api/models': Response(status: 200, body: jsonEncode(configBody())),
+    });
+    final model = ModelsModel(BridgeClient(transport));
+    addTearDown(model.dispose);
+    await model.load();
+
+    await pump(tester, ModelsSection(model: model));
+
+    // The four labels, one each, over the rows that answer them.
+    for (final label in ['ROLES', 'PRESETS', 'KEYS', 'SPENDING']) {
+      expect(find.text(label), findsOneWidget, reason: label);
+    }
+    expect(find.byType(Rows), findsNWidgets(4));
+
+    double top(String text) => tester.getTopLeft(find.text(text)).dy;
+    expect(top('ROLES'), lessThan(top('implementer')));
+    expect(top('implementer'), lessThan(top('PRESETS')));
+    expect(top('PRESETS'), lessThan(top('local/qwen')));
+    expect(top('local/qwen'), lessThan(top('KEYS')));
+    expect(top('KEYS'), lessThan(top('anthropic key')));
+    expect(top('anthropic key'), lessThan(top('SPENDING')));
+    expect(top('SPENDING'), lessThan(top('Daily cap')));
+  });
+
+  testWidgets('a role with no preset reads Active preset', (tester) async {
+    final transport = _Scripted({
+      'GET /api/models': Response(status: 200, body: jsonEncode(configBody())),
+    });
+    final model = ModelsModel(BridgeClient(transport));
+    addTearDown(model.dispose);
+    await model.load();
+
+    await pump(tester, ModelsSection(model: model));
+
+    // implementer has none of its own; reviewer runs local/qwen.
+    expect(
+      model.items.firstWhere((row) => row.id == 'role/implementer').shownValue,
+      'Active preset',
+    );
+    expect(find.text('Active preset'), findsOneWidget);
+
+    // Its detail still names the preset it runs instead.
+    await tester.tap(find.text('implementer'));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('runs the active preset, local/qwen'),
+      findsOneWidget,
+    );
+  });
 }

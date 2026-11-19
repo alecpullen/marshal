@@ -80,6 +80,9 @@ class ModelRow {
 
   /// What is chosen now, in the design system's words.
   String get shownValue {
+    // A role with none of its own runs the active preset, and says so; the
+    // row's note names which one that is.
+    if (kind == ModelRowKind.role && value.isEmpty) return 'Active preset';
     if (editor != ModelEditor.choices) return value;
     for (final (choice, about) in choices) {
       if (choice == value) return about;

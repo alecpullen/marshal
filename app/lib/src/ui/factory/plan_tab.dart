@@ -4,8 +4,9 @@ import '../kit/kit.dart';
 /// The work item's Plan tab (F6 decision 6): its goal and scope, the settings
 /// its approved revision froze, in words, and its documents.
 ///
-/// The plan and the specification are the exact bytes that were approved, so
-/// what is read here is what the workers were given. "Propose a change" is
+/// The plan is the approved Markdown, drawn as Markdown, and the specification
+/// is the approved bytes verbatim, so what is read here is what the workers
+/// were given. "Propose a change" is
 /// offered only when the host can take one; a host that passes none gets a
 /// tab that reads and nothing that pretends to write.
 class PlanTab extends StatelessWidget {
@@ -39,7 +40,7 @@ class PlanTab extends StatelessWidget {
         if (plan.isEmpty)
           Text('No plan text.', style: e.body.tint(e.muted))
         else
-          OutputBlock(text: plan),
+          Narration(text: plan),
         if (spec.isNotEmpty) ...[
           const SizedBox(height: Space.s12),
           const Label('Specification'),

@@ -198,8 +198,9 @@ final shellHosts = [
 model.ThreadRef _shellThread(
   String id,
   String title,
-  model.ThreadStatus status,
-) => model.ThreadRef(
+  model.ThreadStatus status, {
+  Duration age = const Duration(minutes: 8),
+}) => model.ThreadRef(
   host: 'local',
   id: id,
   project: '/home/u/marshal',
@@ -259,7 +260,20 @@ NavModel shellNavFor(Place place) => NavModel(
         _shellThread('a-2', 'Web studio contract', model.ThreadStatus.needsYou),
         _shellThread('a-3', 'Bump the gate', model.ThreadStatus.ready),
       ],
-      earlier: 12,
+      earlierThreads: [
+        _shellThread(
+          'a-4',
+          'Retire the old bridge',
+          model.ThreadStatus.idle,
+          age: const Duration(days: 3),
+        ),
+        _shellThread(
+          'a-5',
+          'Sort out the token sweep',
+          model.ThreadStatus.idle,
+          age: const Duration(days: 4),
+        ),
+      ],
       active: place.kind == PlaceKind.project && place.id == '/home/u/marshal',
     ),
   ],

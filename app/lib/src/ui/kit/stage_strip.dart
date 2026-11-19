@@ -13,7 +13,7 @@ import 'vocabulary.dart';
 /// and the ones ahead are `faint`.
 ///
 /// The strip has no fifth stage. An item that is ending says so in [endWord],
-/// beside it, because stopping, stopped and closed are states of the work
+/// beneath it, because stopping, stopped and closed are states of the work
 /// rather than stages of it.
 class StageStrip extends StatelessWidget {
   const StageStrip({
@@ -33,7 +33,7 @@ class StageStrip extends StatelessWidget {
   /// The thread's status: the colour the current stage and the bar take.
   final Status status;
 
-  /// A word beside the strip for an item that is ending, such as "Stopped".
+  /// A word beneath the strip for an item that is ending, such as "Stopped".
   final String? endWord;
 
   @override
@@ -45,20 +45,27 @@ class StageStrip extends StatelessWidget {
       children: [
         Segments(done: current, total: labels.length, status: status),
         const SizedBox(height: Space.s6),
-        Wrap(
-          spacing: Space.s12,
-          runSpacing: Space.s4,
-          crossAxisAlignment: WrapCrossAlignment.center,
+        // One word per segment, with the same gaps the bar draws, so a stage
+        // is named under the segment it is.
+        Row(
           children: [
-            for (final (index, label) in labels.indexed)
-              Text(
-                label,
-                style: index == current ? e.bodyStrong : e.small.tint(e.faint),
+            for (final (index, label) in labels.indexed) ...[
+              if (index > 0) const SizedBox(width: Space.s4),
+              Expanded(
+                child: Text(
+                  label,
+                  style: index == current
+                      ? e.bodyStrong
+                      : e.small.tint(e.faint),
+                ),
               ),
-            if (end != null && end.isNotEmpty)
-              Text(end, style: e.label.tint(e.muted)),
+            ],
           ],
         ),
+        if (end != null && end.isNotEmpty) ...[
+          const SizedBox(height: Space.s6),
+          Text(end, style: e.label.tint(e.muted)),
+        ],
       ],
     );
   }

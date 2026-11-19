@@ -234,6 +234,31 @@ void main() {
     expect(answered, 'the rounds');
   });
 
+  testWidgets('the answer field follows its decision', (tester) async {
+    await pumpKit(
+      tester,
+      ItemAsks(
+        item: WorkItemView.of('local', item(pending: decision())),
+        now: now,
+      ),
+      width: 900,
+      height: 1600,
+    );
+
+    // The question is read first, and the field that answers it comes after
+    // (§5): a field drawn above the card asks for an answer to something the
+    // person has not been told yet.
+    final card = find.byType(AskCard);
+    final field = find.byType(Field);
+    expect(card, findsOneWidget);
+    expect(field, findsOneWidget);
+    expect(
+      tester.getTopLeft(field).dy,
+      greaterThan(tester.getTopLeft(card).dy),
+      reason: 'the answer follows the question it answers',
+    );
+  });
+
   testWidgets('a decision\u2019s answer is disabled until there are words', (
     tester,
   ) async {

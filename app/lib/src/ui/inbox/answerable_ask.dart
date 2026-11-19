@@ -119,6 +119,7 @@ class _AnswerableAskState extends State<AnswerableAsk> {
         AskPlacement.overview => [
           AskAction(
             'Open in the factory',
+            primary: true,
             onTap: widget.onOpenSource,
             note: ask.thread == null
                 ? 'This ask names no work item to open.'
@@ -136,7 +137,9 @@ class _AnswerableAskState extends State<AnswerableAsk> {
         // which draws every question of the request. Answering here would
         // post a partial shape, which the agent reads as declined
         // (internal/acp/questions.go).
-        return [AskAction('Open inbox', onTap: widget.onOpenInbox)];
+        return [
+          AskAction('Open inbox', primary: true, onTap: widget.onOpenInbox),
+        ];
       }
       // The fields under the card carry the actions that post them.
       return const [];
@@ -147,7 +150,11 @@ class _AnswerableAskState extends State<AnswerableAsk> {
   /// The ask's own actions, each posting through the one answer path.
   List<AskAction> _offered(model.Ask ask) => [
     for (final action in ask.actions)
-      AskAction(action.label, onTap: _tap(ask, action)),
+      AskAction(
+        action.label,
+        primary: action.primary,
+        onTap: _tap(ask, action),
+      ),
   ];
 
   /// The questions of a multi-question ask, one answer each, and the actions
@@ -181,8 +188,8 @@ class _AnswerableAskState extends State<AnswerableAsk> {
             spacing: Space.s8,
             runSpacing: Space.s8,
             children: [
-              for (final (index, action) in ask.actions.indexed)
-                index == 0
+              for (final action in ask.actions)
+                action.primary
                     ? Btn.primary(action.label, onTap: _tap(ask, action))
                     : Btn(action.label, onTap: _tap(ask, action)),
             ],

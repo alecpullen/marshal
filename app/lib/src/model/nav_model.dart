@@ -56,15 +56,15 @@ class NavPlace {
       '${active ? ', active' : ''})';
 }
 
-/// One project row: the project's name, its current threads, and how many
-/// threads have gone quiet, drawn as "Earlier · N".
+/// One project row: the project's name, its current threads, and the threads
+/// that have gone quiet, drawn as its "Earlier" row.
 @immutable
 class NavProject {
   const NavProject({
     required this.id,
     required this.name,
     required this.current,
-    required this.earlier,
+    this.earlierThreads = const [],
     this.active = false,
   });
 
@@ -77,8 +77,12 @@ class NavProject {
   /// Its threads now, most recently active first.
   final List<ThreadRef> current;
 
-  /// How many of its threads are idle and older than a day.
-  final int earlier;
+  /// Its threads that are closed, or idle for more than a day, most recently
+  /// active first.
+  final List<ThreadRef> earlierThreads;
+
+  /// How many earlier threads it has.
+  int get earlier => earlierThreads.length;
 
   /// The project's own page is open. A project whose thread is open is not
   /// filled: the thread's row is where the person is, and one place is lit.
@@ -237,20 +241,26 @@ class _ProjectBuilder {
     final current = [
       for (final thread in _threads)
         if (!isEarlier(thread, now)) thread,
-    ];
-    current.sort((a, b) {
-      final byTime = b.lastActive.compareTo(a.lastActive);
-      return byTime != 0 ? byTime : a.id.compareTo(b.id);
-    });
-    final earlier = _threads.length - current.length;
+    ]..sort(_mostRecentFirst);
+    final earlier = [
+      for (final thread in _threads)
+        if (isEarlier(thread, now)) thread,
+    ]..sort(_mostRecentFirst);
     final active = place.kind == PlaceKind.project && place.id == root;
     return NavProject(
       id: root,
       name: projectName(root),
       current: List.unmodifiable(current),
-      earlier: earlier,
+      earlierThreads: List.unmodifiable(earlier),
       active: active,
     );
+  }
+
+  /// The order both of a project's lists are drawn in: most recently active
+  /// first, and by id when two tie.
+  static int _mostRecentFirst(ThreadRef a, ThreadRef b) {
+    final byTime = b.lastActive.compareTo(a.lastActive);
+    return byTime != 0 ? byTime : a.id.compareTo(b.id);
   }
 }
 

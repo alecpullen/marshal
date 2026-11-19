@@ -17,6 +17,7 @@ class SectionPage<T> extends StatelessWidget {
     required this.model,
     required this.row,
     required this.detail,
+    this.group,
     this.subtitle,
     this.actions = const [],
     this.tabs,
@@ -52,6 +53,13 @@ class SectionPage<T> extends StatelessWidget {
   /// The detail's body: the edit itself. Save and Cancel are added around
   /// it, and the bridge's refusal is drawn above it.
   final Widget Function(BuildContext context, T item) detail;
+
+  /// The label a run of consecutive rows sits under; unset draws one list.
+  ///
+  /// The model lists its rows in the order they belong in, so grouping here
+  /// only finds the runs of neighbours that answer the same label: it never
+  /// reorders anything.
+  final String Function(T item)? group;
 
   /// The one primary action a section may add to its page header.
   final List<Widget> actions;
@@ -147,10 +155,7 @@ class SectionPage<T> extends StatelessWidget {
   /// The rows, or the state that stands in for them.
   List<Widget> _content(BuildContext context) {
     final retry = StateAction('Read the section again', onTap: model.load);
-    final empty = StateAction(
-      emptyAction?.label ?? 'Read the section again',
-      onTap: emptyAction?.onTap ?? model.load,
-    );
+    final empty = _emptyAction(context);
     switch (state) {
       case StateKind.loading:
         return const [StateMessage.loading(lines: 5)];
@@ -195,9 +200,54 @@ class SectionPage<T> extends StatelessWidget {
     return [_rows(context)];
   }
 
-  Widget _rows(BuildContext context) => Rows([
-    for (final item in model.items) row(item, () => _open(context, item)),
-  ]);
+  /// The empty state's one action, which is the one that fills the list
+  /// (design-system.md §7): the section's own, else — when it has a create in
+  /// its header — that same create, opening the same blank; else a read.
+  StateAction _emptyAction(BuildContext context) {
+    final given = emptyAction;
+    if (given != null) return given;
+    final create = createLabel;
+    final blank = this.blank;
+    if (create != null && blank != null) {
+      return StateAction(create, onTap: () => _open(context, blank()));
+    }
+    return StateAction('Read the section again', onTap: model.load);
+  }
+
+  /// The rows, or — when the section names them — each run of neighbours
+  /// under its group's [Label]. A stale list draws the same last-known rows
+  /// under the same labels.
+  Widget _rows(BuildContext context) {
+    final group = this.group;
+    if (group == null) {
+      return Rows([
+        for (final item in model.items) row(item, () => _open(context, item)),
+      ]);
+    }
+    final runs = <(String, List<T>)>[];
+    for (final item in model.items) {
+      final name = group(item);
+      if (runs.isNotEmpty && runs.last.$1 == name) {
+        runs.last.$2.add(item);
+      } else {
+        runs.add((name, [item]));
+      }
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var i = 0; i < runs.length; i++) ...[
+          if (i > 0) const SizedBox(height: Space.s20),
+          Label(runs[i].$1),
+          const SizedBox(height: Space.s8),
+          Rows([
+            for (final item in runs[i].$2)
+              row(item, () => _open(context, item)),
+          ]),
+        ],
+      ],
+    );
+  }
 
   /// Opens the detail the way every section does (F7 decision 2).
   void _open(BuildContext context, T item) {

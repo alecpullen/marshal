@@ -35,6 +35,10 @@ class WatchesTab extends StatelessWidget {
       state: state,
       readOnly: true,
       actions: [Btn('New watch', onTap: () => showWatchForm(context, model))],
+      emptyAction: StateAction(
+        'New watch',
+        onTap: () => showWatchForm(context, model),
+      ),
       detailTitle: (watch) => watch.name,
       emptyMessage:
           'A watch an agent starts — a command, a job or a file — is listed '

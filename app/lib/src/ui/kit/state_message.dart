@@ -193,10 +193,13 @@ class StateMessage extends StatelessWidget {
         child: Semantics(
           enabled: false,
           child: Row(
+            // The pill sits beside the words, not halfway down a tall box.
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(message!, style: e.bodyStrong.tint(e.muted)),
                     const SizedBox(height: Space.s2),

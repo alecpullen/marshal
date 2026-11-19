@@ -1,3 +1,7 @@
+// [GeneralPreferences]'s parameters are named as its callers read them and its
+// fields stay private, so `save` cannot be an initializing formal.
+// ignore_for_file: prefer_initializing_formals
+
 import 'package:flutter/foundation.dart';
 
 import '../client/contract.g.dart' show DaemonInfo;
@@ -10,14 +14,40 @@ import 'thread_view_state.dart' show Density;
 /// (design-system.md §2).
 enum Appearance { system, light, dark }
 
-/// What General sets for this window, held where every screen reads it.
+/// What General sets, held where every screen reads it and kept on the device
+/// that chose it.
 ///
-/// Nothing here is written to the bridge yet: the bridge's config route is
-/// not mapped in this build, so the choices last as long as the app runs and
-/// the section says so rather than implying they were stored.
+/// Nothing here is written to the bridge: appearance and density are this
+/// device's, saved through [save] so a reload or a reopened window opens on
+/// the choice last made, and another browser or computer keeps its own.
 class GeneralPreferences extends ChangeNotifier {
-  Appearance _appearance = Appearance.system;
-  Density _density = Density.comfortable;
+  /// Preferences that open as the saved [appearance] and [density] names, and
+  /// that keep a change through [save].
+  ///
+  /// A saved name that is not one of [Appearance]'s or [Density]'s values is
+  /// ignored, so a value written by another version opens on the default
+  /// rather than failing.
+  GeneralPreferences({
+    String? appearance,
+    String? density,
+    void Function(String key, String value)? save,
+  }) : _save = save,
+       _appearance = _saved(Appearance.values, appearance) ?? Appearance.system,
+       _density = _saved(Density.values, density) ?? Density.comfortable;
+
+  Appearance _appearance;
+  Density _density;
+
+  /// Where this device keeps a choice, or null where nothing keeps it.
+  final void Function(String key, String value)? _save;
+
+  /// The value of [values] named [name], or null when none is.
+  static T? _saved<T extends Enum>(List<T> values, String? name) {
+    for (final value in values) {
+      if (value.name == name) return value;
+    }
+    return null;
+  }
 
   Appearance get appearance => _appearance;
 
@@ -49,12 +79,14 @@ class GeneralPreferences extends ChangeNotifier {
     if (next == _appearance) return;
     _appearance = next;
     notifyListeners();
+    _save?.call('appearance', next.name);
   }
 
   void setDensity(Density next) {
     if (next == _density) return;
     _density = next;
     notifyListeners();
+    _save?.call('density', next.name);
   }
 }
 
@@ -229,10 +261,9 @@ class GeneralModel extends SectionModel<GeneralSetting> {
     return _settings().firstWhere((setting) => setting.id == item.id);
   }
 
-  /// What is written under a setting whose choice is this window's only.
-  static const windowOnly =
-      'This window follows it now; the bridge stores it with the app config, '
-      'which this build does not read yet.';
+  /// What is written under a setting whose choice is this device's only.
+  static const deviceOnly =
+      'Kept on this device: another browser or computer keeps its own.';
 
   List<GeneralSetting> _settings() => [
     GeneralSetting(
@@ -249,7 +280,7 @@ class GeneralModel extends SectionModel<GeneralSetting> {
         GeneralChoice(value: 'light', label: 'Light', about: 'Always light'),
         GeneralChoice(value: 'dark', label: 'Dark', about: 'Always dark'),
       ],
-      note: windowOnly,
+      note: deviceOnly,
     ),
     GeneralSetting(
       id: 'density',
@@ -275,7 +306,7 @@ class GeneralModel extends SectionModel<GeneralSetting> {
       ],
       note:
           'A thread keeps its own switch, so this is what a thread opens with '
-          'rather than a rule. $windowOnly',
+          'rather than a rule. $deviceOnly',
     ),
     GeneralSetting(
       id: 'keyboard',

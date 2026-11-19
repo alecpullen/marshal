@@ -296,32 +296,34 @@ class _ThreadScreenState extends State<ThreadScreen> {
       widget.view.cursor = null;
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.keyJ) {
+    if (!meta && !control && key == LogicalKeyboardKey.keyJ) {
       _moveCursor(shift ? 10 : 1);
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.keyK) {
+    if (!meta && !control && key == LogicalKeyboardKey.keyK) {
       _moveCursor(shift ? -10 : -1);
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.keyG) {
+    if (!meta && !control && key == LogicalKeyboardKey.keyG) {
       final rows = _rows;
       if (rows.isNotEmpty) {
         widget.view.cursor = shift ? rows.last.id : rows.first.id;
       }
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter) {
+    if (!meta &&
+        !control &&
+        (key == LogicalKeyboardKey.enter ||
+            key == LogicalKeyboardKey.numpadEnter)) {
       widget.view.cycleDensity();
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.keyZ) {
+    if (!meta && !control && key == LogicalKeyboardKey.keyZ) {
       final cursor = widget.view.cursor;
       if (cursor != null) widget.view.toggleFold(cursor);
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.keyY) {
+    if (!meta && !control && key == LogicalKeyboardKey.keyY) {
       final cursor = widget.view.cursor;
       if (cursor != null) widget.onCopyRow?.call(cursor);
       return KeyEventResult.handled;

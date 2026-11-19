@@ -334,6 +334,51 @@ void main() {
     );
   });
 
+  test('a question lists what its options mean', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        agents: [
+          agent(
+            id: 'a-1',
+            status: AgentState.agentAwaitingQuestion,
+            pending: const PendingRequest(
+              kind: PendingKind.pendingQuestion,
+              id: 'q-1',
+              params: {
+                'questions': [
+                  {
+                    'question': 'Which branch?',
+                    'options': [
+                      {
+                        'label': 'main',
+                        'value': 'main',
+                        'description': '  Ship what is on the branch now  ',
+                      },
+                      {'label': 'next', 'value': 'release/next'},
+                    ],
+                  },
+                ],
+              },
+            ),
+          ),
+        ],
+      ),
+    ], now: now);
+    final inbox = await inboxFor(fixture);
+
+    final ask = inbox.asks.single;
+    final question = ask.questions.single;
+    expect(
+      [for (final option in question.options) option.description],
+      ['Ship what is on the branch now', null],
+    );
+    // The option that was described says what choosing it means, in one line;
+    // the one that was not adds no line of its own.
+    expect(ask.body, 'main — Ship what is on the branch now');
+  });
+
   test('a question’s options are equals', () async {
     final fixture = await ModelFixture.start([
       FixtureHost(
@@ -373,52 +418,6 @@ void main() {
           'choosing among a question’s options is not the ask’s primary '
           'action, and neither is the free reply',
     );
-  });
-
-  test('a question lists what its options mean', () async {
-    final fixture = await ModelFixture.start([
-      FixtureHost(
-        name: 'local',
-        projects: [project('/home/u/alpha')],
-        agents: [
-          agent(
-            id: 'a-1',
-            status: AgentState.agentAwaitingQuestion,
-            pending: const PendingRequest(
-              kind: PendingKind.pendingQuestion,
-              id: 'q-1',
-              params: {
-                'questions': [
-                  {
-                    'question': 'Which branch?',
-                    'options': [
-                      {
-                        'label': 'main',
-                        'value': 'main',
-                        'description': '  Ship what is on the branch now  ',
-                      },
-                      {'label': 'next', 'value': 'release/next'},
-                    ],
-                  },
-                ],
-              },
-            ),
-          ),
-        ],
-      ),
-    ], now: now);
-
-    final inbox = await inboxFor(fixture);
-
-    final ask = inbox.asks.single;
-    final question = ask.questions.single;
-    expect(
-      [for (final option in question.options) option.description],
-      ['Ship what is on the branch now', null],
-    );
-    // The option that was described says what choosing it means, in one line;
-    // the one that was not adds no line of its own.
-    expect(ask.body, 'main — Ship what is on the branch now');
   });
 
   /// Two questions in one request, which the agent answers as a pair: it

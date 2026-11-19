@@ -108,6 +108,73 @@ class NavModel {
   final List<NavProject> projects;
 }
 
+/// What the sidebar's search found, in the order it is drawn and Enter
+/// takes: places, then threads, then projects.
+@immutable
+class NavSearch {
+  const NavSearch({
+    this.places = const [],
+    this.threads = const [],
+    this.projects = const [],
+  });
+
+  /// The fixed places whose label holds the query.
+  final List<NavPlace> places;
+
+  /// The threads whose title holds it: a project's current threads first, then
+  /// its earlier ones, in the tree's own order.
+  final List<ThreadRef> threads;
+
+  /// The projects whose name holds it.
+  final List<NavProject> projects;
+
+  /// Nothing matched, so the sidebar says so.
+  bool get isEmpty => places.isEmpty && threads.isEmpty && projects.isEmpty;
+}
+
+/// The places, threads and projects of [fixed] and [projects] whose name or
+/// title holds every word of [query], ignoring case. A thread is searched
+/// whether it is current or earlier.
+///
+/// A blank query finds nothing: while nothing is typed the sidebar draws its
+/// tree, never an empty result.
+NavSearch searchNav(
+  List<NavPlace> fixed,
+  List<NavProject> projects,
+  String query,
+) {
+  final words = [
+    for (final word in query.toLowerCase().split(RegExp(r'\s+')))
+      if (word.isNotEmpty) word,
+  ];
+  if (words.isEmpty) return const NavSearch();
+
+  bool matches(String text) {
+    final lower = text.toLowerCase();
+    // The query's words narrow the result: "cache reads" finds what says both
+    // and not what says one.
+    return words.every(lower.contains);
+  }
+
+  return NavSearch(
+    places: List.unmodifiable([
+      for (final place in fixed)
+        if (matches(place.label)) place,
+    ]),
+    // The tree's order, project by project, and a project's current threads
+    // before the ones under its "Earlier".
+    threads: List.unmodifiable([
+      for (final project in projects)
+        for (final thread in [...project.current, ...project.earlierThreads])
+          if (matches(thread.title)) thread,
+    ]),
+    projects: List.unmodifiable([
+      for (final project in projects)
+        if (matches(project.name)) project,
+    ]),
+  );
+}
+
 /// Whether [thread] belongs under a project's "Earlier".
 ///
 /// A closed session is earlier whatever its age: it is stored rather than

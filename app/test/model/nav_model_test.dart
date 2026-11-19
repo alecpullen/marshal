@@ -456,4 +456,122 @@ void main() {
       ['local', 'studio'],
     );
   });
+
+  // The sidebar's search: what is typed narrows the tree rather than opening a
+  // page of its own, so these are the rules the field's rows follow.
+  group('the search', () {
+    NavPlace place(PlaceKind kind, String label) =>
+        NavPlace(kind: kind, label: label);
+
+    ThreadRef thread(
+      String id,
+      String title, {
+      String project = '/home/u/alpha',
+    }) => ThreadRef(
+      host: 'local',
+      id: id,
+      project: project,
+      title: title,
+      kind: ThreadKind.agent,
+      status: ThreadStatus.idle,
+      headline: '',
+      lastActive: now,
+    );
+
+    final fixed = [
+      place(PlaceKind.overview, 'Overview'),
+      place(PlaceKind.inbox, 'Inbox'),
+      place(PlaceKind.pulls, 'Pull requests'),
+    ];
+
+    final projects = [
+      NavProject(
+        id: '/home/u/alpha',
+        name: 'alpha',
+        current: [
+          thread('a-1', 'Cache the reads'),
+          thread('a-2', 'Fix the login bug'),
+        ],
+        earlierThreads: [thread('a-3', 'Retire the old bridge')],
+      ),
+      NavProject(
+        id: '/home/u/beta',
+        name: 'Beta service',
+        current: [thread('b-1', 'Cache the writes', project: '/home/u/beta')],
+      ),
+    ];
+
+    test('search matches every word, in any case', () {
+      // Every word must appear in the title, and case is not the question:
+      // only the thread that says both words is found.
+      expect(
+        [
+          for (final thread in searchNav(
+            fixed,
+            projects,
+            'CACHE Reads',
+          ).threads)
+            thread.id,
+        ],
+        ['a-1'],
+      );
+
+      // A word may match anywhere in the name: a place by its label, a project
+      // by its own name.
+      expect(
+        [
+          for (final place in searchNav(fixed, projects, 'PULL').places)
+            place.label,
+        ],
+        ['Pull requests'],
+      );
+      expect(
+        [
+          for (final project in searchNav(
+            fixed,
+            projects,
+            'BETA service',
+          ).projects)
+            project.name,
+        ],
+        ['Beta service'],
+      );
+
+      // One word alone finds everything that says it, and nothing else.
+      final cache = searchNav(fixed, projects, 'cache');
+      expect([for (final thread in cache.threads) thread.id], ['a-1', 'b-1']);
+      expect(cache.places, isEmpty);
+      expect(cache.projects, isEmpty);
+    });
+
+    test('search finds earlier threads', () {
+      final found = searchNav(fixed, projects, 'bridge');
+      expect([for (final thread in found.threads) thread.id], ['a-3']);
+      expect(found.places, isEmpty);
+      expect(found.projects, isEmpty);
+
+      // Threads keep the tree's order however wide the query: project by
+      // project as listed, and a project's current threads before the ones
+      // under its "Earlier".
+      expect(
+        [
+          for (final thread in searchNav(fixed, projects, 'the').threads)
+            thread.id,
+        ],
+        ['a-1', 'a-2', 'a-3', 'b-1'],
+      );
+    });
+
+    test('a blank query finds nothing', () {
+      // Whitespace is nothing typed: the sidebar keeps its tree rather than
+      // drawing every place, thread and project as a "result".
+      for (final query in ['', ' ', '   ', '\t\n ']) {
+        final found = searchNav(fixed, projects, query);
+        expect(found.isEmpty, isTrue, reason: 'query "$query"');
+        expect(found.places, isEmpty);
+        expect(found.threads, isEmpty);
+        expect(found.projects, isEmpty);
+      }
+    });
+  });
 }

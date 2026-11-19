@@ -6,9 +6,10 @@ import 'src/client/bridge_client.dart';
 import 'src/client/contract.g.dart';
 import 'src/client/fleet_profiles.dart';
 import 'src/client/host.dart';
-import 'src/client/host_tokens.dart';
 import 'src/client/host_discovery_stub.dart'
     if (dart.library.io) 'src/client/host_discovery_io.dart';
+import 'src/client/host_tokens.dart';
+import 'src/client/preference_store.dart';
 import 'src/client/studio_code_stub.dart'
     if (dart.library.js_interop) 'src/client/studio_code_web.dart';
 import 'src/menu/desktop_stub.dart'
@@ -100,8 +101,16 @@ Future<void> main() async {
   // The work items: the one poller of the factory's list (F6 decision 14).
   final factory = FactoryStore(hosts);
   // This window's appearance and transcript density: Settings' General
-  // section sets them, and the sections F7 built read them back.
-  final preferences = GeneralPreferences();
+  // section sets them, and the sections F7 built read them back. They are this
+  // device's own, so a reload or a reopened window opens on the choice last
+  // made: a build with a store keeps them (browser storage on the web,
+  // `studio.json` on a desktop) and a test build keeps none.
+  final preferenceStore = openPreferenceStore();
+  final preferences = GeneralPreferences(
+    appearance: preferenceStore?.read('appearance'),
+    density: preferenceStore?.read('density'),
+    save: preferenceStore?.write,
+  );
   // Every host's tripped watches, blocked requests and held drafts (spec D4).
   // It is built after the inbox so an answer can ask for a re-read of the host
   // it answered on, and its reads are what the Overview's card and the inbox's

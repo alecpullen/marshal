@@ -23,8 +23,15 @@ class GoPullsIntent extends Intent {
   const GoPullsIntent();
 }
 
-/// The shell's shortcuts (f9-parity.md decision 6): ⌘N, and ⌘1/⌘2/⌘3 for
-/// Overview, Inbox and Pull requests.
+/// `⌘K`: the keyboard goes to the sidebar's search, wherever the person is —
+/// including inside another text field, so a search is one key away from a
+/// half-typed draft.
+class FocusSearchIntent extends Intent {
+  const FocusSearchIntent();
+}
+
+/// The shell's shortcuts (f9-parity.md decision 6): ⌘N, ⌘1/⌘2/⌘3 for Overview,
+/// Inbox and Pull requests, and ⌘K for the sidebar's search.
 final Map<ShortcutActivator, Intent> shellShortcuts = {
   const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
       const NewWorkIntent(),
@@ -34,4 +41,6 @@ final Map<ShortcutActivator, Intent> shellShortcuts = {
       const GoInboxIntent(),
   const SingleActivator(LogicalKeyboardKey.digit3, meta: true):
       const GoPullsIntent(),
+  const SingleActivator(LogicalKeyboardKey.keyK, meta: true):
+      const FocusSearchIntent(),
 };

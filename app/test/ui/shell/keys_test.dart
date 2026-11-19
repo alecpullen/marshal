@@ -394,6 +394,101 @@ void main() {
     expect(find.byType(ThreadComposer), findsOneWidget);
   });
 
+  testWidgets('⌘K focuses search', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final fixture = await fixtureWithProject(tester);
+    final inboxModel = inbox.InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+    );
+    addTearDown(inboxModel.dispose);
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(store: fixture.store, inbox: inboxModel),
+      ),
+    );
+    await settleIo(tester);
+
+    // The search field holds no keyboard until it is asked for.
+    final search = find.descendant(
+      of: find.byType(Sidebar),
+      matching: find.byType(EditableText),
+    );
+    expect(tester.widget<EditableText>(search).focusNode.hasFocus, isFalse);
+
+    await sendMeta(tester, LogicalKeyboardKey.keyK);
+
+    // `⌘K` is the search's own key wherever a person is (f9-parity decision 6).
+    expect(tester.widget<EditableText>(search).focusNode.hasFocus, isTrue);
+  });
+
+  testWidgets('⌘K from the composer focuses search', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final fixture = await fixtureWithProject(tester);
+    final inboxModel = inbox.InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+    );
+    addTearDown(inboxModel.dispose);
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inboxModel,
+          initialPlace: const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
+          threadStore: (thread) => StackStore.seeded(_snapshot()),
+          composerFor: (thread, view) => ComposerModel(
+            prompt: (text) async {},
+            steer: (text) async {},
+            cancel: () async {},
+            setMode: (mode) async {},
+            access: () async => const AccessState(
+              mode: 'act',
+              auto: false,
+              system: false,
+              revision: 1,
+            ),
+            view: view,
+          ),
+        ),
+      ),
+    );
+    await settleIo(tester);
+
+    final composer = find.descendant(
+      of: find.byType(ThreadComposer),
+      matching: find.byType(EditableText),
+    );
+    await tester.tap(composer);
+    await tester.pump();
+    await tester.enterText(composer, 'half a thought');
+    await tester.pump();
+    expect(tester.widget<EditableText>(composer).focusNode.hasFocus, isTrue);
+
+    await sendMeta(tester, LogicalKeyboardKey.keyK);
+
+    // The field's own keys are kept and `⌘K` is not one of them: unlike `⌘N`
+    // and `⌘1/⌘2/⌘3`, it moves the keyboard to the search rather than
+    // navigating away, and the draft is still there to come back to.
+    final search = find.descendant(
+      of: find.byType(Sidebar),
+      matching: find.byType(EditableText),
+    );
+    expect(tester.widget<EditableText>(search).focusNode.hasFocus, isTrue);
+    expect(tester.widget<EditableText>(composer).focusNode.hasFocus, isFalse);
+    expect(find.text('half a thought'), findsOneWidget);
+  });
+
   testWidgets('opening a thread reads its access', (tester) async {
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1;

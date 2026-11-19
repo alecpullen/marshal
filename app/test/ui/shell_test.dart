@@ -1,9 +1,13 @@
 import 'dart:async';
 
+import 'package:flutter/services.dart' show LogicalKeyboardKey, TextInputAction;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
-import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/client/host.dart'
+    show HostKind, HostReach, HostRegistry;
+import 'package:marshal_app/src/model/fleet_store.dart'
+    show FleetStore, HostView;
+import 'package:marshal_app/src/model/general_model.dart';
 import 'package:marshal_app/src/model/hosts_model.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as inbox;
 import 'package:marshal_app/src/model/new_work_model.dart';
@@ -19,6 +23,7 @@ import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/sections/unsaved_guard.dart';
+import 'package:marshal_app/src/ui/settings/settings_place.dart';
 import 'package:marshal_app/src/ui/shell/host_switcher.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
@@ -147,6 +152,8 @@ void main() {
     StateKind? state,
     VoidCallback? onNew,
     VoidCallback? onConnectRepo,
+    UnsavedGuard? unsaved,
+    HostPlaceBuilder? settingsFor,
   }) {
     final opened = <Place>[];
     final nav = shellNavFor(place);
@@ -161,6 +168,9 @@ void main() {
         onSelect: opened.add,
         onNew: onNew,
         onConnectRepo: onConnectRepo,
+        onLeaveSettings: () {},
+        unsaved: unsaved,
+        settingsFor: settingsFor,
         content: (_) => plannedPlace(place, nav),
       ),
       opened,
@@ -328,6 +338,191 @@ void main() {
     expect(recorded.last, 'local');
     expect(find.text('Automations at local'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('in Settings the sidebar lists its sections in order', (
+    tester,
+  ) async {
+    final (shell, _) = shellAt(const Place(PlaceKind.settings));
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    // Settings' sidebar is its ten sections in the design's order (F7
+    // decision 7), under the row that leaves the place.
+    final labels = [
+      for (final row in tester.widgetList<NavRow>(
+        find.descendant(
+          of: find.byType(Sidebar),
+          matching: find.byType(NavRow),
+        ),
+      ))
+        row.label,
+    ];
+    expect(labels.first, 'Back');
+    expect(labels.skip(1), [
+      'Hosts',
+      'Environments',
+      'Connections',
+      'Models and routing',
+      'Secrets',
+      'Network',
+      'Usage and audit',
+      'Notifications',
+      'Access',
+      'General',
+    ]);
+  });
+
+  testWidgets('a section opens through the guard', (tester) async {
+    // A section holding an edit: opening another would lose what was typed, so
+    // a section row asks the one guard every way out of a place asks.
+    final edits = HostsModel.fixture(shellHosts)
+      ..edit(shellHosts.first)
+      ..change(shellHosts.first);
+    final guard = UnsavedGuard()..watch(edits);
+    final (shell, opened) = shellAt(
+      const Place(PlaceKind.settings),
+      unsaved: guard,
+    );
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    await tester.tap(find.text('Secrets'));
+    await tester.pump();
+
+    expect(find.text('Leave without saving?'), findsOneWidget);
+    expect(opened, isEmpty, reason: 'nothing opens until the person says so');
+
+    await tester.tap(find.text('Discard the edit'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(opened, [const Place(PlaceKind.settings, section: 'secrets')]);
+  });
+
+  testWidgets('Settings draws no list of its own', (tester) async {
+    // The sidebar is Settings' list, so the page beside it draws the open
+    // section alone: one column of section rows, never two (F2).
+    final (shell, _) = shellAt(
+      const Place(PlaceKind.settings, section: 'secrets'),
+      settingsFor: (host, section, state) => SettingsPlace(
+        preferences: GeneralPreferences(),
+        index: section,
+        sections: {
+          SettingsSectionKind.hosts: (state) => const Text('Hosts page'),
+          SettingsSectionKind.secrets: (state) => const Text('Secrets page'),
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+    await tester.pump();
+
+    expect(find.text('Secrets page'), findsOneWidget);
+    expect(find.text('Hosts page'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(SettingsPlace),
+        matching: find.byType(NavRow),
+      ),
+      findsNothing,
+      reason: 'the sections are the sidebar, not the page',
+    );
+    // And the sidebar fills the section that is open.
+    expect(
+      tester
+          .widgetList<NavRow>(
+            find.descendant(
+              of: find.byType(Sidebar),
+              matching: find.byType(NavRow),
+            ),
+          )
+          .where((row) => row.selected)
+          .map((row) => row.label),
+      ['Secrets'],
+    );
+  });
+
+  testWidgets('Back returns to the place before Settings', (tester) async {
+    // Settings is a place like any other, so its Back row leaves it for the
+    // place the person came from (F2), here the Overview the Studio opened at.
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final store = FleetStore(HostRegistry(discovery: () async => []));
+    addTearDown(store.dispose);
+    final asks = InboxModel(
+      store,
+      client: (host) => throw StateError('no host answers'),
+    );
+    addTearDown(asks.dispose);
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(store: store, inbox: asks),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(Sidebar),
+        matching: find.text('Settings'),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('Back'), findsOneWidget);
+
+    await tester.tap(find.text('Back'));
+    await tester.pump();
+
+    expect(find.text('Back'), findsNothing);
+    expect(
+      tester
+          .widgetList<NavRow>(
+            find.descendant(
+              of: find.byType(Sidebar),
+              matching: find.byType(NavRow),
+            ),
+          )
+          .where((row) => row.selected)
+          .map((row) => row.label),
+      ['Overview'],
+    );
+
+    // Back returns wherever the person came from, not only where the Studio
+    // opened: from the Inbox, it goes back to the Inbox.
+    await tester.tap(
+      find.descendant(of: find.byType(Sidebar), matching: find.text('Inbox')),
+    );
+    await tester.pump();
+    await tester.tap(
+      find.descendant(
+        of: find.byType(Sidebar),
+        matching: find.text('Settings'),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.text('Back'));
+    await tester.pump();
+
+    expect(
+      tester
+          .widgetList<NavRow>(
+            find.descendant(
+              of: find.byType(Sidebar),
+              matching: find.byType(NavRow),
+            ),
+          )
+          .where((row) => row.selected)
+          .map((row) => row.label),
+      ['Inbox'],
+    );
   });
 
   testWidgets('selecting a row changes the place', (tester) async {
@@ -595,12 +790,105 @@ void main() {
 
     expect(find.text('PROJECTS'), findsOneWidget);
     expect(find.byTooltip('Projects and threads'), findsNothing);
-    // The search field is drawn where it will live, disabled, and says why. It
-    // has no label above it: a magnifying glass names it.
+    // The search field is drawn here, above the tree. It has no label above
+    // it: a magnifying glass names it, and its tooltip says what it finds.
     expect(find.byType(Field), findsOneWidget);
     expect(find.byIcon(Glyphs.search), findsOneWidget);
     expect(find.text('Search'), findsNothing);
-    expect(find.byTooltip('Search arrives in a later phase'), findsOneWidget);
+    expect(
+      find.byTooltip('Find a thread, project or place (⌘K)'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('typing filters the sidebar to what matches', (tester) async {
+    final (shell, _) = shellAt(const Place.overview());
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    await tester.enterText(find.byType(Field), 'recover');
+    await tester.pump();
+
+    // The tree is replaced by what matches: the thread whose title holds the
+    // word, with no other thread of the project's under it.
+    expect(find.text('THREADS'), findsOneWidget);
+    expect(find.text('Reliable session recovery'), findsOneWidget);
+    expect(find.text('Web studio contract'), findsNothing);
+    expect(find.text('Bump the gate'), findsNothing);
+
+    // The fixed places and the tree's own labels are gone with it, and a
+    // group holding nothing — here the places and the projects — is not
+    // drawn at all.
+    expect(find.text('PROJECTS'), findsNothing);
+    expect(find.text('PLACES'), findsNothing);
+    expect(find.text('Inbox'), findsNothing);
+  });
+
+  testWidgets('Enter opens the first match', (tester) async {
+    final (shell, opened) = shellAt(const Place.overview());
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    await tester.enterText(find.byType(Field), 'studio');
+    await tester.pump();
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+
+    // A thread is the first thing found: Enter opens it.
+    expect(opened, [const Place(PlaceKind.thread, host: 'local', id: 'a-2')]);
+
+    // And the search is put back: the tree is drawn again in full.
+    expect(find.text('THREADS'), findsNothing);
+    expect(find.text('Bump the gate'), findsOneWidget);
+    expect(find.text('PROJECTS'), findsOneWidget);
+  });
+
+  testWidgets('Escape restores the tree', (tester) async {
+    final (shell, opened) = shellAt(const Place.overview());
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    await tester.enterText(find.byType(Field), 'recover');
+    await tester.pump();
+    expect(find.text('Web studio contract'), findsNothing);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+
+    // The query is gone, so the tree is back, and nothing was opened.
+    expect(opened, isEmpty);
+    expect(find.text('PROJECTS'), findsOneWidget);
+    expect(find.text('Reliable session recovery'), findsOneWidget);
+    expect(find.text('Web studio contract'), findsOneWidget);
+
+    // The field also let go of the keyboard: its text is empty and unfocused,
+    // so the tree's own shortcuts are the ones the keyboard reaches.
+    final field = tester.widget<Field>(find.byType(Field));
+    expect(field.controller?.text, isEmpty);
+    expect(
+      tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+      isFalse,
+    );
+  });
+
+  testWidgets('nothing matching says so', (tester) async {
+    final (shell, _) = shellAt(const Place.overview());
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    await tester.enterText(find.byType(Field), 'zzz');
+    await tester.pump();
+
+    // One line, in the words of the thing searched for, and no group labels
+    // standing over nothing.
+    expect(find.text('Nothing is called “zzz”'), findsOneWidget);
+    expect(find.text('THREADS'), findsNothing);
+    expect(find.text('PROJECTS'), findsNothing);
+    expect(find.text('Reliable session recovery'), findsNothing);
   });
 
   testWidgets('the narrow app bar has New', (tester) async {

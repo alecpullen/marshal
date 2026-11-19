@@ -32,6 +32,12 @@ branch that is not already present.
 There is deliberately no removal path (`workspace.go:20`) — the tool covers
 mechanics, and the `using-worktrees` skill covers judgment.
 
+If the worktree directory is removed while the session is running — a merged
+branch cleaned up from another terminal, `git worktree remove` — the next tool
+call returns the session to the project root and writes one system notice
+naming the path. The same landing applies when a session resumes into a
+worktree that is gone.
+
 ## workspace.finish
 
 **For:** merging the session's worktree branch into the base branch, then

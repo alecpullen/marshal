@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -216,6 +217,201 @@ func TestResumeFallsBackWithNoticeWhenWorktreeGone(t *testing.T) {
 	}
 	if row.ActiveRoot != "" {
 		t.Fatalf("stale ActiveRoot %q was not cleared", row.ActiveRoot)
+	}
+}
+
+func TestEnsureWorkspaceRootLeavesALiveWorktreeAlone(t *testing.T) {
+	root := t.TempDir()
+	s := New(config.Default(), root, time.Unix(100, 0), Persistence{})
+	wt := filepath.Join(root, ".marshal", "worktrees", "feat-x")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x"})
+	before := len(s.Messages())
+
+	ws := s.EnsureWorkspaceRoot()
+	if ws.ActiveRoot != wt || ws.Branch != "feat/x" {
+		t.Fatalf("EnsureWorkspaceRoot() = %+v, want the worktree unchanged", ws)
+	}
+	if got := len(s.Messages()); got != before {
+		t.Fatalf("messages = %d, want %d (no notice for a live worktree)", got, before)
+	}
+}
+
+func TestEnsureWorkspaceRootRecoversFromARemovedWorktree(t *testing.T) {
+	s, d, sid, root := newPersistedState(t)
+	wt := filepath.Join(root, ".marshal", "worktrees", "feat-x")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x", TargetBranch: "main", BaseSha: "abc123"})
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+
+	ws := s.EnsureWorkspaceRoot()
+	if ws.ActiveRoot != root || ws.Branch != "" || ws.BaseSha != "" || ws.TargetBranch != "" {
+		t.Fatalf("EnsureWorkspaceRoot() = %+v, want the project root with an empty branch", ws)
+	}
+	msgs := s.Messages()
+	last := msgs[len(msgs)-1]
+	if last.Role != RoleSystem || !strings.Contains(last.Content, wt) {
+		t.Fatalf("last message = %v %q, want a system notice naming %q", last.Role, last.Content, wt)
+	}
+	// The cleared row is what stops the next resume warning a second time.
+	row, err := d.GetSession(sid)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if row.ActiveRoot != "" || row.WorktreeBranch != "" {
+		t.Fatalf("row still records ActiveRoot %q / branch %q", row.ActiveRoot, row.WorktreeBranch)
+	}
+}
+
+func TestEnsureWorkspaceRootWritesOneNoticeForConcurrentCallers(t *testing.T) {
+	root := t.TempDir()
+	s := New(config.Default(), root, time.Unix(100, 0), Persistence{})
+	wt := filepath.Join(root, ".marshal", "worktrees", "feat-x")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x"})
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if ws := s.EnsureWorkspaceRoot(); ws.ActiveRoot != root {
+				t.Errorf("EnsureWorkspaceRoot() = %+v, want %q", ws, root)
+			}
+		}()
+	}
+	wg.Wait()
+
+	notices := 0
+	for _, m := range s.Messages() {
+		if m.Role == RoleSystem && strings.Contains(m.Content, "no longer exists") {
+			notices++
+		}
+	}
+	if notices != 1 {
+		t.Fatalf("system notices = %d, want 1", notices)
+	}
+}
+
+func TestEnsureWorkspaceRootStaysPutWhenTheProjectRootIsAlsoGone(t *testing.T) {
+	root := t.TempDir()
+	s := New(config.Default(), root, time.Unix(100, 0), Persistence{})
+	wt := filepath.Join(root, ".marshal", "worktrees", "feat-x")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x"})
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("remove project: %v", err)
+	}
+
+	ws := s.EnsureWorkspaceRoot()
+	if ws.ActiveRoot != wt {
+		t.Fatalf("EnsureWorkspaceRoot() = %+v, want the root left alone with nowhere to land", ws)
+	}
+	for _, m := range s.Messages() {
+		if m.Role == RoleSystem && strings.Contains(m.Content, "no longer exists") {
+			t.Fatal("a notice was written although the session could not move")
+		}
+	}
+}
+
+// TestEnsureWorkspaceRootLeavesADispatchIsolatedRootAlone pins the dispatch
+// case: a pipeline child is bound to the dispatcher's worktree while its
+// project root is the directory the run was launched from, so recovering the
+// child to that project root would write outside the isolation it was given.
+func TestEnsureWorkspaceRootLeavesADispatchIsolatedRootAlone(t *testing.T) {
+	launch := t.TempDir()
+	s := New(config.Default(), launch, time.Unix(100, 0), Persistence{})
+	dispatch := filepath.Join(launch, ".marshal", "worktrees", "task-1")
+	if err := os.MkdirAll(dispatch, 0o755); err != nil {
+		t.Fatalf("mkdir dispatch worktree: %v", err)
+	}
+	s.BindIsolatedWorkspace(dispatch)
+	if err := os.RemoveAll(dispatch); err != nil {
+		t.Fatalf("remove dispatch worktree: %v", err)
+	}
+	before := len(s.Messages())
+
+	ws := s.EnsureWorkspaceRoot()
+	if ws.ActiveRoot != dispatch {
+		t.Fatalf("EnsureWorkspaceRoot() = %+v, want the bound dispatch root %q", ws, dispatch)
+	}
+	if got := s.Workspace().ActiveRoot; got != dispatch {
+		t.Fatalf("session ActiveRoot = %q, want unchanged %q", got, dispatch)
+	}
+	if got := len(s.Messages()); got != before {
+		t.Fatalf("messages = %d, want %d (a dispatch-isolated root earns no notice)", got, before)
+	}
+}
+
+func TestASetWorkspaceClearsDispatchIsolation(t *testing.T) {
+	launch := t.TempDir()
+	s := New(config.Default(), launch, time.Unix(100, 0), Persistence{})
+	dispatch := filepath.Join(launch, ".marshal", "worktrees", "task-1")
+	if err := os.MkdirAll(dispatch, 0o755); err != nil {
+		t.Fatalf("mkdir dispatch worktree: %v", err)
+	}
+	s.BindIsolatedWorkspace(dispatch)
+	if err := os.RemoveAll(dispatch); err != nil {
+		t.Fatalf("remove dispatch worktree: %v", err)
+	}
+	// An ordinary rebinding is the session's own choice again, so the same
+	// session recovers from that gone root.
+	s.SetWorkspace(Workspace{ActiveRoot: dispatch, Branch: "dispatch/task-1"})
+
+	ws := s.EnsureWorkspaceRoot()
+	if ws.ActiveRoot != launch || ws.Branch != "" {
+		t.Fatalf("EnsureWorkspaceRoot() = %+v, want the project root %q with an empty branch", ws, launch)
+	}
+	noticed := false
+	for _, m := range s.Messages() {
+		if m.Role == RoleSystem && strings.Contains(m.Content, "no longer exists") {
+			noticed = true
+		}
+	}
+	if !noticed {
+		t.Fatal("no system notice; a session that chose its root still recovers")
+	}
+}
+
+// TestEnsureWorkspaceRootRecoversWhenTheRootIsAFile covers the other arm of
+// unusedWorktreeRoot: a path that still exists but is not a directory is as
+// unusable as one that was removed.
+func TestEnsureWorkspaceRootRecoversWhenTheRootIsAFile(t *testing.T) {
+	root := t.TempDir()
+	s := New(config.Default(), root, time.Unix(100, 0), Persistence{})
+	wt := filepath.Join(root, ".marshal", "worktrees", "feat-x")
+	if err := os.MkdirAll(filepath.Dir(wt), 0o755); err != nil {
+		t.Fatalf("mkdir worktrees: %v", err)
+	}
+	if err := os.WriteFile(wt, []byte("not a worktree\n"), 0o644); err != nil {
+		t.Fatalf("write file at worktree path: %v", err)
+	}
+	s.SetWorkspace(Workspace{ProjectRoot: root, ActiveRoot: wt, Branch: "feat/x"})
+	before := len(s.Messages())
+
+	ws := s.EnsureWorkspaceRoot()
+	if ws.ActiveRoot != root || ws.Branch != "" {
+		t.Fatalf("EnsureWorkspaceRoot() = %+v, want the project root %q with an empty branch", ws, root)
+	}
+	if got := len(s.Messages()); got != before+1 {
+		t.Fatalf("messages = %d, want %d (one notice)", got, before+1)
+	}
+	last := s.Messages()[before]
+	if last.Role != RoleSystem || !strings.Contains(last.Content, wt) {
+		t.Fatalf("last message = %v %q, want a system notice naming %q", last.Role, last.Content, wt)
 	}
 }
 

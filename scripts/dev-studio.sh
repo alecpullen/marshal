@@ -5,14 +5,11 @@
 #
 # The studio is the SPA embedded in webbridge (`web/bridge/static`, baked in
 # with //go:embed) talking to a webbridge over HTTP. It runs as its own unit,
-# `marshal-studio.service`, on 127.0.0.1:7700, with the *server* profile. Two
-# reasons it is not the local daemon the TUI uses:
-#
-#   - the local profile is socket-only (`daemon install` pins `--addr off`) and
-#     refuses egress, secret backends and containers, which is most of what
-#     studio's workspace and build screens drive;
-#   - a restart here must not end the TUI's turns. Separate units, separate
-#     fleets, separate restarts.
+# `marshal-studio.service`, on 127.0.0.1:7700. One reason it is a second
+# daemon rather than the TUI's: it serves the browser on that address with its
+# own bearer token, and it restarts apart from the TUI's daemon, so a restart
+# here does not end the TUI's turns. Containers are no longer a reason to keep
+# it apart — every daemon runs them now.
 #
 # The loop is the daemon's: the unit pins binary *paths*, so rebuild in place
 # and restart. A change under app/ is invisible until `flutter build web`
@@ -52,13 +49,13 @@
 # what a remote browser types and the tailnet root may belong to another
 # service.
 #
-# Agents the studio spawns run in containers. SetHostProcessesOnly is reached
-# only by `--profile local` (cmd/webbridge/main.go), so the server profile
-# containerises every agent whenever podman or docker is on PATH; the
-# host-process fallback that would use --marshal-bin is not available here. A
-# spawn therefore needs the agent image, and for a source build the default is
-# `ghcr.io/marshal/agent:latest`. The studio itself serves without it; only
-# spawning agents needs it, which is most of what the studio is for.
+# Agents the studio spawns run in containers: the studio's projects have a
+# workspace, and any daemon containerises an agent that has one whenever podman
+# or docker is on PATH, so the host-process fallback that would use
+# --marshal-bin is not reached here. A spawn therefore needs the agent image,
+# and for a source build the default is `ghcr.io/marshal/agent:latest`. The
+# studio itself serves without it; only spawning agents needs it, which is most
+# of what the studio is for.
 #
 # The agent's marshal comes from the *image*, not from --marshal-bin, so this
 # is a third artifact to refresh alongside the SPA and the two binaries: a host
@@ -173,7 +170,7 @@ done
 
 if [ "$(uname -s)" != "Linux" ]; then
 	echo "dev-studio.sh: this writes a systemd user unit, so it is Linux-only (this is $(uname -s))" >&2
-	echo "dev-studio.sh: run webbridge --profile server yourself elsewhere" >&2
+	echo "dev-studio.sh: run webbridge yourself elsewhere" >&2
 	exit 1
 fi
 
@@ -193,25 +190,8 @@ env_file="$studio_dir/webbridge.env"
 token_file="$studio_dir/token"
 log="$studio_dir/webbridge.log"
 
-# The bridge's state dir belongs to the container runtime's state volume, not
-# to a directory beside it: agent containers mount subpaths of that volume —
-# work/<agent>, sockets/<agent>, the shared home, and the egress sidecar's own
-# directory — so the bridge's view and the containers' view have to be the
-# same files. A rootless podman volume is user-owned and writable; a rootful
-# docker one is not, and falls back to a plain directory (studio still serves,
-# but containerized agents cannot see their state).
 runtime=$(command -v podman || command -v docker || true)
 state_dir=$studio_dir/state
-resolve_state_dir() {
-	[ -n "$runtime" ] || return 0
-	"$runtime" volume create marshal-state >/dev/null 2>&1 || true
-	local mp
-	mp=$("$runtime" volume inspect marshal-state --format '{{.Mountpoint}}' 2>/dev/null || true)
-	if [ -n "$mp" ] && [ -w "$mp" ]; then
-		state_dir=$mp
-	fi
-}
-resolve_state_dir
 
 under_home() {
 	case $1 in
@@ -268,17 +248,17 @@ read_token() {
 }
 
 # write_unit renders the unit for this checkout. --cwd-root registers the repo
-# as the studio's first project (the server profile would otherwise register
-# whatever directory systemd started it in).
+# as the studio's first project (a daemon given none registers no working
+# directory project).
 write_unit() {
 	mkdir -p "$(dirname "$unit_path")" "$state_dir"
 	cat >"$unit_path" <<EOF
 [Unit]
-Description=Marshal studio (webbridge, server profile)
+Description=Marshal studio (webbridge)
 
 [Service]
 WorkingDirectory=$repo_root
-ExecStart="$repo_root/webbridge" "--profile" "server" "--addr" "127.0.0.1:7700" "--state-dir" "$state_dir" "--workspace" "$studio_dir/fleet.json" "--cwd-root" "$repo_root" "--marshal-bin" "$repo_root/marshal"
+ExecStart="$repo_root/webbridge" "--socket" "$studio_dir/marshal.sock" "--addr" "127.0.0.1:7700" "--state-dir" "$state_dir" "--egress" "on" "--workspace" "$studio_dir/fleet.json" "--cwd-root" "$repo_root" "--marshal-bin" "$repo_root/marshal"
 EnvironmentFile=$env_file
 Environment="PATH=$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="SHELL=/bin/bash"
@@ -297,8 +277,8 @@ wait_ready() {
 	token=$(read_token)
 	deadline=$(($(date +%s) + timeout))
 	while :; do
-		# /api/daemon is the *local* profile's route (it answers 404 here), so
-		# the probe is a route every profile serves behind the bearer check.
+		# /api/projects is behind the bearer check, so a healthy daemon
+		# answers it without needing any particular route set.
 		if curl -fsS -m 2 -H "Authorization: Bearer $token" "$base/api/projects" >/dev/null 2>&1; then
 			return 0
 		fi
@@ -336,7 +316,7 @@ print_status() {
 	printf 'unit:    %s\n' "$unit_path"
 	printf 'state:   %s\n' "$state_dir"
 	if curl -fsS -m 2 -H "Authorization: Bearer $token" "$base/api/projects" >/dev/null 2>&1; then
-		printf 'studio:  %s  profile=server  pid=%s  started %s\n' \
+		printf 'studio:  %s  pid=%s  started %s\n' \
 			"${version#webbridge }" "$pid" "${started:-?}"
 		printf 'url:     %s\n' "$base"
 		remotes=$(remote_urls)

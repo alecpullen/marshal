@@ -43,15 +43,16 @@ address.
 > Behind a terminating proxy this never comes up; hitting the bridge
 > directly over HTTP on such a name will simply fail to load.
 
-## The local profile
+## The daemon
 
-`webbridge --profile local` is the user's own daemon, not a fleet: host
-processes only, no container machinery, and a unix socket instead of a bearer
-token.
+`webbridge` is the user's own daemon, not a fleet: a unix socket instead of a
+bearer token, and its agents are host processes unless they have a workspace.
 
 ```bash
-webbridge --profile local --socket ~/.local/share/marshal/daemon/marshal.sock --addr off
+webbridge --socket ~/.local/share/marshal/daemon/marshal.sock --addr off
 ```
+
+`--profile` is retired; `local` is ignored and `server` is refused.
 
 - `--socket <path>` names the listener (also `WEBBRIDGE_SOCKET`). Its default
   is `<data>/daemon/marshal.sock`, where `<data>` is `MARSHAL_DATA_DIR`, else

@@ -107,10 +107,10 @@ bridge. The loop is: edit, run `./scripts/dev-studio.sh`, reload the tab.
 
 ## The agent image
 
-The studio's server profile containerises every agent whenever podman or
-docker is on `PATH`; `SetHostProcessesOnly` is called only for
-`--profile local` (`cmd/webbridge/main.go`). Without an agent image the studio
-serves, but every spawn fails, so the image is part of a usable setup.
+A daemon runs an agent in a container when the agent has a workspace, mounting
+its state from the daemon's state directory; on Linux that needs rootless
+Podman or Docker. Without an agent image the studio serves, but every spawn
+fails, so the image is part of a usable setup.
 
 `--dev-image` builds `build/Dockerfile.dev`, which copies the host-built
 `./marshal` into an image that adds only `git` and `ca-certificates`. That is
@@ -310,7 +310,7 @@ mid-flight.
    Studio's web build (`flutter build web` from `app/`; there is no Node step
    any more). podman or docker for containerized agents. systemd (Linux) or
    launchd (macOS) for the daemon; the studio helper is Linux-only (it writes a
-   systemd user unit — elsewhere run `webbridge --profile server` yourself).
+   systemd user unit — elsewhere run `webbridge` yourself).
 2. **Build and install the daemon.**
 
    ```bash

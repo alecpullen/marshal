@@ -84,8 +84,9 @@ that host's own token, never the relay's. `--join URL` — the local daemon's
 bridge dial out and join one, where the joining bridge serves and the relay is
 its client.
 
-`webbridge --profile local` is the user's local daemon (P4): a unix socket,
-host processes only, and no container machinery. Each project runs its own
+`webbridge` is the user's daemon (P4; one-daemon D1): a unix socket, and agents
+as host processes unless they have a workspace, which runs them in a container
+(a rootless runtime on Linux, or Docker Desktop). Each project runs its own
 `marshal acp --viewers` child, started on the first attach and stopped 30s
 after its last session closes; `POST /api/projects/attach` upgrades a marshal
 client onto that child's viewer socket, relaying its frames unchanged. A

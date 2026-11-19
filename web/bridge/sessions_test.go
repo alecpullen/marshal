@@ -1461,3 +1461,71 @@ func TestAnAnswerReachesAProjectSession(t *testing.T) {
 		return false
 	})
 }
+
+// TestPendingRequestCarriesWhenItWasParked: an approval and a question each
+// report when the bridge saw them parked, and a resolved one takes its time
+// with it.
+func TestPendingRequestCarriesWhenItWasParked(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+	sid, err := r.New(ctx, AgentPath("/home/u/a"), "")
+	if err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+
+	// park runs the production waiter in the background, waits for the
+	// registry to report its request, and checks the park time it carries.
+	park := func(t *testing.T, wait func(), id string) {
+		t.Helper()
+		go func() { wait() }()
+		eventually(t, "the parked "+id, func() bool {
+			_, ok := r.PendingRequest(sid)
+			return ok
+		})
+		req, ok := r.PendingRequest(sid)
+		if !ok || req.ID != id {
+			t.Fatalf("PendingRequest = %+v ok=%v, want %s", req, ok, id)
+		}
+		if req.At == 0 {
+			t.Fatalf("the parked %s reports no At", id)
+		}
+		if req.At > time.Now().UnixMilli() {
+			t.Fatalf("the parked %s reports At = %d, after now", id, req.At)
+		}
+	}
+
+	t.Run("approval", func(t *testing.T) {
+		params := `{"sessionId":"` + sid + `","toolCallId":"tc-1","toolName":"shell.run"}`
+		park(t, func() { _, _ = r.awaitPermission(ctx, json.RawMessage(params)) }, "tc-1")
+		if err := r.ResolvePermission("tc-1", Decision{Approved: true}); err != nil {
+			t.Fatalf("ResolvePermission: %v", err)
+		}
+		if req, ok := r.PendingRequest(sid); ok {
+			t.Fatalf("a resolved approval is still reported: %+v", req)
+		}
+		r.permMu.Lock()
+		_, leaked := r.permAt["tc-1"]
+		r.permMu.Unlock()
+		if leaked {
+			t.Fatal("the resolved approval kept its park time")
+		}
+	})
+
+	t.Run("question", func(t *testing.T) {
+		params := `{"sessionId":"` + sid + `","questionId":"q-1","questions":[{"question":"proceed?"}]}`
+		park(t, func() { _, _ = r.awaitQuestion(ctx, json.RawMessage(params)) }, "q-1")
+		if err := r.ResolveQuestion("q-1", Answers{Declined: true}); err != nil {
+			t.Fatalf("ResolveQuestion: %v", err)
+		}
+		if req, ok := r.PendingRequest(sid); ok {
+			t.Fatalf("a resolved question is still reported: %+v", req)
+		}
+		r.quesMu.Lock()
+		_, leaked := r.quesAt["q-1"]
+		r.quesMu.Unlock()
+		if leaked {
+			t.Fatal("the resolved question kept its park time")
+		}
+	})
+}

@@ -2069,6 +2069,33 @@ func agentDisplayName(a Agent) string {
 	return a.ID
 }
 
+// titleRunes is how many runes of its spawn prompt a Title keeps.
+const titleRunes = 80
+
+// agentTitle is AgentStatus.Title for a spawn prompt: its first non-blank
+// line, runs of whitespace collapsed to one space, cut to titleRunes runes
+// with an ellipsis marking the cut. A prompt with no words has no title, so an
+// agent spawned without one carries an empty Title rather than a line of
+// blanks.
+func agentTitle(prompt string) string {
+	line := ""
+	for _, l := range strings.Split(prompt, "\n") {
+		if f := strings.Fields(l); len(f) > 0 {
+			line = strings.Join(f, " ")
+			break
+		}
+	}
+	if line == "" {
+		return ""
+	}
+	// Counted in runes, not bytes: a prompt in Japanese is cut after 80
+	// characters, never in the middle of one.
+	if r := []rune(line); len(r) > titleRunes {
+		return string(r[:titleRunes]) + "…"
+	}
+	return line
+}
+
 // finishFromFleet is the refusal's sentence (decision 3), shared by the relay
 // and the session screen.
 //
@@ -2148,7 +2175,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 	for _, a := range f.ws.Agents() {
 		live := f.live.get(a.ID)
 		st := AgentStatus{
-			ID: a.ID, Project: a.Project, Name: a.Name,
+			ID: a.ID, Project: a.Project, Name: a.Name, Title: agentTitle(a.Prompt),
 			OwnerID: a.OwnerID, Origin: a.Origin, ClientID: a.ClientID,
 			Status: "idle", Activity: live.activity, ContextPct: live.contextPct,
 			ChangedFiles: live.changedFiles, Interrupted: a.Interrupted,
@@ -2187,9 +2214,15 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			// though its payload is still cached.
 			pending := rt.reg.Pending(sid)
 			if pending != "" && live.pending != nil && live.pending.kind == pending {
-				st.Pending = &PendingRequest{
+				req := PendingRequest{
 					Kind: contract.PendingKind(live.pending.kind), ID: live.pending.id, Params: live.pending.params,
 				}
+				// Absent when the bridge never saw it arrive: an ask
+				// observed before a restart has no park time to report.
+				if !live.pending.at.IsZero() {
+					req.At = live.pending.at.UnixMilli()
+				}
+				st.Pending = &req
 			}
 			switch pending {
 			case "approval":

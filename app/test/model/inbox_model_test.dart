@@ -142,6 +142,64 @@ void main() {
     expect(inbox.asks.first.since, now.subtract(const Duration(minutes: 40)));
   });
 
+  test('a parked request waits from when it was parked', () async {
+    // A thread's own update moves on every delta and every access report, so
+    // an ask measured from it can keep reading "waiting now"; the bridge's
+    // own park time is what a person has actually been looking at.
+    final parked = now.subtract(const Duration(minutes: 35));
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        agents: [
+          agent(
+            id: 'a-1',
+            status: AgentState.agentAwaitingQuestion,
+            pending: PendingRequest(
+              kind: PendingKind.pendingQuestion,
+              id: 'q-1',
+              params: {
+                'questions': [
+                  {'question': 'Which branch?'},
+                ],
+              },
+              at: parked.millisecondsSinceEpoch,
+            ),
+            // Newer than the park time, as a status delta makes it.
+            lastActive: now.subtract(const Duration(minutes: 2)),
+          ),
+        ],
+      ),
+    ], now: now);
+    final inbox = await inboxFor(fixture);
+
+    final ask = inbox.asks.single;
+    expect(ask.since, parked);
+    expect(ask.since.isUtc, isTrue);
+  });
+
+  test('a request with no park time waits from the agent', () async {
+    // A bridge that did not see the request arrive records no park time, so
+    // the agent's own last activity is the best its ask can say.
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        agents: [
+          agent(
+            id: 'a-1',
+            status: AgentState.agentAwaitingApproval,
+            pending: approval(),
+            lastActive: now.subtract(const Duration(minutes: 12)),
+          ),
+        ],
+      ),
+    ], now: now);
+    final inbox = await inboxFor(fixture);
+
+    expect(inbox.asks.single.since, now.subtract(const Duration(minutes: 12)));
+  });
+
   test('approval actions', () async {
     final fixture = await ModelFixture.start([
       FixtureHost(
@@ -315,6 +373,52 @@ void main() {
           'choosing among a question’s options is not the ask’s primary '
           'action, and neither is the free reply',
     );
+  });
+
+  test('a question lists what its options mean', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        agents: [
+          agent(
+            id: 'a-1',
+            status: AgentState.agentAwaitingQuestion,
+            pending: const PendingRequest(
+              kind: PendingKind.pendingQuestion,
+              id: 'q-1',
+              params: {
+                'questions': [
+                  {
+                    'question': 'Which branch?',
+                    'options': [
+                      {
+                        'label': 'main',
+                        'value': 'main',
+                        'description': '  Ship what is on the branch now  ',
+                      },
+                      {'label': 'next', 'value': 'release/next'},
+                    ],
+                  },
+                ],
+              },
+            ),
+          ),
+        ],
+      ),
+    ], now: now);
+
+    final inbox = await inboxFor(fixture);
+
+    final ask = inbox.asks.single;
+    final question = ask.questions.single;
+    expect(
+      [for (final option in question.options) option.description],
+      ['Ship what is on the branch now', null],
+    );
+    // The option that was described says what choosing it means, in one line;
+    // the one that was not adds no line of its own.
+    expect(ask.body, 'main — Ship what is on the branch now');
   });
 
   /// Two questions in one request, which the agent answers as a pair: it

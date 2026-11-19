@@ -75,16 +75,60 @@ void main() {
     }
   });
 
-  test('a thread is named for its agent, or its id', () {
-    expect(
-      threadFor('local', agent(id: 'a-1', name: 'Cache the reads')).title,
-      'Cache the reads',
-    );
-    expect(threadFor('local', agent(id: 'a-1', name: '  ')).title, 'a-1');
+  test('a thread carries its host, its project and its kind', () {
     final thread = threadFor('studio', agent(id: 'a-9', project: '/w/alpha'));
     expect(thread.host, 'studio');
     expect(thread.project, '/w/alpha');
     expect(thread.kind, ThreadKind.agent);
+  });
+
+  test('an unnamed agent is called by its title', () {
+    // What it was asked is a better row than its id: the bridge keeps the
+    // first line of the spawn prompt for exactly this.
+    expect(
+      threadFor('local', unnamed(title: '  Fix the flaky test  ')).title,
+      'Fix the flaky test',
+    );
+    // A name of nothing but spaces is no name, so the title is what is left.
+    expect(
+      threadFor(
+        'local',
+        unnamed(name: '  ', title: 'Read the cache layer'),
+      ).title,
+      'Read the cache layer',
+    );
+    // A title of nothing but spaces is no title either.
+    expect(
+      threadFor('local', unnamed(name: '  ', title: '   ')).title,
+      'Agent a-1',
+    );
+  });
+
+  test('an agent with neither is called by its short id', () {
+    // A raw id is not a name, so only eight characters of it are shown, as
+    // a session's are.
+    expect(
+      threadFor('local', unnamed(id: '03423874cb70374a')).title,
+      'Agent 03423874',
+    );
+    // A name and a title of nothing but spaces are neither, so the id is.
+    expect(threadFor('local', unnamed(name: '  ')).title, 'Agent a-1');
+    expect(
+      threadFor('local', unnamed(name: ' ', title: '  ')).title,
+      'Agent a-1',
+    );
+    // An id shorter than that is taken as it is.
+    expect(threadFor('local', unnamed(id: 'a-1')).title, 'Agent a-1');
+  });
+
+  test('a name wins over a title', () {
+    expect(
+      threadFor(
+        'local',
+        unnamed(name: '  Cache the reads  ', title: 'Read the cache layer'),
+      ).title,
+      'Cache the reads',
+    );
   });
 
   test("the last activity is the agent's own update", () {
@@ -286,6 +330,18 @@ void main() {
     );
   });
 }
+
+/// One agent as a test writes one when its name or its title is the subject:
+/// the quietest agent there is, except for how it is called.
+AgentStatus unnamed({String id = 'a-1', String? name, String? title}) =>
+    AgentStatus(
+      id: id,
+      project: '/home/u/alpha',
+      name: name,
+      title: title,
+      status: AgentState.agentIdle,
+      updatedAt: DateTime.utc(2026, 11, 17, 4).toIso8601String(),
+    );
 
 /// One session row as a test writes one: open, idle, and untouched, except
 /// where a test says otherwise.

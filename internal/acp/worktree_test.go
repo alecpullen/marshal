@@ -135,6 +135,15 @@ func TestParseNumstat(t *testing.T) {
 	if got[2].Path != "image.png" || got[2].Added != 0 {
 		t.Errorf("[2] = %+v", got[2])
 	}
+	// No output must still yield an empty list, not nil: the wire writes nil
+	// as null and clients decode Files as a list.
+	empty := parseNumstat("")
+	if empty == nil {
+		t.Fatal("parseNumstat(\"\") = nil, want an empty non-nil slice")
+	}
+	if len(empty) != 0 {
+		t.Fatalf("parseNumstat(\"\") = %+v, want empty", empty)
+	}
 }
 
 // newDiffManager wires a WorktreeManager over one isolated fake session.
@@ -169,6 +178,32 @@ func TestDiffReturnsFileStatsWithoutPath(t *testing.T) {
 	}
 	if out.Diff != "" {
 		t.Errorf("Diff must be empty without a path, got %q", out.Diff)
+	}
+}
+
+// A session that has changed nothing still reports its files as a list. The
+// Studio decodes Files as a List, and a nil slice on the wire is null.
+func TestDiffOfAnUntouchedTreeListsNoFiles(t *testing.T) {
+	git := worktree.NewFakeGitOps() // no numstat output: the tree is untouched
+	m, id := newDiffManager(t, git)
+
+	res, err := m.Diff(context.Background(), json.RawMessage(`{"sessionId":"`+id+`"}`))
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	out := res.(DiffResult)
+	if out.Files == nil {
+		t.Fatal("Files = nil, want an empty non-nil slice")
+	}
+	if len(out.Files) != 0 {
+		t.Fatalf("Files = %+v, want none", out.Files)
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"files":[]`) {
+		t.Fatalf("json = %s, want it to contain \"files\":[]", encoded)
 	}
 }
 

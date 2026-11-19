@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
+import 'fleet_store.dart' show describeFailure;
 
 /// What the Inspect tab draws for one node (f4-inspector.md decision 11):
 /// the facts, then the tabs' bodies.
@@ -99,7 +100,7 @@ class InspectModel extends ChangeNotifier {
       final answer = await client.node(sessionId, nodeId, subagentId);
       _facts = _factsOf(answer);
     } catch (error) {
-      _error = '$error';
+      _error = describeFailure(error);
     } finally {
       _loading = false;
       _notify();
@@ -120,7 +121,9 @@ class InspectModel extends ChangeNotifier {
           : _requestSummary(model);
       _notify();
     } catch (error) {
-      modelRequest = 'The request could not be read: $error';
+      modelRequest =
+          'The request could not be read: '
+          '${describeFailure(error)}';
       _notify();
     } finally {
       _loadingRequest = false;

@@ -355,7 +355,7 @@ void main() {
           host: 'local',
           loaded: true,
           lastRead: shellNow.subtract(const Duration(minutes: 4)),
-          failure: 'offline',
+          failureWords: 'offline',
         ),
       ],
       projects: const [

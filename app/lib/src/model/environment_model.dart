@@ -4,6 +4,7 @@ import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
 import 'environments_model.dart'
     show BuildLog, EnvironmentBuilds, EnvironmentVersion;
+import 'fleet_store.dart' show describeFailure;
 import 'section_model.dart' show SaveState, UnsavedEditsSource;
 
 /// The nine layers the designer names, in the order the design lists them
@@ -344,7 +345,7 @@ class EnvironmentModel extends ChangeNotifier implements UnsavedEditsSource {
       _saveState = SaveState.clean;
     } catch (error) {
       _saveState = SaveState.failed;
-      _saveError = error.toString();
+      _saveError = describeFailure(error);
     }
     notifyListeners();
   }

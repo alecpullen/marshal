@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
@@ -25,6 +26,7 @@ import 'package:marshal_app/src/ui/shell/sidebar.dart';
 
 import '../model/support.dart';
 import '../support/fake_bridge.dart';
+import '../support/kit.dart';
 import '../support/screens.dart';
 
 /// The shell's rules (F2 decision 1 and §4): a row opens its place, the
@@ -144,6 +146,7 @@ void main() {
     Place place, {
     StateKind? state,
     VoidCallback? onNew,
+    VoidCallback? onConnectRepo,
   }) {
     final opened = <Place>[];
     final nav = shellNavFor(place);
@@ -157,6 +160,7 @@ void main() {
         onRetry: () {},
         onSelect: opened.add,
         onNew: onNew,
+        onConnectRepo: onConnectRepo,
         content: (_) => plannedPlace(place, nav),
       ),
       opened,
@@ -591,8 +595,11 @@ void main() {
 
     expect(find.text('PROJECTS'), findsOneWidget);
     expect(find.byTooltip('Projects and threads'), findsNothing);
-    // The search field is drawn where it will live, disabled, and says why.
-    expect(find.text('Search'), findsOneWidget);
+    // The search field is drawn where it will live, disabled, and says why. It
+    // has no label above it: a magnifying glass names it.
+    expect(find.byType(Field), findsOneWidget);
+    expect(find.byIcon(Glyphs.search), findsOneWidget);
+    expect(find.text('Search'), findsNothing);
     expect(find.byTooltip('Search arrives in a later phase'), findsOneWidget);
   });
 
@@ -621,6 +628,101 @@ void main() {
     // the sidebar's.
     expect(find.byTooltip('New'), findsOneWidget);
     expect(find.byTooltip('Projects and threads'), findsNothing);
+  });
+
+  testWidgets('one row is filled for the open thread', (tester) async {
+    const place = Place(PlaceKind.thread, host: 'local', id: 'a-1');
+    // The fill is the open place alone: the thread's row, never its project's.
+    final fixture = shellNavFor(place);
+    final nav = NavModel(
+      fixed: fixture.fixed,
+      projects: [
+        for (final project in fixture.projects)
+          NavProject(
+            id: project.id,
+            name: project.name,
+            current: project.current,
+            earlier: project.earlier,
+          ),
+      ],
+    );
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Shell(
+          nav: nav,
+          hosts: shellHosts,
+          place: place,
+          now: shellNow,
+          onRetry: () {},
+          onSelect: (_) {},
+          content: (_) => plannedPlace(place, nav),
+        ),
+      ),
+    );
+
+    final fill = tokens().selected;
+    final filled = [
+      for (final box in tester.widgetList<DecoratedBox>(
+        find.descendant(
+          of: find.byType(Sidebar),
+          matching: find.byType(DecoratedBox),
+        ),
+      ))
+        if (box.decoration is BoxDecoration &&
+            (box.decoration as BoxDecoration).color == fill)
+          box,
+    ];
+    expect(filled, hasLength(1));
+
+    // And the row it fills is the thread's: no `NavRow` is selected, because
+    // the project whose thread is open is not where the person is.
+    final rows = tester.widgetList<NavRow>(find.byType(NavRow));
+    expect(rows.where((row) => row.selected), isEmpty);
+    expect(
+      tester
+          .widgetList<ThreadRow>(find.byType(ThreadRow))
+          .where((row) => row.selected),
+      hasLength(1),
+    );
+  });
+
+  testWidgets('the sidebar rows share one edge', (tester) async {
+    final (shell, _) = shellAt(
+      const Place.overview(),
+      onNew: () {},
+      onConnectRepo: () {},
+    );
+    await tester.pumpWidget(
+      EmberApp(brightness: Brightness.light, home: shell),
+    );
+
+    double left(Finder finder) => tester.getTopLeft(finder).dx;
+    double right(Finder finder) => tester.getTopRight(finder).dx;
+
+    // One inset for everything the sidebar draws: the switcher, the search,
+    // a place's icon and the `Projects` label all start at the same edge.
+    expect(find.byType(HostSwitcher), findsOneWidget);
+    final edge = left(find.byType(HostSwitcher));
+    expect(left(find.byType(Field)), edge);
+    expect(
+      left(
+        find.descendant(
+          of: find.byType(Sidebar),
+          matching: find.byIcon(Glyphs.square_grid_2x2),
+        ),
+      ),
+      edge,
+    );
+    expect(left(find.text('PROJECTS')), edge);
+
+    // And one inset on the right: the search's plus and the `Projects` plus
+    // end at the same edge.
+    Finder plus(String tooltip) => find.descendant(
+      of: find.byTooltip(tooltip),
+      matching: find.byIcon(Glyphs.plus),
+    );
+    expect(right(plus('New')), right(plus('Connect a repository')));
   });
 
   testWidgets('New starts work in the first project', (tester) async {

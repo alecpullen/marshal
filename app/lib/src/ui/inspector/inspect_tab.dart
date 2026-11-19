@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../model/inspect_model.dart';
 import '../kit/kit.dart';
+import 'inspector.dart';
 
 /// The Inspect tab (f4-inspector.md decision 11): the selected node's actor,
 /// why, timing, sandbox, approval and call id, then its output, arguments,
@@ -37,8 +38,9 @@ class _InspectTabState extends State<InspectTab> {
     );
   }
 
-  /// The five states every screen that shows data has (§7).
-  Widget _stateOnly(StateKind state) => switch (state) {
+  /// The five states every screen that shows data has (§7), inset as the
+  /// ready content is.
+  Widget _stateOnly(StateKind state) => TabMessage(switch (state) {
     StateKind.loading => const StateMessage.loading(lines: 5),
     StateKind.empty => StateMessage.empty(
       message: 'Select a step to inspect it.',
@@ -62,25 +64,31 @@ class _InspectTabState extends State<InspectTab> {
       name: 'A step’s own diff',
       note: 'The Inspector shows the change set’s diff',
     ),
-  };
+  });
 
   Widget _body(BuildContext context) {
     final e = Ember.of(context);
     final facts = widget.model.facts;
     if (widget.model.nodeId == null) {
-      return StateMessage.empty(
-        message: 'Select a step to inspect it.',
-        action: StateAction('Back to live', onTap: () => setState(() {})),
+      return TabMessage(
+        StateMessage.empty(
+          message: 'Select a step to inspect it.',
+          action: StateAction('Back to live', onTap: () => setState(() {})),
+        ),
       );
     }
-    if (widget.model.loading) return const StateMessage.loading(lines: 5);
+    if (widget.model.loading) {
+      return const TabMessage(StateMessage.loading(lines: 5));
+    }
     final error = widget.model.error;
     if (error != null) {
-      return StateMessage.error(
-        message: error,
-        retry: StateAction(
-          'Try again',
-          onTap: () => unawaited(widget.model.select(widget.model.nodeId)),
+      return TabMessage(
+        StateMessage.error(
+          message: error,
+          retry: StateAction(
+            'Try again',
+            onTap: () => unawaited(widget.model.select(widget.model.nodeId)),
+          ),
         ),
       );
     }

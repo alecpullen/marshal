@@ -127,6 +127,10 @@ type observedPending struct {
 	kind   string
 	id     string
 	params json.RawMessage
+	// at is when the bridge first saw this request parked. It survives a
+	// repeated observation: a status delta or an access report moves
+	// updatedAt, but the wait began when the ask did.
+	at time.Time
 }
 
 type agentLive struct {
@@ -290,7 +294,9 @@ func classifyRegistryEvent(payload any) (observedPending, bool) {
 	}
 }
 
-// observePending records the pending request seen for a session.
+// observePending records the pending request seen for a session. A repeat of
+// the request the session already holds is the same wait, so it keeps the time
+// it was first seen rather than reading as freshly parked.
 func (s *liveState) observePending(sessionID string, p observedPending) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -298,6 +304,11 @@ func (s *liveState) observePending(sessionID string, p observedPending) {
 	if a == nil {
 		a = &agentLive{}
 		s.agents[sessionID] = a
+	}
+	if a.pending != nil && a.pending.id == p.id && !a.pending.at.IsZero() {
+		p.at = a.pending.at
+	} else {
+		p.at = time.Now().UTC()
 	}
 	a.pending = &p
 	a.updatedAt = time.Now().UTC()

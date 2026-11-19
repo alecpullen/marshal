@@ -29,7 +29,7 @@ class SourceState {
     required this.host,
     this.reach,
     this.lastRead,
-    this.failure,
+    this.failureWords,
     this.loaded = false,
   });
 
@@ -44,24 +44,27 @@ class SourceState {
   final DateTime? lastRead;
 
   /// Why the last read failed, in the bridge's words; null when it worked.
-  final String? failure;
+  ///
+  /// Words, not an exception: the store runs every failure through
+  /// describeFailure before it holds it, so a row splices this in as it is.
+  final String? failureWords;
 
   /// Whether anything was ever read for [host].
   final bool loaded;
 
   /// The last read worked.
-  bool get healthy => loaded && failure == null;
+  bool get healthy => loaded && failureWords == null;
 
   /// The last read failed and an earlier snapshot is what is held: its
   /// entries stay, labelled with their age.
-  bool get stale => loaded && failure != null;
+  bool get stale => loaded && failureWords != null;
 
   /// Nothing was ever read, so there is no snapshot: the source says it is
   /// unavailable rather than empty.
-  bool get unavailable => !loaded && failure != null;
+  bool get unavailable => !loaded && failureWords != null;
 
   /// The source is still making its first attempt.
-  bool get connecting => !loaded && failure == null;
+  bool get connecting => !loaded && failureWords == null;
 
   /// What this source's row says, in the design system's words (§8): what is
   /// held, how old it is, and what did not arrive.
@@ -79,8 +82,8 @@ class SourceState {
       _ when healthy => '${kind.label}: read $when',
       // The row's own line already carries the age ("Last updated 4m ago"),
       // so this says what went wrong rather than repeating it.
-      _ when stale => '${kind.label}: the last read failed — $failure',
-      _ when unavailable => '${kind.label}: unavailable — $failure',
+      _ when stale => '${kind.label}: the last read failed — $failureWords',
+      _ when unavailable => '${kind.label}: unavailable — $failureWords',
       _ => '${kind.label}: connecting',
     };
   }
@@ -112,7 +115,7 @@ List<SourceState> sourceStates(FleetStore store, {FactoryStore? factory}) {
         host: host.name,
         reach: host.reach,
         lastRead: contact,
-        failure: store.failure(host.name),
+        failureWords: store.failure(host.name),
         // A host that has answered at least once holds a snapshot, even when
         // that snapshot names no agent.
         loaded: contact != null,
@@ -124,7 +127,7 @@ List<SourceState> sourceStates(FleetStore store, {FactoryStore? factory}) {
         kind: SourceKind.factory,
         host: host.name,
         lastRead: factory.lastReadAt(host.name),
-        failure: factory.failure(host.name),
+        failureWords: factory.failure(host.name),
         loaded: factory.loaded(host.name),
       ),
     );

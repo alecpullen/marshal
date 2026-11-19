@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import '../client/contract.g.dart';
+import 'fleet_store.dart' show describeFailure;
 
 // The routes are functions and their fields stay private, so the parameters
 // cannot be initializing formals: Dart has no private named parameter.
@@ -367,7 +368,7 @@ class PlanningModel extends ChangeNotifier {
       _apply(events);
       _failure = null;
     } catch (error) {
-      _failure = '$error';
+      _failure = describeFailure(error);
     }
     _loading = false;
     notifyListeners();
@@ -387,7 +388,7 @@ class PlanningModel extends ChangeNotifier {
       await _prompt(PlannerPromptRequest(requestID: _requestID(), text: words));
     } catch (error) {
       _running = false;
-      _failure = '$error';
+      _failure = describeFailure(error);
       notifyListeners();
       return;
     }
@@ -400,7 +401,7 @@ class PlanningModel extends ChangeNotifier {
       await _cancel();
       _failure = null;
     } catch (error) {
-      _failure = '$error';
+      _failure = describeFailure(error);
     }
     _running = false;
     notifyListeners();
@@ -429,7 +430,7 @@ class PlanningModel extends ChangeNotifier {
       // back here, so the refusal is what the screen says.
       _settled.remove(requestID);
       _requests.insert(0, request);
-      _failure = '$error';
+      _failure = describeFailure(error);
       notifyListeners();
       return;
     }
@@ -455,7 +456,7 @@ class PlanningModel extends ChangeNotifier {
       notifyListeners();
       return _latest;
     } catch (error) {
-      _failure = '$error';
+      _failure = describeFailure(error);
       notifyListeners();
       return null;
     }

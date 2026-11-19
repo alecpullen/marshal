@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
+import 'fleet_store.dart' show describeFailure;
 
 // A repository's own type reaches its screens through the model, so `ui/`
 // reads `model/` and never `client/` (test/boundary_test.dart).
@@ -78,7 +79,7 @@ class ConnectRepoModel extends ChangeNotifier {
       );
     } catch (error) {
       _registered = null;
-      _failure = '$error';
+      _failure = describeFailure(error);
     }
     _busy = false;
     notifyListeners();
@@ -94,7 +95,7 @@ class ConnectRepoModel extends ChangeNotifier {
     try {
       await _client.discoverRepo(repo.id);
     } catch (error) {
-      _failure = '$error';
+      _failure = describeFailure(error);
     }
     notifyListeners();
   }

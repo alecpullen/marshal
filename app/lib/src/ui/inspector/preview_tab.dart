@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../../model/preview_model.dart';
 import '../kit/kit.dart';
+import 'inspector.dart';
 
 /// The Preview tab (f4-inspector.md decision 10): the ports the agent's
 /// workspace declares, each loaded through the bridge's preview route.
@@ -45,8 +46,9 @@ class _PreviewTabState extends State<PreviewTab> {
     );
   }
 
-  /// The five states every screen that shows data has (§7).
-  Widget _stateOnly(StateKind state) => switch (state) {
+  /// The five states every screen that shows data has (§7), inset as the
+  /// ready content is.
+  Widget _stateOnly(StateKind state) => TabMessage(switch (state) {
     StateKind.loading => const StateMessage.loading(lines: 4),
     StateKind.empty => StateMessage.empty(
       message: 'This agent’s workspace declares no preview ports.',
@@ -70,7 +72,7 @@ class _PreviewTabState extends State<PreviewTab> {
       name: 'A desktop web view',
       note: 'This phase opens the agent’s app in a browser',
     ),
-  };
+  });
 
   Widget _body(BuildContext context) {
     final e = Ember.of(context);
@@ -121,12 +123,14 @@ class _PreviewTabState extends State<PreviewTab> {
   Widget _preview(BuildContext context, Ember e, int port, String? url) {
     final error = widget.model.errorFor(port);
     if (error != null) {
-      return StateMessage.error(
-        message: error,
-        retry: StateAction('Try again', onTap: () => unawaited(_open(port))),
+      return TabMessage(
+        StateMessage.error(
+          message: error,
+          retry: StateAction('Try again', onTap: () => unawaited(_open(port))),
+        ),
       );
     }
-    if (url == null) return const StateMessage.loading(lines: 3);
+    if (url == null) return const TabMessage(StateMessage.loading(lines: 3));
     return Padding(
       padding: const EdgeInsets.all(Space.s16),
       child: Column(

@@ -67,8 +67,8 @@ class NavRow extends StatelessWidget {
       builder: (context, state) => Container(
         constraints: const BoxConstraints(minHeight: Sizes.row),
         padding: EdgeInsets.only(
-          left: indent ? Space.s16 : Space.s2,
-          right: Space.s8,
+          left: indent ? Space.s16 : Space.s4,
+          right: Space.s4,
         ),
         decoration: BoxDecoration(
           color: selected ? e.selected : (state.hovered ? e.hover : null),

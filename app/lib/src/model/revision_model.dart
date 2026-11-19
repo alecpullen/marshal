@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'fleet_store.dart' show describeFailure;
+
 /// A plan revision being written (F6 decision 6, F6 plan 1 task 5): the plan
 /// that was approved, the plan as it is proposed, and what sending it did.
 ///
@@ -67,7 +69,7 @@ class RevisionModel extends ChangeNotifier {
     try {
       await submit(proposal);
     } catch (error) {
-      _error = error.toString();
+      _error = describeFailure(error);
     } finally {
       _sending = false;
       if (!_disposed) notifyListeners();

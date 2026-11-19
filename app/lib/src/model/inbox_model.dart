@@ -119,14 +119,18 @@ class AskAction {
 }
 
 /// One option a question offers, as the request carries it: the label a
-/// person reads, and the value the agent reads. They are the same when the
-/// payload names no value.
+/// person reads, the value the agent reads, and what choosing it means. Label
+/// and value are the same when the payload names no value.
 @immutable
 class AskOption {
-  const AskOption(this.label, {String? value}) : value = value ?? label;
+  const AskOption(this.label, {String? value, this.description})
+    : value = value ?? label;
 
   final String label;
   final String value;
+
+  /// What choosing it means, as the agent wrote it; null when it wrote none.
+  final String? description;
 
   @override
   String toString() => 'AskOption("$label" = "$value")';
@@ -459,7 +463,7 @@ class InboxModel extends ChangeNotifier {
       _reflow();
       return;
     } catch (error) {
-      _overlays[key] = (state: AskState.failed, error: error.toString());
+      _overlays[key] = (state: AskState.failed, error: describeFailure(error));
       _reflow();
       return;
     }
@@ -818,7 +822,7 @@ class InboxModel extends ChangeNotifier {
       body: approval ? _approvalBody(pending) : _questionBody(questions),
       actions: approval ? _approvalActions : _questionActions(questions),
       questions: questions,
-      since: since,
+      since: _parkedAt(pending, since),
       source: AskSource.fleet,
       project: thread.project,
       scope: AskScope.everyone,
@@ -826,10 +830,22 @@ class InboxModel extends ChangeNotifier {
     );
   }
 
+  /// When a parked request started waiting: the moment the bridge saw it
+  /// parked, or [fallback] when it did not record one.
+  ///
+  /// A thread's own last activity moves on every delta and every access
+  /// report, so it cannot say how long a question has waited; the request's
+  /// own park time is what a person has been looking at (F2 finding 6).
+  static DateTime _parkedAt(PendingRequest pending, DateTime fallback) {
+    final at = pending.at;
+    if (at == null || at <= 0) return fallback;
+    return DateTime.fromMillisecondsSinceEpoch(at, isUtc: true);
+  }
+
   /// The questions a request carries, in its own order.
   ///
   /// The payload's shape is `{question, options, multi}`, where an option is
-  /// a plain string or a `{label, value}` pair
+  /// a plain string or a `{label, value, description}` triple
   /// (`internal/app/session/pending.go`). A question this build cannot read
   /// is dropped rather than guessed at.
   static List<AskQuestion> _questionsOf(PendingRequest pending) {
@@ -852,11 +868,16 @@ class InboxModel extends ChangeNotifier {
             final label = option['label'] ?? option['value'];
             if (label is! String || label.trim().isEmpty) continue;
             final value = option['value'];
+            final description = option['description'];
             options.add(
               AskOption(
                 label.trim(),
                 value: value is String && value.trim().isNotEmpty
                     ? value.trim()
+                    : null,
+                description:
+                    description is String && description.trim().isNotEmpty
+                    ? description.trim()
                     : null,
               ),
             );
@@ -912,12 +933,24 @@ class InboxModel extends ChangeNotifier {
     return '';
   }
 
-  /// The context a question needs: how many more it asks, when it asks more
-  /// than one.
+  /// The context a question needs: what its options mean, or how many more
+  /// questions it asks when it asks more than one.
+  ///
+  /// One question's options are described in its body, one line each, because
+  /// a bare label does not say what choosing it does (design-system.md §2:
+  /// never leave the meaning to a faint label). An option the agent left
+  /// undescribed adds nothing rather than a line that says nothing.
   static String _questionBody(List<AskQuestion> questions) {
-    if (questions.length < 2) return '';
-    final more = questions.length - 1;
-    return more == 1 ? '1 more question' : '$more more questions';
+    if (questions.length >= 2) {
+      final more = questions.length - 1;
+      return more == 1 ? '1 more question' : '$more more questions';
+    }
+    if (questions.isEmpty) return '';
+    return [
+      for (final option in questions.first.options)
+        if (option.description != null)
+          '${option.label} — ${option.description}',
+    ].join('\n');
   }
 
   /// A plan is summarised by its task count, so the operator can judge the

@@ -202,18 +202,20 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `StepHeader` | A step's ordinal, headline and duration | The running dot while it is worked on. Its disclosure folds the step's rows; the duration is mono |
 | `ToolRow` | One tool call | Verb and target in mono, the result at the right. Indented to the step's text; `err` colours only a failed result |
 | `Narration` | The agent's prose | Markdown, parsed and drawn with the text roles. No third-party widget sets a size, weight or colour |
+| `Notice` | Something in a conversation that is not the agent talking to the person: a harness notice, the agent's thinking, a run event or a finished job | Its first line in `small` `muted`; the rest folded behind *Details*. No icon, fill or border. Never the agent's prose, which is `Narration` |
 | `OutputBlock` | Output the agent produced | The only filled block: `codeBg`, mono at every density. A capped block says so in words |
 | `LiveRow` | The row work is happening on | One running dot, the headline, the latest line. The only row that moves |
 | `StateMessage` | Empty, loading, stale, error, planned | The only way these states are shown (§7) |
-| `Field` | A text input | Border only; the label is above it. `Field.multiline` is the same input for prose, taller and growing with what it holds; its `mono` flag sets the text in `mono` for a document a person edits line by line |
+| `Field` | A text input | Border only; the label is above it. `Field.multiline` is the same input for prose, taller and growing with what it holds; its `mono` flag sets the text in `mono` for a document a person edits line by line. `Field.search` is the one without a label above it, led by a magnifying glass |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
 | `Sheet` | A dialog or bottom sheet; it dims what is behind it with `scrim` | One per screen at most |
 | `Composer` | The field a thread is driven from | The draft, the mode and model chips, Stop while running, Send or Steer. A read-only session is one line saying why |
 
 Added in F2: `NavRow`, the sidebar's row (an icon or a disclosure chevron, a
 label, an optional count; the selected row is filled and its icon is
-`accent`). A thread is never a `NavRow`: it is a `ThreadRow`, which carries
-its status.
+`accent`). The selected row is the open place alone: a project whose thread is
+open is not filled, because the thread's row is where the person is. A thread
+is never a `NavRow`: it is a `ThreadRow`, which carries its status.
 
 Added in F4: `DiffView` and `GateList`, the inspector's two read-only views of
 a change. Both are reused by the work item's inspector (F6), so neither knows
@@ -231,7 +233,9 @@ F4: `RowItem.mono` and `NavRow.mono`, a row whose name is an identifier such
 as a path, and `RowItem.selected`, the row a list is showing, filled with
 `selected` as a `NavRow` is. Added in F7: `Field.mono`, the field set in
 `mono` for the environment designer's source — a document a person edits line
-by line, never prose.
+by line, never prose. Added for the visual fixes: `Field.search`, the one field
+without a label above it — the sidebar's search, which a leading magnifying
+glass names.
 
 Added in F5: `PrCard`'s **checks unavailable** state — the checks cannot be
 read, and the card says why in its own line. It is never drawn as passing and
@@ -263,6 +267,18 @@ as a dependency graph — dependency layers left to right, straight edges in
 chain, because that is the work the plan describes. The run's third view, the
 timeline, is not a component of its own: it is `Segments`' bar per role over the
 run's own span, so its colours are the ones `Segments` already states.
+
+Added for the visual fixes: `Notice`. A warning the harness writes into a
+conversation — a snapshot not recorded, a rollback, a compaction — was drawn
+as `Narration`, so it read as the agent speaking: six lines of paths in the
+reading role, all of them open, breaking mid-word. A `Notice` is the harness's
+own voice instead: one quiet line in `small` `muted`, and the rest of what it
+said folded behind *Details* until a person asks for it, because a notice is a
+fact to acknowledge and not prose to read. What else is not the agent talking
+to the person is a `Notice` too: the agent's *Thinking* (hidden at outline
+density), a run event, whose kind leads its line as `Review · …`, and a
+finished job, whose line leads with its label and outcome. `Narration` stays the
+agent's prose alone.
 
 Supporting pieces, shared by the components and exported with them by
 `kit.dart`. None is drawn on its own, and none has variants:

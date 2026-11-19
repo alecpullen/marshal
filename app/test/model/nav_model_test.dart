@@ -221,7 +221,26 @@ void main() {
     },
   );
 
-  test('an open thread lights its project row', () async {
+  test('an open thread lights only its own row', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha'), project('/home/u/beta')],
+        agents: [agent(id: 'a-1')],
+      ),
+    ], now: now);
+    await fixture.refresh();
+
+    // The thread is open, not its project: the thread's row is where the
+    // person is, so no project row is filled.
+    final model = buildNavModel(
+      const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
+      fixture.store,
+    );
+    expect([for (final row in model.projects) row.active], [false, false]);
+  });
+
+  test('the project page lights its project row', () async {
     final fixture = await ModelFixture.start([
       FixtureHost(
         name: 'local',
@@ -232,10 +251,10 @@ void main() {
     await fixture.refresh();
 
     final model = buildNavModel(
-      const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
+      const Place(PlaceKind.project, id: '/home/u/beta'),
       fixture.store,
     );
-    expect([for (final row in model.projects) row.active], [true, false]);
+    expect([for (final row in model.projects) row.active], [false, true]);
   });
 
   test('inbox count follows the store', () async {
@@ -254,10 +273,11 @@ void main() {
       ),
     ], now: now);
 
-    // Before the first read the queue is empty, and the row says nothing.
+    // Before the first read the queue is empty, and the row says nothing: an
+    // empty count is no count, so no `0` is drawn beside the label.
     expect(
       buildNavModel(const Place.overview(), fixture.store).fixed[1].count,
-      0,
+      isNull,
     );
 
     await fixture.refresh();
@@ -267,7 +287,8 @@ void main() {
     );
 
     // Nothing else carries the queue's size. Pull requests carries its own
-    // count — how many wait for review (F5 decision 14).
+    // count — how many wait for review (F5 decision 14) — and none does
+    // here, so only the Inbox rows with something waiting are counted.
     expect(
       [
         for (final row in buildNavModel(
@@ -276,7 +297,7 @@ void main() {
         ).fixed)
           if (row.count != null) row.label,
       ],
-      ['Inbox', 'Pull requests'],
+      ['Inbox'],
     );
   });
 

@@ -773,12 +773,19 @@ class _HostWiring {
   }
 }
 
-/// What went wrong, in the bridge's own words.
+/// What went wrong, in plain words (design-system.md §7).
 ///
 /// The bridge answers `{"error": "…"}`; a screen says the words, not the JSON
-/// they are wrapped in (design-system.md §7: in plain words). Anything else is
-/// its own message.
+/// they are wrapped in. A [BridgeFailure] keeps its own message, and any other
+/// error its `toString()` — except the two a decode raises, [TypeError] and
+/// [FormatException]: those say nothing a reader can act on, and usually mean
+/// this Studio read the bridge's answer as a shape it does not have. They
+/// become one sentence saying so.
 String describeFailure(Object error) {
+  if (error is TypeError || error is FormatException) {
+    return 'The bridge sent an answer this Studio cannot read. The bridge '
+        'and the Studio may be different versions.';
+  }
   if (error is! BridgeFailure) return error.toString();
   final message = error.message;
   try {

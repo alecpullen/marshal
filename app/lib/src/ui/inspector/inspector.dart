@@ -171,3 +171,19 @@ class Inspector extends StatelessWidget {
     );
   }
 }
+
+/// A tab's state message, inset as the tab's content is.
+///
+/// A tab's ready state pads its list by [Space.s16]; a loading or failed
+/// message drawn bare would touch the panel's edge instead, so every state
+/// message a tab draws for itself goes through here (design-system.md §7). A
+/// message inside a padded list is already inset and is not wrapped.
+class TabMessage extends StatelessWidget {
+  const TabMessage(this.child, {super.key});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) =>
+      Padding(padding: const EdgeInsets.all(Space.s16), child: child);
+}

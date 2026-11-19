@@ -1,8 +1,13 @@
 import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:marshal_app/src/client/contract.g.dart';
+import 'package:marshal_app/src/model/selection.dart';
+import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_view_state.dart';
+import 'package:marshal_app/src/ui/thread/selection_layer.dart';
 
 import 'support.dart';
 
@@ -283,6 +288,198 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(_clipboard, contains('Step number 1 mapped the fixtures'));
+
+    store.dispose();
+    view.dispose();
+  });
+
+  testWidgets('a highlight after a dropped blank line lands on its line', (
+    tester,
+  ) async {
+    // The store keeps the notice's blank line; the row does not draw it, so
+    // its second line sits two characters further along in the store than a
+    // run of paragraph lengths would put it.
+    final store = StackStore.seeded(
+      StackSnapshot(
+        sessionID: 's-1',
+        rev: 1,
+        roots: const ['msg:1'],
+        nodes: const [
+          WireNode(
+            id: 'msg:1',
+            kind: 'message',
+            message: WireMessage(role: 'system', content: 'a\n\nb'),
+          ),
+        ],
+      ),
+    );
+    final view = ThreadViewState();
+    await pumpThread(tester, store: store, view: view);
+    await tester.tap(find.text('Details'));
+    await tester.pump();
+
+    final layer = tester.state<SelectionLayerState>(
+      find.byType(SelectionLayer),
+    );
+    // The second line's offsets in the store text: what dragging across it
+    // selects.
+    layer.selection.begin(const TextAnchor('msg:1', 3));
+    layer.selection.extend(const TextAnchor('msg:1', 4));
+    await tester.pump();
+
+    // The row's own painter is the one keyed on the row the layer registered.
+    final row = find.byWidgetPredicate(
+      (widget) => widget is CustomPaint && widget.key == layer.keys['msg:1'],
+    );
+    final canvas = TestRecordingCanvas();
+    tester.widget<CustomPaint>(row).painter!.paint(canvas, Size.zero);
+    final drawn = [
+      for (final call in canvas.invocations)
+        if (call.invocation.memberName == #drawRect)
+          call.invocation.positionalArguments.first as Rect,
+    ];
+
+    // One box, on the second line's glyph: not on the first line, and not on
+    // the Details control that follows it.
+    final paragraph = tester.renderObject<RenderParagraph>(find.text('b'));
+    final glyph = paragraph
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 0, extentOffset: 1),
+        )
+        .single
+        .toRect();
+    final glyphAt = glyph.shift(paragraph.localToGlobal(Offset.zero));
+    final origin = tester
+        .renderObject<RenderBox>(row)
+        .localToGlobal(Offset.zero);
+    expect(drawn, hasLength(1));
+    expect(
+      drawn.single.shift(origin),
+      rectMoreOrLessEquals(glyphAt, epsilon: 0.5),
+    );
+
+    store.dispose();
+    view.dispose();
+  });
+
+  testWidgets('a highlight on a thinking line below its lead lands on it', (
+    tester,
+  ) async {
+    // The row draws a `Thinking` lead line that its store text carries too: a
+    // projection without it would put every line below a lead line's length
+    // out of place, and a highlight would land on the wrong glyphs.
+    final store = StackStore.seeded(
+      StackSnapshot(
+        sessionID: 's-1',
+        rev: 1,
+        roots: const ['turn:1'],
+        nodes: const [
+          WireNode(id: 'turn:1', kind: 'turn', children: ['think:1']),
+          WireNode(
+            id: 'think:1',
+            kind: 'thinking',
+            parent: 'turn:1',
+            thinking: WireThinking(
+              text: 'The parser is the first stop.\nThe fixtures matter more.',
+            ),
+          ),
+        ],
+      ),
+    );
+    final view = ThreadViewState();
+    await pumpThread(tester, store: store, view: view);
+    await tester.tap(find.text('Details'));
+    await tester.pump();
+
+    final layer = tester.state<SelectionLayerState>(
+      find.byType(SelectionLayer),
+    );
+    const word = 'The fixtures';
+    final at = store.plainText('think:1').indexOf(word);
+    expect(at, greaterThan(0), reason: 'the lead line precedes it');
+    layer.selection.begin(TextAnchor('think:1', at));
+    layer.selection.extend(TextAnchor('think:1', at + word.length));
+    await tester.pump();
+
+    final row = find.byWidgetPredicate(
+      (widget) => widget is CustomPaint && widget.key == layer.keys['think:1'],
+    );
+    final canvas = TestRecordingCanvas();
+    tester.widget<CustomPaint>(row).painter!.paint(canvas, Size.zero);
+    final drawn = [
+      for (final call in canvas.invocations)
+        if (call.invocation.memberName == #drawRect)
+          call.invocation.positionalArguments.first as Rect,
+    ];
+
+    // One box, on the second thinking line's first word: the lead line and
+    // the line between are not highlighted in its place.
+    final paragraph = tester.renderObject<RenderParagraph>(
+      find.text('The fixtures matter more.'),
+    );
+    final glyph = paragraph
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 0, extentOffset: 12),
+        )
+        .single
+        .toRect();
+    final glyphAt = glyph.shift(paragraph.localToGlobal(Offset.zero));
+    final origin = tester
+        .renderObject<RenderBox>(row)
+        .localToGlobal(Offset.zero);
+    expect(drawn, hasLength(1));
+    expect(
+      drawn.single.shift(origin),
+      rectMoreOrLessEquals(glyphAt, epsilon: 0.5),
+    );
+
+    store.dispose();
+    view.dispose();
+  });
+
+  testWidgets('select all copies a thinking row that is still folded', (
+    tester,
+  ) async {
+    _captureClipboard();
+    final store = StackStore.seeded(
+      StackSnapshot(
+        sessionID: 's-1',
+        rev: 1,
+        roots: const ['turn:1'],
+        nodes: const [
+          WireNode(id: 'turn:1', kind: 'turn', children: ['think:1']),
+          WireNode(
+            id: 'think:1',
+            kind: 'thinking',
+            parent: 'turn:1',
+            thinking: WireThinking(
+              text:
+                  'The parser is the first stop.\n'
+                  'The fixtures it reads matter more than the rest.',
+            ),
+          ),
+        ],
+      ),
+    );
+    final view = ThreadViewState();
+    await pumpThread(tester, store: store, view: view);
+
+    // The row is folded and *Details* is not tapped: only its first line is
+    // drawn.
+    expect(find.text('Thinking'), findsOneWidget);
+    expect(find.textContaining('The fixtures it reads matter'), findsNothing);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    await _copy(tester);
+
+    // Copy is model-backed, so folding hides a line on screen and not from
+    // the clipboard.
+    expect(_clipboard, contains('The parser is the first stop.'));
+    expect(_clipboard, contains('The fixtures it reads matter more'));
+    expect(_clipboard, startsWith('Thinking'));
 
     store.dispose();
     view.dispose();

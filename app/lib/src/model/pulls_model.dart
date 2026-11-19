@@ -220,7 +220,7 @@ class PullsModel extends ChangeNotifier {
       }
       _overlays[key] = (sending: false, error: describeFailure(failure));
     } catch (error) {
-      _overlays[key] = (sending: false, error: error.toString());
+      _overlays[key] = (sending: false, error: describeFailure(error));
     }
     _rebuild();
   }
@@ -241,7 +241,7 @@ class PullsModel extends ChangeNotifier {
     } on BridgeFailure catch (failure) {
       _overlays[key] = (sending: false, error: describeFailure(failure));
     } catch (error) {
-      _overlays[key] = (sending: false, error: error.toString());
+      _overlays[key] = (sending: false, error: describeFailure(error));
     }
     _rebuild();
   }

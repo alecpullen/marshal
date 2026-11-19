@@ -325,6 +325,37 @@ void main() {
     store.dispose();
   });
 
+  test('plainText leads a thinking row with the line it draws', () {
+    final store = StackStore.seeded(
+      const StackSnapshot(
+        sessionID: 's-1',
+        rev: 1,
+        roots: ['turn:1'],
+        nodes: [
+          WireNode(id: 'turn:1', kind: 'turn', children: ['think:1']),
+          WireNode(
+            id: 'think:1',
+            kind: 'thinking',
+            parent: 'turn:1',
+            thinking: WireThinking(
+              text: 'The parser is the first stop.\nThe fixtures matter more.',
+            ),
+          ),
+        ],
+      ),
+    );
+
+    // The row is drawn as a notice whose first line names it, so the copied
+    // text carries that line: drawn text stays findable in the projection the
+    // selection highlights from (selection_layer.dart's `_HighlightPainter`).
+    final text = store.plainText('think:1');
+    expect(text, startsWith('Thinking'));
+    expect(text, contains('The parser is the first stop.'));
+    expect(text, contains('The fixtures matter more.'));
+    expect(text.split('\n').first, 'Thinking');
+    store.dispose();
+  });
+
   test('fold override survives a patch', () async {
     final sequence = _Sequence.load('turn-arrives.json');
     final fetcher = _Fetcher(sequence.snapshot);

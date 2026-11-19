@@ -4,6 +4,7 @@ import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
 import '../client/transport.dart';
 import 'age.dart';
+import 'fleet_store.dart' show describeFailure;
 import 'stack_store.dart';
 
 /// What a [ChangesModel] has read: nothing yet, what the agent changed, or a
@@ -342,7 +343,7 @@ class ChangesModel extends ChangeNotifier {
       _status = ChangesStatus.ready;
     } catch (error) {
       _status = ChangesStatus.failed;
-      failureMessage = '$error';
+      failureMessage = describeFailure(error);
     }
     _notify();
   }
@@ -360,7 +361,7 @@ class ChangesModel extends ChangeNotifier {
       gateRanAt = DateTime.tryParse(record.at);
       if (_status == ChangesStatus.failed) _status = ChangesStatus.ready;
     } catch (error) {
-      failureMessage = '$error';
+      failureMessage = describeFailure(error);
     } finally {
       _runningGate = false;
       _notify();
@@ -520,7 +521,7 @@ class ChangesModel extends ChangeNotifier {
     } catch (error) {
       // No answer at all: the connection dropped or timed out. Nothing here
       // says whether the push happened.
-      return ShipResult(ShipOutcome.failed, message: '$error');
+      return ShipResult(ShipOutcome.failed, message: describeFailure(error));
     }
   }
 

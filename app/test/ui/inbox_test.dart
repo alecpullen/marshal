@@ -479,7 +479,7 @@ void main() {
             host: 'local',
             loaded: true,
             lastRead: shellNow.subtract(const Duration(minutes: 7)),
-            failure: 'offline',
+            failureWords: 'offline',
           ),
         ],
       ),

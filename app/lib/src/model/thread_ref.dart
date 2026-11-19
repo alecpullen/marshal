@@ -152,13 +152,26 @@ ThreadRef threadFor(String host, AgentStatus agent) {
     host: host,
     id: agent.id,
     project: agent.project,
-    title: name.isEmpty ? agent.id : name,
+    title: name.isNotEmpty ? name : _agentTitle(agent),
     kind: ThreadKind.agent,
     status: statusOfAgent(agent),
     headline: headlineFor(agent),
     stepsDone: agent.stepsDone,
     lastActive: lastActiveOf(agent),
   );
+}
+
+/// What an agent is called when nobody named it: what it was asked, in the
+/// bridge's one line, or its short id when it was asked nothing.
+///
+/// A raw id is not a name (F2 decision 3): it is what an agent falls back to
+/// only when the bridge has neither a name nor a prompt for it, and then it is
+/// cut to eight characters the way a session's is.
+String _agentTitle(AgentStatus agent) {
+  final title = agent.title?.trim() ?? '';
+  if (title.isNotEmpty) return title;
+  final id = agent.id;
+  return 'Agent ${id.length > 8 ? id.substring(0, 8) : id}';
 }
 
 /// A session's status: needs you when it has a pending request, running when

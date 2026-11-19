@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
 import '../client/transport.dart';
+import 'fleet_store.dart' show describeFailure;
 
 /// What a "Plan first" started, in the terms a screen needs: the planner's id,
 /// the project it plans in, and the workspace it owns (F6 decision 8).
@@ -478,7 +479,7 @@ class NewWorkModel extends ChangeNotifier {
       _issueList = List.unmodifiable(await routes.issues(_choices['Project']!));
       _recipeList = List.unmodifiable(await routes.recipes());
     } catch (error) {
-      _failure = '$error';
+      _failure = describeFailure(error);
     }
   }
 
@@ -617,7 +618,7 @@ class NewWorkModel extends ChangeNotifier {
         ),
       );
     } catch (error) {
-      _failure = '$error';
+      _failure = describeFailure(error);
     }
     notifyListeners();
   }
@@ -646,7 +647,7 @@ class NewWorkModel extends ChangeNotifier {
         ),
       );
     } catch (error) {
-      _failure = '$error';
+      _failure = describeFailure(error);
     }
     notifyListeners();
   }

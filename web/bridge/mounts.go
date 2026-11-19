@@ -27,6 +27,27 @@ func volumeMount(runtime, volume, target, subpath string, readonly bool) []strin
 	return []string{"--mount", spec}
 }
 
+// bindMount is a --mount argument binding source on the host at target.
+//
+// The spelling is the same for docker and podman, so no runtime name is
+// threaded here. readonly appends ",readonly", which both accept.
+func bindMount(source, target string, readonly bool) []string {
+	spec := fmt.Sprintf("type=bind,source=%s,target=%s", source, target)
+	if readonly {
+		spec += ",readonly"
+	}
+	return []string{"--mount", spec}
+}
+
+// stateMount is the mount of one state subpath at target: a bind of
+// stateDir/subpath when stateDir is set, else volumeMount of volume.
+func stateMount(runtimeName, volume, stateDir, target, subpath string, readonly bool) []string {
+	if stateDir != "" {
+		return bindMount(filepath.Join(stateDir, subpath), target, readonly)
+	}
+	return volumeMount(runtimeName, volume, target, subpath, readonly)
+}
+
 // ProjectMount maps a host path to the bridge's in-container view of it.
 // A containerized bridge reads a checkout at its own mount point, but
 // Docker resolves a bind-mount source against the daemon's view, so

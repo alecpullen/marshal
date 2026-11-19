@@ -478,3 +478,45 @@ func TestContainerExtraMountsAndEnv(t *testing.T) {
 		t.Errorf("setup args = %q", joined)
 	}
 }
+
+func TestAHostStateContainerBindsEveryStateMount(t *testing.T) {
+	const stateDir = "/host/state"
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
+		StateVolume: "marshal-state", StateDir: stateDir,
+		WorkSubpath: "work/a1", SocketSubpath: "sockets/a1",
+		HomeConfigSubpath: "home/config", HomeDataSubpath: "home/data",
+		ExtraVolumes: []VolumeSubpath{{Subpath: "cache/lib", Target: "/cache", ReadOnly: true}},
+	})
+	joined := strings.Join(tr.buildRunArgs(), " ")
+
+	if strings.Contains(joined, "type=volume") {
+		t.Fatalf("a state volume mount survived a host state dir:\n%s", joined)
+	}
+	for _, sub := range []string{"work/a1", "sockets/a1", "home/config", "home/data", "cache/lib"} {
+		want := "source=" + filepath.Join(stateDir, sub)
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in:\n%s", want, joined)
+		}
+	}
+}
+
+func TestTheConfigHomeBindsTheUsersDirectoryReadOnly(t *testing.T) {
+	const stateDir = "/host/state"
+	const configHome = "/Users/you/.config/marshal"
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
+		StateVolume: "marshal-state", StateDir: stateDir,
+		WorkSubpath: "work/a1", SocketSubpath: "sockets/a1",
+		HomeConfigSubpath: "home/config", HomeDataSubpath: "home/data",
+		HomeConfigDir: configHome,
+	})
+	joined := strings.Join(tr.buildRunArgs(), " ")
+
+	if !strings.Contains(joined, "type=bind,source="+configHome+",target="+containerConfigDir+",readonly") {
+		t.Fatalf("the config home is not a readonly bind of the user's directory:\n%s", joined)
+	}
+	if !strings.Contains(joined, "source="+filepath.Join(stateDir, "home/data")) {
+		t.Fatalf("the data home left the state dir:\n%s", joined)
+	}
+}

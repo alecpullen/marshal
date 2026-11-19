@@ -62,6 +62,13 @@ type ContainerConfig struct {
 	RuntimeName string
 	// StateVolume is the name of the shared state volume.
 	StateVolume string
+	// StateDir, when non-empty, is the host directory the state subpaths live
+	// under: every state mount binds StateDir/<subpath>, and StateVolume is not
+	// used.
+	StateDir string
+	// HomeConfigDir, when non-empty, is a host directory bound read-only as the
+	// shared config home, in place of HomeConfigSubpath.
+	HomeConfigDir string
 	// WorkSubpath is the subpath within the state volume for the agent's
 	// workspace (e.g. "work/<agentID>").
 	WorkSubpath string
@@ -235,24 +242,28 @@ func (c *containerTransport) commonRunArgs(extraEnv map[string]string) []string 
 		args = append(args, "-v", c.cfg.LocalMount+":"+containerWorkDir)
 	} else {
 		args = append(args,
-			volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerWorkDir, c.cfg.WorkSubpath, false)...)
+			stateMount(c.cfg.RuntimeName, c.cfg.StateVolume, c.cfg.StateDir, containerWorkDir, c.cfg.WorkSubpath, false)...)
 	}
 	args = append(args,
-		volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerSocketDir, c.cfg.SocketSubpath, false)...)
+		stateMount(c.cfg.RuntimeName, c.cfg.StateVolume, c.cfg.StateDir, containerSocketDir, c.cfg.SocketSubpath, false)...)
 	args = append(args, c.cfg.ExtraMounts...)
 	if c.cfg.HomeConfigSubpath != "" {
 		// The shared homes: config is read-only for project agents and
 		// writable only for the control agent, which owns config edits.
+		if c.cfg.HomeConfigDir != "" {
+			args = append(args, bindMount(c.cfg.HomeConfigDir, containerConfigDir, true)...)
+		} else {
+			args = append(args,
+				stateMount(c.cfg.RuntimeName, c.cfg.StateVolume, c.cfg.StateDir, containerConfigDir, c.cfg.HomeConfigSubpath, !c.cfg.HomeConfigWritable)...)
+		}
 		args = append(args,
-			volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerConfigDir, c.cfg.HomeConfigSubpath, !c.cfg.HomeConfigWritable)...)
-		args = append(args,
-			volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerDataDir, c.cfg.HomeDataSubpath, false)...)
+			stateMount(c.cfg.RuntimeName, c.cfg.StateVolume, c.cfg.StateDir, containerDataDir, c.cfg.HomeDataSubpath, false)...)
 	}
 	for _, m := range c.cfg.ExtraBinds {
 		args = append(args, "-v", m.Host+":"+m.Container)
 	}
 	for _, v := range c.cfg.ExtraVolumes {
-		args = append(args, volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, v.Target, v.Subpath, v.ReadOnly)...)
+		args = append(args, stateMount(c.cfg.RuntimeName, c.cfg.StateVolume, c.cfg.StateDir, v.Target, v.Subpath, v.ReadOnly)...)
 	}
 	if n := c.cfg.Network; n != "" && n != "host" && n != "none" && !strings.HasPrefix(n, "container:") {
 		args = append(args, "--network", n)

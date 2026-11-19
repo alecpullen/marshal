@@ -42,6 +42,8 @@ Not counted above:
 
 ## Plan 1 — One daemon (D1, D4, A5)
 
+Plan: [plans/2026-11-20-od-1-one-daemon-plan.md](plans/2026-11-20-od-1-one-daemon-plan.md).
+
 | File | Lines | Action | What |
 |---|---:|---|---|
 | `cmd/webbridge/main.go` | 1,183 | Cut | The `--profile` flag (`:146`). `applyProfile` (`:307–375`) becomes the one daemon's defaults, without the refusals. The `cfg.profile == "local"` branches (`:260`, `:779`, `:853`, `:923`, `:959`) now always run. The working-directory project (`:260–266`) goes. |
@@ -51,7 +53,12 @@ Not counted above:
 | `web/bridge/mounts.go` | 62 / 132 | Reshape | The same: `volumeMount` builds subpath mounts of the shared volume. |
 | `cmd/webbridge/local_test.go` | — / 476 | Reshape | Local-profile defaults and refusals become the one daemon's defaults. |
 | `cmd/webbridge/main_test.go` | — / 538 | Reshape | Its profile cases go. |
-| Project runtime setting | — | Add | `host` or `container` per project: a field in the project registry and `web/bridge/contract`, and a row in the Studio's project defaults tab (`app/lib/src/ui/project/defaults_tab.dart`). |
+| `web/bridge/control.go` | — | Cut | `controlContainerConfig`, `controlContainerName`, and `controlRuntime`'s `containerized` and `boundRoots` fields. The control agent is always a host process. `ContainerConfig.HomeConfigWritable` and `ExtraBinds`, which only it used, go too. |
+| `web/bridge/egresshost.go`, `egress_fleet.go` | — | Cut | Egress process mode: `startProcessProxy` and `drainRecords` (`egresshost.go:697–764`), the `mode` field and its checks. Egress is the sidecar, for container agents only. |
+| `web/bridge/fleet.go` | — | Cut | The plain-agent derive step in `Spawn` (`:1546–1560`). |
+| Rootless check | — | Add | `runtimeProbe.rootless`, `rootlessFromInfo` and `Fleet.needsRuntime`. On Linux, a daemon with host state refuses a rootful runtime. |
+| `[daemon] egress` | — | Add | A config field, `UnitSpec.Egress` and `--egress on\|off` in the unit. `--egress` defaults to `off`. |
+| `scripts/dev-studio.sh`, `compose.yaml` | — | Reshape | Run on the new `webbridge` until plans 3 and 4 delete them. The dev studio drops `resolve_state_dir`, the volume-mountpoint workaround. |
 
 ## Plan 2 — Hosts over SSH (D6–D9, D15)
 

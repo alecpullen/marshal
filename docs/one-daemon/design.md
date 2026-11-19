@@ -112,18 +112,26 @@ loopback address. Any other address is refused at start, naming the setting.
 `--tls-cert` and `--tls-key` go: TLS belongs to whatever publishes a listener.
 
 **D4. Containers are a per-agent sandbox.** The `hostOnly` switch goes
-(`fleet.go:156`, `:870`), and so does probing for a container runtime at spawn.
-- An agent runs in a container when it names a workspace (as today) or its
-  project's runtime setting is `container`. The setting is new, and its
-  default is `host`.
-- Every other agent is a host process on its project's child (P4 D10). That
-  holds whether or not a container runtime is installed.
-- `onProjectChild` (`fleet.go:965`) loses its `hostOnly` clause and keeps the
-  others.
-- The egress proxy, `--secrets local|openbao`, the quotas, the agent image and
-  the resource caps work on any daemon where a container runtime answers. The
-  local profile's refusals of `--egress on` and of non-`env` secrets go
-  (`main.go:333-339`).
+(`fleet.go:156`, `:870`). Planning plan 1 settled the details, on 2026-11-20:
+- **A workspace is the only trigger.** An agent runs in a container when it
+  has a workspace: its own, or its project's default
+  (`ProjectSettings.Workspace`, applied at `fleet.go:1397`). A
+  `devcontainer.json` becomes a workspace through Settings › Environments.
+- **Everything else runs on the host.** Every other agent, and the control
+  agent, is a host process, whether or not a container runtime is installed.
+  It never probes for one. A plain local agent runs on its project's child
+  (P4 D10).
+- **Container agents' files.** They mount the daemon's state directory, and
+  the user's config directory read-only as their config home (A5).
+- **Rootless runtimes only, on Linux.** A daemon whose state is on the host
+  uses a rootless runtime there, and refuses a rootful one with a message that
+  names the fix. Docker Desktop on macOS is accepted.
+- **Egress.** The egress proxy is a sidecar for container agents only, off
+  unless `[daemon] egress` turns it on. Its in-process mode for host agents
+  goes.
+- **Secrets and limits.** `--secrets local|openbao`, the quotas, the agent
+  image and the resource caps work on any daemon. The local profile's
+  refusals of `--egress on` and of non-`env` secrets go (`main.go:333-339`).
 
 **D5. The containerized daemon is retired.** These go: `compose.yaml`,
 `build/Dockerfile.bridge`, the `webbridge` images in `.goreleaser.yaml`, and
@@ -277,12 +285,15 @@ or similar.
   is in the host table.
 - **A4. Caddy and nginx can proxy to a unix socket.** For a proxy that cannot,
   use a loopback web listener (D10) and accept D13's caveat.
-- **A5. Container agents can run from a daemon on the host.** Today's
-  container mounts assume the containerized bridge: subpaths of a named state
-  volume (`mounts.go`; `container.go:76`, `:91`; `--state-volume` defaults to
-  `marshal-state`). A daemon on the host has to bind-mount its state directory
-  instead. Check this before D5 deletes anything: it is the largest piece of
-  work here that nobody has verified.
+- **A5. Container agents can run from a daemon on the host.** This was
+  checked while planning plan 1, and it does not hold today:
+  - Container agents mount their work tree, socket directory and homes as
+    subpaths of a named volume (`mounts.go`; `container.go:229–258`). The
+    daemon dials the socket under its own state directory.
+  - The two views meet only when that directory is the volume's mountpoint,
+    which `scripts/dev-studio.sh:196–214` arranges by hand.
+  - Plan 1 binds the state directory instead, and keeps volume mode for a
+    containerized bridge until D5.
 
 ## Non-goals
 
@@ -319,10 +330,11 @@ or similar.
 Prose plans, written one at a time. Each one deletes what it replaces in the
 same change: [`inventory.md`](inventory.md) lists the files.
 
-1. **One daemon** (D1, D4, and A5's check). Remove `--profile` and `hostOnly`,
-   add the project runtime setting, and make container agents run from a
-   daemon on the host. It runs first because a server machine needs it before
-   it can stop running the containerized bridge.
+1. **One daemon** (D1, D4, A5):
+   [plans/2026-11-20-od-1-one-daemon-plan.md](plans/2026-11-20-od-1-one-daemon-plan.md).
+   It removes `--profile` and `hostOnly`, and makes container agents run from
+   a daemon on the host. It runs first because a server machine needs it
+   before it can stop running the containerized bridge.
 2. **Hosts over SSH** (D6–D9, D15). Add the tunnel helper,
    `DaemonInfo.hosts`, `marshal fleet --host`, native discovery and Settings ›
    Hosts. Delete the HTTPS transports, `fleet login`/`token`, and

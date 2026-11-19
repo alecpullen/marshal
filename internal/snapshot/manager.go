@@ -821,21 +821,18 @@ func (m *Manager) RunManaged(ctx context.Context, cmd *exec.Cmd) ([]byte, error)
 	if err := m.checkReady(); err != nil {
 		return nil, err
 	}
-	if deadline := m.deadlineFor(ctx); deadline > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, deadline)
-		defer cancel()
-	}
+	scope := m.beginCommand(ctx, "", commandLabel(cmd))
+	defer scope.end()
 	life, err := m.newManagedTree(cmd)
 	if err != nil {
 		return nil, err
 	}
 	out, bytesFn := combinedOutput(normalizeMaxOutput(m.maxOutputBytes))
-	err = runProcessTreeWith(ctx, cmd, life, out)
+	err = runProcessTreeWith(scope.ctx, cmd, life, out)
 	// A tree that is confirmed gone, or that was never started, can be forgotten.
 	// One whose termination is unknown stays registered for the next drain.
 	m.releaseTree(life)
-	return bytesFn(), err
+	return bytesFn(), scope.classify(err)
 }
 
 // gitRun runs a sanitized, read-only git command against gitDir and returns its
@@ -856,13 +853,10 @@ func (m *Manager) gitRun(ctx context.Context, gitDir string, stdin []byte, args 
 	if gitDir == "" {
 		return nil, nil, false, storeErrorf(ReasonInternal, "git directory must not be empty")
 	}
-	if deadline := m.deadlineFor(ctx); deadline > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, deadline)
-		defer cancel()
-	}
+	scope := m.beginCommand(ctx, gitDir, gitCommandLabel(args))
+	defer scope.end()
 
-	cmd := newGitCmd(ctx, m.gitBinary, gitDir, "", true, args...)
+	cmd := newGitCmd(scope.ctx, m.gitBinary, gitDir, "", true, args...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -873,9 +867,9 @@ func (m *Manager) gitRun(ctx context.Context, gitDir string, stdin []byte, args 
 	max := normalizeMaxOutput(m.maxOutputBytes)
 	outBuf := &limitedBuffer{max: max}
 	errBuf := &limitedBuffer{max: max}
-	err = runProcessTreeWith(ctx, cmd, life, treeOutput{stdout: outBuf, stderr: errBuf})
+	err = runProcessTreeWith(scope.ctx, cmd, life, treeOutput{stdout: outBuf, stderr: errBuf})
 	m.releaseTree(life)
-	return outBuf.Bytes(), errBuf.Bytes(), outBuf.Truncated() || errBuf.Truncated(), err
+	return outBuf.Bytes(), errBuf.Bytes(), outBuf.Truncated() || errBuf.Truncated(), scope.classify(err)
 }
 
 // gitRunEnv is gitRun with an io.Reader on stdin, an explicit work tree, and
@@ -899,13 +893,10 @@ func (m *Manager) gitRunEnv(ctx context.Context, gitDir, workTree string, stdin 
 	if gitDir == "" {
 		return nil, nil, false, storeErrorf(ReasonInternal, "git directory must not be empty")
 	}
-	if deadline := m.deadlineFor(ctx); deadline > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, deadline)
-		defer cancel()
-	}
+	scope := m.beginCommand(ctx, gitDir, gitCommandLabel(args))
+	defer scope.end()
 
-	cmd := newGitCmd(ctx, m.gitBinary, gitDir, workTree, true, args...)
+	cmd := newGitCmd(scope.ctx, m.gitBinary, gitDir, workTree, true, args...)
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
@@ -921,9 +912,9 @@ func (m *Manager) gitRunEnv(ctx context.Context, gitDir, workTree string, stdin 
 	max := normalizeMaxOutput(maxOutput)
 	outBuf := &limitedBuffer{max: max}
 	errBuf := &limitedBuffer{max: max}
-	err = runProcessTreeWith(ctx, cmd, life, treeOutput{stdout: outBuf, stderr: errBuf})
+	err = runProcessTreeWith(scope.ctx, cmd, life, treeOutput{stdout: outBuf, stderr: errBuf})
 	m.releaseTree(life)
-	return outBuf.Bytes(), errBuf.Bytes(), outBuf.Truncated() || errBuf.Truncated(), err
+	return outBuf.Bytes(), errBuf.Bytes(), outBuf.Truncated() || errBuf.Truncated(), scope.classify(err)
 }
 
 // gitRunEnvWriter is gitRunEnv for a command whose stdout is STREAMED into a
@@ -944,20 +935,17 @@ func (m *Manager) gitRunEnvWriter(ctx context.Context, gitDir string, stdout io.
 	if stdout == nil {
 		return nil, false, storeErrorf(ReasonInternal, "git output writer must not be nil")
 	}
-	if deadline := m.deadlineFor(ctx); deadline > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, deadline)
-		defer cancel()
-	}
-	cmd := newGitCmd(ctx, m.gitBinary, gitDir, "", true, args...)
+	scope := m.beginCommand(ctx, gitDir, gitCommandLabel(args))
+	defer scope.end()
+	cmd := newGitCmd(scope.ctx, m.gitBinary, gitDir, "", true, args...)
 	life, err := m.newManagedTree(cmd)
 	if err != nil {
 		return nil, false, err
 	}
 	errBuf := &limitedBuffer{max: normalizeMaxOutput(m.maxOutputBytes)}
-	err = runProcessTreeWith(ctx, cmd, life, treeOutput{stdout: stdout, stderr: errBuf})
+	err = runProcessTreeWith(scope.ctx, cmd, life, treeOutput{stdout: stdout, stderr: errBuf})
 	m.releaseTree(life)
-	return errBuf.Bytes(), errBuf.Truncated(), err
+	return errBuf.Bytes(), errBuf.Truncated(), scope.classify(err)
 }
 
 // gitOutput is gitRun requiring success, with stderr folded into the error so a
@@ -965,8 +953,7 @@ func (m *Manager) gitRunEnvWriter(ctx context.Context, gitDir string, stdout io.
 func (m *Manager) gitOutput(ctx context.Context, gitDir string, args ...string) ([]byte, error) {
 	out, errOut, _, err := m.gitRun(ctx, gitDir, nil, args...)
 	if err != nil {
-		return out, m.storeError(ReasonUnreadableFile, gitDir,
-			fmt.Errorf("git %s: %w%s", strings.Join(args, " "), err, gitOutputSuffix(errOut)))
+		return out, m.gitFailure(gitDir, args, err, errOut)
 	}
 	return out, nil
 }
@@ -975,10 +962,25 @@ func (m *Manager) gitOutput(ctx context.Context, gitDir string, args ...string) 
 func (m *Manager) gitOutputStdin(ctx context.Context, gitDir string, stdin []byte, args ...string) ([]byte, bool, error) {
 	out, errOut, truncated, err := m.gitRun(ctx, gitDir, stdin, args...)
 	if err != nil {
-		return out, truncated, m.storeError(ReasonUnreadableFile, gitDir,
-			fmt.Errorf("git %s: %w%s", strings.Join(args, " "), err, gitOutputSuffix(errOut)))
+		return out, truncated, m.gitFailure(gitDir, args, err, errOut)
 	}
 	return out, truncated, nil
+}
+
+// gitFailure decorates a failed git invocation with the command and Git's own
+// diagnostic on stderr, WITHOUT losing a reason the invocation already carried.
+//
+// A managed command that hit the manager's own time bound has already been
+// classified (ReasonCommandTimeout). Relabelling that as "a path could not be
+// read" here would put the timeout back where it started: indistinguishable from
+// a storage fault, with recovery advice that cannot help.
+func (m *Manager) gitFailure(gitDir string, args []string, err error, errOut []byte) error {
+	reason := ReasonOf(err)
+	if reason == "" {
+		reason = ReasonUnreadableFile
+	}
+	return m.storeError(reason, gitDir,
+		fmt.Errorf("git %s: %w%s", strings.Join(args, " "), err, gitOutputSuffix(errOut)))
 }
 
 // gitDirExists reports whether a directory looks like a Git repository, without
@@ -999,6 +1001,97 @@ func (m *Manager) deadlineFor(ctx context.Context) time.Duration {
 		}
 	}
 	return m.commandDeadline
+}
+
+// commandScope bounds one managed command by the manager's command deadline and
+// classifies what ended it.
+//
+// The bound itself is deliberate: a wedged Git process must not pin the store
+// lock or a whole turn forever. What it must not do is vanish into a bare
+// context.DeadlineExceeded. A caller cannot tell from that which invocation was
+// cut off, how long it was allowed, or whether retrying is the right response,
+// and the agent — which derives its user-visible reason from a structured token
+// on the error — degrades to a generic "the capture failed" whose recovery
+// advice is to clean storage that is not the problem.
+//
+// The caller's own context is deliberately left unclassified. A turn abort or a
+// shutdown is an expected interruption, not a storage condition, and the agent
+// already recognises it by context; only a bound the manager imposed on itself
+// becomes a structured store timeout.
+type commandScope struct {
+	// ctx is the context the command must run under.
+	ctx context.Context
+	// parent is the caller's context, unchanged, so an abort can be told apart
+	// from this scope's own bound.
+	parent context.Context
+	path   string
+	label  string
+	bound  time.Duration
+	cancel context.CancelFunc
+}
+
+// beginCommand derives the bounded context one managed command runs under.
+// label names the command in a timeout message; path is the store path it
+// concerns, when there is one.
+func (m *Manager) beginCommand(ctx context.Context, path, label string) *commandScope {
+	s := &commandScope{ctx: ctx, parent: ctx, path: path, label: label, cancel: func() {}}
+	if deadline := m.deadlineFor(ctx); deadline > 0 {
+		s.ctx, s.cancel = context.WithTimeout(ctx, deadline)
+		s.bound = deadline
+	}
+	return s
+}
+
+// end releases the bounded context. It must be called exactly once.
+func (s *commandScope) end() {
+	if s != nil && s.cancel != nil {
+		s.cancel()
+	}
+}
+
+// classify returns err unchanged, or a structured timeout when this scope's own
+// bound is what ended the command.
+//
+// The cause is kept in the chain (%w), so errors.Is(err, context.DeadlineExceeded)
+// still holds for a caller that needs to distinguish a timeout from a hard
+// failure, while ReasonOf(err) now names it.
+func (s *commandScope) classify(err error) error {
+	if err == nil || s == nil || s.bound <= 0 {
+		return err
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if s.parent.Err() != nil {
+		// The caller's own context ended (cancel or its own deadline): an
+		// expected abort, which must stay unclassified.
+		return err
+	}
+	se := storeError(ReasonCommandTimeout, fmt.Errorf("%s timed out after %s: %w",
+		s.label, s.bound.Round(time.Millisecond), err))
+	se.Path = s.path
+	return se
+}
+
+// commandLabel names a git invocation for a timeout message, e.g. "git ls-files".
+func gitCommandLabel(args []string) string {
+	if len(args) == 0 {
+		return "git"
+	}
+	return "git " + args[0]
+}
+
+// commandLabel names a managed command for a timeout message. It reports the
+// program only: the arguments of an arbitrary command can carry a whole script,
+// and the label is quoted into a user-visible message.
+func commandLabel(cmd *exec.Cmd) string {
+	if cmd == nil {
+		return "managed command"
+	}
+	if base := filepath.Base(cmd.Path); base != "" && base != "." && base != string(filepath.Separator) {
+		return base
+	}
+	return "managed command"
 }
 
 // checkReady validates the manager and its seams. A nil seam is an internal

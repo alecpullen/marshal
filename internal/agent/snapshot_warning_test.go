@@ -596,6 +596,42 @@ func (e storeErrorStub) Error() string { return e.reason }
 
 func (e storeErrorStub) SnapshotReason() string { return e.reason }
 
+// TestCommandTimeoutIsReportedAsATimeoutNotAStorageFault pins the wording of a
+// capture that a time bound ended.
+//
+// It is its own kind of failure: nothing in the store is wrong, nothing in it
+// needs repairing, and the capture can simply be retried. Reporting it as a
+// generic capture failure sends the user to `marshal snapshots cleanup`, which
+// cannot make a slow command fast and, worse, invites them to delete rollback
+// history over a transient condition.
+func TestCommandTimeoutIsReportedAsATimeoutNotAStorageFault(t *testing.T) {
+	// The store prints its reason first; this is the exact shape a classified
+	// managed-command timeout produces.
+	err := errors.New("command_timeout path=/ws/.local/share/marshal/snapshots/v2: git ls-files timed out after 30s: context deadline exceeded")
+	reason := snapshotReasonFor(err)
+	if reason != reasonCommandTimeout {
+		t.Fatalf("reason = %q, want command_timeout", reason)
+	}
+	detail := snapshotReasonDetail(reason)
+	if !strings.Contains(detail, "time") {
+		t.Errorf("detail does not say the capture timed out: %q", detail)
+	}
+	if strings.Contains(detail, "budget") || strings.Contains(detail, "free space") {
+		t.Errorf("detail attributes a timeout to a storage limit: %q", detail)
+	}
+	recovery := snapshotRecovery(reason)
+	if strings.Contains(recovery, "cleanup") || strings.Contains(recovery, "migrate") {
+		t.Errorf("recovery sends the user to a storage repair for a timeout: %q", recovery)
+	}
+	if !strings.Contains(recovery, "status") {
+		t.Errorf("recovery dropped the status command: %q", recovery)
+	}
+	// A timeout is not a limit failure, so no budget line is rendered.
+	if line := snapshotLimitLine(nil, reason); line != "" {
+		t.Errorf("a timeout rendered a limit line: %q", line)
+	}
+}
+
 // TestSnapshotWarningRendersWorkspaceReasonLimitAndRecovery asserts the
 // message contract itself, independent of the hook that emits it.
 func TestSnapshotWarningRendersWorkspaceReasonLimitAndRecovery(t *testing.T) {

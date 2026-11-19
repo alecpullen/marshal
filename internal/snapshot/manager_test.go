@@ -730,3 +730,63 @@ func TestRunManagedHonoursCommandDeadline(t *testing.T) {
 		t.Fatalf("RunManaged took %s; the command deadline should have ended it", elapsed)
 	}
 }
+
+// A command that outlives the manager's OWN deadline must be CLASSIFIED.
+//
+// A bare "context deadline exceeded" tells a caller neither which invocation was
+// cut off, nor how long it was allowed, nor whether retrying is sensible. That
+// is not a cosmetic problem: the agent derives its user-visible reason by
+// matching a structured token, so an unclassified timeout degrades into a
+// generic "the capture failed" whose recovery advice (storage cleanup) cannot
+// fix a timeout. The cause stays reachable through errors.Is.
+func TestRunManagedClassifiesItsOwnDeadlineAsCommandTimeout(t *testing.T) {
+	m := newTestManager(t, WithCommandDeadline(200*time.Millisecond))
+	cmd := exec.Command(os.Args[0], "-test.run=TestSnapshotHelperProcess")
+	cmd.Env = append(os.Environ(),
+		envHelperMode+"="+helperModeHeartbeat,
+		envHelperHeartbeat+"="+filepath.Join(t.TempDir(), "hb"),
+	)
+	_, err := m.RunManaged(context.Background(), cmd)
+	if err == nil {
+		t.Fatal("RunManaged returned success for a command that outlived its deadline")
+	}
+	if got := ReasonOf(err); got != ReasonCommandTimeout {
+		t.Fatalf("ReasonOf = %q, want %q (err = %v)", got, ReasonCommandTimeout, err)
+	}
+	if !errors.Is(err, ErrCommandTimeout) {
+		t.Fatalf("errors.Is(err, ErrCommandTimeout) = false; err = %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the classified timeout lost its cause; err = %v", err)
+	}
+	for _, want := range []string{"200ms", filepath.Base(os.Args[0])} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("classified timeout does not name %q: %v", want, err)
+		}
+	}
+}
+
+// A caller cancellation or a caller deadline is NOT the manager's own bound: it
+// must stay an unclassified context error, because the agent recognises an
+// expected abort (turn cancel, shutdown) by its context and must show nothing.
+func TestRunManagedLeavesCallerCancellationUnclassified(t *testing.T) {
+	m := newTestManager(t, WithCommandDeadline(30*time.Second))
+	cmd := exec.Command(os.Args[0], "-test.run=TestSnapshotHelperProcess")
+	cmd.Env = append(os.Environ(),
+		envHelperMode+"="+helperModeHeartbeat,
+		envHelperHeartbeat+"="+filepath.Join(t.TempDir(), "hb"),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	_, err := m.RunManaged(ctx, cmd)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunManaged error = %v, want context.Canceled", err)
+	}
+	if got := ReasonOf(err); got != "" {
+		t.Fatalf("a caller cancellation was classified as %q; it must stay unclassified", got)
+	}
+}

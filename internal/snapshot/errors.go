@@ -94,6 +94,19 @@ const (
 	// hashed are the bytes it wrote: a length-prefixed object that describes
 	// different content is corruption, not a tolerable race.
 	ReasonUnverifiedObject StoreReason = "unverified_object"
+	// ReasonCommandTimeout means a managed command was still running when the
+	// manager's own time bound ended it. It is deliberately distinct from
+	// ReasonLockTimeout (the store was held by another process), from
+	// ReasonInterruptedCapture (a previous capture was left half-done), and from
+	// ReasonUnreadableFile (a path could not be read): nothing in the store is
+	// wrong and nothing in it needs repairing — the work simply did not fit in
+	// the time allowed, so the correct response is to retry rather than to repair
+	// or delete storage.
+	//
+	// Without this reason the bare context.DeadlineExceeded of an expired command
+	// context reached the caller unclassified, which is what made a timeout
+	// indistinguishable from a real storage fault in the user-visible warning.
+	ReasonCommandTimeout StoreReason = "command_timeout"
 	// ReasonInternal means the manager is misconfigured (for example a nil
 	// dependency seam).
 	ReasonInternal StoreReason = "internal_error"
@@ -131,6 +144,7 @@ var (
 	ErrSymlinkEscape          = errors.New(string(ReasonSymlinkEscape))
 	ErrUnsupportedFileType    = errors.New(string(ReasonUnsupportedFileType))
 	ErrUnverifiedObject       = errors.New(string(ReasonUnverifiedObject))
+	ErrCommandTimeout         = errors.New(string(ReasonCommandTimeout))
 	ErrStoreInternal          = errors.New(string(ReasonInternal))
 	ErrSnapshotExpired        = errors.New(string(ReasonSnapshotExpired))
 	ErrSnapshotNotFound       = errors.New(string(ReasonSnapshotNotFound))
@@ -166,6 +180,8 @@ func sentinelForReason(r StoreReason) error {
 		return ErrUnsupportedFileType
 	case ReasonUnverifiedObject:
 		return ErrUnverifiedObject
+	case ReasonCommandTimeout:
+		return ErrCommandTimeout
 	case ReasonInternal:
 		return ErrStoreInternal
 	case ReasonSnapshotExpired:

@@ -178,7 +178,7 @@ class Composer extends StatelessWidget {
                             ),
                           ),
                           onMode,
-                      ),
+                        ),
                       if (model != null)
                         _chip(
                           context,

@@ -173,23 +173,39 @@ class ComposerModel extends ChangeNotifier {
     }
   }
 
-  /// Reads the session's committed access tuple, which decides whether the
-  /// composer is read-only.
+  /// Reads the session's committed access tuple, which the mode chip names.
   ///
-  /// A session whose mode is `ask` has granted no editing, so it is read-only
-  /// here; the reason names the mode rather than a failure.
+  /// The mode never makes the composer read-only: a session in plan or default
+  /// mode can still be prompted, and the bridge asks for approval where it
+  /// needs one, so this only reports the mode.
+  ///
+  /// It is started unawaited when a thread opens and at each turn boundary, so
+  /// the answer can arrive after the thread's composer is gone: a disposed
+  /// model is left alone rather than notified.
   Future<void> refreshAccess() async {
     try {
       final state = await _access();
-      _readOnly = state.mode != 'act';
-      _readOnlyReason = _readOnly
-          ? 'This session is in ${state.mode} mode: it can be read but not driven.'
-          : null;
-      _permissionMode = state.mode == 'act' ? 'Act' : 'Ask';
+      if (_disposed) return;
+      _permissionMode = switch (state.mode) {
+        'ask' => 'Ask',
+        'act' => state.auto ? 'Act · Auto' : 'Act',
+        _ => _permissionMode,
+      };
     } catch (error) {
+      if (_disposed) return;
       _failure = _words(error);
     }
+    if (_disposed) return;
     notifyListeners();
+  }
+
+  /// Whether [dispose] has run: a read this model started may still land.
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 
   static String _words(Object error) => describeFailure(error);

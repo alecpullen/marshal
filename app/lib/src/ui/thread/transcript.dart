@@ -1,8 +1,8 @@
-import '../../model/age.dart';
 import '../../model/inbox_model.dart' as model;
 import '../../model/selection.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_view_state.dart';
+import '../inbox/answerable_ask.dart';
 import '../kit/kit.dart';
 import 'selection_layer.dart';
 
@@ -53,6 +53,45 @@ List<TranscriptRow> flattenRows(StackStore store, ThreadViewState view) {
   return rows;
 }
 
+/// The place [nodeId] holds among its parent's children whose kind is `step`:
+/// 1 for the first step, 2 for the second, whatever rows the tree puts between
+/// them.
+///
+/// A step is numbered among steps, never among the rows drawn before it, so
+/// the prompt above it does not make the first one read 2. The parent is found
+/// by walking the same tree [flattenRows] walks: the store exposes the roots,
+/// a node by id and its children, and no parent link, so the walk is what
+/// keeps this true of the tree the rows were drawn from rather than of a
+/// `parent` field that could disagree with it. A node it cannot place — one
+/// the tree does not hold, or one that is not a step — is 0 rather than an
+/// error: a row draws on whatever tree it is handed.
+int stepOrdinal(StackStore store, String nodeId) {
+  if (store.node(nodeId)?.kind != 'step') return 0;
+  // A step at the top of the tree is placed among the roots.
+  var siblings = store.roots;
+  if (!siblings.contains(nodeId)) {
+    siblings = const <String>[];
+    final stack = <String>[...store.roots];
+    final seen = <String>{};
+    while (stack.isNotEmpty) {
+      final id = stack.removeLast();
+      if (!seen.add(id)) continue;
+      final children = store.node(id)?.children ?? const <String>[];
+      if (children.contains(nodeId)) {
+        siblings = children;
+        break;
+      }
+      stack.addAll(children);
+    }
+  }
+  var ordinal = 0;
+  for (final id in siblings) {
+    if (store.node(id)?.kind == 'step') ordinal++;
+    if (id == nodeId) break;
+  }
+  return ordinal;
+}
+
 /// The transcript (design-system.md §5): a lazily built list over the store's
 /// tree, drawing each node with the row for its kind at the view's density.
 ///
@@ -86,7 +125,7 @@ class Transcript extends StatefulWidget {
   final List<model.Ask> asks;
 
   /// Answers an ask where it is pinned.
-  final void Function(model.Ask ask, model.AskAction action)? onAnswer;
+  final AnswerAsk? onAnswer;
 
   /// What a waiting time is measured against.
   final DateTime? now;
@@ -272,7 +311,6 @@ class _TranscriptState extends State<Transcript> {
                                 nodeId: row.id,
                                 child: _Row(
                                   nodeId: row.id,
-                                  index: index,
                                   depth: row.depth,
                                   store: widget.store,
                                   view: widget.view,
@@ -334,38 +372,22 @@ class _PinnedAsk extends StatelessWidget {
 
   final model.Ask ask;
   final DateTime? now;
-  final void Function(model.Ask ask, model.AskAction action)? onAnswer;
+  final AnswerAsk? onAnswer;
 
   @override
   Widget build(BuildContext context) {
-    final at = now ?? DateTime.now();
-    final onAnswer = this.onAnswer;
     return Padding(
       padding: const EdgeInsets.only(left: Sizes.row, bottom: Space.s12),
-      child: AskCard(
-        kind: switch (ask.kind) {
-          model.AskKind.approval => AskKind.approval,
-          model.AskKind.question => AskKind.question,
-          model.AskKind.intake => AskKind.intake,
-          model.AskKind.pull => AskKind.pull,
-          model.AskKind.reviewDraft => AskKind.review,
-          model.AskKind.network => AskKind.network,
-          model.AskKind.approvalDraft => AskKind.approval,
-          model.AskKind.decision => AskKind.decision,
-          model.AskKind.recovery => AskKind.decision,
-          model.AskKind.completion => AskKind.decision,
-        },
-        title: ask.title,
-        body: ask.body.isEmpty ? null : ask.body,
-        waiting: relativeAge(ask.since, at),
-        actions: [
-          for (final action in ask.actions)
-            AskAction(
-              action.label,
-              onTap: onAnswer == null ? null : () => onAnswer(ask, action),
-            ),
-        ],
+      child: AnswerableAsk(
+        // The card's own state — a reply field, what was typed, the last
+        // action — belongs to this ask, not to this position: an ask answered
+        // and dropped must not hand its open field to the one that takes its
+        // place (F9 decision 9, the same key the Inbox and the Overview use).
+        key: ValueKey('${ask.host}|${ask.id}'),
+        ask: ask,
         placement: AskPlacement.thread,
+        now: now ?? DateTime.now(),
+        onAnswer: onAnswer,
       ),
     );
   }
@@ -375,7 +397,6 @@ class _PinnedAsk extends StatelessWidget {
 class _Row extends StatelessWidget {
   const _Row({
     required this.nodeId,
-    required this.index,
     required this.depth,
     required this.store,
     required this.view,
@@ -383,7 +404,6 @@ class _Row extends StatelessWidget {
   });
 
   final String nodeId;
-  final int index;
   final int depth;
   final StackStore store;
   final ThreadViewState view;
@@ -437,7 +457,7 @@ class _Row extends StatelessWidget {
         if (step == null) return const SizedBox.shrink();
         final foldable = (node.children ?? const <String>[]).isNotEmpty;
         return StepHeader(
-          number: '${index + 1}',
+          number: '${stepOrdinal(store, nodeId)}',
           headline: step.headline,
           took: _took(step),
           live: node.live ?? false,

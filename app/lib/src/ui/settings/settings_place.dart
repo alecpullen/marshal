@@ -42,9 +42,9 @@ typedef SettingsSectionBuild = Widget Function(StateKind? state);
 /// saying what it will hold (decision 9); the order of the ten is fixed
 /// here, so a section cannot move or go missing as the later steps land.
 ///
-/// The place is also where the appearance a person chose takes effect: the
-/// whole place is under [GeneralPreferences]' brightness, so choosing Dark
-/// in General recolours what is on screen at once.
+/// The appearance a person chose is the whole window's, not this place's: the
+/// window is under the brightness General sets, so choosing Dark recolours
+/// every screen at once, this one with them.
 class SettingsPlace extends StatefulWidget {
   const SettingsPlace({
     super.key,
@@ -54,7 +54,9 @@ class SettingsPlace extends StatefulWidget {
     this.state,
   });
 
-  /// This window's appearance and transcript density.
+  /// This window's appearance and transcript density, as the window holds
+  /// them. The place draws under the window's own theme; General's section is
+  /// what sets them.
   final GeneralPreferences preferences;
 
   /// The sections this build has. One with no builder is planned.
@@ -79,38 +81,25 @@ class _SettingsPlaceState extends State<SettingsPlace> {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: widget.preferences,
-      builder: (context, _) => EmberTheme(
-        brightness: widget.preferences.brightness,
-        child: Builder(
-          builder: (context) {
-            final narrow = MediaQuery.sizeOf(context).width < Layout.narrow;
-            final content = KeyedSubtree(
-              key: ValueKey(_open),
-              child: _section(),
-            );
-            if (narrow) {
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Flexible(flex: 2, child: _list()),
-                  const Hairline(),
-                  Expanded(flex: 3, child: content),
-                ],
-              );
-            }
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SizedBox(width: Layout.sidebar, child: _list()),
-                const Hairline.vertical(),
-                Expanded(child: content),
-              ],
-            );
-          },
-        ),
-      ),
+    final narrow = MediaQuery.sizeOf(context).width < Layout.narrow;
+    final content = KeyedSubtree(key: ValueKey(_open), child: _section());
+    if (narrow) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Flexible(flex: 2, child: _list()),
+          const Hairline(),
+          Expanded(flex: 3, child: content),
+        ],
+      );
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(width: Layout.sidebar, child: _list()),
+        const Hairline.vertical(),
+        Expanded(child: content),
+      ],
     );
   }
 

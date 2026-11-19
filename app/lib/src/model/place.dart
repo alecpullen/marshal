@@ -159,8 +159,14 @@ int sectionIndex(Place place) {
 
 /// The path segment of each simple place. `project` and `thread` carry a
 /// target and are formatted by [formatPlace].
+///
+/// The overview has a segment of its own, `/overview`, rather than living at
+/// the root: `/` is the app's root route, which the surrounding `MaterialApp`
+/// answers itself by pushing its home route, so an arrival at `/` never
+/// reaches the screen that would open it (F8 decision 2). `/` still parses to
+/// the overview, because anything this build does not know does.
 const _segments = {
-  PlaceKind.overview: '',
+  PlaceKind.overview: 'overview',
   PlaceKind.inbox: 'inbox',
   PlaceKind.pulls: 'pulls',
   PlaceKind.automations: 'automations',

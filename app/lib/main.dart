@@ -131,11 +131,16 @@ Future<void> main() async {
     preferences: preferences,
     signals: signals,
   );
+  // The appearance and density General sets are the window's, so the root is
+  // what listens: every screen is drawn under the theme the person chose, not
+  // only the one they chose it on.
   runApp(
-    EmberApp(
-      home: AnimatedBuilder(
-        animation: preferences,
-        builder: (context, _) => Studio(
+    AnimatedBuilder(
+      animation: preferences,
+      builder: (context, _) => EmberApp(
+        brightness: preferences.brightness,
+        home: Studio(
+          density: preferences.density,
           store: store,
           inbox: inbox,
           pulls: pulls,

@@ -1,6 +1,5 @@
 import '../../model/age.dart';
 import '../../model/fleet_store.dart' show HostView;
-import '../../model/inbox_model.dart' as model;
 import '../../model/overview_model.dart';
 import '../../model/place.dart';
 import '../../model/pulls_model.dart';
@@ -8,6 +7,7 @@ import '../../model/source_state.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/watches_model.dart' show TrippedWatch;
 import '../kit/kit.dart';
+import '../inbox/answerable_ask.dart';
 import '../pulls/pull_facts.dart';
 
 /// The Overview (F2 decision 8): what needs you, what is running, every
@@ -63,13 +63,7 @@ class Overview extends StatelessWidget {
   /// Answers an ask in place, without leaving the Overview. [reply] is a
   /// question's free text and [answers] the one collected per question when
   /// a request asks more than one.
-  final void Function(
-    model.Ask ask,
-    model.AskAction action, {
-    String? reply,
-    List<String>? answers,
-  })?
-  onAnswer;
+  final AnswerAsk? onAnswer;
 
   /// Opens the studio's new-work dialog: the page's primary action
   /// (design.md, "Starting work"). Null leaves the header without one rather
@@ -255,49 +249,14 @@ class Overview extends StatelessWidget {
         )
       else
         for (final ask in asks) ...[
-          AskCard(
-            kind: _askKind(ask.kind),
-            title: ask.title,
-            body: ask.body.isEmpty ? null : ask.body,
-            waiting: relativeAge(ask.since, now),
-            waitingSince: ask.since.toLocal().toString(),
-            source: ask.provenance,
-            onOpenSource: ask.thread == null ? null : _thread(ask.thread!),
+          AnswerableAsk(
+            key: ValueKey('${ask.host}|${ask.id}'),
+            ask: ask,
             placement: AskPlacement.overview,
-            actions: ask.answeredInThread
-                // A work item's asks carry its version and reviewed identity,
-                // so they are answered in the item's own thread: the card
-                // opens it and offers nothing that would post nothing here.
-                ? [
-                    AskAction(
-                      'Open in the factory',
-                      onTap: ask.thread == null ? null : _thread(ask.thread!),
-                      note: ask.thread == null
-                          ? 'This ask names no work item to open.'
-                          : null,
-                    ),
-                  ]
-                : ask.questions.length > 1
-                // Several questions need an answer for each, and the
-                // Overview has no room to collect them: the card sends the
-                // person to the Inbox, which draws every question of the
-                // request. Answering here would post a partial shape, which
-                // the agent reads as declined (internal/acp/questions.go).
-                ? [
-                    AskAction(
-                      'Open inbox',
-                      onTap: _open(const Place(PlaceKind.inbox)),
-                    ),
-                  ]
-                : [
-                    for (final action in ask.actions)
-                      AskAction(
-                        action.label,
-                        onTap: ask.state == model.AskState.sending
-                            ? null
-                            : () => onAnswer?.call(ask, action),
-                      ),
-                  ],
+            now: now,
+            onAnswer: onAnswer,
+            onOpenSource: ask.thread == null ? null : _thread(ask.thread!),
+            onOpenInbox: _open(const Place(PlaceKind.inbox)),
           ),
           const SizedBox(height: Space.s8),
         ],
@@ -475,6 +434,34 @@ class Overview extends StatelessWidget {
     ].join(' · ');
   }
 
+  /// The day's spend against its cap. The bar is `muted` unless the spend is
+  /// holding work back — a host reported the cap blocking work, or the cap is
+  /// used up — which is when a meter reports a fault (design-system.md §5).
+  Widget _spendMeter(SpendSummary spend) {
+    final value =
+        '\$${spend.spentUSD.toStringAsFixed(2)} of '
+        '\$${spend.capUSD.toStringAsFixed(2)}';
+    final fault = spend.blocked || spend.fraction >= 1;
+    final tooltip = spend.blocked
+        ? 'The daily cap is holding work back'
+        : spend.fraction >= 1
+        ? 'The daily cap is used up'
+        : 'Today’s spend against the daily cap';
+    return fault
+        ? Meter.fault(
+            label: 'Today',
+            value: value,
+            fraction: spend.fraction,
+            tooltip: tooltip,
+          )
+        : Meter(
+            label: 'Today',
+            value: value,
+            fraction: spend.fraction,
+            tooltip: tooltip,
+          );
+  }
+
   /// The side rail: what each host is carrying, and the day's spend.
   Widget _rail(BuildContext context) {
     final spend = overview.spend;
@@ -499,16 +486,7 @@ class Overview extends StatelessWidget {
           const SizedBox(height: Space.s12),
           const Label('Spend'),
           const SizedBox(height: Space.s12),
-          Meter.fault(
-            label: 'Today',
-            value:
-                '\$${spend.spentUSD.toStringAsFixed(2)} of '
-                '\$${spend.capUSD.toStringAsFixed(2)}',
-            fraction: spend.fraction,
-            tooltip: spend.blocked
-                ? 'The daily cap is holding work back'
-                : 'Today’s spend against the daily cap',
-          ),
+          _spendMeter(spend),
           // The days behind today, as the mock's rail draws them: a shape,
           // not a table (the spark says nothing about values).
           if (overview.spendDays.isNotEmpty) ...[
@@ -715,22 +693,4 @@ class Overview extends StatelessWidget {
 
   VoidCallback? _open(Place place) =>
       onSelect == null ? null : () => onSelect!(place);
-
-  /// An ask's kind in the kit's vocabulary (§5: one card, every ask).
-  ///
-  /// A work item's four asks are drawn with the kit's existing kinds (F6):
-  /// the card's title and body say what is being decided, and four new kinds
-  /// would be a design-system change that says nothing more.
-  static AskKind _askKind(model.AskKind kind) => switch (kind) {
-    model.AskKind.approval => AskKind.approval,
-    model.AskKind.question => AskKind.question,
-    model.AskKind.intake => AskKind.intake,
-    model.AskKind.pull => AskKind.pull,
-    model.AskKind.reviewDraft => AskKind.review,
-    model.AskKind.network => AskKind.network,
-    model.AskKind.approvalDraft => AskKind.approval,
-    model.AskKind.decision => AskKind.decision,
-    model.AskKind.recovery => AskKind.decision,
-    model.AskKind.completion => AskKind.decision,
-  };
 }

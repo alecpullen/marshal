@@ -31,6 +31,7 @@ import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
 import '../../model/work_item_model.dart'
     show WorkItemView, WorkItemWorker, threadOfItem;
+import '../inbox/answerable_ask.dart';
 import '../inbox/inbox.dart' show Inbox;
 import '../factory/handoff_sheet.dart';
 import '../factory/planning_screen.dart';
@@ -577,6 +578,7 @@ class Studio extends StatefulWidget {
     this.libraryFor,
     this.settingsFor,
     this.signals,
+    this.density = Density.comfortable,
     this.initialPlace = const Place.overview(),
     this.startPage,
   });
@@ -693,6 +695,11 @@ class Studio extends StatefulWidget {
   /// test or an embedded host that supplies none still builds.
   final SignalsStore? signals;
 
+  /// The density a thread opens at, as Settings' General section set it: what
+  /// General picks is what a transcript starts as. A thread's own switch still
+  /// overrides it for that thread, which is the only place it can be changed.
+  final Density density;
+
   /// The place a deep link names.
   final Place initialPlace;
 
@@ -705,8 +712,13 @@ class Studio extends StatefulWidget {
   State<Studio> createState() => _StudioState();
 }
 
-class _StudioState extends State<Studio> {
+class _StudioState extends State<Studio> with WidgetsBindingObserver {
   late Place _place = widget.initialPlace;
+
+  /// The place the page's own address names, once this screen has written it
+  /// (F8 decision 2). Null until then: a screen the page handed no place never
+  /// writes one, so a test and the tray's window leave the address alone.
+  Place? _written;
 
   /// What to say above the place when the link that opened this screen named
   /// nothing this build knows (F8 decision 2).
@@ -748,13 +760,30 @@ class _StudioState extends State<Studio> {
   @override
   void initState() {
     super.initState();
+    // A page with an address keeps one history entry per place the person
+    // opens, so Back walks them rather than leaving the Studio, and the
+    // address's own arrivals are this screen's to open (F8 decision 2).
+    //
+    // Only a page that was handed the address it opened at does either: a
+    // test, and a window the tray opened, have none to keep, and must not
+    // touch the platform's navigation at all.
+    if (widget.startPage != null) {
+      unawaited(SystemNavigator.selectMultiEntryHistory());
+      WidgetsBinding.instance.addObserver(this);
+    }
     _followPage();
     _reread();
   }
 
-  /// Opens the place the page's own address names, and replaces a hash written
-  /// for the Svelte Studio with this build's path for that place (F8 decision
-  /// 2), so a reload and Back land on it.
+  /// Opens the place the page's own address names, and writes that place back
+  /// as this build's path for it (F8 decision 2), so a reload and Back land on
+  /// it.
+  ///
+  /// The entry the page opened on is always replaced: a hash written for the
+  /// Svelte Studio, and a bare `/` that names the overview only by being the
+  /// root, are both addresses this screen would not be given on the way back —
+  /// `/` is the root route, which the surrounding app answers itself — so the
+  /// address must name the place the way this build writes it.
   ///
   /// A screen that was handed a place — a test, the tray — is left alone: only
   /// a page that named no place is followed.
@@ -762,17 +791,21 @@ class _StudioState extends State<Studio> {
     final page = widget.startPage;
     if (page == null) return;
     _place = page.place;
+    // The address names this place once it is written below, so the first
+    // navigation after it is a push rather than a second write of the same.
+    _written = page.place;
     _notice = page.notice;
-    if (page.fromHash) {
-      SystemNavigator.routeInformationUpdated(
-        uri: Uri.parse(formatPlace(page.place)),
-        replace: true,
-      );
-    }
+    SystemNavigator.routeInformationUpdated(
+      uri: Uri.parse(formatPlace(page.place)),
+      replace: true,
+    );
   }
 
   @override
   void dispose() {
+    if (widget.startPage != null) {
+      WidgetsBinding.instance.removeObserver(this);
+    }
     _unsaved.dispose();
     super.dispose();
   }
@@ -851,8 +884,10 @@ class _StudioState extends State<Studio> {
               : () => unawaited(_openConnectRepo(context)),
           // The place-level New (F9 B3): the narrow app bar and the sidebar
           // start work the way the page headers do, through the same
-          // resolution `⌘N` uses.
-          onNew: _firstProject() == null ? null : _newWorkFromKeys,
+          // resolution `⌘N` uses — but unguarded, because a tap does not take
+          // the keyboard from a composer and a button that asked the key path
+          // would do nothing while one held it.
+          onNew: _firstProject() == null ? null : _newWork,
         );
         // The shell's keys (f9-parity decision 6): one Shortcuts above the
         // place, so `⌘N` and `⌘1/⌘2/⌘3` work wherever a person is rather than
@@ -909,6 +944,62 @@ class _StudioState extends State<Studio> {
       _notice = null;
       _place = next;
     });
+    _writeAddress(next);
+  }
+
+  /// Writes [place] into the page's address as a new history entry, so Back
+  /// returns to the place before it (F8 decision 2). A push, not a replace:
+  /// the place a person opens is a page they can go back from.
+  ///
+  /// A place the address already names is not written again, and a screen the
+  /// page handed no address writes nothing at all — a test and the tray's
+  /// window have no page to name.
+  void _writeAddress(Place place, {bool replace = false}) {
+    if (widget.startPage == null) return;
+    if (!replace && _written == place) return;
+    _written = place;
+    SystemNavigator.routeInformationUpdated(
+      uri: Uri.parse(formatPlace(place)),
+      replace: replace,
+    );
+  }
+
+  /// Opens the place the address has arrived at: Back, Forward and a reload
+  /// all come through here, so each lands on the place the address names
+  /// (F8 decision 2).
+  ///
+  /// The address names it already, so nothing is written back. A place with an
+  /// unsaved edit asks first, through the guard a click asks; a person who
+  /// keeps editing stays put, and the address that moved on is put back to the
+  /// place still on screen, replacing the entry that arrived.
+  @override
+  Future<bool> didPushRouteInformation(
+    RouteInformation routeInformation,
+  ) async {
+    // The whole address is read, not just its path: a place carries its
+    // inspector keys in the query and a link written for the old Studio in the
+    // fragment, and both are how the entry names what it opens.
+    final uri = routeInformation.uri;
+    final place = startPlace(
+      path: uri.hasQuery ? '${uri.path}?${uri.query}' : uri.path,
+      hash: uri.fragment.isEmpty ? '' : '#${uri.fragment}',
+    ).place;
+    if (place != _place && !await _mayLeave()) {
+      _writeAddress(_place, replace: true);
+      return true;
+    }
+    if (!mounted) return true;
+    _written = place;
+    _go(place);
+    return true;
+  }
+
+  /// Whether the place on screen may be left: yes when nothing is being
+  /// edited, and otherwise whatever the person says to the one guard every
+  /// place leaving this screen asks (F7 decision 3).
+  Future<bool> _mayLeave() async {
+    if (!_unsaved.hasUnsavedEdits) return true;
+    return _unsaved.confirm(context);
   }
 
   /// The shell's state, from what the store holds.
@@ -1078,6 +1169,7 @@ class _StudioState extends State<Studio> {
           threadStore: build,
           composerFor: widget.composerFor,
           now: widget.store.now,
+          density: widget.density,
           onRetry: () => unawaited(factory.refresh(thread.host)),
         );
       }
@@ -1087,16 +1179,20 @@ class _StudioState extends State<Studio> {
           thread: thread,
           buildStore: build,
           composerFor: widget.composerFor,
+          density: widget.density,
           // The thread's own ⌘N opens the Studio's one dialog, naming the
           // thread's host and project; the dialog may then move to another
           // host (spec D10, P8 plan 2 decision 6).
           shareFor: widget.shareFor,
           inspectorFor: widget.inspectorFor,
-          // The thread's own ⌘N is the shell's one call, so it obeys the same
-          // rule about a composer that has the keyboard (F9 decision 6). The
-          // dialog opens on this thread's host and may move to another (spec
-          // D10, P8 plan 2 decision 6).
-          onNewWork: widget.newWorkFor == null ? null : _newWorkFromKeys,
+          // The thread's New buttons open the Studio's one dialog; its own ⌘N
+          // does too, but behind the shell's guard against a composer that has
+          // the keyboard (F9 decision 6). The dialog opens on this thread's
+          // host and may move to another (spec D10, P8 plan 2 decision 6).
+          onNewWork: widget.newWorkFor == null ? null : _newWork,
+          onNewWorkFromKeys: widget.newWorkFor == null
+              ? null
+              : _newWorkFromKeys,
           asks: [
             for (final ask in widget.inbox.asks)
               if (ask.thread?.host == thread.host &&
@@ -1263,12 +1359,22 @@ class _StudioState extends State<Studio> {
         focused.findAncestorWidgetOfExactType<EditableText>() != null;
   }
 
-  /// ⌘N from anywhere (f9-parity decision 6): it opens the new-work dialog for
-  /// the project in view — the thread's, the project place's, else the first
-  /// the fleet lists — and does nothing at all while a text field has the
-  /// keyboard, so typing a `⌘N` into a composer is not a key press.
+  /// ⌘N from anywhere (f9-parity decision 6): a key press does nothing at all
+  /// while a text field has the keyboard, so typing a `⌘N` into a composer is
+  /// not a key press, and otherwise opens the new-work dialog ([_newWork]).
+  ///
+  /// The guard belongs to the key path alone. A pointer tap does not take the
+  /// keyboard from a composer, so a New button that asked here would be dead
+  /// while a field held the keyboard: every button calls [_newWork] directly.
   void _newWorkFromKeys() {
     if (_editingText()) return;
+    _newWork();
+  }
+
+  /// Opens the new-work dialog for the project in view — the thread's, the
+  /// project place's, else the first the fleet lists — for every caller but
+  /// the key path, which guards a focused text field first.
+  void _newWork() {
     final place = _place;
     String? host;
     String? project;
@@ -1408,16 +1514,23 @@ class _ThreadPlace extends StatefulWidget {
     this.shareFor,
     this.inspectorFor,
     this.onNewWork,
+    this.onNewWorkFromKeys,
     this.asks = const [],
     this.onAnswer,
     this.now,
     this.pulls,
+    this.density = Density.comfortable,
   });
 
   final model.ThreadRef thread;
   final StackStore Function(model.ThreadRef thread) buildStore;
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
+
+  /// What this thread opens as, from Settings' General section: the density a
+  /// transcript starts at. The thread's own switch still overrides it, for
+  /// this thread alone.
+  final Density density;
 
   /// Builds this thread's Share model, once, when the place opens. Null
   /// leaves the header's Share disabled.
@@ -1429,11 +1542,16 @@ class _ThreadPlace extends StatefulWidget {
   final InspectorBuilder? inspectorFor;
 
   /// Opens the Studio's one new-work dialog for this thread's host and
-  /// project. Null leaves `⌘N` and the empty transcript's action without a
-  /// dialog.
+  /// project: the thread's empty transcript and outline ask for it. Null
+  /// leaves those actions without a dialog.
   final VoidCallback? onNewWork;
+
+  /// What this thread's own `⌘N` asks for: the same dialog, behind the
+  /// shell's guard against a composer that holds the keyboard (F9 decision 6).
+  /// Null falls back to [onNewWork].
+  final VoidCallback? onNewWorkFromKeys;
   final List<inbox.Ask> asks;
-  final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
+  final AnswerAsk? onAnswer;
   final DateTime? now;
 
   /// The pull requests this thread shipped: the review head or the failing
@@ -1446,7 +1564,8 @@ class _ThreadPlace extends StatefulWidget {
 
 class _ThreadPlaceState extends State<_ThreadPlace> {
   late final StackStore _store = widget.buildStore(widget.thread);
-  late final ThreadViewState _view = ThreadViewState();
+  late final ThreadViewState _view = ThreadViewState()
+    ..density = widget.density;
 
   /// The inspector this thread's tabs read, built once so a rebuild does not
   /// rebuild five models (F9 decision 4).
@@ -1469,6 +1588,10 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
     // A thread opened while its agent is mid-turn offers Steer and Stop from
     // the first frame, from the fleet's own report of the agent.
     _composer?.setRunning(_turnRunning);
+    // The composer's chip names the session's own access, which only a read
+    // reports: the first frame draws the composer's default until it lands.
+    final composer = _composer;
+    if (composer != null) unawaited(composer.refreshAccess());
   }
 
   @override
@@ -1479,6 +1602,12 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
     // running, or parked on a person, keeps Steer and Stop.
     if (old.thread.status != widget.thread.status) {
       _composer?.setRunning(_turnRunning);
+      // The chip is read again at a turn boundary: the mode a session commits
+      // is announced as it happens, but the Studio's one place to re-read it
+      // without a subscription is here, so a chip can be stale until the turn
+      // ends (best-effort, per the plan's non-goal on switching mode).
+      final composer = _composer;
+      if (composer != null) unawaited(composer.refreshAccess());
     }
   }
 
@@ -1519,6 +1648,7 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
           ? null
           : () => _sendBack(context),
       onNewWork: widget.onNewWork,
+      onNewWorkFromKeys: widget.onNewWorkFromKeys,
       // The panel beside the transcript, when a host built one (F9
       // decision 4). Null leaves the screen as it was before F9.
       inspector: _inspector?.state,
@@ -1632,6 +1762,7 @@ class _WorkItemPlace extends StatefulWidget {
     this.threadStore,
     this.composerFor,
     this.now,
+    this.density = Density.comfortable,
     this.onRetry,
   });
 
@@ -1645,6 +1776,11 @@ class _WorkItemPlace extends StatefulWidget {
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
   final DateTime? now;
+
+  /// The density the item's worker transcript opens at, passed on from the
+  /// Studio: what Settings' General section chose.
+  final Density density;
+
   final VoidCallback? onRetry;
 
   @override
@@ -1704,6 +1840,7 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
               buildStore: build,
               composerFor: widget.composerFor,
               now: widget.now,
+              density: widget.density,
               pulls: widget.pulls,
             ),
       onBack: () => setState(() => _worker = null),

@@ -130,6 +130,86 @@ void main() {
     view.dispose();
   });
 
+  testWidgets('steps are numbered among steps, not rows', (tester) async {
+    final store = StackStore.seeded(
+      StackSnapshot(
+        sessionID: 's-1',
+        rev: 1,
+        roots: const ['turn:1'],
+        nodes: const [
+          WireNode(
+            id: 'turn:1',
+            kind: 'turn',
+            children: [
+              'msg:user',
+              'msg:1',
+              'step:1',
+              'tool:1',
+              'msg:2',
+              'step:2',
+            ],
+          ),
+          WireNode(
+            id: 'msg:user',
+            kind: 'message',
+            parent: 'turn:1',
+            message: WireMessage(role: 'user', content: 'Map the fixtures'),
+          ),
+          WireNode(
+            id: 'msg:1',
+            kind: 'message',
+            parent: 'turn:1',
+            message: WireMessage(role: 'assistant', content: 'Reading them'),
+          ),
+          WireNode(
+            id: 'step:1',
+            kind: 'step',
+            parent: 'turn:1',
+            step: WireStep(headline: 'Read the fixtures'),
+          ),
+          WireNode(
+            id: 'tool:1',
+            kind: 'tool',
+            parent: 'turn:1',
+            tool: WireTool(
+              name: 'file.read',
+              display: 'Read file',
+              verb: 'read',
+              calls: [WireCall(callID: 'c1', target: 'test/fixtures.go')],
+            ),
+          ),
+          WireNode(
+            id: 'msg:2',
+            kind: 'message',
+            parent: 'turn:1',
+            message: WireMessage(role: 'assistant', content: 'Rewriting them'),
+          ),
+          WireNode(
+            id: 'step:2',
+            kind: 'step',
+            parent: 'turn:1',
+            step: WireStep(headline: 'Rewrote the fixtures'),
+          ),
+        ],
+      ),
+    );
+    final view = ThreadViewState()..density = Density.full;
+    await pumpThread(tester, store: store, view: view);
+
+    // The prompt, a narration and a tool row sit before and between the
+    // steps; the second step is still the second step.
+    final numbers = [
+      for (final header in tester.widgetList<StepHeader>(
+        find.byType(StepHeader),
+      ))
+        header.number,
+    ];
+    expect(numbers, ['1', '2']);
+
+    store.dispose();
+    view.dispose();
+  });
+
   testWidgets('a folded step hides its children', (tester) async {
     final store = fixtureStore();
     final view = ThreadViewState();

@@ -10,6 +10,7 @@ import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
 import '../inspector/inspector.dart';
+import '../inbox/answerable_ask.dart';
 import '../kit/kit.dart';
 import '../pulls/pull_facts.dart';
 import 'review_head.dart';
@@ -95,6 +96,7 @@ class ThreadScreen extends StatefulWidget {
     this.onShare,
     this.onStop,
     this.onNewWork,
+    this.onNewWorkFromKeys,
     this.onCopyRow,
     this.selection,
     this.asks = const [],
@@ -144,8 +146,16 @@ class ThreadScreen extends StatefulWidget {
   /// Stops the thread.
   final VoidCallback? onStop;
 
-  /// Opens the new-work dialog (`⌘N`).
+  /// Opens the new-work dialog: what this thread's empty transcript and
+  /// outline ask for. A New button always opens it, because a tap does not
+  /// take the keyboard from a composer (`kit/Press`).
   final VoidCallback? onNewWork;
+
+  /// What this thread's own `⌘N` asks for. The shell guards it against a
+  /// composer that holds the keyboard (F9 decision 6), so it is a separate
+  /// call from [onNewWork]. Null falls back to [onNewWork], which is what a
+  /// caller that supplies only one of them meant.
+  final VoidCallback? onNewWorkFromKeys;
 
   /// Copies the cursor row (`y`). The free selection copies with `⌘C`, which
   /// this screen owns so one instance serves both.
@@ -159,8 +169,7 @@ class ThreadScreen extends StatefulWidget {
   final List<asks_model.Ask> asks;
 
   /// Answers an ask where it is pinned.
-  final void Function(asks_model.Ask ask, asks_model.AskAction action)?
-  onAnswer;
+  final AnswerAsk? onAnswer;
 
   /// What a waiting time is measured against.
   final DateTime? now;
@@ -245,7 +254,14 @@ class _ThreadScreenState extends State<ThreadScreen> {
     final control = HardwareKeyboard.instance.isControlPressed;
 
     if ((meta || control) && key == LogicalKeyboardKey.keyN) {
-      widget.onNewWork?.call();
+      // The key path, not the button path: the shell guards this one against
+      // a composer that holds the keyboard.
+      final newWork = widget.onNewWorkFromKeys ?? widget.onNewWork;
+      // A screen built with no dialog to open — a worker transcript is one —
+      // leaves `⌘N` to the shell, whose own guard still opens it. Swallowing
+      // the key here would make it dead rather than handled elsewhere.
+      if (newWork == null) return KeyEventResult.ignored;
+      newWork();
       return KeyEventResult.handled;
     }
     if ((meta || control) && key == LogicalKeyboardKey.keyC) {

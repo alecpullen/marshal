@@ -46,7 +46,7 @@ void main() {
   });
 
   test('the paths are the ones the design names', () {
-    expect(formatPlace(const Place.overview()), '/');
+    expect(formatPlace(const Place.overview()), '/overview');
     expect(formatPlace(const Place(PlaceKind.inbox)), '/inbox');
     expect(formatPlace(const Place(PlaceKind.pulls)), '/pulls');
     expect(formatPlace(const Place(PlaceKind.automations)), '/automations');

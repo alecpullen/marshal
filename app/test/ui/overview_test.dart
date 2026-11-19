@@ -8,6 +8,7 @@ import 'package:marshal_app/src/model/watches_model.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/model/pulls_model.dart';
 import 'package:marshal_app/src/model/source_state.dart';
+import 'package:marshal_app/src/ui/inbox/answerable_ask.dart';
 import 'package:marshal_app/src/ui/overview/overview.dart';
 
 import '../support/pulls.dart';
@@ -62,6 +63,7 @@ void main() {
     StateKind? state,
     List<TrippedWatch> automations = const [],
     bool manyHosts = false,
+    AnswerAsk? onAnswer,
   }) => EmberApp(
     brightness: Brightness.light,
     home: Overview(
@@ -72,6 +74,7 @@ void main() {
       manyHosts: manyHosts,
       state: state,
       onSelect: (place) => opened?.add(place),
+      onAnswer: onAnswer,
       onRetry: () {},
     ),
   );
@@ -253,6 +256,59 @@ void main() {
     expect(opened, [
       const Place(PlaceKind.thread, host: 'local', id: 'item-1'),
     ]);
+  });
+
+  testWidgets('Reply on the Overview posts the words typed', (tester) async {
+    String? typedReply;
+    model.AskAction? withAction;
+    final overview = OverviewModel(
+      needsYou: [
+        ask(
+          'q-1',
+          'Which branch?',
+          5,
+          kind: model.AskKind.question,
+          thread: thread('a-1', 'Reliable session recovery'),
+          actions: const [
+            model.AskAction(
+              'Reply',
+              primary: true,
+              kind: model.AskActionKind.reply,
+            ),
+            model.AskAction('Decline', kind: model.AskActionKind.decline),
+          ],
+        ),
+      ],
+      running: const [],
+      needsYouTotal: 1,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: null,
+    );
+    await tester.pumpWidget(
+      show(
+        overview,
+        onAnswer: (ask, action, {reply, answers}) {
+          withAction = action;
+          typedReply = reply;
+        },
+      ),
+    );
+
+    // The Overview answers in place, exactly as the Inbox does: one action
+    // opens the field, and Send carries its words.
+    await tester.tap(find.text('Reply'));
+    await tester.pump();
+    expect(find.byType(Field), findsOneWidget);
+
+    await tester.enterText(find.byType(Field), 'a topic branch');
+    await tester.tap(find.text('Send'));
+    await tester.pump();
+
+    expect(withAction?.label, 'Reply');
+    expect(typedReply, 'a topic branch');
+    expect(find.byType(Field), findsNothing);
   });
 
   testWidgets('every card names its source', (tester) async {
@@ -553,6 +609,76 @@ void main() {
     final spark = tester.widget<Spark>(find.byType(Spark));
     expect(spark.semanticLabel, 'Daily spend');
     expect(spark.values, [1.0, 2.5, 6.0]);
+  });
+
+  testWidgets('spend under its cap is not a fault', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: const SpendSummary(
+        day: '2026-11-17',
+        spentUSD: 0.1,
+        capUSD: 10,
+        blocked: false,
+      ),
+    );
+    await tester.pumpWidget(show(overview));
+
+    // A bar that is barely filled reports no fault (design-system.md §5), so
+    // it is drawn muted: the reading itself is the same either way.
+    final meter = tester.widget<Meter>(find.byType(Meter));
+    expect(meter.fault, isFalse);
+    expect(meter.value, '\$0.10 of \$10.00');
+    expect(meter.tooltip, 'Today’s spend against the daily cap');
+  });
+
+  testWidgets('spend that blocks work is a fault', (tester) async {
+    final overview = OverviewModel(
+      needsYou: const [],
+      running: const [],
+      needsYouTotal: 0,
+      sources: const [],
+      projects: const [],
+      capacity: const [],
+      spend: const SpendSummary(
+        day: '2026-11-17',
+        spentUSD: 0.1,
+        capUSD: 10,
+        blocked: true,
+      ),
+    );
+    await tester.pumpWidget(show(overview));
+
+    // A host reported the cap holding work back: that is a fault, whatever
+    // the bar's fill says.
+    final blocked = tester.widget<Meter>(find.byType(Meter));
+    expect(blocked.fault, isTrue);
+    expect(blocked.tooltip, 'The daily cap is holding work back');
+
+    // A cap that is used up holds work back even with no host reporting it.
+    await tester.pumpWidget(
+      show(
+        const OverviewModel(
+          needsYou: [],
+          running: [],
+          needsYouTotal: 0,
+          sources: [],
+          projects: [],
+          capacity: [],
+          spend: SpendSummary(
+            day: '2026-11-17',
+            spentUSD: 10,
+            capUSD: 10,
+            blocked: false,
+          ),
+        ),
+      ),
+    );
+    expect(tester.widget<Meter>(find.byType(Meter)).fault, isTrue);
   });
 
   testWidgets('the split names the top three roles', (tester) async {

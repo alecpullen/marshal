@@ -7,6 +7,7 @@ import 'package:marshal_app/src/model/new_work_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
+import 'package:marshal_app/src/ui/shell/sidebar.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
 import 'package:marshal_app/src/ui/thread/thread_composer.dart';
 
@@ -196,6 +197,149 @@ void main() {
     expect(find.text('Start a new agent'), findsNothing);
   });
 
+  testWidgets('New in the sidebar opens with the composer focused', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final fixture = await fixtureWithProject(tester);
+    fixture.bridges['local']!
+      ..reply(
+        'GET',
+        '/api/prompts/recent',
+        const FakeReply(200, body: '{"prompts":[]}'),
+      )
+      ..reply('GET', '/api/recipes', const FakeReply(200, body: '[]'));
+    final inboxModel = inbox.InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+    );
+    addTearDown(inboxModel.dispose);
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inboxModel,
+          initialPlace: const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
+          threadStore: (thread) => StackStore.seeded(_snapshot()),
+          composerFor: (thread, view) => ComposerModel(
+            prompt: (text) async {},
+            steer: (text) async {},
+            cancel: () async {},
+            setMode: (mode) async {},
+            access: () async => const AccessState(
+              mode: 'act',
+              auto: false,
+              system: false,
+              revision: 1,
+            ),
+            view: view,
+          ),
+          newWorkFor: (host, root) => NewWorkModel.forProject(
+            project('/home/u/marshal'),
+            fixture.clientFor('local'),
+            host: 'local',
+          ),
+        ),
+      ),
+    );
+    await settleIo(tester);
+
+    // A tap does not take the keyboard from the composer (kit/Press), so the
+    // sidebar's plus arrives while the field still holds it: the button opens
+    // the dialog anyway, and only `⌘N` is guarded.
+    await tester.tap(
+      find.descendant(
+        of: find.byType(ThreadComposer),
+        matching: find.byType(EditableText),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(
+      find.descendant(
+        of: find.byType(Sidebar),
+        matching: find.byTooltip('New'),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('Start a new agent'), findsOneWidget);
+  });
+
+  testWidgets("a thread's New opens with the composer focused", (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final fixture = await fixtureWithProject(tester);
+    fixture.bridges['local']!
+      ..reply(
+        'GET',
+        '/api/prompts/recent',
+        const FakeReply(200, body: '{"prompts":[]}'),
+      )
+      ..reply('GET', '/api/recipes', const FakeReply(200, body: '[]'));
+    final inboxModel = inbox.InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+    );
+    addTearDown(inboxModel.dispose);
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inboxModel,
+          initialPlace: const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
+          // An empty transcript is where the thread's own New control lives:
+          // its empty-state action must open the dialog even while a composer
+          // holds the keyboard. Only the thread's `⌘N` is guarded.
+          threadStore: (thread) => StackStore.seeded(
+            const StackSnapshot(sessionID: 'a-1', rev: 1, roots: [], nodes: []),
+          ),
+          composerFor: (thread, view) => ComposerModel(
+            prompt: (text) async {},
+            steer: (text) async {},
+            cancel: () async {},
+            setMode: (mode) async {},
+            access: () async => const AccessState(
+              mode: 'act',
+              auto: false,
+              system: false,
+              revision: 1,
+            ),
+            view: view,
+          ),
+          newWorkFor: (host, root) => NewWorkModel.forProject(
+            project('/home/u/marshal'),
+            fixture.clientFor('local'),
+            host: 'local',
+          ),
+        ),
+      ),
+    );
+    await settleIo(tester);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(ThreadComposer),
+        matching: find.byType(EditableText),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.text('Start an agent'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('Start a new agent'), findsOneWidget);
+  });
+
   testWidgets('⌘2 does nothing while a composer has focus', (tester) async {
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1;
@@ -248,5 +392,59 @@ void main() {
 
     expect(find.widgetWithText(PageBody, 'Inbox'), findsNothing);
     expect(find.byType(ThreadComposer), findsOneWidget);
+  });
+
+  testWidgets('opening a thread reads its access', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final fixture = await fixtureWithProject(tester);
+    final inboxModel = inbox.InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+    );
+    addTearDown(inboxModel.dispose);
+    // The session committed auto, which only a read of the access route
+    // reports: the chip names it.
+    fixture.bridges['local']!.reply(
+      'GET',
+      '/api/sessions/a-1/access',
+      const FakeReply(
+        200,
+        body:
+            '{"mode":"act","auto":true,"system_access":false,'
+            '"access_revision":1}',
+      ),
+    );
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inboxModel,
+          initialPlace: const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
+          threadStore: (thread) => StackStore.seeded(_snapshot()),
+          composerFor: (thread, view) => ComposerModel.forSession(
+            fixture.clientFor(thread.host),
+            thread.id,
+            view: view,
+          ),
+        ),
+      ),
+    );
+    await settleIo(tester);
+
+    final reads = [
+      for (final request in fixture.requests('local'))
+        if (request.method == 'GET' &&
+            request.uri == '/api/sessions/a-1/access')
+          request.uri,
+    ];
+    expect(reads, hasLength(1), reason: 'the composer reads access once');
+    // The chip names what the read reported.
+    await settleIo(tester);
+    expect(find.text('Act · Auto'), findsOneWidget);
   });
 }

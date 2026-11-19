@@ -76,7 +76,7 @@ void main() {
       view: view,
       asks: [askToAnswer],
       now: DateTime.utc(2026, 11, 17, 4, 20),
-      onAnswer: (theAsk, action) {
+      onAnswer: (theAsk, action, {String? reply, List<String>? answers}) {
         answered.add('${theAsk.id}:${action.label}');
         answeredAsk = theAsk;
         answeredAction = action;

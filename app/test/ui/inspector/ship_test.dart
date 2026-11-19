@@ -86,6 +86,30 @@ void main() {
     expect(find.text('Done'), findsOneWidget);
   });
 
+  testWidgets('an opened pull request says where its checks show', (
+    tester,
+  ) async {
+    await pumpKit(
+      tester,
+      const ShipOutcomeView(
+        result: ShipResult(
+          ShipOutcome.pullRequest,
+          url: 'https://example.com/marshal/pull/7',
+          message: 'f4-inspector',
+        ),
+      ),
+    );
+
+    // The checks are the forge's, and Pull requests is where they show.
+    expect(
+      find.text(
+        'Its checks run on the forge; Pull requests shows them as they finish.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('F5'), findsNothing);
+  });
+
   testWidgets('a pushed branch says what to do next', (tester) async {
     await pumpKit(
       tester,

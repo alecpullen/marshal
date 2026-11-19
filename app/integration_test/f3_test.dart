@@ -79,7 +79,7 @@ void main() {
           step: '1',
         ),
       ],
-      onAnswer: (theAsk, action) =>
+      onAnswer: (theAsk, action, {reply, answers}) =>
           answered.add('${theAsk.id}:${action.label}'),
       composer: ThreadComposer(model: composer, view: view),
     );

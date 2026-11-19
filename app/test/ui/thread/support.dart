@@ -4,6 +4,7 @@ import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/model/thread_view_state.dart';
+import 'package:marshal_app/src/ui/inbox/answerable_ask.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
 
@@ -108,7 +109,7 @@ Future<void> pumpThread(
   void Function(String nodeId)? onCopyRow,
   Widget? composer,
   List<model.Ask> asks = const [],
-  void Function(model.Ask ask, model.AskAction action)? onAnswer,
+  AnswerAsk? onAnswer,
   DateTime? now,
 }) async {
   tester.view.physicalSize = const Size(900, 700);

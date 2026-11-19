@@ -111,10 +111,16 @@ type snapshotReason string
 
 const (
 	// Reasons mirrored from internal/snapshot/errors.go (StoreReason values).
+	//
+	// reasonCommandTimeout is one managed command that the store's own time bound
+	// ended. It is not a storage fault: the capture did not fit in the time
+	// allowed, so retrying is the right response — not repairing or deleting
+	// anything.
 	reasonBudgetExhausted        snapshotReason = "budget_exhausted"
 	reasonInsufficientFreeSpace  snapshotReason = "insufficient_free_space"
 	reasonUnreadableFile         snapshotReason = "unreadable_file"
 	reasonLockTimeout            snapshotReason = "lock_timeout"
+	reasonCommandTimeout         snapshotReason = "command_timeout"
 	reasonInterruptedCapture     snapshotReason = "interrupted_capture"
 	reasonLegacyRecoveryRequired snapshotReason = "legacy_recovery_required"
 	reasonAccountingOverflow     snapshotReason = "accounting_overflow"
@@ -149,6 +155,7 @@ var storeReasonTokens = []snapshotReason{
 	reasonLegacyRecoveryRequired,
 	reasonInterruptedCapture,
 	reasonLockTimeout,
+	reasonCommandTimeout,
 	reasonUnreadableFile,
 	reasonAccountingOverflow,
 	reasonUnsupportedPlatform,
@@ -236,6 +243,11 @@ func snapshotReasonDetail(reason snapshotReason) string {
 		return "a previous capture was interrupted and has not been reconciled"
 	case reasonLockTimeout:
 		return "another process holds the snapshot store lock"
+	case reasonCommandTimeout:
+		// A timeout is not a storage condition: nothing is corrupt, nothing needs
+		// reclaiming, and the capture merely needs to run again. Saying so is what
+		// stops this being read as a store that needs cleaning up.
+		return "a snapshot command was still running when its time bound ended it, so the capture did not finish (nothing in the store is damaged; retrying is safe)"
 	case reasonUnreadableFile:
 		return "a path in the snapshot store could not be read, so usage cannot be accounted for"
 	case reasonAccountingOverflow:

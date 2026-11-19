@@ -153,7 +153,10 @@ func (r *Runner) shellInputFor(toolName string, argsMap map[string]interface{}) 
 		}
 	}
 	dir := r.State.WorkingDir
-	workspace := r.State.Workspace().ActiveRoot
+	// The recovered root, not the recorded one: a worktree removed underneath
+	// the session is put right here, before admission decides, so the command
+	// is judged against the directory it will actually run in.
+	workspace := r.State.EnsureWorkspaceRoot().ActiveRoot
 	if workspace == "" {
 		workspace = dir
 	}

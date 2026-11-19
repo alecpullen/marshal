@@ -242,6 +242,13 @@ func TestDispatchActorUsesExecutionWorktree(t *testing.T) {
 	if got := parent.Workspace().ActiveRoot; got != parent.WorkingDir {
 		t.Errorf("parent active root = %q, want it unchanged at %q", got, parent.WorkingDir)
 	}
+	// The binding is isolated (spec § D6): a dispatch worktree that has
+	// vanished must leave the child where it was, not move it to the project
+	// root the run was launched from. The worktree above was never created, so
+	// without the flag this call recovers to the launch directory.
+	if got := child.EnsureWorkspaceRoot().ActiveRoot; got != worktree {
+		t.Errorf("EnsureWorkspaceRoot() moved the child to %q, want the bound worktree %q", got, worktree)
+	}
 }
 
 // TestDispatchActorDoesNotRetargetParentWorkspace covers the shared-session

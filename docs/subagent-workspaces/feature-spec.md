@@ -2,7 +2,8 @@
 
 Date: 2026-11-20
 
-Status: draft for design approval. Implementation plans follow approval.
+Status: approved on 2026-11-20. Implementation follows the [three ordered
+plans](plans/README.md).
 
 ## Intent
 
@@ -34,9 +35,8 @@ Three approaches were considered:
 | Separate worktrees; separate PRs | Each task is independently reviewable, with more branches and review work | Parents can still publish task branches when requested; publishing is outside this feature |
 | One shared worktree | Simple for small tasks, with shared edits and build state | Explicit option; never a silent fallback |
 
-The operational choices below are the proposed design for approval, including
-merge topology, retention, scope and recovery. They are not additional user
-decisions already made in conversation.
+The user subsequently approved the complete design below, including merge
+topology, retention, scope and recovery.
 
 ## Evidence and existing machinery
 

@@ -60,6 +60,9 @@ type WorkspaceStatus struct {
 	Allocated int64
 	// Generations lists each generation with its measured size and protection.
 	Generations []GenerationUsage
+	// Missing lists manifest records whose generation directory is gone. Their
+	// snapshots are lost; the records are kept until an explicit cleanup.
+	Missing []MissingGeneration
 	// Unlisted lists generation directories the manifest does not describe.
 	Unlisted []*GenerationUsage
 	// StagingAllocated is the measured size of capture scratch.
@@ -72,6 +75,14 @@ type WorkspaceStatus struct {
 	OverBudget bool
 	// Warnings are this workspace's problems.
 	Warnings []MaintenanceWarning
+}
+
+// MissingGeneration is a manifest record whose generation directory is gone.
+type MissingGeneration struct {
+	// ID is the generation identifier.
+	ID string
+	// State is the lifecycle state the manifest still records for it.
+	State GenerationState
 }
 
 // BuildStoreStatus performs the read-only measurements the status report renders.
@@ -149,6 +160,29 @@ func (m *Manager) workspaceStatus(ctx context.Context, workspace string, usage *
 	}
 	if man, err := cat.Load(); err == nil && man != nil {
 		st.Root = man.Root
+		// A manifest record with no directory is data that is already gone. It
+		// is the one thing `status` must not omit: the record is what makes the
+		// loss visible, and reporting the workspace as healthy while every
+		// cleanup pass warns about it is how the operator ends up going in
+		// circles.
+		for _, rec := range man.Generations {
+			if _, present := gens.ByID[rec.ID]; present {
+				continue
+			}
+			st.Missing = append(st.Missing, MissingGeneration{ID: rec.ID, State: rec.State})
+			path, pathErr := cat.GenerationDir(rec.ID)
+			if pathErr != nil {
+				path = cat.Root()
+			}
+			st.Warnings = append(st.Warnings, MaintenanceWarning{
+				Reason:    ReasonUnreadableFile,
+				Workspace: workspace,
+				Path:      path,
+				Message: fmt.Sprintf("generation %s (%s) is listed in the manifest but its directory is missing; "+
+					"its snapshots are lost and the record is kept until 'marshal snapshots cleanup' removes it",
+					rec.ID, rec.State),
+			})
+		}
 	}
 	if gens.Corrupt {
 		st.Warnings = append(st.Warnings, MaintenanceWarning{
@@ -220,6 +254,9 @@ func RenderStoreStatus(st *StoreStatus) string {
 		for _, g := range ws.Generations {
 			fmt.Fprintf(&b, "      %s  %s  %s%s\n", g.ID, formatBytes(g.Allocated),
 				generationStateLabel(g), protectedLabel(g.Protected))
+		}
+		for _, g := range ws.Missing {
+			fmt.Fprintf(&b, "      %s  LOST: listed in the manifest (%s), directory missing\n", g.ID, g.State)
 		}
 		for _, g := range ws.Unlisted {
 			fmt.Fprintf(&b, "      %s  %s  unlisted in the manifest%s\n",
@@ -388,13 +425,19 @@ func RenderCleanupReport(r *CleanupReport, root string) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Snapshot cleanup: %s\n", root)
-	if len(r.Reconciled) > 0 || r.StagingRemoved > 0 || len(r.GenerationsRemoved) > 0 {
+	if len(r.Reconciled) > 0 || r.StagingRemoved > 0 || len(r.GenerationsRemoved) > 0 || len(r.RecordsForgotten) > 0 {
 		fmt.Fprintf(&b, "\nVersioned store (reconciled automatically):\n")
 		fmt.Fprintf(&b, "  workspaces reconciled: %d\n", len(r.Reconciled))
 		fmt.Fprintf(&b, "  capture scratch removed: %d\n", r.StagingRemoved)
 		fmt.Fprintf(&b, "  generations removed: %d\n", len(r.GenerationsRemoved))
 		for _, id := range r.GenerationsRemoved {
 			fmt.Fprintf(&b, "    %s\n", id)
+		}
+		if len(r.RecordsForgotten) > 0 {
+			fmt.Fprintf(&b, "  stale records forgotten (their generations were already gone): %d\n", len(r.RecordsForgotten))
+			for _, id := range r.RecordsForgotten {
+				fmt.Fprintf(&b, "    %s\n", id)
+			}
 		}
 	}
 	if len(r.RemnantsRemoved) > 0 {

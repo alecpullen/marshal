@@ -751,6 +751,30 @@ func (r *ReconcileReport) Workspace(hash string) *WorkspaceReconcile {
 //
 // Legacy stores and quarantined workspaces are never touched.
 func (m *Manager) Reconcile(ctx context.Context) (*ReconcileReport, error) {
+	return m.reconcile(ctx, reconcileOptions{})
+}
+
+// reconcileOptions selects what one reconciliation pass may do.
+//
+// The automatic pass (startup maintenance, admission) keeps every record it
+// cannot safely finish; only an explicit operator command asks for more.
+type reconcileOptions struct {
+	// forgetLostRecords drops the manifest record of a generation whose
+	// directory is already gone, when that generation is neither the active
+	// capture target nor protected.
+	//
+	// A sealed, unprotected generation is exactly what ordinary reclamation may
+	// delete, so its record outliving its directory describes a loss that has
+	// already happened. Keeping the record forever makes the store permanently
+	// unmaintainable: the loss is re-reported on every pass and no operation can
+	// ever acknowledge it. `marshal snapshots cleanup` — an explicit request to
+	// finish exactly this kind of bookkeeping — therefore drops the record and
+	// states the loss once in its report. Automatic passes never do, so a loss
+	// the operator has not seen yet stays visible.
+	forgetLostRecords bool
+}
+
+func (m *Manager) reconcile(ctx context.Context, opts reconcileOptions) (*ReconcileReport, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -775,7 +799,7 @@ func (m *Manager) Reconcile(ctx context.Context) (*ReconcileReport, error) {
 			report.Warnings = append(report.Warnings, ws.Warnings...)
 			continue
 		}
-		out, err := m.reconcileWorkspace(ctx, ws)
+		out, err := m.reconcileWorkspace(ctx, ws, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -789,7 +813,7 @@ func (m *Manager) Reconcile(ctx context.Context) (*ReconcileReport, error) {
 }
 
 // reconcileWorkspace reconciles one versioned workspace store.
-func (m *Manager) reconcileWorkspace(ctx context.Context, ws *DiscoveredWorkspace) (*WorkspaceReconcile, error) {
+func (m *Manager) reconcileWorkspace(ctx context.Context, ws *DiscoveredWorkspace, opts reconcileOptions) (*WorkspaceReconcile, error) {
 	out := &WorkspaceReconcile{Workspace: ws.Workspace}
 	if ws.Corrupt {
 		// Nothing durable describes this store, so there is no safe action
@@ -845,7 +869,7 @@ func (m *Manager) reconcileWorkspace(ctx context.Context, ws *DiscoveredWorkspac
 	}
 
 	// 2. Resolve each generation's lifecycle state.
-	if err := m.reconcileGenerations(ctx, cat, ws, out); err != nil {
+	if err := m.reconcileGenerations(ctx, cat, ws, out, opts); err != nil {
 		return nil, err
 	}
 
@@ -1049,10 +1073,13 @@ func (m *Manager) generationUnreachableBytes(ctx context.Context, cat *Catalog, 
 //   - `creating`, no refs   → interrupted creation; remove it whole.
 //   - `creating`, has refs  → interrupted activation; seal and keep.
 //   - any state, dir missing→ report; the manifest is left describing what is
-//     lost rather than being quietly edited to hide it.
+//     lost rather than being quietly edited to hide it. An explicit
+//     `snapshots cleanup` may drop the record of a generation that was neither
+//     the active capture target nor protected, because that generation was
+//     already reclaimable and the loss is stated in the report instead.
 //   - directory not listed  → report; never removed, because nothing durable
 //     says what it is.
-func (m *Manager) reconcileGenerations(ctx context.Context, cat *Catalog, ws *DiscoveredWorkspace, out *WorkspaceReconcile) error {
+func (m *Manager) reconcileGenerations(ctx context.Context, cat *Catalog, ws *DiscoveredWorkspace, out *WorkspaceReconcile, opts reconcileOptions) error {
 	man, err := cat.Load()
 	if err != nil {
 		return err
@@ -1100,12 +1127,42 @@ func (m *Manager) reconcileGenerations(ctx context.Context, cat *Catalog, ws *Di
 			}
 			out.GenerationsForgotten = append(out.GenerationsForgotten, rec.ID)
 		default:
+			// A lost generation in any other state is real data loss, not an
+			// interrupted operation. The record is the only remaining evidence
+			// that it existed, so it is kept — except for the two cases where
+			// forgetting it cannot lose anything and its absence only describes
+			// the past: an explicit `snapshots cleanup` may drop the record of a
+			// generation that was neither the capture target nor protected.
+			// Those are precisely the generations ordinary reclamation may
+			// delete, so their record outliving them is bookkeeping, not
+			// evidence. The loss is still stated in the warning below, once.
+			if opts.forgetLostRecords && rec.ID != man.ActiveID && !rec.IsProtected() {
+				if err := cat.ForgetGeneration(rec.ID); err != nil {
+					return err
+				}
+				out.GenerationsForgotten = append(out.GenerationsForgotten, rec.ID)
+				out.Warnings = append(out.Warnings, MaintenanceWarning{
+					Reason:    ReasonUnreadableFile,
+					Workspace: ws.Workspace,
+					Path:      dir,
+					Message: fmt.Sprintf("generation %s (%s) is gone: its directory was missing while its manifest "+
+						"record remained, so its snapshots are permanently lost; cleanup removed the stale record "+
+						"so maintenance can continue", rec.ID, rec.State),
+				})
+				continue
+			}
+			message := fmt.Sprintf("generation %s (%s) is listed in the manifest but its directory is missing; "+
+				"snapshots in it are lost and the record is kept so the loss stays visible", rec.ID, rec.State)
+			if rec.ID == man.ActiveID {
+				message += " (it is the active capture target, so run 'marshal snapshots status' before removing anything)"
+			} else if rec.IsProtected() {
+				message += " (it is protected; its record is never removed automatically)"
+			}
 			out.Warnings = append(out.Warnings, MaintenanceWarning{
 				Reason:    ReasonUnreadableFile,
 				Workspace: ws.Workspace,
 				Path:      dir,
-				Message: "generation directory is missing but its manifest record is not; snapshots in it " +
-					"are lost and the record is left in place so the loss stays visible",
+				Message:   message,
 			})
 		}
 	}
@@ -1353,5 +1410,5 @@ func (m *Manager) ReconcileWorkspace(ctx context.Context, workspace string) (*Wo
 			}),
 		}, nil
 	}
-	return m.reconcileWorkspace(ctx, ws)
+	return m.reconcileWorkspace(ctx, ws, reconcileOptions{})
 }

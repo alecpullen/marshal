@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -373,22 +374,53 @@ func ctlFleet(t *testing.T, agent *fakeAgent) *Fleet {
 // agentFleet builds a fleet in which every project agent (and the control
 // agent) is a fresh fakeAgent, returned by id for inspection.
 func agentFleet(t *testing.T) (*Fleet, *fakeAgent, func(agentID string) *fakeAgent) {
+	return agentFleetWith(t, nil)
+}
+
+// agentFleetWith is agentFleet with a hook that configures each fake before
+// the bridge can use it, so a test can answer a request the agent makes.
+//
+// A plain local agent runs on its project's child (P4 D10 decision 2), so the
+// fake a test inspects is that child's: one per project root. An agent that
+// keeps a child of its own — a git-sourced or workspace agent — gets a fresh
+// fake from the runtime factory instead.
+func agentFleetWith(t *testing.T, setup func(*fakeAgent)) (*Fleet, *fakeAgent, func(agentID string) *fakeAgent) {
 	t.Helper()
 	ctl := newFakeAgent()
 	f := ctlFleet(t, ctl)
 	var mu sync.Mutex
 	byID := map[string]*fakeAgent{}
-	f.newRuntime = func(a Agent) (*Child, error) {
+	byRoot := map[string]*fakeAgent{}
+	register := func(into map[string]*fakeAgent, key string) *Child {
 		fa := newFakeAgent()
+		if setup != nil {
+			setup(fa)
+		}
 		mu.Lock()
-		byID[a.ID] = fa
+		into[key] = fa
 		mu.Unlock()
-		return &Child{Transport: fa}, nil
+		return &Child{Transport: fa}
+	}
+	f.newRuntime = func(a Agent) (*Child, error) {
+		return register(byID, a.ID), nil
+	}
+	f.newProjectChild = func(root, socket string) (*Child, error) {
+		return register(byRoot, filepath.Clean(root)), nil
 	}
 	return f, ctl, func(id string) *fakeAgent {
 		mu.Lock()
+		fa := byID[id]
+		mu.Unlock()
+		if fa != nil {
+			return fa
+		}
+		a, ok := f.ws.Agent(id)
+		if !ok {
+			return nil
+		}
+		mu.Lock()
 		defer mu.Unlock()
-		return byID[id]
+		return byRoot[filepath.Clean(a.Project)]
 	}
 }
 

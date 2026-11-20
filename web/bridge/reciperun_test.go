@@ -17,15 +17,7 @@ import (
 // session/stack from the first request.
 func recipeFleet(t *testing.T, setup func(*fakeAgent)) (*Fleet, func(string) *fakeAgent) {
 	t.Helper()
-	f, _, agentOf := agentFleet(t)
-	inner := f.newRuntime
-	f.newRuntime = func(a Agent) (*Child, error) {
-		c, err := inner(a)
-		if setup != nil {
-			setup(agentOf(a.ID))
-		}
-		return c, err
-	}
+	f, _, agentOf := agentFleetWith(t, setup)
 	// A scheduled run records its result after the test body ends; wait for
 	// that so it does not write into a removed temp dir.
 	t.Cleanup(func() {

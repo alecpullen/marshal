@@ -24,9 +24,15 @@ func testFleetWithVersion(t *testing.T, version string) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, version, nil, "marshal-state")
+	// The state directory is real and short: a plain local agent runs on its
+	// project's child (P4 D10 decision 2), and that child's viewer socket
+	// lives under it.
+	f := NewFleet(ws, "unused", nil, shortStateDir(t), Limits{}, version, nil, "marshal-state")
 	bin, args, env := helperCommand("registry")
 	f.newRuntime = func(a Agent) (*Child, error) { return &Child{MarshalBin: bin, Args: args, Env: env}, nil }
+	f.newProjectChild = func(root, socket string) (*Child, error) {
+		return &Child{MarshalBin: bin, Args: args, Env: env}, nil
+	}
 	t.Cleanup(f.Close)
 	return f
 }
@@ -127,7 +133,6 @@ func TestAWorkspaceAgentWithNoRuntimeIsRefused(t *testing.T) {
 // workspace needs a child of its own.
 func TestAPlainLocalAgentRunsOnItsProjectChildWhileEgressRuns(t *testing.T) {
 	f := testFleetWithStateVolume(t, "marshal-state")
-	f.SetHostProcessesOnly()
 	f.egress = newEgressHost(f)
 
 	if !f.onProjectChild(Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local"}) {
@@ -270,11 +275,16 @@ func TestDeclaredMountsTranslateAnInsidePath(t *testing.T) {
 // version in its initialize response, so a version-skew test can drive the
 // bridge's handshake check. It overrides the fleet's runtime factory with a
 // helper child that answers initialize with agentInfo.version set to
-// version.
+// version, and gives a plain local agent's project child the same helper: a
+// local agent runs on its project's child (P4 D10 decision 2), so that is
+// the handshake the bridge reads.
 func (f *Fleet) spawnWithAgentVersion(ctx context.Context, version string) (string, error) {
 	bin, args, env := helperCommand("registry-version")
 	env = append(env, "HELPER_VERSION="+version)
 	f.newRuntime = func(a Agent) (*Child, error) { return &Child{MarshalBin: bin, Args: args, Env: env}, nil }
+	f.newProjectChild = func(root, socket string) (*Child, error) {
+		return &Child{MarshalBin: bin, Args: args, Env: env}, nil
+	}
 	return f.Spawn(ctx, "/p", SpawnOptions{Prompt: "x"})
 }
 
@@ -359,7 +369,6 @@ func TestAnAgentsVersionWarningIsOnItsStatus(t *testing.T) {
 			}
 			fake.fakeAgent.mu.Unlock()
 		})
-		f.SetHostProcessesOnly()
 		f.buildVersion = "v1.0.0"
 		id, err := f.Spawn(ctlContext(t), t.TempDir(), SpawnOptions{Name: "one"})
 		if err != nil {
@@ -402,9 +411,15 @@ func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
+	// The state directory is real and short: a plain local agent runs on its
+	// project's child (P4 D10 decision 2), and that child's viewer socket
+	// lives under it.
+	f := NewFleet(ws, "unused", nil, shortStateDir(t), Limits{}, "", nil, "marshal-state")
 	bin, args, env := helperCommand("registry")
 	f.newRuntime = func(a Agent) (*Child, error) { return &Child{MarshalBin: bin, Args: args, Env: env}, nil }
+	f.newProjectChild = func(root, socket string) (*Child, error) {
+		return &Child{MarshalBin: bin, Args: args, Env: env}, nil
+	}
 	f.slots = newSlots(limit)
 	t.Cleanup(f.Close)
 	return f
@@ -511,9 +526,14 @@ func TestMergeClearsIsolationOnSuccess(t *testing.T) {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
+	f := NewFleet(ws, "unused", nil, shortStateDir(t), Limits{}, "", nil, "marshal-state")
 	bin, args, env := helperCommand("registry-merged")
+	// A plain local agent runs on its project's child (P4 D10 decision 2), so
+	// the merge-refusing child is that child.
 	f.newRuntime = func(a Agent) (*Child, error) { return &Child{MarshalBin: bin, Args: args, Env: env}, nil }
+	f.newProjectChild = func(root, socket string) (*Child, error) {
+		return &Child{MarshalBin: bin, Args: args, Env: env}, nil
+	}
 	t.Cleanup(f.Close)
 
 	ctx, cancel := testContext(t)
@@ -647,13 +667,18 @@ func TestSpawnPassesAgentEnvToContainer(t *testing.T) {
 }
 
 func TestTwoAgentsOnOneProjectGetSeparateRuntimes(t *testing.T) {
-	f := testFleet(t)
+	// Two container agents on one project: each needs its own container, so
+	// each keeps a child of its own (Task 4) rather than joining the
+	// project's child.
+	e := newWSSpawnEnv(t)
+	e.builtTemplate(t, "svc", sampleDoc("svc"))
+	root := t.TempDir()
 
-	first, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "one"})
+	first, err := e.f.Spawn(ctlContext(t), root, SpawnOptions{Prompt: "one", Workspace: "svc"})
 	if err != nil {
 		t.Fatalf("Spawn first: %v", err)
 	}
-	second, err := f.Spawn(context.Background(), "/p", SpawnOptions{Prompt: "two"})
+	second, err := e.f.Spawn(ctlContext(t), root, SpawnOptions{Prompt: "two", Workspace: "svc"})
 	if err != nil {
 		t.Fatalf("Spawn second: %v", err)
 	}
@@ -661,11 +686,11 @@ func TestTwoAgentsOnOneProjectGetSeparateRuntimes(t *testing.T) {
 		t.Fatal("both spawns returned the same agent id")
 	}
 
-	rt1, err := f.runtimeForAgent(first)
+	rt1, err := e.f.runtimeForAgent(first)
 	if err != nil {
 		t.Fatalf("runtimeForAgent(first): %v", err)
 	}
-	rt2, err := f.runtimeForAgent(second)
+	rt2, err := e.f.runtimeForAgent(second)
 	if err != nil {
 		t.Fatalf("runtimeForAgent(second): %v", err)
 	}
@@ -735,10 +760,12 @@ func TestReattachAllReconnectsPersistedAgents(t *testing.T) {
 // takes the whole control plane down, and every other agent with it.
 func TestReattachOfAVanishedAgentDoesNotPanic(t *testing.T) {
 	f := testFleet(t)
-	// A persisted record for an agent whose container no longer exists. The
-	// runtime builder fails, so the runtime carries a nil child.
+	// A persisted record for an agent whose container no longer exists. Its
+	// workspace keeps it off the project's child (Task 4), so the runtime
+	// builder — not a project child — is what fails.
 	if err := f.ws.PutAgent(Agent{ID: "gone", Project: "/p", OwnerID: DefaultOwnerID,
-		SourceKind: "local", SessionID: "sess_gone", CreatedAt: time.Now()}); err != nil {
+		SourceKind: "local", SessionID: "sess_gone", CreatedAt: time.Now(),
+		Workspace: &AgentWorkspace{Name: "w"}}); err != nil {
 		t.Fatal(err)
 	}
 	f.newRuntime = func(a Agent) (*Child, error) {
@@ -1028,7 +1055,10 @@ func TestDiscardRetiresAGitSourcedAgent(t *testing.T) {
 func TestEverySpawnOriginPreservesExplicitAutoFalse(t *testing.T) {
 	f, _, agentOf := agentFleet(t)
 	for _, origin := range []string{OriginUI, OriginMCP, OriginIssue, OriginSchedule, OriginReviewBot, OriginCI} {
-		id, err := f.Spawn(ctlContext(t), "/p", SpawnOptions{Origin: origin, Mode: "act", Auto: boolPtr(false)})
+		// A fresh project per origin: a plain local agent runs on its
+		// project's child (P4 D10 decision 2), and a shared root would
+		// pool every origin's session/new on one child.
+		id, err := f.Spawn(ctlContext(t), t.TempDir(), SpawnOptions{Origin: origin, Mode: "act", Auto: boolPtr(false)})
 		if err != nil {
 			t.Fatalf("%s: Spawn: %v", origin, err)
 		}
@@ -1052,7 +1082,9 @@ func TestEverySpawnOriginPreservesExplicitAutoFalse(t *testing.T) {
 func TestUnattendedOriginNeverPromotesLegacyEdit(t *testing.T) {
 	f, _, agentOf := agentFleet(t)
 	for _, origin := range []string{OriginSchedule, OriginReviewBot, OriginCI} {
-		id, err := f.Spawn(ctlContext(t), "/p", SpawnOptions{Origin: origin, Mode: "edit", Prompt: "x"})
+		// A fresh project per origin, so this spawn's session/new is the one
+		// its agent's child recorded.
+		id, err := f.Spawn(ctlContext(t), t.TempDir(), SpawnOptions{Origin: origin, Mode: "edit", Prompt: "x"})
 		if err != nil {
 			t.Fatalf("%s: Spawn: %v", origin, err)
 		}
@@ -1073,20 +1105,18 @@ func TestUnattendedOriginNeverPromotesLegacyEdit(t *testing.T) {
 // asked for.
 func TestSpawnUsesCombinedStartingTupleAndActualResponse(t *testing.T) {
 	e, s, root := projectEnv(t)
-	// The agent answers with the tuple it committed, as a real one does.
-	orig := e.f.newRuntime
-	e.f.newRuntime = func(a Agent) (*Child, error) {
-		c, err := orig(a)
-		if err != nil {
-			return nil, err
+	// The agent answers with the tuple it committed, as a real one does. A
+	// plain local agent runs on its project's child (P4 D10 decision 2), so
+	// that child is the fake this test drives.
+	var projectFake *fakeAgent
+	e.f.newProjectChild = func(rootPath, socket string) (*Child, error) {
+		fa := newFakeAgent()
+		fa.results["session/new"] = map[string]any{
+			"sessionId": "s-committed", "mode": "act", "auto": true,
+			"system_access": false, "access_revision": 3,
 		}
-		if fa, ok := c.Transport.(*fakeAgent); ok {
-			fa.results["session/new"] = map[string]any{
-				"sessionId": "s-committed", "mode": "act", "auto": true,
-				"system_access": false, "access_revision": 3,
-			}
-		}
-		return c, nil
+		projectFake = fa
+		return &Child{Transport: fa}, nil
 	}
 	// The project supplies the mode; the request supplies an explicit Auto.
 	putSettings(t, s, root, ProjectSettings{Mode: "ask"})
@@ -1098,11 +1128,14 @@ func TestSpawnUsesCombinedStartingTupleAndActualResponse(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("spawn = %d %s", rec.Code, rec.Body)
 	}
-	calls := e.agents[out.AgentID].calls("session/new")
+	if projectFake == nil {
+		t.Fatal("the spawn built no project child")
+	}
+	calls := projectFake.calls("session/new")
 	if len(calls) != 1 || !strings.Contains(calls[0], `"policy":{"auto":false,"mode":"ask"}`) {
 		t.Fatalf("session/new = %v, want the combined project/request tuple", calls)
 	}
-	if got := e.agents[out.AgentID].calls("session/set_mode"); len(got) != 0 {
+	if got := projectFake.calls("session/set_mode"); len(got) != 0 {
 		t.Fatalf("session/set_mode = %v, want no implicit patch", got)
 	}
 	// The committed response, not the request, is what the bridge records.
@@ -1226,6 +1259,7 @@ func testFleetWithLimits(t *testing.T, limits Limits) *Fleet {
 	f := NewFleet(ws, "unused", nil, stateDir, limits, "", nil, "marshal-state")
 	tr := &scriptedTransport{gate: gateResult{OK: true}}
 	f.newRuntime = func(a Agent) (*Child, error) { return &Child{Transport: tr}, nil }
+	f.newProjectChild = func(root, socket string) (*Child, error) { return &Child{Transport: tr}, nil }
 	t.Cleanup(f.Close)
 	return f
 }
@@ -1314,7 +1348,13 @@ func TestFleetCloseDetachesRatherThanStopping(t *testing.T) {
 	f.newRuntime = func(a Agent) (*Child, error) {
 		return &Child{Transport: tr, Containerized: true}, nil
 	}
-	a := Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile()}
+	// The agent keeps a child of its own: a workspace keeps it off its
+	// project's child (Task 4), which is what this test detaches.
+	a := Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile(),
+		Workspace: &AgentWorkspace{Name: "w"}}
+	f.wsMu.Lock()
+	f.wsExtras[a.ID] = wsExtras{}
+	f.wsMu.Unlock()
 	if err := f.ws.PutAgent(a); err != nil {
 		t.Fatal(err)
 	}

@@ -274,15 +274,14 @@ func TestAProjectChildClassifiesByAgent(t *testing.T) {
 	}
 }
 
-// hostOnlyProjectFleet is projectFleet made host-only, with newRuntime failing
-// the test: a local agent on a project child must never build a child of its
-// own (P4 D10 decision 2).
-func hostOnlyProjectFleet(t *testing.T) (*Fleet, func(root string) *fakeProjectChild) {
+// childOnlyProjectFleet is projectFleet with newRuntime failing, so only
+// project children start: a local agent on a project child must never build a
+// child of its own (P4 D10 decision 2).
+func childOnlyProjectFleet(t *testing.T) (*Fleet, func(root string) *fakeProjectChild) {
 	t.Helper()
 	f, fakeFor := projectFleet(t)
-	f.SetHostProcessesOnly()
 	f.newRuntime = func(a Agent) (*Child, error) {
-		t.Errorf("newRuntime was called for agent %s on project %s; a host-only local agent runs on its project's child", a.ID, a.Project)
+		t.Errorf("newRuntime was called for agent %s on project %s; a plain local agent runs on its project's child", a.ID, a.Project)
 		return nil, fmt.Errorf("newRuntime must not be called")
 	}
 	return f, fakeFor
@@ -292,7 +291,7 @@ func hostOnlyProjectFleet(t *testing.T) (*Fleet, func(root string) *fakeProjectC
 // records the agent's session/new on its stdio, with no client-trust mark, and
 // the session is tracked as the fleet's on that child's registry (P4 D10).
 func TestALocalAgentRunsOnItsProjectsChild(t *testing.T) {
-	f, fakeFor := hostOnlyProjectFleet(t)
+	f, fakeFor := childOnlyProjectFleet(t)
 	ctx := ctlContext(t)
 	root := t.TempDir()
 
@@ -338,7 +337,7 @@ func TestALocalAgentRunsOnItsProjectsChild(t *testing.T) {
 // project share its child, and the daemon's listing leaves the agent's session
 // out (P4 D10 decision 1).
 func TestAnAgentAndAClientShareTheChild(t *testing.T) {
-	f, fakeFor := hostOnlyProjectFleet(t)
+	f, fakeFor := childOnlyProjectFleet(t)
 	ctx := ctlContext(t)
 	root := t.TempDir()
 
@@ -377,11 +376,6 @@ func TestOnlyPlainLocalAgentsMove(t *testing.T) {
 	f, _ := projectFleet(t)
 	local := Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile()}
 
-	if f.onProjectChild(local) {
-		t.Error("a fleet that is not host-only moved a local agent onto a project child")
-	}
-
-	f.SetHostProcessesOnly()
 	if !f.onProjectChild(local) {
 		t.Error("a plain local agent did not move onto its project's child")
 	}
@@ -402,7 +396,7 @@ func TestOnlyPlainLocalAgentsMove(t *testing.T) {
 // TestAnAgentsEventsReachItsOwnLog: an agent on a project child reads the
 // child's log and the fleet's deltas under its own id (P4 D10 decision 3).
 func TestAnAgentsEventsReachItsOwnLog(t *testing.T) {
-	f, fakeFor := hostOnlyProjectFleet(t)
+	f, fakeFor := childOnlyProjectFleet(t)
 	ctx := ctlContext(t)
 	root := t.TempDir()
 
@@ -453,7 +447,6 @@ func TestTheAgentTakesTheChildsVersion(t *testing.T) {
 		}
 		fake.fakeAgent.mu.Unlock()
 	})
-	f.SetHostProcessesOnly()
 	f.buildVersion = "v1.0.0"
 	ctx := ctlContext(t)
 	root := t.TempDir()
@@ -504,7 +497,7 @@ func closeCalls(t *testing.T, fake *fakeProjectChild) []string {
 // the project's child and leaves the child serving the client's session, with
 // no stop and no detach (P4 D10 decision 5).
 func TestRetiringAnAgentLeavesTheChild(t *testing.T) {
-	f, fakeFor := hostOnlyProjectFleet(t)
+	f, fakeFor := childOnlyProjectFleet(t)
 	ctx := ctlContext(t)
 	root := t.TempDir()
 
@@ -543,7 +536,7 @@ func TestRetiringAnAgentLeavesTheChild(t *testing.T) {
 // TestTheLastAgentLeavingArmsTheLinger: with no client session, retiring the
 // agent leaves the child with nothing tracked and a linger that stops it.
 func TestTheLastAgentLeavingArmsTheLinger(t *testing.T) {
-	f, _ := hostOnlyProjectFleet(t)
+	f, _ := childOnlyProjectFleet(t)
 	kit := captureTimers(f)
 	ctx := ctlContext(t)
 	root := t.TempDir()
@@ -597,7 +590,6 @@ func TestPausingAndResumingReloadsOnTheChild(t *testing.T) {
 		fake.fakeAgent.mu.Unlock()
 	})
 	fleet = f
-	f.SetHostProcessesOnly()
 	ctx := ctlContext(t)
 	root := t.TempDir()
 
@@ -654,7 +646,6 @@ func TestAFailedCloseStillUntracks(t *testing.T) {
 		}
 		fake.fakeAgent.mu.Unlock()
 	})
-	f.SetHostProcessesOnly()
 	shortenLinger(t, f)
 	ctx := ctlContext(t)
 	root := t.TempDir()
@@ -686,7 +677,7 @@ func TestAFailedCloseStillUntracks(t *testing.T) {
 // TestTheFleetsCloseStopsTheSharedChildOnce: Close stops the child an agent
 // shares with a client, and does not detach it (P4 D10).
 func TestTheFleetsCloseStopsTheSharedChildOnce(t *testing.T) {
-	f, fakeFor := hostOnlyProjectFleet(t)
+	f, fakeFor := childOnlyProjectFleet(t)
 	ctx := ctlContext(t)
 	root := t.TempDir()
 
@@ -719,7 +710,7 @@ func TestTheFleetsCloseStopsTheSharedChildOnce(t *testing.T) {
 // with session/load on its project's child, after the session is mapped
 // (P4 D10 decisions 4 and 5).
 func TestReattachAllLoadsOnTheProjectChild(t *testing.T) {
-	f, fakeFor := hostOnlyProjectFleet(t)
+	f, fakeFor := childOnlyProjectFleet(t)
 	root := t.TempDir()
 
 	if err := f.ws.PutAgent(Agent{
@@ -766,7 +757,6 @@ func TestTheAgentsRuntimeTakesTheChildsCapabilities(t *testing.T) {
 			"watchAccess":  map[string]any{},
 		})
 	})
-	f.SetHostProcessesOnly()
 	ctx := ctlContext(t)
 	root := t.TempDir()
 

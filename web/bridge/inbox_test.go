@@ -291,12 +291,15 @@ func TestFleetInbox(t *testing.T) {
 // answer is the fleet's live inbox, so each agent lands in the group its
 // state puts it in, and an intake submission is in the needs-you queue.
 func TestTheInboxRouteAnswersTheGroups(t *testing.T) {
-	e, s, root := projectEnv(t)
-	busy, err := e.f.Spawn(ctlContext(t), root, SpawnOptions{Name: "busy", Mode: "edit"})
+	e, s, _ := projectEnv(t)
+	// A plain local agent runs on its project's child (P4 D10 decision 2), so
+	// each agent gets a project of its own: one root would pool both agents'
+	// sessions on one child, and this test turns on telling them apart.
+	busy, err := e.f.Spawn(ctlContext(t), t.TempDir(), SpawnOptions{Name: "busy", Mode: "edit"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	quiet, err := e.f.Spawn(ctlContext(t), root, SpawnOptions{Name: "quiet", Mode: "edit"})
+	quiet, err := e.f.Spawn(ctlContext(t), t.TempDir(), SpawnOptions{Name: "quiet", Mode: "edit"})
 	if err != nil {
 		t.Fatal(err)
 	}

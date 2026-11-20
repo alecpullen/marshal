@@ -239,7 +239,15 @@ func testFleetWithContainerizedAgent(t *testing.T) (*Fleet, *capturingTransport)
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, "", Limits{}, "", nil, "marshal-state")
+	// A workspace is what keeps an agent in a container (Task 4), so the
+	// fleet publishes a built one: an agent given it stays containerised,
+	// which is the view these tests are about.
+	f := NewFleet(ws, "unused", nil, shortStateDir(t), Limits{}, "", nil, "marshal-state")
+	f.runner = func(name string, args ...string) ([]byte, error) { return nil, nil }
+	publishDoc(t, f, "w", sampleDoc("w"))
+	if err := f.templates.SetBuild("w", 1, "ok", "marshal-derived-w", 1, 1); err != nil {
+		t.Fatal(err)
+	}
 	tr := &capturingTransport{}
 	f.newRuntime = func(a Agent) (*Child, error) {
 		return &Child{Transport: tr, Containerized: true}, nil
@@ -249,10 +257,15 @@ func testFleetWithContainerizedAgent(t *testing.T) (*Fleet, *capturingTransport)
 }
 
 // startContainerizedAgent registers an agent rooted at root and starts
-// its runtime, returning the live runtime.
+// its runtime, returning the live runtime. The agent carries a workspace, so
+// placement keeps it in a container (Task 4).
 func startContainerizedAgent(t *testing.T, f *Fleet, root string) *agentRuntime {
 	t.Helper()
-	a := Agent{ID: "a1", Project: root, SourceKind: "local", Profile: DefaultRuntimeProfile()}
+	a := Agent{ID: "a1", Project: root, SourceKind: "local", Profile: DefaultRuntimeProfile(),
+		Workspace: &AgentWorkspace{Name: "w"}}
+	f.wsMu.Lock()
+	f.wsExtras[a.ID] = wsExtras{}
+	f.wsMu.Unlock()
 	if err := f.ws.PutAgent(a); err != nil {
 		t.Fatal(err)
 	}
@@ -293,11 +306,15 @@ func TestWorktreePruneSendsTheAgentsView(t *testing.T) {
 func TestSpawnSendsTheAgentsViewOfCwd(t *testing.T) {
 	root := t.TempDir()
 	f, tr := testFleetWithContainerizedAgent(t)
+	// A workspace spawn asks the control agent (its fleet config), so this
+	// test gives it a fake one rather than a real process.
+	f.newControl = func() (*Child, error) { return &Child{Transport: newFakeAgent()}, nil }
 
 	// Drive the real Spawn: the translation under test happens inside
 	// it, between startRuntime and session/new, where a test cannot
-	// reach in to adjust the runtime.
-	if _, err := f.Spawn(context.Background(), root, SpawnOptions{}); err != nil {
+	// reach in to adjust the runtime. The workspace is what keeps the
+	// agent containerised (Task 4).
+	if _, err := f.Spawn(context.Background(), root, SpawnOptions{Workspace: "w"}); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 	if got := tr.cwdSentTo("session/new"); got != "/work" {
@@ -328,9 +345,10 @@ func TestRestoreSessionSendsTheAgentsViewOfCwd(t *testing.T) {
 	f, tr := testFleetWithContainerizedAgent(t)
 
 	// A persisted agent with a session id: ReattachAll must reload it,
-	// and session/load carries a cwd that must be translated.
+	// and session/load carries a cwd that must be translated. Its workspace
+	// is what keeps it containerised (Task 4).
 	a := Agent{ID: "a1", Project: root, SourceKind: "local",
-		SessionID: "s-1", Profile: DefaultRuntimeProfile()}
+		SessionID: "s-1", Profile: DefaultRuntimeProfile(), Workspace: &AgentWorkspace{Name: "w"}}
 	if err := f.ws.PutAgent(a); err != nil {
 		t.Fatal(err)
 	}
@@ -360,8 +378,10 @@ func TestListSessionsSendsTheAgentsViewOfCwd(t *testing.T) {
 func TestLoadSessionSendsTheAgentsViewOfCwd(t *testing.T) {
 	root := t.TempDir()
 	f, tr := testFleetWithContainerizedAgent(t)
+	// A workspace spawn asks the control agent (its fleet config).
+	f.newControl = func() (*Child, error) { return &Child{Transport: newFakeAgent()}, nil }
 
-	if _, err := f.Spawn(context.Background(), root, SpawnOptions{}); err != nil {
+	if _, err := f.Spawn(context.Background(), root, SpawnOptions{Workspace: "w"}); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 	srv := NewServer(f, "")

@@ -777,7 +777,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// This must precede every start below — egress, reattach, the poller
 	// and the scheduler — so no agent or probe sees a container runtime.
 	if cfg.profile == "local" {
-		fleet.SetHostProcessesOnly()
 		// A project child starts with its project's environment (decision
 		// 7). A bridge that cannot name its own binary leaves children
 		// inheriting the bridge's environment instead.

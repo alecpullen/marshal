@@ -15,7 +15,11 @@ func parkedFixture(t *testing.T, work json.RawMessage, signalErr error) (*Fleet,
 	root := t.TempDir()
 	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
 	w := FactoryWorker{AgentID: "a1", SessionID: "s1", Role: "implementer", SpawnEffectID: "e1"}
-	a := Agent{ID: w.AgentID, Project: root, SessionID: w.SessionID, FactoryItemID: "i1", FactoryRole: w.Role, FactorySpawnEffectID: w.SpawnEffectID}
+	// A factory worker spawns against a repo (factoryWorkers.spawn passes
+	// RepoID), so it is a git-sourced agent and keeps a child of its own
+	// (P4 D10 decision 2) rather than joining a project's child.
+	a := Agent{ID: w.AgentID, Project: root, SessionID: w.SessionID, SourceKind: "git",
+		FactoryItemID: "i1", FactoryRole: w.Role, FactorySpawnEffectID: w.SpawnEffectID}
 	if err := ws.PutAgent(a); err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +491,8 @@ func (fx *factorySubagentWorkerFixture) recoverableWorker(t *testing.T, item Fac
 	worker.Role, worker.SpawnEffectID = role, "spawn-1"
 	if err := fx.f.ws.PutAgent(Agent{
 		ID: worker.AgentID, Project: project, SessionID: worker.SessionID,
-		OwnerID: DefaultOwnerID, Origin: OriginUI,
+		SourceKind: "git",
+		OwnerID:    DefaultOwnerID, Origin: OriginUI,
 		FactoryItemID: item.ID, FactoryRole: role, FactorySpawnEffectID: worker.SpawnEffectID,
 	}); err != nil {
 		t.Fatal(err)

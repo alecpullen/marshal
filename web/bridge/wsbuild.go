@@ -244,8 +244,7 @@ func (f *Fleet) buildDerivedStream(runtime, tag, dockerfile string, out io.Write
 
 // runtimeName is the container runtime's name, "docker" under a fake runner.
 func (f *Fleet) runtimeName() (string, error) {
-	// Host-only outranks the fake-runner shortcut (decision 4).
-	if f.runner != nil && !f.hostOnly {
+	if f.runner != nil {
 		return "docker", nil
 	}
 	_, name, ok := f.containerRuntime()

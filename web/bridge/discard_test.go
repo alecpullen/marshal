@@ -53,7 +53,7 @@ func TestDiscardRetiresAnAgentWhenTheChildRefuses(t *testing.T) {
 // not, and reattaching fails. Discard must still retire it. Otherwise the
 // record is permanent and, with it, the concurrency slot it holds.
 func TestDiscardRetiresAnAgentWhoseSessionCannotBeRestored(t *testing.T) {
-	f, _, _ := agentFleet(t)
+	f, _, agentOf := agentFleet(t)
 	id, err := f.Spawn(ctlContext(t), "/p", SpawnOptions{Prompt: "x"})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -61,15 +61,16 @@ func TestDiscardRetiresAnAgentWhoseSessionCannotBeRestored(t *testing.T) {
 	// Detach without destroying: the record survives, the runtime does not.
 	f.releaseAgent(id, false)
 
-	// The next runtime cannot restore the session.
-	fail := newFakeAgent()
-	fail.handler = func(method string, _ json.RawMessage) (any, *rpcError, bool) {
+	// The next runtime cannot restore the session. The agent is a plain local
+	// one, so its next runtime is its project's child — the child the spawn
+	// already built (P4 D10 decision 2) — and that is where the refusal has to
+	// come from.
+	agentOf(id).handler = func(method string, _ json.RawMessage) (any, *rpcError, bool) {
 		if method == "session/load" {
 			return nil, &rpcError{Code: -32603, Message: "internal error"}, true
 		}
 		return nil, nil, false
 	}
-	f.newRuntime = func(a Agent) (*Child, error) { return &Child{Transport: fail}, nil }
 
 	if err := f.Discard(context.Background(), id); err != nil {
 		t.Fatalf("Discard: %v", err)

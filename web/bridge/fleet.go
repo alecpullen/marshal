@@ -150,11 +150,6 @@ type Fleet struct {
 	// Nil means the real runner (exec.Command); tests inject a fake so the
 	// derive path is exercisable without a daemon.
 	runner commandRunner
-	// hostOnly makes every agent, the control agent included, a host
-	// process, and stops the fleet from probing for a container runtime at
-	// all (decision 4). Set through SetHostProcessesOnly before anything
-	// starts.
-	hostOnly bool
 	// stateOnHost makes every state mount a bind of stateDir rather than a
 	// subpath of stateVolume, and userConfigDir the container agents' config
 	// home. Set through SetStateOnHost before anything starts.
@@ -899,11 +894,6 @@ func detectedRuntime() (path, name string, ok bool) {
 	return p.path, p.name, p.ok
 }
 
-// SetHostProcessesOnly makes every agent, the control agent included, a
-// host process, and stops the fleet from ever probing for a container
-// runtime (decision 4). Call it before anything starts.
-func (f *Fleet) SetHostProcessesOnly() { f.hostOnly = true }
-
 // SetStateOnHost makes the fleet's state mounts binds of its state
 // directory, and binds userConfigDir read-only as container agents' config
 // home ("" keeps the state subpath). On Linux it also requires a rootless
@@ -928,13 +918,10 @@ func (f *Fleet) stateMount(runtimeName, target, subpath string, readonly bool) [
 // environment (P4 D7). Without it they inherit the bridge's.
 func (f *Fleet) SetProjectEnv(p *ProjectEnv) { f.projectEnv = p }
 
-// containerRuntime is the fleet's container runtime: none when host-only,
-// without probing; none when a host-state fleet on Linux needs a rootless
-// runtime and this one is not; otherwise the probe's answer.
+// containerRuntime is the fleet's container runtime: none when a host-state
+// fleet on Linux needs a rootless runtime and this one is not; otherwise the
+// probe's answer.
 func (f *Fleet) containerRuntime() (path, name string, ok bool) {
-	if f.hostOnly {
-		return "", "", false
-	}
 	if f.probe != nil {
 		path, name, ok = f.probe()
 	} else {
@@ -1055,7 +1042,7 @@ func (f *Fleet) runtimeForRoot(root string) (*agentRuntime, error) {
 // deleted with the agent, and a workspace is what makes a container, so each
 // of those keeps a child of its own.
 func (f *Fleet) onProjectChild(a Agent) bool {
-	if !f.hostOnly || a.Project == "" || a.Workspace != nil {
+	if a.Project == "" || a.Workspace != nil {
 		return false
 	}
 	return a.SourceKind != "git"

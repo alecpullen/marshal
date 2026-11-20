@@ -81,6 +81,7 @@ var fixtureTypes = map[string]reflect.Type{
 	"StepDetail":         reflect.TypeOf(StepDetail{}),
 	"StepDiff":           reflect.TypeOf(StepDiff{}),
 	"StepDiffs":          reflect.TypeOf(StepDiffs{}),
+	"SubagentWorkspace":  reflect.TypeOf(SubagentWorkspace{}),
 	"SymbolDetail":       reflect.TypeOf(SymbolDetail{}),
 	"ThoughtDetail":      reflect.TypeOf(ThoughtDetail{}),
 	"TodoDetail":         reflect.TypeOf(TodoDetail{}),

@@ -190,8 +190,37 @@ func callDetail(ev registry.AuditEvent) acpwire.CallDetail {
 		if ex, ok := ev.Notice.Execution(); ok {
 			c.Execution = executionDetail(ex)
 		}
+		// Workspace lifecycle evidence travels the same way. It is the call's
+		// own record of the work it acted on — what the receipt named when it
+		// ran — and is never re-read from the session's current view of the
+		// task, which is what keeps a historical outcome historical.
+		if ws, ok := ev.Notice.SubagentWorkspace(); ok {
+			c.Workspace = subagentWorkspaceDetail(ws)
+		}
 	}
 	return c
+}
+
+// subagentWorkspaceDetail projects one workspace evidence payload onto the
+// detail transport. The free-text fields — the paths and the record's own
+// explanation — go through the same scrubber a card's command does, because
+// they are display text and a control sequence in one would otherwise reach a
+// client's renderer verbatim.
+func subagentWorkspaceDetail(ws registry.SubagentWorkspaceEvidence) *acpwire.SubagentWorkspace {
+	return &acpwire.SubagentWorkspace{
+		TaskKey:      ws.TaskKey,
+		Mode:         ws.Mode,
+		Root:         strutil.ScrubText(ws.Root),
+		Branch:       strutil.ScrubText(ws.Branch),
+		BaseSHA:      ws.BaseSHA,
+		CandidateSHA: ws.CandidateSHA,
+		TargetRoot:   strutil.ScrubText(ws.TargetRoot),
+		TargetBranch: strutil.ScrubText(ws.TargetBranch),
+		Execution:    ws.Execution,
+		Integration:  ws.Integration,
+		Cleanup:      ws.Cleanup,
+		Reason:       strutil.ScrubText(ws.Reason),
+	}
 }
 
 func activeCallDetail(a *session.ActiveToolCall) acpwire.CallDetail {

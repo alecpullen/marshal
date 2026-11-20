@@ -6646,6 +6646,7 @@ class CallDetail {
     this.symbols,
     this.notice,
     this.execution,
+    this.workspace,
     this.summary,
   });
 
@@ -6672,6 +6673,10 @@ class CallDetail {
   /// carries: what was launched, who owned it, and how it ended. It is
   /// separate from Notice, which is coaching prose written for the model.
   final ExecutionDetail? execution;
+  /// Workspace is the workspace lifecycle evidence this call carried, when it
+  /// carried any: the receipt's task key, candidate and integration state. It
+  /// is historical — what the call recorded when it ran.
+  final SubagentWorkspace? workspace;
   /// Summary is the call's own summary, uncut.
   final String? summary;
 
@@ -6705,6 +6710,10 @@ class CallDetail {
       execution: _objectOrNull(
         json['execution'],
         ExecutionDetail.fromJson,
+      ),
+      workspace: _objectOrNull(
+        json['workspace'],
+        SubagentWorkspace.fromJson,
       ),
       summary: json['summary'] as String?,
     );
@@ -6763,8 +6772,110 @@ class CallDetail {
     if (execution != null) {
       json['execution'] = execution!.toJson();
     }
+    if (workspace != null) {
+      json['workspace'] = workspace!.toJson();
+    }
     if (summary != null) {
       json['summary'] = summary;
+    }
+    return json;
+  }
+}
+
+/// SubagentWorkspace is one child's owned-workspace lifecycle evidence: what
+/// the child was bound to, the commit it produced, the checkout that work
+/// belongs in, and what became of the integration and of the workspace's
+/// artifacts.
+///
+/// Every field is optional, and an empty one is unknown rather than
+/// zero-valued fact. Empty Execution, Integration or Cleanup means the record
+/// predates the state or has not settled — never success. CandidateSHA is empty
+/// for a child that produced no commit, and Reason is empty unless the record
+/// explains its own outcome. A client must not infer an integration from the
+/// presence of a candidate.
+class SubagentWorkspace {
+  const SubagentWorkspace({
+    this.taskKey,
+    this.mode,
+    this.root,
+    this.branch,
+    this.baseSHA,
+    this.candidateSHA,
+    this.targetRoot,
+    this.targetBranch,
+    this.execution,
+    this.integration,
+    this.cleanup,
+    this.reason,
+  });
+
+  final String? taskKey;
+  final String? mode;
+  final String? root;
+  final String? branch;
+  final String? baseSHA;
+  final String? candidateSHA;
+  final String? targetRoot;
+  final String? targetBranch;
+  final String? execution;
+  final String? integration;
+  final String? cleanup;
+  final String? reason;
+
+  factory SubagentWorkspace.fromJson(Map<String, dynamic> json) {
+    return SubagentWorkspace(
+      taskKey: json['taskKey'] as String?,
+      mode: json['mode'] as String?,
+      root: json['root'] as String?,
+      branch: json['branch'] as String?,
+      baseSHA: json['baseSha'] as String?,
+      candidateSHA: json['candidateSha'] as String?,
+      targetRoot: json['targetRoot'] as String?,
+      targetBranch: json['targetBranch'] as String?,
+      execution: json['execution'] as String?,
+      integration: json['integration'] as String?,
+      cleanup: json['cleanup'] as String?,
+      reason: json['reason'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (taskKey != null) {
+      json['taskKey'] = taskKey;
+    }
+    if (mode != null) {
+      json['mode'] = mode;
+    }
+    if (root != null) {
+      json['root'] = root;
+    }
+    if (branch != null) {
+      json['branch'] = branch;
+    }
+    if (baseSHA != null) {
+      json['baseSha'] = baseSHA;
+    }
+    if (candidateSHA != null) {
+      json['candidateSha'] = candidateSHA;
+    }
+    if (targetRoot != null) {
+      json['targetRoot'] = targetRoot;
+    }
+    if (targetBranch != null) {
+      json['targetBranch'] = targetBranch;
+    }
+    if (execution != null) {
+      json['execution'] = execution;
+    }
+    if (integration != null) {
+      json['integration'] = integration;
+    }
+    if (cleanup != null) {
+      json['cleanup'] = cleanup;
+    }
+    if (reason != null) {
+      json['reason'] = reason;
     }
     return json;
   }

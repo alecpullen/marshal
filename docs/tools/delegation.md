@@ -144,6 +144,21 @@ operation reconciles to one truthful receipt instead of a second merge. A stale
 source or target refuses rather than forcing anything. These are parent-only:
 `SubtaskScopeView` excludes them from every child.
 
+**Integrate serially.** Two candidates built from the same base are each correct
+in isolation and can still conflict in the target, so accept one, run the
+combined build and tests, then accept the next. A `conflict` receipt aborts only
+that merge — neither side is rewritten and both branches remain — and its
+residue is the parent's to resolve; it is not a refusal to retry.
+
+**Both receipts carry typed evidence.** Alongside the `key: value` text, each
+result carries a `subagent_workspace` notice: the task key, the candidate, the
+binding and target, and the execution, integration and cleanup states. It is the
+record at the moment the call ran, never re-read from the current view, so a
+later integration cannot rewrite what an earlier receipt said. The same shape
+travels to clients as `CallDetail.Workspace` and `Subagent.Workspace`
+(`internal/acpwire`, and `contract.SubagentWorkspace` across the bridge), and to
+the postmortem's `subagent_workspaces` section.
+
 ## skill.load
 
 **For:** loading a skill's instruction set into the current context.

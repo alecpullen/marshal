@@ -122,6 +122,101 @@ void main() {
     expect(facts.thinking.single, 'The fold test loads the other one.');
   });
 
+  test('inspect appends a call’s workspace lifecycle facts', () async {
+    NodeDetailResponse answer(SubagentWorkspace? workspace) =>
+        NodeDetailResponse(
+          node: const WireNode(
+            id: 'n1',
+            kind: 'tool',
+            tool: WireTool(
+              name: 'agent.integrate',
+              display: 'Integrate task-1',
+            ),
+          ),
+          detail: NodeDetail(
+            calls: [
+              CallDetail(
+                callID: 'call_1',
+                toolName: 'agent.integrate',
+                output: 'task_key: task-1',
+                workspace: workspace,
+              ),
+            ],
+          ),
+        );
+
+    Future<InspectFacts> factsFor(SubagentWorkspace? workspace) async {
+      bridge.reply(
+        'GET',
+        '/api/sessions/s-1/nodes/n1',
+        _json(answer(workspace).toJson()),
+      );
+      final model = InspectModel(client, sessionId: 's-1');
+      await model.select('n1');
+      return model.facts;
+    }
+
+    // A recorded integration reports its candidate and its own states.
+    final known = await factsFor(
+      const SubagentWorkspace(
+        taskKey: 'task-1',
+        mode: 'isolated',
+        root: '/worktrees/task-1',
+        candidateSHA: '2222222',
+        targetBranch: 'main',
+        execution: 'done',
+        integration: 'integrated',
+        cleanup: 'integrated_cleanup_pending',
+        reason: 'merged; the worktree is still present',
+      ),
+    );
+    for (final want in [
+      'workspace: isolated · /worktrees/task-1',
+      'task: task-1',
+      'candidate: 2222222',
+      'target: main',
+      'execution: done',
+      'integration: integrated',
+      'cleanup: integrated, cleanup pending',
+      'reason: merged; the worktree is still present',
+    ]) {
+      expect(known.output, contains(want));
+    }
+    // The receipt's own output is still there, above the evidence.
+    expect(known.output, startsWith('task_key: task-1'));
+
+    // A conflict is not a success, and an absent candidate says so.
+    final conflicted = await factsFor(
+      const SubagentWorkspace(
+        taskKey: 'task-1',
+        integration: 'conflict',
+        cleanup: 'retained',
+      ),
+    );
+    expect(conflicted.output, contains('integration: conflict'));
+    expect(conflicted.output, contains('cleanup: retained'));
+    expect(conflicted.output, contains('candidate: none recorded'));
+
+    // A candidate nobody integrated is never shown as integrated, and an
+    // interrupted record's unknown state is not invented.
+    final unintegrated = await factsFor(
+      const SubagentWorkspace(taskKey: 'task-1', candidateSHA: 'abc1234'),
+    );
+    expect(unintegrated.output, contains('candidate: abc1234'));
+    expect(unintegrated.output, contains('integration: not recorded'));
+    expect(unintegrated.output, isNot(contains('integration: integrated')));
+
+    // A pending integration is stated as pending, not as done.
+    final pending = await factsFor(
+      const SubagentWorkspace(taskKey: 'task-1', integration: 'intent'),
+    );
+    expect(pending.output, contains('integration: pending'));
+
+    // A legacy call with no payload keeps exactly the output it had.
+    final legacy = await factsFor(null);
+    expect(legacy.output, 'task_key: task-1');
+  });
+
   test('the model request loads on demand', () async {
     bridge.reply(
       'GET',

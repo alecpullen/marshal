@@ -49,4 +49,13 @@ A brief that says "implement the parser" produces work you throw away.
 
 `agent.await` every subagent you started. Review each report against its stated deliverable before integrating. A subagent reporting success is a claim, not evidence — check the verification actually ran.
 
-If two children's work conflicts on integration, that is a decomposition failure, not a merge problem. Re-split and re-run.
+Integration is a separate, serial step. `agent.integrate` takes the reported
+`task_key` and the exact candidate SHA you reviewed, and merges it into the
+checkout the child was dispatched for; `agent.discard` drops a branch you
+deliberately abandon. Do them one at a time and re-run the combined build and
+tests after each: the children are independent in their own worktrees, but the
+target they land in is one tree, and two correct candidates can still conflict
+there.
+
+If two children's work conflicts on integration, that is a decomposition failure, not a merge problem. Re-split and re-run. A `conflict` receipt is not
+something to retry: it keeps both branches, and its residue is yours to resolve.

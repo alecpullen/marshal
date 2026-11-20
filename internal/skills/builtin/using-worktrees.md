@@ -78,9 +78,32 @@ the user to review.
   commits are yours to make. Choose it only for a small task whose files and
   build state are genuinely suitable to share; a shared child cannot give you an
   isolated candidate.
-- **Integration is explicit.** Bring a retained branch in yourself with git —
-  `shell.run git merge <branch>` (or `git cherry-pick <candidate>`) once you have
-  reviewed its candidate and its report. Check the report's branch and candidate
-  commit before you merge; do not assume the child's work is in your tree. Until
-  integration tooling exists, git is the only integration path, and the retained
-  branch stays on disk for you to keep or drop.
+- **Integration is explicit, and it has a tool.** A retained branch is not in
+  your tree until *you* put it there. When the conversation owns a workspace
+  service, `agent.integrate` merges the exact candidate you reviewed into the
+  captured target, and `agent.discard` drops a branch you deliberately abandon.
+  Both take only `task_key` and `expected_head`: read the candidate out of
+  `agent.await`'s report and pass that exact SHA, so a branch that has moved can
+  never be merged in its place. `workspace.finish` is still the session-level
+  tool for the session's own worktree; `agent.integrate` is the per-child one.
+- **Review at the exact candidate before you integrate.** The report names a
+  task key, branch, base and candidate; read the diff at that candidate — a
+  review child dispatched with `"workspace": "isolated"` and
+  `"base_commit": "<candidate>"` sees exactly it — and only then integrate. A
+  child's successful report is not evidence that its changes are in your tree.
+- **Integrate serially, validate the combination.** Two children built from the
+  same base can each be correct and still conflict, so integrate one at a time
+  and run the combined build and tests after each acceptance. A `conflict`
+  receipt aborts only that merge: neither side is rewritten, both branches stay
+  on disk, and the residue is yours to resolve — do not reset, force, or
+  fabricate a resolution.
+- **A conflict, a dirty source, or an unknown state is retained, not discarded.**
+  The receipt says `cleanup: retained` and the branch stays for you to inspect.
+  Discard is a separate, deliberate act: `agent.discard` removes a **verified
+  clean** owned branch and refuses a dirty or moved one rather than forcing it.
+  Never delete a worktree or branch by hand.
+- **Shared-mode limits.** A shared child works directly in the parent's checkout
+  and owns no candidate, so there is nothing to integrate: the parent commits
+  what it wrote. Do not dispatch shared work you expect to review and merge as an
+  independent candidate, and do not treat a shared child's files as already
+  committed.

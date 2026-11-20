@@ -86,6 +86,64 @@ type SubagentView struct {
 	// embedded so the card carries the same lightweight facts the conversation
 	// work index stores. It never carries the full report body.
 	SubagentWorkFacts
+
+	// Workspace is the read-only lifecycle evidence of this child's owned
+	// workspace, joined by task key from the conversation's retained records.
+	// It is a copy taken when the view is projected, so it never aliases a
+	// mutable parent workspace, and nil means this conversation recorded no
+	// owned workspace for the child — not that one was discarded.
+	Workspace *SubagentWorkspaceFacts
+}
+
+// SubagentWorkspaceFacts is the projection of one retained owned-workspace
+// record onto the facts a card explains the work's lifecycle with: what the
+// child was bound to, the commit it produced, the checkout that work belongs
+// in, and what became of the integration and of the workspace's artifacts.
+//
+// Every field is optional and an empty one is unknown, never a zero-valued
+// fact: an empty Execution, Integration or Cleanup means the record predates
+// the state or has not settled, and an empty CandidateSHA means the child
+// produced no commit. A reader must not infer an integration from either.
+type SubagentWorkspaceFacts struct {
+	TaskKey      string
+	Mode         string
+	Root         string
+	Branch       string
+	BaseSHA      string
+	CandidateSHA string
+	TargetRoot   string
+	TargetBranch string
+	Execution    string
+	Integration  string
+	Cleanup      string
+	Reason       string
+}
+
+// subagentWorkspaceFactsOf projects one retained record onto those facts. It
+// reads only what the record itself holds — never the live parent workspace —
+// so a card keeps naming the candidate and integration state the record
+// settled on.
+func subagentWorkspaceFactsOf(rec subagentwork.Record) *SubagentWorkspaceFacts {
+	if rec.TaskKey == "" {
+		return nil
+	}
+	out := &SubagentWorkspaceFacts{
+		TaskKey:      rec.TaskKey,
+		Mode:         string(rec.Binding.Mode),
+		Root:         rec.Binding.Root,
+		Branch:       rec.Binding.Branch,
+		BaseSHA:      rec.Binding.BaseSHA,
+		CandidateSHA: rec.Candidate,
+		TargetRoot:   rec.Target.Root,
+		TargetBranch: rec.Target.Branch,
+		Execution:    rec.Outcome,
+		Cleanup:      rec.CleanupState,
+	}
+	if rec.Integration != nil {
+		out.Integration = rec.Integration.State
+		out.Reason = rec.Integration.Reason
+	}
+	return out
 }
 
 // SubagentMeta is the optional metadata passed to RegisterSubagentWithMeta.
@@ -814,13 +872,32 @@ func (s *State) FinishSubagent(id int64, summary string, err error) {
 
 // Subagents returns a copy of the registered subagent views in registration
 // order. The Child pointers inside reference live states; callers read them
-// under those states' own locks.
+// under those states' own locks. Each view carries a copy of its retained
+// workspace evidence, joined by task key: a card therefore keeps naming the
+// candidate and integration state the durable record settled on.
 func (s *State) Subagents() []SubagentView {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]SubagentView, len(s.subagents))
 	copy(out, s.subagents)
+	for i := range out {
+		out[i].Workspace = s.subagentWorkspaceFactsLocked(out[i].WorkKey)
+	}
 	return out
+}
+
+// subagentWorkspaceFactsLocked is the retained evidence for one task key, as a
+// fresh projection, or nil when this conversation holds no record for it.
+// Callers must hold s.mu.
+func (s *State) subagentWorkspaceFactsLocked(taskKey string) *SubagentWorkspaceFacts {
+	if taskKey == "" {
+		return nil
+	}
+	record, ok := s.subagentWorkspaces[taskKey]
+	if !ok {
+		return nil
+	}
+	return subagentWorkspaceFactsOf(record)
 }
 
 // Constants naming the lightweight work-index entries a subagent produces.
@@ -994,6 +1071,12 @@ func (s *State) SubagentSnapshot() SubagentSnapshot {
 	rev := s.subagentRevision
 	views := make([]SubagentView, len(s.subagents))
 	copy(views, s.subagents)
+	// The retained workspace evidence is a copy of the ledger's own record, so
+	// it is projected under the same lock the ledger is read with and never
+	// aliases the record a writer may later replace.
+	for i := range views {
+		views[i].Workspace = s.subagentWorkspaceFactsLocked(views[i].WorkKey)
+	}
 	var settlingIDs []int64
 	for id, settling := range s.subagentSettling {
 		if settling {

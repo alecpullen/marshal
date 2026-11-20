@@ -241,7 +241,45 @@ func lifecycleResult(name string, m subagentwork.Mutation, rec subagentwork.Reco
 	if rec.Target.Branch != "" {
 		fmt.Fprintf(&b, "target_branch: %s\n", rec.Target.Branch)
 	}
-	return registry.ToolResult{Summary: lifecycleSummary(name, m.TaskKey, rec, state), Content: b.String()}
+	return registry.ToolResult{
+		Summary: lifecycleSummary(name, m.TaskKey, rec, state),
+		Content: b.String(),
+		// The same facts travel typed beside the prose, so a client reads the
+		// candidate and the integration and cleanup states without parsing the
+		// receipt. It is the record's own evidence at the moment this call ran:
+		// a later integration does not rewrite what this receipt said.
+		Notice: registry.NewSubagentWorkspaceNotice(workspaceEvidenceOf(m, rec)),
+	}
+}
+
+// workspaceEvidenceOf projects one mutation's record onto the persisted evidence
+// payload. Every field is a primitive string taken from the record; an empty one
+// stays empty and reads as unknown, never as a zero-valued fact.
+func workspaceEvidenceOf(m subagentwork.Mutation, rec subagentwork.Record) registry.SubagentWorkspaceEvidence {
+	ev := registry.SubagentWorkspaceEvidence{
+		OwnerSessionID: m.OwnerSessionID,
+		TaskKey:        m.TaskKey,
+		Mode:           string(rec.Binding.Mode),
+		Root:           rec.Binding.Root,
+		Branch:         rec.Binding.Branch,
+		BaseSHA:        rec.Binding.BaseSHA,
+		CandidateSHA:   rec.Candidate,
+		TargetRoot:     rec.Target.Root,
+		TargetBranch:   rec.Target.Branch,
+		Execution:      rec.Outcome,
+		Cleanup:        rec.CleanupState,
+	}
+	if ev.CandidateSHA == "" {
+		// The receipt names the candidate this call was asked to act on, which
+		// is the exact commit the parent inspected even when the record itself
+		// had not yet observed one.
+		ev.CandidateSHA = m.ExpectedHead
+	}
+	if rec.Integration != nil {
+		ev.Integration = rec.Integration.State
+		ev.Reason = rec.Integration.Reason
+	}
+	return ev
 }
 
 // lifecycleSummary is the one-line outcome a transcript row can show.

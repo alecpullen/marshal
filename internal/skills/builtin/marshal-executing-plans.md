@@ -125,8 +125,15 @@ cleanly, ask, and resume. Never guess at it, and never hand it to a subagent.
      own tests, and embedded code landed verbatim. Revert anything outside
      scope, or treat it as a bigger decision.
    - Re-run the task's Verify commands on the integrated result.
-   - Integrate explicitly — merge the retained branch or cherry-pick the
-     candidate with `shell.run` — and then commit.
+   - Integrate explicitly with `agent.integrate`: to merge the retained branch
+     whose work you reviewed, pass the reported `task_key` and that exact
+     candidate SHA. It merges into the checkout the child was dispatched for,
+     so it never moves your own tree's unrelated work, and it refuses a
+     candidate or target that has changed since you looked. Integrate accepted
+     tasks **one at a time**, re-running the combined build and tests after
+     each: two tasks built from the same base can both be correct and still
+     conflict. A `conflict` receipt keeps both sides and is yours to resolve;
+     do not reset or force it. Then commit.
 
 Before the next task, read the signatures the next task consumes from the
 committed code. Paste those into its brief rather than relaying the previous

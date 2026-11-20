@@ -77,6 +77,13 @@ Use this instead of `shell.run git merge`, and pop or drop any stash you created
 before calling it. See `git.md` for the merge-hygiene note and why it fires too
 late to help.
 
+**This is the session's own worktree.** A subagent's workspace is not this one:
+`agent.integrate` (see [`delegation.md`](delegation.md)) is the per-child
+equivalent, merging one owned candidate into the checkout that child was
+dispatched for. It takes a task key and an exact candidate, never a path, so it
+cannot be aimed at a checkout the caller does not own, and `workspace.finish`
+cannot merge a child's candidate in its place.
+
 ## question.ask
 
 **For:** asking the user a question when the request is ambiguous or a decision

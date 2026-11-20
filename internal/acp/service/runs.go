@@ -37,8 +37,33 @@ func subagentsOf(views []session.SubagentView) []acpwire.Subagent {
 				SessionID:   v.Child.SessionID(),
 			}
 		}
+		out[i].Workspace = subagentWorkspaceOf(v.Workspace)
 	}
 	return out
+}
+
+// subagentWorkspaceOf projects the session's retained workspace evidence onto
+// the wire. Nil stays nil: a conversation that recorded no owned workspace for
+// a child sends no evidence at all, which a client reads as unknown rather than
+// as an empty record.
+func subagentWorkspaceOf(w *session.SubagentWorkspaceFacts) *acpwire.SubagentWorkspace {
+	if w == nil {
+		return nil
+	}
+	return &acpwire.SubagentWorkspace{
+		TaskKey:      w.TaskKey,
+		Mode:         w.Mode,
+		Root:         w.Root,
+		Branch:       w.Branch,
+		BaseSHA:      w.BaseSHA,
+		CandidateSHA: w.CandidateSHA,
+		TargetRoot:   w.TargetRoot,
+		TargetBranch: w.TargetBranch,
+		Execution:    w.Execution,
+		Integration:  w.Integration,
+		Cleanup:      w.Cleanup,
+		Reason:       w.Reason,
+	}
 }
 
 // activityWire is a session activity on the wire.

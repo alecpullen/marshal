@@ -170,9 +170,12 @@ class InspectModel extends ChangeNotifier {
         if ((wireCall?.risk ?? '').isNotEmpty) wireCall!.risk!,
       ].join(' · '),
       callId: call?.callID ?? wireCall?.callID,
-      output: call == null
-          ? (node.message?.content ?? node.completion?.report ?? '')
-          : (call.output ?? call.diff ?? ''),
+      output: _withWorkspace(
+        call == null
+            ? (node.message?.content ?? node.completion?.report ?? '')
+            : (call.output ?? call.diff ?? ''),
+        call?.workspace,
+      ),
       arguments: call?.args ?? '',
       thinking: [
         for (final thought in detail.thinking ?? const <ThoughtDetail>[])
@@ -194,6 +197,63 @@ class InspectModel extends ChangeNotifier {
       if (network) 'network isolated',
     ];
     return parts.isEmpty ? null : parts.join(' · ');
+  }
+
+  /// [_withWorkspace] appends a call's workspace lifecycle facts to the output
+  /// body it is shown under. It is additive: a call that recorded no evidence
+  /// — every legacy receipt — keeps exactly the output it had.
+  ///
+  /// The facts state only what the payload holds. An absent candidate,
+  /// integration or cleanup reads as none recorded or not recorded, never as
+  /// success, and a pending integration or cleanup says so in as many words: a
+  /// receipt that accepted the merge but could not remove the worktree is not a
+  /// finished operation.
+  static String _withWorkspace(String output, SubagentWorkspace? ws) {
+    if (ws == null) return output;
+    final lines = <String>[];
+    final head = [
+      if ((ws.mode ?? '').isNotEmpty) ws.mode!,
+      if ((ws.root ?? '').isNotEmpty) ws.root!,
+    ].join(' · ');
+    if (head.isNotEmpty) lines.add('workspace: $head');
+    if ((ws.taskKey ?? '').isNotEmpty) lines.add('task: ${ws.taskKey}');
+    lines.add(
+      (ws.candidateSHA ?? '').isEmpty
+          ? 'candidate: none recorded'
+          : 'candidate: ${ws.candidateSHA}',
+    );
+    final target = [
+      if ((ws.targetBranch ?? '').isNotEmpty) ws.targetBranch!,
+      if ((ws.targetRoot ?? '').isNotEmpty) ws.targetRoot!,
+    ].join(' · ');
+    if (target.isNotEmpty) lines.add('target: $target');
+    if ((ws.execution ?? '').isNotEmpty)
+      lines.add('execution: ${ws.execution}');
+    switch (ws.integration) {
+      case null:
+      case '':
+        lines.add('integration: not recorded');
+      case 'intent':
+        lines.add('integration: pending — the work is not in the target yet');
+      default:
+        lines.add('integration: ${ws.integration}');
+    }
+    switch (ws.cleanup) {
+      case null:
+      case '':
+        // Nothing recorded: say nothing rather than invent a state.
+        break;
+      case 'integrated_cleanup_pending':
+        lines.add(
+          'cleanup: integrated, cleanup pending — the worktree and branch remain',
+        );
+      default:
+        lines.add('cleanup: ${ws.cleanup}');
+    }
+    if ((ws.reason ?? '').isNotEmpty) lines.add('reason: ${ws.reason}');
+    if (lines.isEmpty) return output;
+    final body = lines.join('\n');
+    return output.isEmpty ? body : '$output\n\n$body';
   }
 
   static String _requestSummary(ModelRequest request) {

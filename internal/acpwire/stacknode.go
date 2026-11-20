@@ -49,6 +49,13 @@ type CallDetail struct {
 	// handoff or a stop outcome with, without parsing a sentence.
 	Execution *ExecutionDetail `json:"execution,omitempty"`
 	Summary   string           `json:"summary,omitempty"` // the call's own summary, uncut
+
+	// Workspace is the workspace lifecycle evidence this call carried, when it
+	// carried any: the dispatch, await, integrate or discard receipt's task
+	// key, candidate and integration state. It is historical — what the call
+	// recorded when it ran — and is never recomputed from the session's
+	// current view of the same task.
+	Workspace *SubagentWorkspace `json:"workspace,omitempty"`
 }
 
 // ExecutionDetail is one managed command execution's structured evidence as

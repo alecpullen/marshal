@@ -626,3 +626,85 @@ func TestShellFamilyMatchesTheProjection(t *testing.T) {
 		}
 	}
 }
+
+// TestCallBodyShowsWorkspaceEvidence pins what an expanded lifecycle receipt
+// adds under its output: the candidate, the integration and the cleanup state,
+// each stated as the payload holds it. A receipt that merged but could not
+// remove the worktree says so, and a call with no payload draws exactly the
+// body it drew before the field existed.
+func TestCallBodyShowsWorkspaceEvidence(t *testing.T) {
+	call := acpwire.WireCall{Args: `{"task_key":"task-1"}`, Output: "task_key: task-1\n"}
+	known := &acpwire.CallDetail{
+		Args:   `{"task_key":"task-1"}`,
+		Output: "task_key: task-1\n",
+		Workspace: &acpwire.SubagentWorkspace{
+			TaskKey:      "task-1",
+			Mode:         "isolated",
+			Root:         "/worktrees/task-1",
+			CandidateSHA: "2222222",
+			TargetBranch: "main",
+			Execution:    "done",
+			Integration:  "integrated",
+			Cleanup:      "integrated_cleanup_pending",
+			Reason:       "merged; the worktree is still present",
+		},
+	}
+	body := func(d *acpwire.CallDetail) string {
+		return ansi.Strip(strings.Join(toolBody("agent.integrate", call, d, 80), "\n"))
+	}
+
+	got := body(known)
+	for _, want := range []string{
+		"workspace: isolated · /worktrees/task-1",
+		"task: task-1",
+		"candidate: 2222222",
+		"target: main",
+		"execution: done",
+		"integration: integrated",
+		"cleanup: integrated, cleanup pending",
+		"reason: merged; the worktree is still present",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the body lacks %q:\n%s", want, got)
+		}
+	}
+
+	// A conflict is not a success, and a retained workspace is not a cleaned-up
+	// one: both say what the record says.
+	conflicted := &acpwire.CallDetail{
+		Output: "task_key: task-1\n",
+		Workspace: &acpwire.SubagentWorkspace{
+			TaskKey:     "task-1",
+			Integration: "conflict",
+			Cleanup:     "retained",
+			Reason:      "both branches changed internal/app.go",
+		},
+	}
+	got = body(conflicted)
+	if !strings.Contains(got, "integration: conflict") || !strings.Contains(got, "cleanup: retained") {
+		t.Fatalf("a conflicted receipt reads as success:\n%s", got)
+	}
+	// A receipt with no candidate says so rather than inventing one.
+	if !strings.Contains(got, "candidate: none recorded") {
+		t.Fatalf("a receipt with no candidate did not report its absence:\n%s", got)
+	}
+	// An unintegrated candidate is never shown as integrated.
+	unintegrated := &acpwire.CallDetail{
+		Output:    "task_key: task-1\n",
+		Workspace: &acpwire.SubagentWorkspace{TaskKey: "task-1", CandidateSHA: "abc1234"},
+	}
+	got = body(unintegrated)
+	if !strings.Contains(got, "candidate: abc1234") || !strings.Contains(got, "integration: not recorded") {
+		t.Fatalf("an unintegrated candidate reads as integrated:\n%s", got)
+	}
+
+	// A call that carried no payload draws exactly its output.
+	legacy := body(&acpwire.CallDetail{Output: "task_key: task-1\n"})
+	if strings.Contains(legacy, "workspace:") || strings.Contains(legacy, "integration:") {
+		t.Fatalf("a call with no workspace payload drew evidence:\n%s", legacy)
+	}
+	// And a nil detail — the wire's own text — is unchanged too.
+	if got := ansi.Strip(strings.Join(toolBody("agent.integrate", call, nil, 80), "\n")); !strings.Contains(got, "task_key: task-1") {
+		t.Fatalf("a nil detail lost the wire's output: %q", got)
+	}
+}

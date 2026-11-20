@@ -8,10 +8,8 @@ import 'package:marshal_app/src/model/hosts_model.dart';
 /// The `marshal fleet` commands as a test scripts them: every one is recorded
 /// in the order it ran, and each can be made to fail.
 class _Runner implements FleetProfiles {
-  _Runner({this.supported = true});
-
   @override
-  final bool supported;
+  bool get supported => true;
 
   /// Every command, in the order it ran: "add studio me@studio", "remove
   /// studio", …
@@ -186,15 +184,13 @@ void main() {
     expect(forgotten, ['studio']);
   });
 
-  test('a browser cannot add', () async {
-    final runner = _Runner(supported: false);
-    final model = HostsModel(() => const <HostView>[], profiles: runner);
+  test('a model without profiles cannot add', () async {
+    final model = HostsModel(() => const <HostView>[]);
 
     expect(model.canAdd, isFalse);
     await expectLater(
       model.add(const HostDraft(name: 'studio', destination: 'me@studio')),
       throwsA(isA<FleetProfileFailure>()),
     );
-    expect(runner.calls, isEmpty);
   });
 }

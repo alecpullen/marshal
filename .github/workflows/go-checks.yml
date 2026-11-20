@@ -59,10 +59,9 @@ jobs:
   # models and the fixture both languages read — so it needs no GTK, no display
   # and no build of the desktop runner. The Studio's web build is made here
   # because it is what every install ships beside the binaries and what a daemon
-  # serves at /; this job builds it, fails on a CDN reference in it, runs its
-  # browser-only tests in Chrome and serves it through a real daemon. The
-  # bundles themselves are built in the release workflow, on the OSes that can
-  # build them.
+  # serves at /; this job builds it, fails on a CDN reference in it, and serves
+  # it through a real daemon. The bundles themselves are built in the release
+  # workflow, on the OSes that can build them.
   app:
     name: App tests and Studio build
     runs-on: ubuntu-latest
@@ -140,20 +139,10 @@ jobs:
           name: studio-web-appjob
           path: share/marshal/studio/
           if-no-files-found: error
-      # `flutter test` on the VM skips a test marked `@TestOn('browser')`, so the
-      # browser transport (test/client/transport_web_test.dart) had no test in
-      # CI at all. Chrome is on ubuntu-latest; `--platform chrome` is what runs
-      # them. The files are found by their marker rather than listed, so a new
-      # browser-only test is not left out of the run.
-      - name: Browser tests
-        run: |
-          files="$(grep -rl "@TestOn('browser')" test)"
-          if [ -z "$files" ]; then
-            echo "no test is marked @TestOn('browser'); the browser half is untested" >&2
-            exit 1
-          fi
-          echo "browser-only tests:"; printf '%s\n' "$files"
-          flutter test --platform chrome $files
+      # The browser-only tests are not run in CI: `flutter test --platform chrome`
+      # hangs on the runner (the browser host starts, then nothing arrives), so
+      # it sat until the job timed out. `flutter analyze` still compiles them;
+      # run them locally with `flutter test --platform chrome $(grep -rl "@TestOn('browser')" test)`.
       # F8's cutover removed the Svelte Studio with its toolchain: the Studio is
       # the Flutter one, and a reintroduced Node project under web/ would be a
       # second Studio nobody builds. This fails rather than letting one rot in
@@ -252,16 +241,42 @@ jobs:
           mkdir -p share/marshal/studio/assets
           printf '<!doctype html><title>stand-in</title>\n' > share/marshal/studio/index.html
           printf '{}\n' > share/marshal/studio/assets/AssetManifest.json
-          # --single-target keeps this to the runner's own platform: the darwin
-          # builds want osxcross, which a plain ubuntu runner has not, and the
-          # guard is about the glob, not the cross toolchain. Docker, Homebrew
-          # and publishing are the release job's business.
-          goreleaser release --snapshot --clean --single-target \
-            --skip=docker,homebrew,publish,validate
+          # `release` has no --single-target; that flag belongs to `build`. And
+          # the checked-in config builds six targets across two OSes: the darwin
+          # pair wants osxcross (o64-clang/oa64-clang), linux/arm64 an aarch64
+          # cross compiler, and neither is on a plain ubuntu runner. The release
+          # job runs inside goreleaser-cross, which has them; this guard is
+          # about the archive's glob, not the cross toolchain, so it releases
+          # one native target from a copy of the config whose only edits are
+          # that target and the compilers it would name.
+          cfg="$RUNNER_TEMP/goreleaser-native.yaml"
+          python3 - "$cfg" <<'PY'
+          import sys, yaml
+          doc = yaml.safe_load(open('.goreleaser.yaml'))
+          for build in doc['builds']:
+              build['goos'] = ['linux']
+              build['goarch'] = ['amd64']
+              # The overrides only name goreleaser-cross's compilers: a native
+              # target needs none of them, and CC/CXX would point at binaries
+              # this runner does not have.
+              build['env'] = ['CGO_ENABLED=1']
+              build.pop('overrides', None)
+          yaml.safe_dump(doc, open(sys.argv[1], 'w'), sort_keys=False)
+          PY
+          # --snapshot stops at the artifacts: no tag, no publish, no changelog.
+          # Docker, Homebrew, notarizing and publishing are the release job's
+          # business.
+          goreleaser release --snapshot --clean --config "$cfg" \
+            --skip=docker,homebrew,publish,validate,notarize
           tarball="$(ls dist/*.tar.gz | head -1)"
           echo "inspecting $tarball"
-          if ! tar -tzf "$tarball" | grep -qx 'share/marshal/studio/index.html'; then
+          # The entries are read into a file first: piping them straight into
+          # `grep -q` lets grep exit on its match, tar then dies of SIGPIPE, and
+          # `pipefail` calls the pipeline failed — a Studio the archive does
+          # carry would be reported as missing.
+          tar -tzf "$tarball" > dist/.entries
+          if ! grep -qx 'share/marshal/studio/index.html' dist/.entries; then
             echo "$tarball carries no share/marshal/studio/index.html: the archive's Studio glob in .goreleaser.yaml misses the zero-depth index.html, and a daemon does not count such a directory as a Studio. Name the directory (share/marshal/studio) rather than a /**/* pattern under it. What the archive holds under it:" >&2
-            tar -tzf "$tarball" | grep 'share/marshal/studio' >&2 || echo "  (nothing)" >&2
+            grep 'share/marshal/studio' dist/.entries >&2 || echo "  (nothing)" >&2
             exit 1
           fi

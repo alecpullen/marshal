@@ -10,8 +10,15 @@ that up, the day-to-day loop, and how to rebuild the setup from nothing.
 | `marshal-studio` | `~/.config/systemd/user/marshal-studio.service` | `http://127.0.0.1:7700` |
 
 Both run the same daemon: `webbridge` has one shape, and `--profile` is retired.
-The studio is a second *process* only because a browser needs a loopback address
-of its own.
+The studio is a second *process* for one reason only: a Studio rebuild rewrites
+the embedded SPA, so `webbridge` has to be relinked, and restarting the studio's
+unit rather than the TUI's daemon keeps a rebuild from ending the TUI's running
+turns. Both serve the browser the same way — the web listener.
+
+Nothing on that listener authenticates a browser: Marshal holds no bearer
+secret, and the operator's proxy is the login (one-daemon D13). A listener on a
+loopback address is reachable by every account on the machine, which is why
+`marshal daemon status` says so beside the address.
 
 Two helpers own them: `scripts/dev-daemon.sh` and `scripts/dev-studio.sh`.
 Both build into the repository root and restart the service; neither watches
@@ -40,8 +47,8 @@ CGO_ENABLED=1 go build -o . ./cmd/marshal ./cmd/webbridge
 ./marshal daemon install
 ./marshal daemon status
 
-# The studio: SPA + binaries + agent image + unit + token.
-./scripts/dev-studio.sh --install --dev-image --token
+# The studio: SPA + binaries + agent image + unit.
+./scripts/dev-studio.sh --install --dev-image
 ```
 
 `-o .` is load-bearing: `go build ./cmd/marshal ./cmd/webbridge` without it
@@ -93,14 +100,12 @@ the SPA the same way before it builds `webbridge`.
 ./scripts/dev-studio.sh --no-spa         # Go only, keep the embedded SPA
 ./scripts/dev-studio.sh --no-build       # restart only
 ./scripts/dev-studio.sh --no-restart     # build (and optionally --dev-image) only
-./scripts/dev-studio.sh --install        # rewrite the unit and rotate the token
+./scripts/dev-studio.sh --install        # rewrite the unit (repo moved, unit settings changed)
 ./scripts/dev-studio.sh --status         # query only
-./scripts/dev-studio.sh --token          # print the bearer token
 ./scripts/dev-studio.sh --agent-image    # slow: compile marshal inside the image (release-shaped)
 ```
 
-`--status` and `--token` are queries: they never build, restart, or rewrite
-anything.
+`--status` is a query: it never builds, restarts, or rewrites anything.
 
 Editing the Studio has no hot-reload mode. F8's cutover removed the Svelte
 studio together with the Vite dev server and the dev proxy that let its page
@@ -134,15 +139,13 @@ for `defaultAgentImageFor`, so the studio's default project settings pick the
 image up with no config edit. The dev image carries a `marshal.dev.bin-mtime`
 label so `--status` can report when it predates `./marshal`.
 
-## The studio's token and state
+## The studio's state
 
-The SPA authenticates `/api` with a bearer token held in `localStorage` and
-asks for it once per browser. `--token` prints it.
+The studio holds no secret: the web listener it serves on has none, and the
+proxy in front of it authenticates the browser (D13).
 
 | Path | Contents |
 |---|---|
-| `$data_dir/studio/token` | the bearer token |
-| `$data_dir/studio/webbridge.env` | `WEBBRIDGE_TOKEN=…`, mode `0600`, read by the unit |
 | `$data_dir/studio/fleet.json` | the studio's own fleet |
 | `$data_dir/studio/webbridge.log` | `append:` stdout/stderr |
 | `$data_dir/studio/state` | `--state-dir` |
@@ -157,8 +160,8 @@ bound read-only beside it, so the bridge and its containers resolve the same
 files. On Linux a container needs those binds, so a rootless Podman or Docker is
 required and a rootful one is refused. `--status` prints the directory.
 
-`--install` rotates the token and signs every browser out; plain restarts keep
-it, so the browser stays signed in.
+A directory written by an older run may still hold `token` and `webbridge.env`;
+neither is read any more. Delete them when you like.
 
 ## Reaching a host from the TUI fleet screen
 
@@ -199,33 +202,26 @@ tailscale serve status                     # shows the 8443 entry beside whateve
 
 Port 443 may already belong to another service on the same host (this box
 serves `:8200` at the root), so pick a free `--https=` port. Tailscale issues
-and renews the certificate, so there is no `--tls-cert` to manage, and the
-entry is tailnet-only — no LAN exposure, no public DNS record. Remove just it
-with `tailscale serve --https=8443 off`; `tailscale serve reset` clears every
-entry on the host, including ones you did not create.
+and renews the certificate, so there is no certificate to manage, and the entry
+is tailnet-only — no LAN exposure, no public DNS record. Remove just it with
+`tailscale serve --https=8443 off`; `tailscale serve reset` clears every entry
+on the host, including ones you did not create.
 
-Forwarding is also what keeps **agent sessions** usable. The agent attach
-refuses a request that is neither TLS nor on a loopback connection, answering
-403 `the agent attach needs TLS` (`overTLSOrLoopback`, `web/bridge/attach.go`).
-Traffic forwarded by `tailscaled` reaches webbridge on loopback, so the
-transport rule passes and sessions open normally from a remote browser.
-Verified: `POST /api/agents/<id>/attach` through the forwarded port reaches
-`attachAgent` (it rejects the missing upgrade header) instead of 403.
-
-Binding the bridge itself to a routable address instead (`--addr 0.0.0.0:7700`)
-is not equivalent: plain HTTP off loopback gets the SPA and `/api` but every
-attach is refused, so studio becomes read-only-ish — you can spawn and watch
-the fleet, but you cannot open a session. If you do need a direct bind, give it
-TLS with `--tls-cert`/`--tls-key` (both, or it refuses to start), and remember
-the bearer token then travels in an `Authorization` header over whatever
-network that is.
+The proxy is now the only gate (D13). Marshal holds no bearer secret and checks
+no browser's identity: tailnet membership is the login, and a request that
+arrives at `:7700` is answered. What the listener does check for itself is what
+a browser sends on another site's behalf — the `Host` it is addressed to (only
+`localhost`, `127.0.0.1`, `::1` and `[daemon] web_url`'s host), a
+state-changing request whose `Sec-Fetch-Site` or `Origin` is another site's,
+and an `/api/` body that is not JSON (`web/bridge/webguard.go`). So `web_url`
+has to name the address the proxy publishes, or the forwarded browser is
+refused before any route sees it.
 
 `tailscale serve` is tailnet-only, so it is not the LAN answer: the LAN needs
-its own TLS front on a LAN address — any reverse proxy pointed at
-`127.0.0.1:7700` whose origin has a certificate, or a direct
-`--tls-cert`/`--tls-key` bind — and the plain-HTTP rebind above is never it.
-Prefer the tailnet: it reaches the same studio with a valid certificate and no
-LAN exposure.
+its own TLS front — any reverse proxy with a certificate pointed at
+`127.0.0.1:7700` — with that same gate behind it. The listener refuses a
+routable bind in any case, so there is no plain-HTTP shortcut to prefer over the
+tailnet.
 
 Which origin is actually live is not something you should have to guess:
 `scripts/dev-studio.sh --status` prints a `remote:` line for every
@@ -240,10 +236,35 @@ Two things do not travel through the forward:
   refused. Browse those from the box itself.
 - **The TUI's fleet screen** does not use the forward at all: `marshal fleet`
   dials a daemon's socket, not a URL, and a remote daemon is a host reached
-  over SSH (`marshal fleet --host NAME`, next section). What the forward
-  gives you is the studio's own page and `/api` at the forwarded origin; a
-  browser signs in there once more, because the token lives in `localStorage`
-  per origin.
+  over SSH (`marshal fleet --host NAME`, next section). What the forward gives
+  you is the studio's own page and `/api` at the forwarded origin.
+
+## Pointing an MCP client at the daemon
+
+An MCP client talks to the daemon as one more client with its own grant, not as
+the owner: create one in **Settings › Access** in the Studio, then save the
+credential it shows once to a file only you can read, because it is not
+displayed again.
+
+```bash
+install -m 0600 /dev/null ~/.config/marshal/mcp-client.cred
+# paste the credential into the file (Settings › Access shows it once)
+```
+
+The client speaks stdio, so its command is `marshal` with `mcp` and that file,
+and nothing listens anywhere:
+
+```jsonc
+// e.g. an MCP client's server entry
+{ "command": "/home/you/.local/bin/marshal",
+  "args": ["mcp", "--credential-file", "/home/you/.config/marshal/mcp-client.cred"] }
+```
+
+`marshal mcp` relays the client's JSON-RPC to `/mcp` over the daemon's socket.
+That keeps per-client grants and needs no web listener, so it works on a box
+whose daemon listens only on its socket. The `/mcp` route carries its own
+client credential either way, which is why the web listener's guard leaves it
+alone (D13).
 
 ## Reaching another machine
 
@@ -264,55 +285,6 @@ prompt (A2). On Linux, the systemd user manager must see the agent: run
 `systemctl --user import-environment SSH_AUTH_SOCK` once per login, run the
 agent as a user unit, or set `IdentityAgent` in `~/.ssh/config`. On macOS,
 launchd gives the daemon the login's agent.
-
-## A relay on the development box
-
-One box can hold both halves of a relay: the Studio on `127.0.0.1:7700` relays,
-and the local daemon joins it as `local`. That is the way to see a relayed host
-without a second machine.
-
-Give the Studio the name it relays and that name's secret. Install first: the
-install rewrites `webbridge.env`, so the relay line is appended after it, and
-another `--install` later wipes it and needs the append again.
-
-```bash
-secret_dir="${MARSHAL_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/marshal}/studio"
-scripts/dev-studio.sh --install
-install -m 0600 /dev/null "$secret_dir/join-local.secret"
-printf '%s\n' 'some-long-secret' > "$secret_dir/join-local.secret"
-printf 'WEBBRIDGE_RELAY_JOIN=local=%s\n' "$secret_dir/join-local.secret" \
-  >> "$secret_dir/webbridge.env"
-scripts/dev-studio.sh --restart
-```
-
-The unit reads `webbridge.env` as an `EnvironmentFile`, so a plain `--restart`
-keeps the relay. Point the daemon at the same relay, store the same secret, and
-reinstall — the join is a unit argument, so it changes only there:
-
-```bash
-marshal daemon join-token          # paste the secret above; it never echoes
-# ~/.config/marshal/config.toml:
-#   [daemon]
-#   join_url = "http://127.0.0.1:7700"
-#   join_name = "local"
-marshal daemon install
-marshal daemon status              # relay: joined http://127.0.0.1:7700 as local
-```
-
-The relay lists what joined it, and a forward needs both tokens: the relay's
-bearer, then the host's own, which `marshal daemon token` prints for a pipe.
-
-```bash
-curl -s -H "Authorization: Bearer $(cat "$secret_dir/token")" \
-  127.0.0.1:7700/api/relay/hosts
-
-curl -s -H "Authorization: Bearer $(cat "$secret_dir/token")" \
-  -H "X-Marshal-Host-Token: $(marshal daemon token)" \
-  127.0.0.1:7700/api/hosts/local/api/agents
-```
-
-The daemon's own token opens no relay route, and the join secret only lets a
-daemon offer itself: the relay gives reach, not authority.
 
 ## Restart cost
 
@@ -355,16 +327,15 @@ mid-flight.
    ```
 
    The first run builds the SPA with `flutter build web`, builds both binaries,
-   writes the unit and token, enables and starts the unit. `--install` implies
-   a restart; no separate `start` is needed.
+   writes the unit, enables and starts the unit. `--install` implies a restart;
+   no separate `start` is needed.
 4. **Confirm both services**, and add a host if you have another machine to
    reach (optional: with no other machine, `fleet.toml` is never needed):
 
    ```bash
    ./scripts/dev-daemon.sh --status
    ./scripts/dev-studio.sh --status
-   curl -fsS -H "Authorization: Bearer $(./scripts/dev-studio.sh --token)" \
-     http://127.0.0.1:7700/api/projects
+   curl -fsS http://127.0.0.1:7700/api/projects   # no credential: the listener has none
 
    ./marshal fleet add box you@box  # optional: writes [hosts.box]
    ./marshal daemon status          # host box (you@box): live
@@ -378,7 +349,7 @@ mid-flight.
 | Symptom | Cause and fix |
 |---|---|
 | `dev-daemon.sh` exits non-zero after "did not answer" | It tails `$data_dir/daemon/webbridge.log`; also `systemctl --user status marshal-daemon`. Usually a missing `webbridge` beside `marshal`. |
-| Studio answers `401` | The token changed (a `--install` ran) or the browser has an old one. Re-paste `--token`. |
+| Studio answers `401` | Not Marshal: the listener holds no secret, so a `401` comes from the proxy in front of it. Sign in there again (D13). |
 | Studio serves but spawns fail | No `ghcr.io/marshal/agent:latest`; run `--dev-image`. `--status` says when it is missing or stale. Or the runtime is rootful: agents need rootless podman or docker on Linux, and a rootful one answers 501. |
 | Agent exits with `GLIBC_2.x not found` | The dev image's base is older than the host's libc; rebuild with `--build-arg BASE_IMAGE=<host-matching image>`. |
 | `--install` refuses to write a unit | `MARSHAL_CONFIG_DIR`/`MARSHAL_DATA_DIR`/`XDG_*` point outside `$HOME`. The unit bakes those paths, so it would outlive a temp dir. Unset them, or pass `--force` deliberately. |

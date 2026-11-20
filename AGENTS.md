@@ -49,7 +49,8 @@ recreate the services from scratch are documented in
 `marshal` also dispatches subcommands: `acp` (headless JSON-RPC server),
 `attach` (reattach to a daemon session), `daemon` (install, drive and restart
 the local daemon), `fleet` (the fleet screen on the local daemon), `history`,
-`plugin`, `snapshots`, `calibrate-tokens`. Top-level flags are `--trust`,
+`mcp` (a stdio relay to `/mcp` over the socket), `plugin`, `snapshots`,
+`calibrate-tokens`. Top-level flags are `--trust`,
 `--embedded` (run in this process, without the daemon) and `--version`.
 
 ### Web control plane
@@ -77,12 +78,15 @@ Dart module, `app/lib/src/client/contract.g.dart`: regenerate with
 `go test ./web/bridge/contract/dartgen -run TestDartContractIsCurrent -update`.
 That currency test fails on a contract change that is not regenerated.
 
-A bridge given `--relay-join NAME=PATH` is a relay for the hosts that join it:
-each forwarded request arrives under `/api/hosts/<name>/` and is decided by
-that host's own token, never the relay's. `--join URL` — the local daemon's
-`daemon.join_url`, its secret stored by `marshal daemon join-token` — makes a
-bridge dial out and join one, where the joining bridge serves and the relay is
-its client.
+`[daemon] web_listen` (`unix`, an absolute socket path, or a loopback address)
+opens the daemon's web listener: the Studio and the API, with no bearer check,
+behind the operator's proxy, which authenticates the browser (one-daemon D10,
+D13). `GET /api/hosts` and `/api/hosts/<name>/…` forward to each host's tunnel,
+and the socket-only routes — the project and agent attach, pin, restart, the
+hosts report and enrollment — are not served there. The listener answers only
+`localhost`, the loopback addresses and `web_url`'s host, and refuses a
+cross-site state-changing request and a non-JSON `/api/` body
+(`web/bridge/webguard.go`).
 
 `webbridge` is the user's daemon (P4; one-daemon D1): a unix socket, and agents
 as host processes unless they have a workspace, which runs them in a container
@@ -135,9 +139,7 @@ daemon. `marshal fleet add NAME DEST` and `marshal fleet remove NAME` write the
 file, keeping its comments. A daemon run with `--tunnels` (as `marshal daemon
 install` writes it) runs `marshal daemon tunnels`, which keeps one `ssh -N` per
 host forwarding `<daemon dir>/hosts/<name>.sock` to that host's socket, and
-reports each tunnel in `GET /api/daemon`'s `hosts`. The bridge serves the agent
-attach on its network listener behind the bearer token, over TLS or on a
-loopback address, and refuses it 403 elsewhere. `internal/fleetprofile` owns
+reports each tunnel in `GET /api/daemon`'s `hosts`. `internal/fleetprofile` owns
 that file, and `internal/tunnels` the tunnels.
 
 ### End-to-end and usability suites

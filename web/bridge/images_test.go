@@ -155,7 +155,7 @@ func TestUploadImageRejectsOversizeBody(t *testing.T) {
 	root := t.TempDir()
 
 	srv := NewServer(f, uploadToken)
-	req := httptest.NewRequest(http.MethodPost, imageURL(root, "s-1"), nil)
+	req := testJSONRequest(http.MethodPost, imageURL(root, "s-1"), "")
 	req.Header.Set("Authorization", "Bearer "+uploadToken)
 	req.ContentLength = maxImageBodyBytes + 1
 	rec := httptest.NewRecorder()

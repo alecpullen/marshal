@@ -262,7 +262,7 @@ func TestWorkspacesHTTPBuildsAndEvents(t *testing.T) {
 
 	// The log replays over SSE, ending with the done event. Cancel the
 	// request once the replay is written: the stream stays open for live events.
-	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/svc/builds/1/events", nil)
+	req := testRequest(http.MethodGet, "/api/workspaces/svc/builds/1/events", nil)
 	ctx, cancel := contextWithCancelAfter(req, 300*time.Millisecond)
 	defer cancel()
 	srec := httptest.NewRecorder()

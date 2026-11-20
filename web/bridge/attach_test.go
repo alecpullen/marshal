@@ -681,7 +681,7 @@ func TestTheTCPHandlerHasNoAttach(t *testing.T) {
 	f := testFleet(t)
 	srv := NewServer(f, "secret")
 	body := fmt.Sprintf(`{"root":%s}`, strconv.Quote(t.TempDir()))
-	req := httptest.NewRequest(http.MethodPost, attachPath, strings.NewReader(body))
+	req := testJSONRequest(http.MethodPost, attachPath, body)
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", attachProtocol)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -699,7 +699,7 @@ func TestTheTCPHandlerHasNoAttach(t *testing.T) {
 // sets by itself.
 func networkAttachRequest(t *testing.T, id, token string, tlsState bool, localAddr string) *http.Request {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/api/agents/"+id+"/attach", nil)
+	req := testRequest(http.MethodPost, "/api/agents/"+id+"/attach", nil)
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", attachProtocol)
 	if token != "" {
@@ -795,7 +795,7 @@ func TestTheNetworkAttachServesLoopbackHTTP(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close() })
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	req := "POST /api/agents/agent-a/attach HTTP/1.1\r\n" +
-		"Host: bridge\r\n" +
+		"Host: localhost\r\n" +
 		"Connection: Upgrade\r\nUpgrade: " + attachProtocol + "\r\n" +
 		"Authorization: Bearer secret\r\n\r\n"
 	if _, err := io.WriteString(conn, req); err != nil {

@@ -22,9 +22,34 @@ type previewEnv struct {
 	id   string
 	port int
 	now  time.Time
+	// host is the address p.do sends requests to. It is the bridge's published
+	// one (see previewPublished), which the web listener answers (D13), so a
+	// preview of it is on that same host, on the preview port.
+	host string
 }
 
+// previewPublished is the address the preview env's bridge publishes. These
+// tests send their requests there, so the guard answers them, and the preview
+// origin — built from the request's host — is "example.com:<preview port>".
+const previewPublished = "http://example.com:7700"
+
+// previewHost is the Host header the published env's requests carry.
+const previewHost = "example.com:7700"
+
 func newPreviewEnv(t *testing.T, port int) *previewEnv {
+	t.Helper()
+	return newPreviewEnvAt(t, port, previewPublished, previewHost)
+}
+
+// newPreviewEnvOnLoopback is newPreviewEnv with nothing published: the bridge
+// answers loopback names only, for a test about the preview origin a loopback
+// request gets (the token in a localhost subdomain).
+func newPreviewEnvOnLoopback(t *testing.T, port int) *previewEnv {
+	t.Helper()
+	return newPreviewEnvAt(t, port, "", "localhost:7700")
+}
+
+func newPreviewEnvAt(t *testing.T, port int, publicURL, host string) *previewEnv {
 	t.Helper()
 	e := newWSSpawnEnv(t)
 	doc := sampleDoc("svc")
@@ -34,16 +59,16 @@ func newPreviewEnv(t *testing.T, port int) *previewEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(e.f, "")
+	srv := NewServer(e.f, "", publicURL)
 	srv.SetPreviewPort(9911)
-	pe := &previewEnv{wsSpawnEnv: e, srv: srv, id: id, port: port, now: time.Unix(1_800_000_000, 0)}
+	pe := &previewEnv{wsSpawnEnv: e, srv: srv, id: id, port: port, now: time.Unix(1_800_000_000, 0), host: host}
 	e.f.clock = func() time.Time { return pe.now }
 	return pe
 }
 
 func (p *previewEnv) do(method, target string, mod func(*http.Request)) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, target, nil)
-	req.Host = "example.com:7700"
+	req.Host = p.host
 	if mod != nil {
 		mod(req)
 	}
@@ -104,7 +129,9 @@ func TestPreviewAuthAgentWithoutAWorkspaceIs403(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv := NewServer(e.f, "")
 	srv.SetPreviewPort(9911)
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/agents/"+id+"/preview/3000", nil))
+	req := httptest.NewRequest("POST", "/api/agents/"+id+"/preview/3000", nil)
+	req.Host = "localhost"
+	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("no workspace = %d %s", rec.Code, rec.Body)
 	}
@@ -245,6 +272,7 @@ func TestPreviewIsServedFromItsOwnOrigin(t *testing.T) {
 	// The API origin never serves /preview, even with a valid cookie: a
 	// page the agent serves there would share the UI's sessionStorage.
 	req := httptest.NewRequest("GET", "/preview/"+p.id+"/3000/", nil)
+	req.Host = p.host
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	p.srv.ServeHTTP(rec, req)
@@ -266,7 +294,9 @@ func TestPreviewIssueNeedsAPreviewListener(t *testing.T) {
 	e := newWSSpawnEnv(t)
 	srv := NewServer(e.f, "")
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/agents/a/preview/3000", nil))
+	req := httptest.NewRequest("POST", "/api/agents/a/preview/3000", nil)
+	req.Host = "localhost"
+	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "preview_unconfigured") {
 		t.Fatalf("no listener = %d %s", rec.Code, rec.Body)
 	}
@@ -399,7 +429,7 @@ func TestCheckPreviewURLRefusesAPath(t *testing.T) {
 }
 
 func TestPreviewOnLocalhostNeedsNoCookie(t *testing.T) {
-	p := newPreviewEnv(t, 3000)
+	p := newPreviewEnvOnLoopback(t, 3000)
 	var got []string
 	p.f.previewForward = func(w http.ResponseWriter, r *http.Request, id string, port int, rest string) {
 		got = append(got, id+"|"+rest)
@@ -483,7 +513,7 @@ func TestPreviewOnLocalhostSendsNoReferrer(t *testing.T) {
 	}))
 	defer up.Close()
 	port, _ := strconv.Atoi(strings.TrimPrefix(up.URL[strings.LastIndex(up.URL, ":"):], ":"))
-	p := newPreviewEnv(t, port)
+	p := newPreviewEnvOnLoopback(t, port)
 	rec := p.do("POST", "/api/agents/"+p.id+"/preview/"+strconv.Itoa(port), func(r *http.Request) { r.Host = "127.0.0.1:7700" })
 	var out struct{ URL string }
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {

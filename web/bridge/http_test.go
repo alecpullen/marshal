@@ -43,6 +43,12 @@ func newTestServer(t *testing.T, token string, transport ...agentTransport) (*Se
 
 // doReq issues one request against the server and records the response.
 // body is JSON-marshaled when non-nil; a nil body sends ContentLength 0.
+//
+// The request is addressed to localhost, a name the web listener answers to
+// (webguard.go, D13): httptest.NewRequest would otherwise address it to
+// example.com, another site's name, and the guard would refuse it. A body is
+// declared application/json, as an /api/ route requires, unless the caller's
+// headers say otherwise.
 func doReq(t *testing.T, s *Server, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	var data []byte
@@ -54,12 +60,33 @@ func doReq(t *testing.T, s *Server, method, path string, body any, headers map[s
 		}
 	}
 	req := httptest.NewRequest(method, path, bytes.NewReader(data))
+	req.Host = "localhost"
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 	return rec
+}
+
+// testRequest builds a request addressed to localhost, a host the web listener
+// answers (webguard.go, D13). httptest.NewRequest would address it to
+// example.com, another site's name, and the guard would refuse it.
+func testRequest(method, path string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, path, body)
+	req.Host = "localhost"
+	return req
+}
+
+// testJSONRequest is testRequest with a JSON body declared as such: an /api/
+// route takes nothing else (webguard.go, D13).
+func testJSONRequest(method, path, body string) *http.Request {
+	req := testRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
 }
 
 func decodeBody(t *testing.T, rec *httptest.ResponseRecorder, v any) {
@@ -160,7 +187,7 @@ func TestHTTPNewSession(t *testing.T) {
 		t.Fatalf("missing cwd: status = %d, want 400", rec.Code)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader("{not json"))
+	req := testJSONRequest(http.MethodPost, "/api/sessions", "{not json")
 	bad := httptest.NewRecorder()
 	s.ServeHTTP(bad, req)
 	if bad.Code != http.StatusBadRequest {
@@ -233,7 +260,7 @@ func TestHTTPSessionLifecycle(t *testing.T) {
 	if rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/prompt", map[string]string{"text": ""}, nil); rec.Code != http.StatusBadRequest {
 		t.Errorf("empty text: status = %d, want 400", rec.Code)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/s-1/prompt", strings.NewReader("{bad"))
+	req := testJSONRequest(http.MethodPost, "/api/sessions/s-1/prompt", "{bad")
 	bad := httptest.NewRecorder()
 	s.ServeHTTP(bad, req)
 	if bad.Code != http.StatusBadRequest {
@@ -375,7 +402,7 @@ func TestHTTPValidationRejections(t *testing.T) {
 		t.Errorf("empty mode: status = %d, want 400", rec.Code)
 	}
 	// Trailing garbage after the JSON value is rejected.
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/s-1/steer", strings.NewReader(`{"text":"x"} garbage`))
+	req := testJSONRequest(http.MethodPost, "/api/sessions/s-1/steer", `{"text":"x"} garbage`)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -471,7 +498,7 @@ func TestHTTPMergeRefusalMapsTo409(t *testing.T) {
 	srv := NewServer(f, "")
 
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/agents/"+id+"/merge", strings.NewReader(`{}`)))
+	srv.ServeHTTP(rec, testJSONRequest("POST", "/api/agents/"+id+"/merge", `{}`))
 	// The fake child answers session/merge with a refusal shape; a refusal
 	// is a 409 so the UI can branch on a code rather than parse prose.
 	if rec.Code != http.StatusConflict && rec.Code != http.StatusOK {
@@ -493,7 +520,7 @@ func TestHTTPDiffRoutesThrough(t *testing.T) {
 	srv := NewServer(f, "")
 
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("GET", "/api/agents/"+id+"/diff", nil))
+	srv.ServeHTTP(rec, testRequest("GET", "/api/agents/"+id+"/diff", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -505,8 +532,7 @@ func TestHTTPExitRoutesThrough(t *testing.T) {
 	srv := NewServer(f, "")
 
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/agents/"+id+"/exit",
-		strings.NewReader(`{"commitMessage":"work"}`)))
+	srv.ServeHTTP(rec, testJSONRequest("POST", "/api/agents/"+id+"/exit", `{"commitMessage":"work"}`))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -523,7 +549,7 @@ func TestHTTPPatchRoutesThrough(t *testing.T) {
 	srv := NewServer(f, "")
 
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("GET", "/api/agents/"+id+"/patch", nil))
+	srv.ServeHTTP(rec, testRequest("GET", "/api/agents/"+id+"/patch", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -581,7 +607,7 @@ func TestPendingEndpointsAreUnderAPIAuth(t *testing.T) {
 	s := testServerWithToken(t, "shared")
 	for _, path := range []string{"/api/pending", "/api/clients"} {
 		rec := httptest.NewRecorder()
-		s.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		s.ServeHTTP(rec, testRequest("GET", path, nil))
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s answered %d without a token, want 401", path, rec.Code)
 		}
@@ -590,8 +616,7 @@ func TestPendingEndpointsAreUnderAPIAuth(t *testing.T) {
 
 func postJSON(t *testing.T, s *Server, path, body string) map[string]any {
 	t.Helper()
-	req := httptest.NewRequest("POST", path, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	req := testJSONRequest("POST", path, body)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
@@ -623,7 +648,7 @@ func testServerWithAudit(t *testing.T) *Server {
 func TestAuditEndpointRequiresAuth(t *testing.T) {
 	s := testServerWithToken(t, "shared")
 	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest("GET", "/api/audit", nil))
+	s.ServeHTTP(rec, testRequest("GET", "/api/audit", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status %d without a token, want 401", rec.Code)
 	}
@@ -813,7 +838,7 @@ func TestAccessRouteRejectsNullPatch(t *testing.T) {
 		{"array", `[]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPatch, "/api/sessions/s-1/access", strings.NewReader(tc.body))
+			req := testJSONRequest(http.MethodPatch, "/api/sessions/s-1/access", tc.body)
 			rec := httptest.NewRecorder()
 			s.ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest {
@@ -1001,7 +1026,7 @@ func TestSubagentRoutesRejectMalformedIDs(t *testing.T) {
 		{"null body", "/api/sessions/s-1/subagents/1/steer", `null`, "invalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req := testJSONRequest(http.MethodPost, tc.path, tc.body)
 			rec := httptest.NewRecorder()
 			s.ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest {
@@ -1190,8 +1215,8 @@ func TestSubagentSteerLostReplyIsConnectionLoss(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/s-1/subagents/5/steer",
-		strings.NewReader(`{"requestId":"req-1","message":"wrap up"}`)).WithContext(ctx)
+	req := testJSONRequest(http.MethodPost, "/api/sessions/s-1/subagents/5/steer",
+		`{"requestId":"req-1","message":"wrap up"}`).WithContext(ctx)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 

@@ -99,10 +99,11 @@ func TestTheStudioExchangeRefusesAForeignOrigin(t *testing.T) {
 		t.Fatalf("foreign origin = %d, want 403: %s", foreign.Code, foreign.Body.String())
 	}
 
-	// The same code still works from the page's own origin: a refused
+	// The same code still works from the page's own origin — the host the
+	// request is addressed to, which doReq makes localhost: a refused
 	// exchange does not spend it.
 	own := doReq(t, s, http.MethodPost, studioSessionPath, map[string]string{"code": code},
-		map[string]string{"Origin": "http://example.com"})
+		map[string]string{"Origin": "http://localhost"})
 	if own.Code != http.StatusOK {
 		t.Fatalf("own origin = %d, want 200: %s", own.Code, own.Body.String())
 	}

@@ -177,6 +177,14 @@ func (s *Server) publicURL(path string) string {
 // check only: it goes to networkAttach, which owns the bearer check and
 // the transport rule, and is absent without a token (decision 7).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// What arrives here came through the operator's proxy, which authenticated
+	// the browser but says nothing about who asked: a request addressed to
+	// another host, one another site's page made, and an /api/ body that is
+	// not JSON are refused before any route sees them (webguard.go, D13).
+	if status, reason, ok := s.webGuard(r); !ok {
+		writeJSON(w, status, map[string]string{"error": reason})
+		return
+	}
 	if s.networkAttach != nil {
 		if _, ok := agentAttachID(r.URL.Path); ok {
 			s.networkAttach.ServeHTTP(w, r)

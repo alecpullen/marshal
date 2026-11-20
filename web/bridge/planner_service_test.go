@@ -495,7 +495,7 @@ func TestPlannerSeparateWorkspaceDefault(t *testing.T) {
 		t.Setenv(plannerAdapterEnv, "")
 		before := countWorkspaceDirs(t, env.stateDir)
 		srv := NewServer(env.fleet, "")
-		r := httptest.NewRequest(http.MethodPost, "/api/planners", strings.NewReader(env.createBody(nil)))
+		r := testJSONRequest(http.MethodPost, "/api/planners", env.createBody(nil))
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, r)
 		if w.Code != http.StatusInternalServerError {

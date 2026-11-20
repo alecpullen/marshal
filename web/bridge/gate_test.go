@@ -15,7 +15,7 @@ func serveAgent(t *testing.T, tr *scriptedTransport) (*Server, string, *Fleet) {
 
 func get(srv *Server, method, path string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+	srv.ServeHTTP(rec, testRequest(method, path, nil))
 	return rec
 }
 
@@ -47,7 +47,7 @@ func TestAgentVerifyStoresGateAndBroadcasts(t *testing.T) {
 func TestExitStoresGate(t *testing.T) {
 	srv, id, f := serveAgent(t, &scriptedTransport{gate: gateResult{OK: false}})
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/agents/"+id+"/exit", strings.NewReader(`{"commitMessage":"w"}`)))
+	srv.ServeHTTP(rec, testJSONRequest("POST", "/api/agents/"+id+"/exit", `{"commitMessage":"w"}`))
 	if _, ok := f.Gate(id); !ok {
 		t.Fatal("exit did not store the gate result")
 	}

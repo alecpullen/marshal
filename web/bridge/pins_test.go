@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -332,7 +331,7 @@ func pinRoute(t *testing.T, h http.Handler, method, path string, body any) *http
 		}
 	}
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(method, path, bytes.NewReader(data)))
+	h.ServeHTTP(rec, testJSONRequest(method, path, string(data)))
 	return rec
 }
 

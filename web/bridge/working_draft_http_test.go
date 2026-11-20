@@ -121,7 +121,10 @@ func newWorkingDraftHTTPEnv(t *testing.T) *workingDraftHTTPEnv {
 // can be sent exactly as they are.
 func (e *workingDraftHTTPEnv) do(method, path, body, token string) *httptest.ResponseRecorder {
 	e.t.Helper()
-	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r := testRequest(method, path, strings.NewReader(body))
+	if body != "" {
+		r.Header.Set("Content-Type", "application/json")
+	}
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -258,7 +261,7 @@ func TestWorkingDraftHTTPInstallationIdentity(t *testing.T) {
 	}
 	response := func(srv *Server) string {
 		t.Helper()
-		r := httptest.NewRequest(http.MethodGet, "/api/factory/working-drafts/installation", nil)
+		r := testRequest(http.MethodGet, "/api/factory/working-drafts/installation", nil)
 		r.Header.Set("Authorization", "Bearer "+workingDraftHTTPToken)
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, r)
@@ -673,7 +676,7 @@ func TestWorkingDraftHTTPUnavailableStore(t *testing.T) {
 	// answering unavailable rather than 404.
 	bare := NewServer(env.fleet, workingDraftHTTPToken)
 	bare.workingDraftRoutes(nil, nil, env.dir)
-	r := httptest.NewRequest(http.MethodGet, "/api/factory/working-drafts?projectRoot="+env.root, nil)
+	r := testRequest(http.MethodGet, "/api/factory/working-drafts?projectRoot="+env.root, nil)
 	r.Header.Set("Authorization", "Bearer "+workingDraftHTTPToken)
 	w := httptest.NewRecorder()
 	bare.ServeHTTP(w, r)

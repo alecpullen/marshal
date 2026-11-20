@@ -626,7 +626,7 @@ func TestARequestedRestartWaitsAgainWhenATurnStarts(t *testing.T) {
 func TestTheRestartRouteIsSocketOnly(t *testing.T) {
 	h, _ := ownBinaryHarness(t)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, daemonRestartPath, strings.NewReader(`{}`))
+	req := testJSONRequest(http.MethodPost, daemonRestartPath, `{}`)
 	h.server.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("ServeHTTP POST %s = %d, want 404: %s", daemonRestartPath, rec.Code, rec.Body)

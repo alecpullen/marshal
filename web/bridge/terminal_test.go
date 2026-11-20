@@ -54,7 +54,7 @@ func newTermEnv(t *testing.T, container bool) *termEnv {
 func (e *termEnv) post(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	e.srv.ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(body)))
+	e.srv.ServeHTTP(rec, testJSONRequest(method, path, body))
 	return rec
 }
 
@@ -586,7 +586,7 @@ func TestTestShellRunsTheBuiltImageWithMountsAndEnv(t *testing.T) {
 	srv := NewServer(e.f, "")
 
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/svc/shell", strings.NewReader(`{"cols":90,"rows":20}`)))
+	srv.ServeHTTP(rec, testJSONRequest("POST", "/api/workspaces/svc/shell", `{"cols":90,"rows":20}`))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("shell = %d %s", rec.Code, rec.Body)
 	}
@@ -625,7 +625,7 @@ func TestTestShellOverridesTheAgentEntrypoint(t *testing.T) {
 	srv := NewServer(e.f, "")
 
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/svc/shell", nil))
+	srv.ServeHTTP(rec, testRequest("POST", "/api/workspaces/svc/shell", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("shell = %d %s", rec.Code, rec.Body)
 	}
@@ -648,7 +648,7 @@ func TestTestShellClosingKillsTheProcessAndRemovesTheContainer(t *testing.T) {
 	srv := NewServer(e.f, "")
 
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/svc/shell", nil))
+	srv.ServeHTTP(rec, testRequest("POST", "/api/workspaces/svc/shell", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("shell = %d %s", rec.Code, rec.Body)
 	}
@@ -661,13 +661,13 @@ func TestTestShellClosingKillsTheProcessAndRemovesTheContainer(t *testing.T) {
 	// Input reaches the shell and never touches an agent hold.
 	body, _ := json.Marshal(map[string]string{"data": base64.StdEncoding.EncodeToString([]byte("ls\n"))})
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/svc/shell/"+out.TerminalID+"/input", strings.NewReader(string(body))))
+	srv.ServeHTTP(rec, testJSONRequest("POST", "/api/workspaces/svc/shell/"+out.TerminalID+"/input", string(body)))
 	if rec.Code != http.StatusNoContent || proc.written() != "ls\n" {
 		t.Fatalf("input = %d, stdin %q", rec.Code, proc.written())
 	}
 
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("DELETE", "/api/workspaces/svc/shell/"+out.TerminalID, nil))
+	srv.ServeHTTP(rec, testRequest("DELETE", "/api/workspaces/svc/shell/"+out.TerminalID, nil))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("close = %d %s", rec.Code, rec.Body)
 	}
@@ -693,12 +693,12 @@ func TestTestShellRefusesAnUnbuiltTemplate(t *testing.T) {
 	e.f.streamer = (&fakeStreamer{}).start
 	srv := NewServer(e.f, "")
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/raw/shell", nil))
+	srv.ServeHTTP(rec, testRequest("POST", "/api/workspaces/raw/shell", nil))
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "workspace_not_built") {
 		t.Fatalf("unbuilt = %d %s", rec.Code, rec.Body)
 	}
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/missing/shell", nil))
+	srv.ServeHTTP(rec, testRequest("POST", "/api/workspaces/missing/shell", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("missing = %d %s", rec.Code, rec.Body)
 	}
@@ -711,7 +711,7 @@ func TestTestShellIsLimitedToTwoPerWorkspace(t *testing.T) {
 	srv := NewServer(e.f, "")
 	for i, want := range []int{200, 200, 429} {
 		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/svc/shell", nil))
+		srv.ServeHTTP(rec, testRequest("POST", "/api/workspaces/svc/shell", nil))
 		if rec.Code != want {
 			t.Fatalf("shell %d = %d %s, want %d", i, rec.Code, rec.Body, want)
 		}

@@ -385,7 +385,10 @@ func TestFactoryHTTP(t *testing.T) {
 	srv.factoryRoutes(NewFactoryAPI(store, nil, fleet))
 	request := func(method, path, body, token string) *httptest.ResponseRecorder {
 		t.Helper()
-		r := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+		r := testRequest(method, path, bytes.NewBufferString(body))
+		if body != "" {
+			r.Header.Set("Content-Type", "application/json")
+		}
 		if token != "" {
 			r.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -438,7 +441,7 @@ func TestFactoryHTTPCreateApprovalAndReplay(t *testing.T) {
 	post := func(v any, path string) *httptest.ResponseRecorder {
 		t.Helper()
 		raw, _ := json.Marshal(v)
-		r := httptest.NewRequest("POST", path, bytes.NewReader(raw))
+		r := testJSONRequest("POST", path, string(raw))
 		r.Header.Set("Authorization", "Bearer secret")
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, r)
@@ -486,7 +489,7 @@ func TestFactoryHTTPCreateApprovalAndReplay(t *testing.T) {
 	command := FactoryCommand{RequestID: "approve-2", Kind: "approve", ExpectedVersion: 1}
 	commandBody, _ := json.Marshal(command)
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
-	acceptedRequest := httptest.NewRequest("POST", "/api/factory/items/"+result.Item.ID+"/commands", bytes.NewReader(commandBody)).WithContext(requestCtx)
+	acceptedRequest := testJSONRequest("POST", "/api/factory/items/"+result.Item.ID+"/commands", string(commandBody)).WithContext(requestCtx)
 	acceptedRequest.Header.Set("Authorization", "Bearer secret")
 	accepted := httptest.NewRecorder()
 	srv.ServeHTTP(accepted, acceptedRequest)
@@ -1158,7 +1161,7 @@ func (f *factoryCompletionHTTP) post(t *testing.T, id string, cmd FactoryCommand
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/factory/items/"+id+"/commands", bytes.NewReader(raw))
+	req := testJSONRequest(http.MethodPost, "/api/factory/items/"+id+"/commands", string(raw))
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 	f.srv.ServeHTTP(rec, req)

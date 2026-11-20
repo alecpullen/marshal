@@ -29,7 +29,7 @@ func count(ms []string, m string) int {
 
 func postBody(srv *Server, path, body string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", path, strings.NewReader(body)))
+	srv.ServeHTTP(rec, testJSONRequest("POST", path, body))
 	return rec
 }
 

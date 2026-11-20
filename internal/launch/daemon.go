@@ -128,14 +128,11 @@ func withAgentVersion(v string) Option {
 	return func(o *options) { o.agentVersion = v }
 }
 
-// daemonClientFor is the client daemon mode talks to: the seam's, else the
-// remote one a server profile's loop was given, else one built for the socket.
+// daemonClientFor is the client daemon mode talks to: the seam's, else one
+// built for the socket.
 func (o *options) daemonClientFor() daemonClient {
 	if o.daemon != nil {
 		return o.daemon
-	}
-	if o.remote != nil {
-		return o.remote.attach
 	}
 	return daemon.NewClient(o.daemonSocket)
 }
@@ -648,9 +645,8 @@ func addNoteOnce(ctx context.Context, sess acpclient.Session, text string) error
 
 // fleetClientFor is the loop's fleet client: the injected one as it is, else
 // one built for the loop's transport the first time the loop needs it
-// (decision 7): the server profile's HTTPS transport for a server's loop, the
-// socket's for the daemon's. The loop asks on its first step, so its client
-// outlives every screen it shows.
+// (decision 7): the socket's, named for the host the socket tunnels to. The
+// loop asks on its first step, so its client outlives every screen it shows.
 func (l *daemonLoop) fleetClientFor(ctx context.Context) acpclient.Fleet {
 	if l.fleetClient != nil {
 		return l.fleetClient
@@ -660,9 +656,6 @@ func (l *daemonLoop) fleetClientFor(ctx context.Context) acpclient.Fleet {
 		// The socket is a tunnel to the host, so the footer and a rejected
 		// request name the machine the screen is showing rather than "local".
 		transport.Server = l.opts.host
-	}
-	if l.opts.remote != nil {
-		transport = l.opts.remote.fleet
 	}
 	built := fleetclient.New(transport)
 	built.Start(ctx)
@@ -771,16 +764,12 @@ func daemonVersionLabel(v string) string {
 }
 
 // versionNote is what a session screen says when its agent is not this build
-// (decision 8). A server's or a host's agent is not restarted from here, so
-// that note carries no advice; this machine's daemon's does.
+// (decision 8). A host's agent is not restarted from here, so that note
+// carries no advice; this machine's daemon's does.
 func (o *options) versionNote(theirs string) string {
 	ours := daemonVersionLabel(o.version())
 	if !o.onThisMachine() {
-		who := "the server"
-		if o.host != "" {
-			who = o.host
-		}
-		return fmt.Sprintf("This marshal is %s; %s's agent is %s.", ours, who, daemonVersionLabel(theirs))
+		return fmt.Sprintf("This marshal is %s; %s's agent is %s.", ours, o.host, daemonVersionLabel(theirs))
 	}
 	return fmt.Sprintf(
 		"This marshal is %s; the daemon's agent is %s. Restart the daemon after upgrading: `marshal daemon stop` then `marshal daemon start`.",
@@ -788,12 +777,12 @@ func (o *options) versionNote(theirs string) string {
 	)
 }
 
-// onThisMachine says whether the loop's socket is this machine's daemon: not a
-// server profile's transports, and not a tunnel to a host. A host's sessions
-// are on another filesystem, its config is not this machine's, and its notes
-// name it, so the two are the same case everywhere those differ.
+// onThisMachine says whether the loop's socket is this machine's daemon rather
+// than a tunnel to a host. A host's sessions are on another filesystem, its
+// config is not this machine's, and its notes name it, so the two are the same
+// case everywhere those differ.
 func (o *options) onThisMachine() bool {
-	return o.remote == nil && o.host == ""
+	return o.host == ""
 }
 
 // envWarningNote is what a session screen says when its project child could not

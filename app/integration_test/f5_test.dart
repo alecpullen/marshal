@@ -7,12 +7,12 @@ import 'package:marshal_app/src/client/bridge_client.dart';
 import 'package:marshal_app/src/client/contract.g.dart' as contract;
 import 'package:marshal_app/src/client/event_stream.dart';
 import 'package:marshal_app/src/client/host.dart';
-import 'package:marshal_app/src/client/transport.dart';
 import 'package:marshal_app/src/model/fleet_store.dart';
 import 'package:marshal_app/src/model/pulls_model.dart';
 import 'package:marshal_app/src/model/pulls_store.dart';
 
 import '../test/support/fake_bridge.dart';
+import '../test/support/sockets.dart';
 
 /// F5's end-to-end flow, driven on a device where one exists (f5 plan 2,
 /// task 5): an agent ships a pull request whose check fails, the app dispatches
@@ -32,8 +32,8 @@ void main() {
     tester,
   ) async {
     HttpOverrides.global = null;
-    final bridge = await FakeBridge.onLoopback();
-    addTearDown(bridge.close);
+    final socket = await socketBridge('f5.sock');
+    final bridge = socket.bridge;
     FakeReply json(Object body, [int status = 200]) => FakeReply(
       status,
       headers: const {'content-type': 'application/json'},
@@ -129,7 +129,7 @@ void main() {
       );
     final frames = bridge.stream('GET', '/api/events');
 
-    final transport = serverTransport(bridge.base, token: () async => 'unused');
+    final transport = socket.transport;
     final client = BridgeClient(transport);
     final registry = HostRegistry(
       discovery: () async => [

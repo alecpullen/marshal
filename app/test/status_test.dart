@@ -29,6 +29,16 @@ void main() {
     expect(daemon.children, hasLength(1));
     expect(daemon.children.single.root, '/home/u/src/marshal');
     expect(daemon.children.single.pinned, isTrue);
+
+    // The hosts are the daemon's tunnels (one-daemon D9): the document names
+    // each one and the socket it is reached on.
+    expect(daemon.hosts, hasLength(1));
+    expect(daemon.hosts.single.name, 'box');
+    expect(daemon.hosts.single.state, 'live');
+    expect(
+      daemon.hosts.single.socket,
+      '/home/u/.local/share/marshal/daemon/hosts/box.sock',
+    );
   });
 
   test('refuses an unknown schema', () {

@@ -1283,6 +1283,7 @@ final _daemonInfo = DaemonInfo(
   projects: const ['/home/u/marshal'],
   pinned: const ['/home/u/widgets'],
   children: const [],
+  hosts: const [],
 );
 
 /// The registry of screens. F0 has one, the gallery; each later phase adds

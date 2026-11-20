@@ -4,10 +4,10 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
-import 'package:marshal_app/src/client/transport.dart';
 import 'package:marshal_app/src/model/files_model.dart';
 
 import '../support/fake_bridge.dart';
+import '../support/sockets.dart';
 
 FakeReply _json(Object body) => FakeReply(
   200,
@@ -23,10 +23,9 @@ void main() {
     // flutter_test's binding answers every HttpClient with 400; the fake
     // bridge is on this machine, so the real client is wanted back.
     HttpOverrides.global = null;
-    bridge = await FakeBridge.onLoopback();
-    client = BridgeClient(
-      serverTransport(bridge.base, token: () async => 'unused'),
-    );
+    final box = await socketBridge();
+    bridge = box.bridge;
+    client = BridgeClient(box.transport);
     bridge
       ..reply(
         'GET',

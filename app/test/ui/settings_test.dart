@@ -74,6 +74,7 @@ void main() {
     projects: const ['/home/u/marshal'],
     pinned: const ['/home/u/widgets'],
     children: const [],
+    hosts: const [],
   );
 
   /// The place with both sections this step has, on [section].

@@ -73,6 +73,37 @@ void main() {
     );
   });
 
+  test("a host keeps its spec's destination", () async {
+    // A host the daemon reaches over ssh keeps the destination it was found
+    // with, so a screen can say where it is reached (one-daemon D9).
+    final overSsh = HostRegistry(
+      discovery: () async => [
+        HostSpec(
+          name: 'box',
+          kind: HostKind.server,
+          destination: 'me@box',
+          client: BridgeClient(transport),
+        ),
+      ],
+      fleetFor: (client) => EventStream(
+        transport,
+        '/api/events',
+        now: clock.now,
+        wait: clock.wait,
+        jitter: 0,
+      ),
+    );
+    addTearDown(overSsh.dispose);
+    await overSsh.discover();
+
+    expect(overSsh.hosts.single.destination, 'me@box');
+    expect(
+      host.destination,
+      isNull,
+      reason: 'the local daemon is reached here, over no ssh destination',
+    );
+  });
+
   test('a stopped daemon becomes stale then unreachable', () async {
     await pumpEventQueue();
     expect(host.reach, HostReach.connecting);

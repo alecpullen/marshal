@@ -11,6 +11,7 @@ import 'package:marshal_app/src/client/transport.dart';
 import 'package:marshal_app/src/model/fleet_store.dart';
 
 import '../support/fake_bridge.dart';
+import '../support/sockets.dart';
 
 /// One agent as a test writes one: every field it does not name is the
 /// quietest value there is.
@@ -276,7 +277,8 @@ class ModelFixture {
     final streams = <String, EventStream>{};
 
     for (final host in hosts) {
-      final bridge = await FakeBridge.onLoopback();
+      final box = await socketBridge('${host.name}.sock');
+      final bridge = box.bridge;
       bridges[host.name] = bridge;
       frames[host.name] = bridge.stream('GET', '/api/events');
       bridge
@@ -319,10 +321,7 @@ class ModelFixture {
               ? const FakeReply(404, body: '{"error":"no budgets"}')
               : _json(host.budget!.toJson()),
         );
-      final transport = serverTransport(
-        bridge.base,
-        token: () async => 'unused',
-      );
+      final transport = box.transport;
       transports[host.name] = transport;
       clients[host.name] = BridgeClient(transport);
     }

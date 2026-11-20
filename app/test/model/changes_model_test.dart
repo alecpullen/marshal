@@ -10,6 +10,7 @@ import 'package:marshal_app/src/model/changes_model.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
 
 import '../support/fake_bridge.dart';
+import '../support/sockets.dart';
 
 /// A change set as the bridge answers it: two files, one of them new.
 DiffResult _diff() => const DiffResult(
@@ -99,10 +100,9 @@ void main() {
     // flutter_test's binding answers every HttpClient with 400; the fake
     // bridge is on this machine, so the real client is wanted back.
     HttpOverrides.global = null;
-    bridge = await FakeBridge.onLoopback();
-    client = BridgeClient(
-      serverTransport(bridge.base, token: () async => 'unused'),
-    );
+    final box = await socketBridge();
+    bridge = box.bridge;
+    client = BridgeClient(box.transport);
     bridge
       ..reply('GET', '/api/agents/a-1/diff', _json(_diff().toJson()))
       ..reply('GET', '/api/agents/a-1/gate', _json(_record().toJson()))
@@ -400,12 +400,7 @@ void main() {
 
     // No answer at all — the connection went away mid-exit.
     final unreachable = await ChangesModel(
-      BridgeClient(
-        serverTransport(
-          Uri.parse('http://127.0.0.1:1'),
-          token: () async => 'unused',
-        ),
-      ),
+      BridgeClient(unreachableTransport()),
       agentId: 'a-1',
     ).ship(message: 'm', openPr: true);
     expect(unreachable.outcome, ShipOutcome.failed);

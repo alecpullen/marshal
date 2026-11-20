@@ -24,6 +24,7 @@ class HostSpec {
     required this.kind,
     required this.client,
     this.via,
+    this.destination,
   });
 
   final String name;
@@ -32,6 +33,9 @@ class HostSpec {
 
   /// The relay's host name this host is reached through, or null.
   final String? via;
+
+  /// The SSH destination this host is reached over, or null.
+  final String? destination;
 }
 
 /// Finds the hosts this build can reach.
@@ -52,6 +56,7 @@ class Host extends ChangeNotifier {
     required this.client,
     required this.fleet,
     this.via,
+    this.destination,
   });
 
   final String name;
@@ -60,6 +65,9 @@ class Host extends ChangeNotifier {
 
   /// The relay's host name this host is reached through, or null.
   final String? via;
+
+  /// The SSH destination this host is reached over, or null.
+  final String? destination;
 
   /// The fleet stream this host follows.
   final EventStream fleet;
@@ -148,6 +156,7 @@ class HostRegistry extends ChangeNotifier {
         client: spec.client,
         fleet: _fleetFor(spec.client),
         via: spec.via,
+        destination: spec.destination,
       );
       host.start();
       _hosts.add(host);

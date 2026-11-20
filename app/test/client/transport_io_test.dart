@@ -5,12 +5,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/transport.dart';
 
 import '../support/fake_bridge.dart';
+import '../support/sockets.dart';
 
-/// The native transports against an in-process fake bridge: one over a unix
-/// socket, the way the local daemon is reached, and one over a loopback origin
-/// behind a bearer token, the way a server profile is.
+/// The native transport against an in-process fake bridge: every request goes
+/// down a unix socket, the way the local daemon and each host's own end of its
+/// tunnel are reached.
 void main() {
-  late Directory dir;
+  late SocketBridge socket;
   late FakeBridge fake;
 
   setUp(() async {
@@ -18,19 +19,12 @@ void main() {
     // flutter_test_config.dart, which initializes it). These tests talk to a
     // fake bridge on this machine, so they want the real client back.
     HttpOverrides.global = null;
-    dir = await Directory.systemTemp.createTemp('marshal-transport-');
-    fake = await FakeBridge.onLoopback();
-    addTearDown(() async {
-      await fake.close();
-      await dir.delete(recursive: true);
-    });
+    socket = await socketBridge();
+    fake = socket.bridge;
   });
 
   test('unix socket request round trips', () async {
-    final socketPath = '${dir.path}/bridge.sock';
-    final unix = await FakeBridge.onUnixSocket(socketPath);
-    addTearDown(unix.close);
-    unix.reply(
+    socket.bridge.reply(
       'GET',
       '/api/daemon',
       const FakeReply(
@@ -40,46 +34,16 @@ void main() {
       ),
     );
 
-    final response = await unixTransport(socketPath)
-        .send(const Request(path: '/api/daemon'));
+    final response = await socket.transport.send(
+      const Request(path: '/api/daemon'),
+    );
 
     expect(response.status, 200);
     expect(response.body, '{"version":"0.9.1"}');
     expect(response.ok, isTrue);
-    expect(unix.requests, hasLength(1));
-    expect(unix.requests.single.method, 'GET');
-    expect(unix.requests.single.uri, '/api/daemon');
-  });
-
-  test('bearer token is sent', () async {
-    final bridge = await FakeBridge.onLoopback(token: 'right-token');
-    addTearDown(bridge.close);
-    bridge.reply('GET', '/api/agents', const FakeReply(200, body: '[]'));
-
-    final response = await serverTransport(
-      bridge.base,
-      token: () async => 'right-token',
-    ).send(const Request(path: '/api/agents'));
-
-    expect(response.status, 200);
-    expect(
-      bridge.requests.single.headers[HttpHeaders.authorizationHeader],
-      'Bearer right-token',
-    );
-  });
-
-  test('401 is Unauthorized', () async {
-    final bridge = await FakeBridge.onLoopback(token: 'right-token');
-    addTearDown(bridge.close);
-    bridge.reply('GET', '/api/agents', const FakeReply(200, body: '[]'));
-
-    await expectLater(
-      serverTransport(
-        bridge.base,
-        token: () async => 'wrong-token',
-      ).send(const Request(path: '/api/agents')),
-      throwsA(isA<Unauthorized>()),
-    );
+    expect(socket.bridge.requests, hasLength(1));
+    expect(socket.bridge.requests.single.method, 'GET');
+    expect(socket.bridge.requests.single.uri, '/api/daemon');
   });
 
   test('error body becomes BridgeFailure message', () async {
@@ -89,16 +53,15 @@ void main() {
       const FakeReply(500, body: 'the bridge is out of room'),
     );
 
-    final failure =
-        await serverTransport(fake.base, token: () async => 'unused')
-            .send(
-              const Request(
-                method: 'POST',
-                path: '/api/agents',
-                body: {'project': '/home/u/src/marshal'},
-              ),
-            )
-            .then<Object?>((_) => null, onError: (Object error) => error);
+    final failure = await socket.transport
+        .send(
+          const Request(
+            method: 'POST',
+            path: '/api/agents',
+            body: {'project': '/home/u/src/marshal'},
+          ),
+        )
+        .then<Object?>((_) => null, onError: (Object error) => error);
 
     expect(failure, isA<BridgeFailure>());
     final bridgeFailure = failure! as BridgeFailure;
@@ -114,16 +77,14 @@ void main() {
     // so a transport that dropped it would turn the write unconditional and
     // defeat the stale-save protection the project page advertises
     // (web/bridge/projects.go).
-    final socketPath = '${dir.path}/settings.sock';
-    final unix = await FakeBridge.onUnixSocket(socketPath);
-    addTearDown(unix.close);
-    unix.reply(
+    final settings = await socketBridge('settings.sock');
+    settings.bridge.reply(
       'PUT',
       '/api/projects/settings',
       const FakeReply(200, body: '{}'),
     );
 
-    final response = await unixTransport(socketPath).send(
+    final response = await settings.transport.send(
       const Request(
         method: 'PUT',
         path: '/api/projects/settings',
@@ -132,7 +93,7 @@ void main() {
     );
 
     expect(response.status, 200);
-    expect(unix.requests.single.headers['if-match'], '"0123"');
+    expect(settings.bridge.requests.single.headers['if-match'], '"0123"');
   });
 
   test('a route header survives a request that carries a body', () async {
@@ -144,31 +105,26 @@ void main() {
       const FakeReply(200, body: '{}'),
     );
 
-    final response =
-        await serverTransport(fake.base, token: () async => 'unused').send(
-          const Request(
-            method: 'PUT',
-            path: '/api/projects/settings',
-            body: {'workspace': 'alpha'},
-            headers: {'If-Match': '"4567"'},
-          ),
-        );
+    final response = await socket.transport.send(
+      const Request(
+        method: 'PUT',
+        path: '/api/projects/settings',
+        body: {'workspace': 'alpha'},
+        headers: {'If-Match': '"4567"'},
+      ),
+    );
 
     expect(response.status, 200);
     final put = fake.requests.single;
     expect(put.headers['if-match'], '"4567"');
     expect(put.headers['content-type'], contains('application/json'));
-    expect(put.headers[HttpHeaders.authorizationHeader], 'Bearer unused');
   });
 
   test('lines yields one element per line as they arrive', () async {
     fake.reply('GET', '/api/agents', const FakeReply(200, body: '[]'));
     final frames = fake.stream('GET', '/api/events');
     final lines = StreamIterator(
-      serverTransport(
-        fake.base,
-        token: () async => 'unused',
-      ).lines(const Request(path: '/api/events')),
+      socket.transport.lines(const Request(path: '/api/events')),
     );
     addTearDown(lines.cancel);
 

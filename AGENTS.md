@@ -31,7 +31,7 @@ go test ./internal/app/...    # one package (prefer the narrowest scope)
 go vet ./...
 gofmt -w .
 scripts/dev-daemon.sh         # rebuild this tree, restart the local daemon, print status
-scripts/dev-studio.sh         # rebuild the SPA and binaries, restart the browser studio, print status
+scripts/dev-daemon.sh --studio  # also rebuild the browser Studio into share/marshal/studio
                               #   --dev-image also refreshes the agent container image from ./marshal
 ```
 
@@ -40,11 +40,10 @@ keeps, are documented in `docs/testing-ci-audit.md`. Everything after the mode
 that is not `--base`/`--go-only` is passed through to `go test`, so
 `scripts/test.sh quick ./internal/acp -run TestStack` works.
 
-`scripts/dev-daemon.sh` and `scripts/dev-studio.sh` keep a development box's
-daemon and browser studio running this checkout's build without cutting a
-release. Setup, the rebuild-and-restart loop, the agent image, and how to
-recreate the services from scratch are documented in
-[`docs/dev-loop.md`](docs/dev-loop.md).
+`scripts/dev-daemon.sh` keeps a development box's daemon — and the Studio it
+serves — running this checkout's build without cutting a release. Setup, the
+rebuild-and-restart loop, the agent image, and how to recreate the service from
+scratch are documented in [`docs/dev-loop.md`](docs/dev-loop.md).
 
 `marshal` also dispatches subcommands: `acp` (headless JSON-RPC server),
 `attach` (reattach to a daemon session), `daemon` (install, drive and restart
@@ -56,22 +55,23 @@ the local daemon), `fleet` (the fleet screen on the local daemon), `history`,
 ### Web control plane
 
 ```bash
-cd app && flutter build web --base-href / --no-web-resources-cdn --output ../web/bridge/static
-go build ./cmd/webbridge                    # embeds the Studio
+cd app && flutter build web --base-href / --no-web-resources-cdn --output ../share/marshal/studio
+go build ./cmd/webbridge
 ```
 
 The Studio is the Flutter app in `app/` (`docs/studio-flutter/`), and `/`
 serves it: F8's cutover retired the Svelte Studio and its Node toolchain, so
 there is no `web/ui`, no `npm` step, and no second client to keep in step.
-`web/bridge/static/` is the build; in a Go-only checkout it holds a placeholder
-index, so `go build` still embeds a page. The app job and the release's
-`studio-web` job both run that command before building `webbridge`, because
-`//go:embed` bakes it in. An old `/next/…` link redirects permanently to the
-same place at `/`.
+`webbridge` serves the Studio from `share/marshal/studio`, found beside or above
+its binary, or from `--studio-dir`; a checkout builds it there with the command
+above. Releases, Homebrew, `install.sh` and the app bundles ship it. A daemon
+without it serves a page that says where it looked (one-daemon D12). An old
+`/next/…` link redirects permanently to the same place at `/`.
 
 `--no-web-resources-cdn` is not optional: without it the build fetches the
 CanvasKit engine from gstatic, and a private network that cannot reach that CDN
-never starts the Studio. The e2e suite checks the served build for a CDN URL.
+never starts the Studio. CI and the e2e suite check the served build for a CDN
+URL.
 
 `web/bridge/contract` holds the fleet loop's wire types and generates the app's
 Dart module, `app/lib/src/client/contract.g.dart`: regenerate with

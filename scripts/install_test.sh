@@ -34,15 +34,17 @@ ok() {
 }
 
 # new_sandbox: create a throwaway prefix holding a stub `marshal` (which logs
-# its calls to $sandbox/calls) and a stand-in `webbridge` to remove.
+# its calls to $sandbox/calls) and a stand-in `webbridge` to remove, plus the
+# Studio that install.sh puts beside the prefix at share/marshal/studio.
 new_sandbox() {
 	sandbox=$(mktemp -d) || {
 		echo "install_test.sh: mktemp -d failed" >&2
 		exit 1
 	}
 	sandboxes="$sandboxes $sandbox"
-	mkdir -p "$sandbox/prefix" "$sandbox/home"
+	mkdir -p "$sandbox/prefix" "$sandbox/home" "$sandbox/share/marshal/studio"
 	printf 'stand-in\n' >"$sandbox/prefix/webbridge"
+	printf '<!doctype html>\n' >"$sandbox/share/marshal/studio/index.html"
 	cat >"$sandbox/prefix/marshal" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >>"$STUB_CALLS"
@@ -55,7 +57,7 @@ case "$1 $2" in
 	exit 1
 	;;
 'daemon uninstall')
-	exit 0
+	exit "${STUB_UNINSTALL_RC:-0}"
 	;;
 esac
 exit 0
@@ -64,14 +66,17 @@ STUB
 	: >"$sandbox/calls"
 }
 
-# uninstall STATUS: run install.sh --uninstall against the current sandbox,
-# leaving the exit code in $rc and the output in $sandbox/output.
+# uninstall STATUS [RC]: run install.sh --uninstall against the current
+# sandbox, leaving the exit code in $rc and the output in $sandbox/output. RC
+# is what the stub's `daemon uninstall` exits with, so a failing service
+# removal can be exercised.
 uninstall() {
 	rc=0
 	HOME="$sandbox/home" \
 		MARSHAL_DATA_DIR="$sandbox/home/data" \
 		STUB_CALLS="$sandbox/calls" \
 		STUB_STATUS="$1" \
+		STUB_UNINSTALL_RC="${2:-0}" \
 		sh "$installer" --uninstall --prefix "$sandbox/prefix" \
 		>"$sandbox/output" 2>&1 || rc=$?
 }
@@ -124,6 +129,22 @@ expect_kept() {
 	fi
 }
 
+expect_studio_removed() {
+	if [ -e "$sandbox/share/marshal/studio" ]; then
+		fail "$case_name: left the Studio behind in $sandbox/share/marshal/studio"
+	else
+		ok "$case_name: removed the Studio"
+	fi
+}
+
+expect_studio_kept() {
+	if [ -f "$sandbox/share/marshal/studio/index.html" ]; then
+		ok "$case_name: kept the Studio"
+	else
+		fail "$case_name: removed the Studio it should have kept"
+	fi
+}
+
 expect_delete_hint() {
 	if grep -q 'delete it with: rm -rf' "$sandbox/output"; then
 		ok "$case_name: says how to delete the kept data"
@@ -140,6 +161,7 @@ socket: /run/user/1000/marshal/marshal.sock (not answering)'
 expect_success
 expect_daemon_uninstall
 expect_removed
+expect_studio_removed
 expect_delete_hint
 
 # (b) A running daemon with a pid.
@@ -150,6 +172,7 @@ socket: /run/user/1000/marshal/marshal.sock (answering)'
 expect_success
 expect_daemon_uninstall
 expect_removed
+expect_studio_removed
 
 # (b') A running daemon whose pid the service manager did not report.
 case_name="loaded and running"
@@ -159,6 +182,7 @@ socket: /run/user/1000/marshal/marshal.sock (answering)'
 expect_success
 expect_daemon_uninstall
 expect_removed
+expect_studio_removed
 
 # (c) Nothing installed: nothing to uninstall.
 case_name="not installed"
@@ -168,6 +192,7 @@ socket: /run/user/1000/marshal/marshal.sock (not answering)'
 expect_success
 expect_no_daemon_uninstall
 expect_removed
+expect_studio_removed
 
 # (d) State unreadable: an empty status line must refuse, not guess, because
 # removing the binaries is what turns a stale unit into a broken one.
@@ -177,6 +202,18 @@ uninstall ''
 expect_refusal
 expect_no_daemon_uninstall
 expect_kept
+expect_studio_kept
+
+# (e) The daemon's own uninstall fails: the binaries stay, and so does the
+# Studio that goes with them.
+case_name="daemon uninstall fails"
+new_sandbox
+uninstall 'service: loaded and running (pid 1)
+socket: /run/user/1000/marshal/marshal.sock (answering)' 1
+expect_refusal
+expect_daemon_uninstall
+expect_kept
+expect_studio_kept
 
 if [ "$failures" -ne 0 ]; then
 	echo "install_test.sh: $failures failure(s)" >&2

@@ -18,7 +18,8 @@ usage() {
 Usage: install.sh [options]
 
   --version V     install tag V (v0.9.1 or 0.9.1); default: the latest release
-  --prefix DIR    where to put marshal and webbridge (default: ~/.local/bin)
+  --prefix DIR    where to put marshal and webbridge, with the Studio in
+                  DIR/../share/marshal/studio (default: ~/.local/bin)
   --no-daemon     install the binaries only; do not install the daemon
   --uninstall     stop and remove the daemon, then remove the binaries
   -h, --help      this text
@@ -73,6 +74,10 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# PREFIX is a bin directory, so the Studio lives beside it under share/. This
+# is computed once, now that --prefix has had its say.
+STUDIO_DIR="$(dirname "$PREFIX")/share/marshal/studio"
+
 command -v curl >/dev/null 2>&1 || die "curl is required"
 
 case "$(uname -s)" in
@@ -111,6 +116,11 @@ if [ "$UNINSTALL" -eq 1 ]; then
 	fi
 	rm -f "$PREFIX/marshal" "$PREFIX/webbridge"
 	say "removed marshal and webbridge from $PREFIX"
+	rm -rf "$STUDIO_DIR"
+	say "removed the Studio from $STUDIO_DIR"
+	# Only when they are empty: another package may share them.
+	rmdir "$(dirname "$STUDIO_DIR")" 2>/dev/null || true
+	rmdir "$(dirname "$(dirname "$STUDIO_DIR")")" 2>/dev/null || true
 	data_dir="${MARSHAL_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/marshal}"
 	say "kept your data in $data_dir"
 	say "delete it with: rm -rf \"$data_dir\""
@@ -182,6 +192,22 @@ install -m 0755 "$tmp/out/webbridge" "$PREFIX/webbridge" ||
 	die "could not install $PREFIX/webbridge"
 
 say "installed $("$PREFIX/marshal" --version) in $PREFIX"
+
+studio_member="share/marshal/studio/index.html"
+[ -f "$tmp/out/$studio_member" ] ||
+	die "$archive does not contain $studio_member"
+studio_parent="$(dirname "$STUDIO_DIR")"
+mkdir -p "$studio_parent" 2>/dev/null || die "cannot create $studio_parent"
+[ -w "$studio_parent" ] ||
+	die "cannot write to $studio_parent; rerun with a --prefix DIR whose parent you own"
+rm -rf "$STUDIO_DIR.new"
+cp -R "$tmp/out/share/marshal/studio" "$STUDIO_DIR.new" ||
+	die "could not copy the Studio to $STUDIO_DIR.new"
+rm -rf "$STUDIO_DIR"
+mv "$STUDIO_DIR.new" "$STUDIO_DIR" ||
+	die "could not move the Studio into $STUDIO_DIR"
+say "installed the Studio in $STUDIO_DIR"
+
 case ":$PATH:" in
 *":$PREFIX:"*) ;;
 *) say "add $PREFIX to your PATH: export PATH=\"$PREFIX:\$PATH\"" ;;

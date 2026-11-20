@@ -242,6 +242,26 @@ Two things do not travel through the forward:
   url = "https://<host>.<tailnet>.ts.net:8443"
   ```
 
+## Reaching another machine
+
+`marshal fleet --host NAME` shows another machine's daemon in the fleet screen,
+reached over SSH (one-daemon D6–D9). On the laptop:
+
+```bash
+marshal fleet add box you@box        # writes [hosts.box] into fleet.toml
+marshal daemon install               # writes --tunnels into the unit
+marshal daemon status                # lists the tunnel: box, its socket, its state
+```
+
+The remote needs `marshal daemon install` too, and an sshd that allows
+stream-local forwarding (`AllowStreamLocalForwarding`, A1).
+
+The daemon's ssh runs with `BatchMode`, so it needs a key it can use without a
+prompt (A2). On Linux, the systemd user manager must see the agent: run
+`systemctl --user import-environment SSH_AUTH_SOCK` once per login, run the
+agent as a user unit, or set `IdentityAgent` in `~/.ssh/config`. On macOS,
+launchd gives the daemon the login's agent.
+
 ## A relay on the development box
 
 One box can hold both halves of a relay: the Studio on `127.0.0.1:7700` relays,

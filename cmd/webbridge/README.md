@@ -149,6 +149,14 @@ inline when the token is used. `marshal daemon install` always writes
 `--oauth-refresh` into the unit, so an installed daemon refreshes; a bridge
 started by hand, and every test, starts no helper unless asked.
 
+`--tunnels` (also `WEBBRIDGE_TUNNELS`, off unless asked) runs
+`<marshal-bin> daemon tunnels --socket <socket>` beside the bridge. That
+helper keeps one `ssh -N` forward per `fleet.toml` host, from
+`<daemon dir>/hosts/<name>.sock` to that host's own socket, so the fleet
+screen's `marshal fleet --host NAME` reaches another machine's daemon; it
+reports each tunnel through the socket's hosts route, which `GET /api/daemon`
+serves. `marshal daemon install` always writes `--tunnels` into the unit.
+
 Each project child starts with the project's own environment, as a terminal in
 that project would give it: the user's login shell (`$SHELL`, else `/bin/sh`)
 is run in the project directory, and a `.envrc` is overlaid through `direnv`

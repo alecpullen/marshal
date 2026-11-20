@@ -1813,6 +1813,7 @@ class DaemonInfo {
     required this.children,
     this.refresh,
     this.join,
+    required this.hosts,
     this.restart,
   });
 
@@ -1839,6 +1840,8 @@ class DaemonInfo {
   final DaemonRefresh? refresh;
   /// filled per request
   final DaemonJoin? join;
+  /// filled per request: the tunnel helper's last report
+  final List<DaemonHost> hosts;
   /// the daemon's own; filled per request
   final DaemonRestart? restart;
 
@@ -1871,6 +1874,10 @@ class DaemonInfo {
         json['join'],
         DaemonJoin.fromJson,
       ),
+      hosts: _list(
+        json['hosts'],
+        (value) => _object(value, DaemonHost.fromJson),
+      ),
       restart: _objectOrNull(
         json['restart'],
         DaemonRestart.fromJson,
@@ -1902,6 +1909,9 @@ class DaemonInfo {
     if (join != null) {
       json['join'] = join!.toJson();
     }
+    json['hosts'] = [
+      for (final value in hosts) value.toJson(),
+    ];
     if (restart != null) {
       json['restart'] = restart!.toJson();
     }
@@ -2000,6 +2010,116 @@ class DaemonRefresh {
     final json = <String, dynamic>{};
     json['pid'] = pid;
     json['restarts'] = restarts;
+    return json;
+  }
+}
+
+/// HostState is a remote host's tunnel state (one-daemon D7).
+enum HostState {
+  hostConnecting('connecting'),
+  hostLive('live'),
+  hostDown('down'),
+  unknown('unknown');
+
+  const HostState(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static HostState fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// DaemonHost is one remote host's tunnel as GET /api/daemon reports it
+/// (one-daemon D7, D9).
+class DaemonHost {
+  const DaemonHost({
+    required this.name,
+    required this.ssh,
+    required this.state,
+    required this.socket,
+    this.lastError,
+    required this.since,
+    this.rawEnums = const {},
+  });
+
+  final String name;
+  /// the destination, as fleet.toml names it
+  final String ssh;
+  final HostState state;
+  /// this machine's end of the tunnel
+  final String socket;
+  final String? lastError;
+  /// Unix milliseconds: when State last changed
+  final int since;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory DaemonHost.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final stateWire = json['state'] as String;
+    final state = HostState.fromWire(stateWire);
+    if (state == HostState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return DaemonHost(
+      name: json['name'] as String,
+      ssh: json['ssh'] as String,
+      state: state,
+      socket: json['socket'] as String,
+      lastError: json['lastError'] as String?,
+      since: (json['since'] as num).toInt(),
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['ssh'] = ssh;
+    json['state'] = rawEnums['state'] ?? state.wire;
+    json['socket'] = socket;
+    if (lastError != null) {
+      json['lastError'] = lastError;
+    }
+    json['since'] = since;
+    return json;
+  }
+}
+
+/// DaemonHostsReport is PUT /api/daemon/hosts's body: every host the tunnel
+/// helper keeps, replacing its last report.
+class DaemonHostsReport {
+  const DaemonHostsReport({
+    required this.hosts,
+  });
+
+  final List<DaemonHost> hosts;
+
+  factory DaemonHostsReport.fromJson(Map<String, dynamic> json) {
+    return DaemonHostsReport(
+      hosts: _list(
+        json['hosts'],
+        (value) => _object(value, DaemonHost.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['hosts'] = [
+      for (final value in hosts) value.toJson(),
+    ];
     return json;
   }
 }

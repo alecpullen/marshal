@@ -153,7 +153,8 @@ D12 (the Studio served from files) was split out into plan 4 while planning.
 
 ## Plan 4 — The Studio as files (D12)
 
-Split out of plan 3 while planning. Not yet written.
+Plan: [plans/2026-11-20-od-4-studio-as-files-plan.md](plans/2026-11-20-od-4-studio-as-files-plan.md).
+Split out of plan 3 while planning it.
 
 | File | Lines | Action | What |
 |---|---:|---|---|
@@ -162,14 +163,24 @@ Split out of plan 3 while planning. Not yet written.
 | `.github/workflows/go-checks.yml` | — | Reshape | `webbridge` builds without `flutter build web` first (`:85–93`). The web build and its CDN check become their own step. |
 | `scripts/dev-studio.sh` | 535 | Delete | The second, server-profile daemon, its unit and its token. A Studio rebuild becomes a `flutter build web` into the web listener's directory, run from `scripts/dev-daemon.sh` when that daemon has `web_listen` set. |
 | `.github/workflows/release.yaml` | — | Reshape | The `studio-web` job (`:72–88`) publishes an asset instead of feeding the embed. `app-darwin` and `app-linux` copy that directory into the bundle (`:154`, `:276`). |
-| Studio directory | — | Add | `--studio-dir` and its default beside the binaries; the release archive, Homebrew, `install.sh` and both app bundles carry the directory. |
+| Studio directory | — | Add | `FindStudioDir`, `Server.SetStudioDir`, `webbridge --studio-dir` and `DaemonInfo.studioDir`, with `share/marshal/studio` beside or above the binaries. |
+| `.goreleaser.yaml` | — | Reshape | The archive carries `share/marshal/studio/**/*`, and the formula installs it into `pkgshare`. |
+| `scripts/install.sh`, `install_test.sh` | — | Reshape | Install the Studio at `<prefix>/../share/marshal/studio`, and remove it on `--uninstall`. |
+| `scripts/dev-daemon.sh` | 248 | Reshape | `--studio` builds the Studio into the checkout's `share/marshal/studio`. `--dev-image` and `--agent-image` move here from `dev-studio.sh`. |
+| `scripts/e2e/checks_spa.py` | — | Reshape | Group I checks that the daemon names its Studio directory. |
+| `.gitignore`, `.gitattributes` | — | Reshape | Ignore `/share/`, and drop the `web/bridge/static` attributes. |
 
 ## Plan 5 — Retire the containerized daemon, and the docs (D5)
+
+Plan: [plans/2026-11-20-od-5-retire-the-container-daemon-plan.md](plans/2026-11-20-od-5-retire-the-container-daemon-plan.md).
 
 | File | Lines | Action | What |
 |---|---:|---|---|
 | `compose.yaml` | 17 | Delete | |
 | `build/Dockerfile.bridge` | 30 | Delete | |
+| `web/bridge/fleet.go`, `mounts.go`, `container.go`, `egress_fleet.go`, `terminal.go`, `wsspawn.go` | — | Cut | Named-volume state: `volumeMount`, `ContainerConfig.StateVolume`, `Fleet.stateVolume` and `stateOnHost`. Project mounts: `ProjectMount`, `TranslateToHost` and `Fleet.projectMounts`. `NewFleet` loses both parameters (41 callers), and `SetStateOnHost` becomes `SetConfigHome`. |
+| `docs/DEPLOYMENT.md` | 88 | Reshape | "Running Marshal on a server": a Linux machine with `marshal daemon install`. |
+| `CHANGELOG.md` | — | Reshape | One "One daemon" block under Unreleased, for plans 1–5. |
 | `.goreleaser.yaml` | — | Cut | The two `Dockerfile.bridge` entries under `dockers` (`:156`, `:165`) and their manifests. The agent image entries stay. |
 | `cmd/webbridge/main.go` | — | Cut | `--state-volume` (`:162`), `--project-mount` (`:157`) and `parseProjectMounts` (`:550–567`). This depends on plan 1 having confirmed A5. |
 | `AGENTS.md` | — | Reshape | Web control plane: the local profile, the relay paragraph, `marshal fleet --server` and `fleet.toml`'s tokens. Also the e2e command, the `internal/fleetprofile` map line, and the `--no-web-resources-cdn` paragraph, which moves to the `studio-web` job. |

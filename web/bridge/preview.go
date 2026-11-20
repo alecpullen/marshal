@@ -231,11 +231,13 @@ func (s *Server) issuePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	origin, tokenInHost := s.previewOrigin(r, pp, tokenOf(u))
-	if host, port, ok := previewOriginFrom(r); ok {
+	if scheme, host, port, ok := previewOriginFrom(r); ok {
 		// The caller knows its own way in to the preview listener, so the
-		// origin it names is the one the link takes, in place of the preview
-		// URL and the request's host (one-daemon open question 1).
-		origin, tokenInHost = previewOriginOn(requestScheme(r), host, port, tokenOf(u))
+		// origin it names — scheme included — is the one the link takes, in
+		// place of the preview URL and the request's host (one-daemon open
+		// question 1). The request's own scheme says how it reached this
+		// daemon, not how it will dial the origin it named.
+		origin, tokenInHost = previewOriginOn(scheme, host, port, tokenOf(u))
 	}
 	if tokenInHost {
 		// The origin carries the credential, so the URL needs no ?t=.
@@ -368,36 +370,38 @@ func requestScheme(r *http.Request) string {
 	return "http"
 }
 
-// previewOriginFrom reads PreviewOriginHeader: an http origin with a host and
-// a port, and no path, query or fragment. ok is false for anything else, and
-// the header is then ignored.
-func previewOriginFrom(r *http.Request) (host string, port int, ok bool) {
+// previewOriginFrom reads PreviewOriginHeader: an http or https origin with a
+// host and a port, and no path, query or fragment. ok is false for anything
+// else, and the header is then ignored. The scheme is returned as url.Parse
+// normalises it, because it decides how the caller will dial the origin it
+// named — which is not necessarily how the request reached this daemon.
+func previewOriginFrom(r *http.Request) (scheme, host string, port int, ok bool) {
 	raw := r.Header.Get(contract.PreviewOriginHeader)
 	if raw == "" {
-		return "", 0, false
+		return "", "", 0, false
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", 0, false
+		return "", "", 0, false
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", 0, false
+		return "", "", 0, false
 	}
 	if u.Path != "" && u.Path != "/" {
-		return "", 0, false
+		return "", "", 0, false
 	}
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return "", 0, false
+		return "", "", 0, false
 	}
 	host, rawPort := u.Hostname(), u.Port()
 	if host == "" || rawPort == "" {
-		return "", 0, false
+		return "", "", 0, false
 	}
 	n, err := strconv.Atoi(rawPort)
 	if err != nil || n < 1 || n > 65535 {
-		return "", 0, false
+		return "", "", 0, false
 	}
-	return host, n, true
+	return u.Scheme, host, n, true
 }
 
 // tokenOf is the token in an issued preview path's ?t= query.

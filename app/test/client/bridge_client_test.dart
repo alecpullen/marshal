@@ -345,6 +345,36 @@ void main() {
     );
   });
 
+  test('a non-preview call sends no preview origin header', () async {
+    // The origin is the preview route's business alone (web/bridge/preview.go
+    // reads it from that request): a client that has one must not let it ride
+    // on every call, or each route would read a header only previews answer.
+    final remote = BridgeClient(
+      transport,
+      previewOrigin: 'http://localhost:54400',
+    );
+    fake.reply(
+      'GET',
+      '/api/daemon',
+      const FakeReply(
+        200,
+        body:
+            '{"version":"0.9.1","profile":"local","pid":42,'
+            '"startedAt":1763300000000,"socket":"/tmp/daemon.sock",'
+            '"projects":[],"pinned":[],"children":[]}',
+      ),
+    );
+
+    await remote.daemon();
+
+    expect(fake.requests.single.uri, '/api/daemon');
+    expect(
+      fake.requests.single.headers,
+      isNot(contains(previewOriginHeader.toLowerCase())),
+      reason: 'only a preview names the origin it is reached through',
+    );
+  });
+
   test('a preview answer that names no url yields no URL', () async {
     // The route answers {"url": …} and nothing else (web/bridge/preview.go):
     // a body that names some other key is not a URL this client can use, so

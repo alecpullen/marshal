@@ -43,6 +43,9 @@ type Config struct {
 	Probe  func(ctx context.Context, socket string) (previewAddr string, err error)
 	Stderr io.Writer // where load and report failures are written; nil discards them
 	SSH    string    // the ssh binary; "" is "ssh" on PATH
+	// FreePort answers a port free on this machine's loopback for a preview
+	// forward. Required of each attempt, so nil is freeLoopbackPort.
+	FreePort func() (int, error)
 
 	Commands Commands         // nil: Exec()
 	Now      func() time.Time // nil: time.Now
@@ -61,6 +64,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Now == nil {
 		c.Now = time.Now
+	}
+	if c.FreePort == nil {
+		c.FreePort = freeLoopbackPort
 	}
 	if c.Poll <= 0 {
 		c.Poll = 2 * time.Second
@@ -323,7 +329,7 @@ func (r *runner) attempt(t *tunnel) error {
 	// surfaces as "Address already in use", and the next attempt avoids it.
 	previewPort := 0
 	if previewAddr != "" {
-		if previewPort, err = freeLoopbackPort(); err != nil {
+		if previewPort, err = r.cfg.FreePort(); err != nil {
 			return err
 		}
 	}

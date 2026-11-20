@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,12 @@ func TestTheDaemonRouteAnswersItsInfo(t *testing.T) {
 	}
 	if len(got.Projects) != 2 || got.Projects[0] != "/home/u/alpha" || got.Projects[1] != "/home/u/zeta" {
 		t.Fatalf("projects = %v, want them sorted", got.Projects)
+	}
+	// A daemon that never started a preview listener names no preview
+	// address: the field is absent, not an empty string a caller could take
+	// for an origin it can reach (one-daemon open question 1).
+	if body := rec.Body.String(); strings.Contains(body, "previewAddr") {
+		t.Fatalf("daemon info %s reports previewAddr with no preview listener", body)
 	}
 }
 

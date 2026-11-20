@@ -475,6 +475,57 @@ func TestAPreviewOriginHeaderNamesTheLink(t *testing.T) {
 	})
 }
 
+// TestThePreviewOriginHeaderKeepsItsScheme: the header names the way the
+// caller will dial this daemon's preview listener, so the link carries that
+// scheme. The request's own scheme says how it reached the daemon, which is a
+// different hop: a plain-HTTP request naming an https origin still gets an
+// https link (one-daemon open question 1).
+func TestThePreviewOriginHeaderKeepsItsScheme(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	want := "/preview/" + p.id + "/3000/"
+
+	t.Run("another host", func(t *testing.T) {
+		// The request is plain HTTP (p.do sends no TLS), so an https link
+		// proves the header's scheme decided it and not the request's.
+		raw := p.issueNamingURL(t, "https://box.lan:54400")
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		if u.Scheme != "https" || u.Host != "box.lan:54400" {
+			t.Fatalf("issued URL %q, want it on https://box.lan:54400", raw)
+		}
+		if u.Path != want {
+			t.Fatalf("issued URL %q, want the path %s", raw, want)
+		}
+		if tok := u.Query().Get("t"); !p.f.previewTokenValid(tok, p.id, 3000) {
+			t.Fatalf("the link carries %q, which is not the token issued", tok)
+		}
+	})
+
+	t.Run("localhost", func(t *testing.T) {
+		raw := p.issueNamingURL(t, "https://localhost:54400")
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		if u.Scheme != "https" || u.Port() != "54400" {
+			t.Fatalf("issued URL %q, want it on https://localhost:54400", raw)
+		}
+		host := u.Hostname()
+		if !strings.HasPrefix(host, "p") || !strings.HasSuffix(host, ".localhost") {
+			t.Fatalf("host = %q, want p<token>.localhost", host)
+		}
+		tok := strings.TrimSuffix(strings.TrimPrefix(host, "p"), ".localhost")
+		if !p.f.previewTokenValid(tok, p.id, 3000) {
+			t.Fatalf("the host carries %q, which is not the token issued", tok)
+		}
+		if u.Path != want || u.RawQuery != "" {
+			t.Fatalf("issued URL %q, want %s with no ?t=", raw, want)
+		}
+	})
+}
+
 // TestABadPreviewOriginHeaderIsIgnored: a header that is not an http origin
 // with a host and a port in range is no way in, so the link is the one the
 // daemon issues without it (one-daemon open question 1).
@@ -484,6 +535,8 @@ func TestABadPreviewOriginHeaderIsIgnored(t *testing.T) {
 		"http://box.lan",         // no port
 		"http://box.lan:54400/x", // a path
 		"http://box.lan:99999/",  // a port out of range
+		"http://box.lan:0",       // a port below the range
+		"http://box.lan:00",      // ...and one that parses as zero
 		"ftp://box.lan:54400",    // not http
 		"garbage",                // not an origin at all
 	} {

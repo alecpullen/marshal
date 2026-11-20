@@ -275,6 +275,24 @@ func TestAMovedPreviewListenerRestartsTheTunnel(t *testing.T) {
 	)
 	f := newFixture(t)
 	f.writeFleet("box", "me@box")
+	// A port of its own each attempt: a tunnel that kept the first one would
+	// meet the "Address already in use" the per-attempt choice avoids.
+	var (
+		portsMu sync.Mutex
+		ports   []int
+	)
+	chosen := func() []int {
+		portsMu.Lock()
+		defer portsMu.Unlock()
+		return append([]int(nil), ports...)
+	}
+	f.cfg.FreePort = func() (int, error) {
+		portsMu.Lock()
+		defer portsMu.Unlock()
+		port := 54400 + len(ports) + 1
+		ports = append(ports, port)
+		return port, nil
+	}
 	var moved atomic.Bool
 	f.script.outputFn = func([]string) ([]byte, error) {
 		if moved.Load() {
@@ -294,8 +312,12 @@ func TestAMovedPreviewListenerRestartsTheTunnel(t *testing.T) {
 	moved.Store(true)
 
 	// The moved listener ends the attempt, so the host is down with the move
-	// as its reason...
-	f.rec.wait(t, live+1, hasState("box", contract.HostDown, "moved its preview listener to "+second))
+	// as its reason, and carrying no port...
+	down := f.rec.wait(t, live+1, hasState("box", contract.HostDown, "moved its preview listener to "+second))
+	downReport, _ := f.rec.at(down)
+	if h, _ := hostNamed(downReport, "box"); h.PreviewPort != 0 {
+		t.Errorf("the down report's PreviewPort = %d, want 0", h.PreviewPort)
+	}
 	// ...and the next attempt forwards the new address.
 	deadline := time.Now().Add(5 * time.Second)
 	for f.script.startCount() < 2 {
@@ -315,6 +337,54 @@ func TestAMovedPreviewListenerRestartsTheTunnel(t *testing.T) {
 	last := forwards(starts[len(starts)-1])
 	if len(last) != 2 || !strings.HasSuffix(last[1], ":"+second) {
 		t.Fatalf("the new forward's -L arguments = %q, want the preview forward to %s", last, second)
+	}
+
+	// The restart forwards its preview to a port of its own: the first
+	// attempt's is one the old listener may still hold.
+	given := chosen()
+	if len(given) < 2 {
+		t.Fatalf("FreePort was called %d times, want once per attempt: %v", len(given), given)
+	}
+	if given[0] == given[1] {
+		t.Fatalf("both attempts were given the local preview port %d, want a port of its own each", given[0])
+	}
+	firstLocal, ok := previewForwardPort(starts[0])
+	if !ok {
+		t.Fatalf("the first forward carries no preview -L: %q", starts[0])
+	}
+	lastLocal, ok := previewForwardPort(starts[len(starts)-1])
+	if !ok {
+		t.Fatalf("the second forward carries no preview -L: %q", starts[len(starts)-1])
+	}
+	if firstLocal != given[0] {
+		t.Errorf("the first forward's local preview port = %d, want the one FreePort answered, %d", firstLocal, given[0])
+	}
+	if lastLocal != given[1] {
+		t.Errorf("the second forward's local preview port = %d, want the one FreePort answered, %d", lastLocal, given[1])
+	}
+	if lastLocal == firstLocal {
+		t.Fatalf("both attempts forwarded the preview to the local port %d, want a distinct port each", lastLocal)
+	}
+
+	// The new attempt carries the address the daemon now serves, so every
+	// Check tick finds it unchanged. A tunnel that compared each tick against
+	// the previous attempt's address would restart forever.
+	settled := f.rec.wait(t, down+1, func(hosts []contract.DaemonHost) bool {
+		h, kept := hostNamed(hosts, "box")
+		return kept && h.State == contract.HostLive && h.PreviewPort == given[1]
+	})
+	if settled <= down {
+		t.Fatalf("the live report after the move is report %d, at or before the down one %d", settled, down)
+	}
+	time.Sleep(10 * f.cfg.Check)
+	if n := f.script.startCount(); n != 2 {
+		t.Fatalf("Start was called %d times after the move settled, want the 2 of the move: %v",
+			n, f.script.startArgvs())
+	}
+	reports := f.rec.all()
+	lastReport := reports[len(reports)-1]
+	if h, kept := hostNamed(lastReport, "box"); !kept || h.State != contract.HostLive {
+		t.Fatalf("the last report = %v, want box live ten ticks after the move", lastReport)
 	}
 }
 
@@ -450,30 +520,47 @@ func TestAForwardThatNeverAnswersIsStopped(t *testing.T) {
 }
 
 // TestALiveTunnelWhoseDaemonStopsIsDown covers a remote daemon that stops
-// answering: the host is down, ssh stays up, and a later answer is live again.
+// answering: the host is down, carrying no preview port, ssh stays up, and a
+// later answer is live again.
 func TestALiveTunnelWhoseDaemonStopsIsDown(t *testing.T) {
+	const previewAddr = "127.0.0.1:54321"
 	f := newFixture(t)
 	f.writeFleet("box", "me@box")
+	f.script.outputFn = func([]string) ([]byte, error) { return statusDocumentPreviewing(previewAddr), nil }
 	var failing atomic.Bool
 	f.probe.fn = func(string) (string, error) {
 		if failing.Load() {
 			return "", errors.New("no route to the daemon")
 		}
-		return "", nil
+		return previewAddr, nil
 	}
 	f.start()
 
 	live := f.rec.wait(t, 0, hasState("box", contract.HostLive, ""))
+	liveReport, _ := f.rec.at(live)
+	if h, _ := hostNamed(liveReport, "box"); h.PreviewPort == 0 {
+		t.Fatalf("the live report's PreviewPort = 0, want the port the preview listener is forwarded to")
+	}
 	failing.Store(true)
 	down := f.rec.wait(t, live+1, hasState("box", contract.HostDown, "daemon stopped answering"))
 	if down <= live {
 		t.Fatalf("the down report is report %d, at or before the live one %d", down, live)
 	}
+	// A down host carries no port: hostforward.go sets the origin header
+	// whenever PreviewPort is above zero.
+	downReport, _ := f.rec.at(down)
+	if h, _ := hostNamed(downReport, "box"); h.PreviewPort != 0 {
+		t.Errorf("the down report's PreviewPort = %d, want 0", h.PreviewPort)
+	}
 	if p := f.script.process(0); p == nil || p.stopped() {
 		t.Fatal("the process was stopped while the host was only down")
 	}
 	failing.Store(false)
-	f.rec.wait(t, down+1, hasState("box", contract.HostLive, ""))
+	back := f.rec.wait(t, down+1, hasState("box", contract.HostLive, ""))
+	backReport, _ := f.rec.at(back)
+	if h, _ := hostNamed(backReport, "box"); h.PreviewPort == 0 {
+		t.Errorf("the live report after the answer's return has PreviewPort = 0, want the preview port back")
+	}
 }
 
 // TestAHostAddedToTheFileStartsATunnel covers the re-read: a host written after
@@ -850,6 +937,25 @@ func forwards(argv []string) []string {
 		}
 	}
 	return out
+}
+
+// previewForwardPort is the local port of argv's preview -L, and whether argv
+// carries one.
+func previewForwardPort(argv []string) (int, bool) {
+	carried := forwards(argv)
+	if len(carried) < 2 {
+		return 0, false
+	}
+	// The preview forward is 127.0.0.1:<port>:<the remote listener>.
+	parts := strings.Split(carried[1], ":")
+	if len(parts) < 2 {
+		return 0, false
+	}
+	port, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, false
+	}
+	return port, true
 }
 
 // hasState matches a report whose host name is in state, with a last error

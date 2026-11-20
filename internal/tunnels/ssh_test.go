@@ -59,6 +59,14 @@ func TestForwardArgvWithoutPreviews(t *testing.T) {
 		"me@box",
 	}
 	assertArgv(t, argv, want)
+
+	// An address without the port it is forwarded to is no forward: the
+	// listener would be 127.0.0.1:0, which carries nothing.
+	argv = forwardArgv("", fleetprofile.Host{Name: "box", SSH: "me@box"}, local, remote, 0, "127.0.0.1:54321")
+	assertArgv(t, argv, want)
+	if forwarded := forwards(argv); len(forwarded) != 1 {
+		t.Fatalf("the forward's -L arguments = %q, want only the socket's", forwarded)
+	}
 }
 
 func TestForwardArgvForwardsThePreviewPort(t *testing.T) {
@@ -119,6 +127,21 @@ func TestRemoteDaemonIgnoresANonLoopbackPreviewAddr(t *testing.T) {
 		}
 		if previewAddr != "" {
 			t.Errorf("remoteDaemon forwarded %q for the preview address %q, want none", previewAddr, addr)
+		}
+	}
+}
+
+func TestLoopbackAddrRefusesAnUnusablePort(t *testing.T) {
+	// A port that is not a number, or outside 1..65535, is one ssh cannot
+	// forward: it fails every attempt, so it is no preview listener.
+	for _, addr := range []string{"127.0.0.1:abc", "localhost:99999", "127.0.0.1:0", "[::1]:-1", "::1:80"} {
+		if got := loopbackAddr(addr); got != "" {
+			t.Errorf("loopbackAddr(%q) = %q, want none", addr, got)
+		}
+	}
+	for _, addr := range []string{"127.0.0.1:54321", "localhost:1", "[::1]:65535"} {
+		if got := loopbackAddr(addr); got != addr {
+			t.Errorf("loopbackAddr(%q) = %q, want it kept", addr, got)
 		}
 	}
 }

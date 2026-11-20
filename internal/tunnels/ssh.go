@@ -56,7 +56,9 @@ func forwardArgv(ssh string, h fleetprofile.Host, local, remote string, previewP
 		"-o", "ServerAliveCountMax=3",
 		"-L", local+":"+remote,
 	)
-	if previewAddr != "" {
+	if previewAddr != "" && previewPort > 0 {
+		// Both halves are needed: an address with no port would forward to
+		// 127.0.0.1:0, which carries nothing.
 		argv = append(argv, "-L", "127.0.0.1:"+strconv.Itoa(previewPort)+":"+bracketed(previewAddr))
 	}
 	argv = append(argv, h.SSH)
@@ -121,13 +123,19 @@ func remoteDaemon(name string, doc []byte) (socket, previewAddr string, err erro
 	return status.Daemon.Socket, loopbackAddr(status.Daemon.PreviewAddr), nil
 }
 
-// loopbackAddr is addr when its host is loopback, and "" otherwise.
+// loopbackAddr is addr when its host is loopback and its port one ssh can
+// forward, and "" otherwise.
 func loopbackAddr(addr string) string {
 	if addr == "" {
 		return ""
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
+		return ""
+	}
+	// ssh forwards a numeric port in 1..65535: anything else fails every
+	// attempt, so it is not a preview listener this tunnel can carry.
+	if number, err := strconv.Atoi(port); err != nil || number < 1 || number > 65535 {
 		return ""
 	}
 	switch {

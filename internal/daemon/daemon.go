@@ -57,6 +57,17 @@ type UnitSpec struct {
 	// host-child agents rather than a separate container fleet: no image
 	// and no workspace build stands between the page and a spawn.
 	StudioAddr string
+	// The web listener, and the origins it advertises (D3). Each is
+	// written only when set: WebListen is `unix`, an absolute socket path
+	// or a loopback host:port, WebGroup shares a unix listener with a
+	// group, PublicURL is the origin the page and its API are reached on,
+	// and PreviewListen/PreviewURL are where previews are served and the
+	// origin they are reached on.
+	WebListen     string // written as --web-listen
+	WebGroup      string // written as --web-group
+	PublicURL     string // written as --public-url
+	PreviewListen string // written as --preview-addr
+	PreviewURL    string // written as --preview-url
 	// Join is the relay this daemon joins, and nil means it joins none
 	// (P8 D12).
 	Join *Join
@@ -99,14 +110,30 @@ func (u UnitSpec) Args() []string {
 	if u.Egress {
 		egress = "on"
 	}
-	return append(args,
+	args = append(args,
 		"--marshal-bin", u.Marshal,
 		"--idle-session-timeout", u.IdleSessionTimeout.String(),
 		"--egress", egress,
-		// The installed daemon always supervises a refresh helper and a
-		// tunnel helper, so both flags are written rather than configured
-		// (decision 5). They come last: they are the arguments that are
-		// not values the user set.
+	)
+	// The web listener and the origins it advertises are values the user
+	// sets, so each is written only when the unit holds one (D3). Nothing
+	// sets them yet, so an installed unit keeps the argv it had.
+	for _, flag := range []struct{ name, value string }{
+		{"--web-listen", u.WebListen},
+		{"--web-group", u.WebGroup},
+		{"--public-url", u.PublicURL},
+		{"--preview-addr", u.PreviewListen},
+		{"--preview-url", u.PreviewURL},
+	} {
+		if flag.value != "" {
+			args = append(args, flag.name, flag.value)
+		}
+	}
+	// The installed daemon always supervises a refresh helper and a
+	// tunnel helper, so both flags are written rather than configured
+	// (decision 5). They come last: they are the arguments that are
+	// not values the user set.
+	return append(args,
 		"--oauth-refresh",
 		"--tunnels",
 	)

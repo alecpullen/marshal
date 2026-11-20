@@ -66,14 +66,10 @@ type Server struct {
 	// hosts is the tunnel helper's last report, sorted by name and never
 	// nil once reported: GET /api/daemon answers it.
 	hosts []DaemonHost
-	// relay, when set, is the table of the hosts that may join this bridge:
-	// the network listener then answers the join route, and the forward and
-	// hosts routes sit behind the bearer check (hostrelay.go).
-	relay *HostRelay
-	// join, when set, is the relay this bridge joins, reported per request
-	// by GET /api/daemon (see SetJoiner). Like refresh it is set once, at
-	// start, before the listeners serve.
-	join *Joiner
+	// hostTransports is one HTTP transport per host socket path: a forward to
+	// a host dials its tunnel socket through the transport built for it, and
+	// keeps it, so a stream keeps its connection (hostforward.go).
+	hostTransports sync.Map
 	// factoryAuth is the one factory policy lock: grant management, client
 	// deletion, project removal, delegation settings and the authorization
 	// guarding a durable factory mutation all take it. It is created with the
@@ -179,22 +175,13 @@ func (s *Server) publicURL(path string) string {
 // go through the mux (with optional bearer auth) so method mismatches
 // still produce 405. The agent attach is on the mux's side of the bearer
 // check only: it goes to networkAttach, which owns the bearer check and
-// the transport rule, and is absent without a token (decision 7). A
-// bridge that is a relay answers the join route here too, before the
-// bearer check (hostrelay.go).
+// the transport rule, and is absent without a token (decision 7).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.networkAttach != nil {
 		if _, ok := agentAttachID(r.URL.Path); ok {
 			s.networkAttach.ServeHTTP(w, r)
 			return
 		}
-	}
-	if s.relay != nil && r.URL.Path == relayJoinPath {
-		// A join is a host's half of a handover, as the sign-in exchange is a
-		// page's, so it answers before the bearer check — and only here: over
-		// the owner's own socket a join means nothing (P8 decision 8).
-		s.relayJoin(w, r)
-		return
 	}
 	// The sign-in exchange and the identity probe answer before the bearer
 	// check: a page with no token yet is the caller they exist for. Minting a
@@ -203,6 +190,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.route(s.http, w, r)
+}
+
+// socketOnly reports whether path is a route only the socket serves: the
+// project attach, the agent attach, pin, restart, the hosts report and
+// enrollment. A request a host forwards from the network crosses to a tunnel
+// socket, and these stay the owner's own operations there too (D10).
+func socketOnly(path string) bool {
+	switch path {
+	case attachPath, pinPath, daemonRestartPath, daemonHostsPath, marshalEnrollPath:
+		return true
+	}
+	_, ok := agentAttachID(path)
+	return ok
 }
 
 // SocketHandler is the server's handler for the local socket: ServeHTTP's
@@ -296,6 +296,11 @@ func (s *Server) route(api http.Handler, w http.ResponseWriter, r *http.Request)
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/daemon", s.daemon)
+	// The hosts this daemon keeps a tunnel to (one-daemon D10): the list the
+	// tunnel helper last reported, and the forward to each host's socket. Both
+	// are /api/ routes, so both listeners serve them.
+	s.mux.HandleFunc("GET "+hostsPath, s.listHosts)
+	s.mux.Handle(hostForwardPrefix, http.HandlerFunc(s.hostForward))
 	s.mux.HandleFunc("GET /api/config", s.config)
 	s.mux.HandleFunc("GET /api/projects", s.listProjects)
 	// A project's image upload: the ref it answers is what a prompt attaches.

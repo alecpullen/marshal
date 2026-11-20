@@ -7,13 +7,6 @@ type DaemonInfo struct {
 	PID       int    `json:"pid"`
 	StartedAt int64  `json:"startedAt"` // Unix milliseconds
 	Socket    string `json:"socket"`
-	// StudioAddr is the address the Studio listener actually bound, and
-	// StudioError is why it bound nothing when it could not. `marshal
-	// studio` reads both over the socket: the address is the truth (a
-	// configured port 0 names its own once bound), and the error is what
-	// makes a busy port a named failure instead of "nothing is serving".
-	StudioAddr  string `json:"studioAddr,omitempty"`
-	StudioError string `json:"studioError,omitempty"`
 	// WebListen is the web listener's bound address ("unix:<path>" or
 	// host:port), and WebError is why it bound nothing (D10).
 	WebListen string         `json:"webListen,omitempty"`
@@ -22,7 +15,6 @@ type DaemonInfo struct {
 	Pinned    []string       `json:"pinned"`            // filled per request
 	Children  []DaemonChild  `json:"children"`          // filled per request
 	Refresh   *DaemonRefresh `json:"refresh,omitempty"` // filled per request
-	Join      *DaemonJoin    `json:"join,omitempty"`    // filled per request
 	Hosts     []DaemonHost   `json:"hosts"`             // filled per request: the tunnel helper's last report
 	Restart   *DaemonRestart `json:"restart,omitempty"` // the daemon's own; filled per request
 }

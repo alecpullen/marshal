@@ -54,8 +54,7 @@ type wsExtras struct {
 // runtimeInfo is the container runtime to use for workspace work. Under a
 // fake runner (tests) it is "docker".
 func (f *Fleet) runtimeInfo() (path, name string, ok bool) {
-	// Host-only outranks the fake-runner shortcut (decision 4).
-	if f.runner != nil && !f.hostOnly {
+	if f.runner != nil {
 		return "docker", "docker", true
 	}
 	return f.containerRuntime()
@@ -128,7 +127,7 @@ func (f *Fleet) workspaceMounts(ctx context.Context, doc WSDoc, storeName, runti
 			if err != nil {
 				return nil, err
 			}
-			args = append(args, volumeMount(runtimeName, f.stateVolume, m.Target, "repos/"+filepath.Base(mirror), true)...)
+			args = append(args, f.stateMount(runtimeName, m.Target, "repos/"+filepath.Base(mirror), true)...)
 		case m.Volume != "" && m.Repo == "":
 			if !volumeNameRe.MatchString(m.Volume) {
 				return nil, fmt.Errorf("%w: invalid volume name %q", ErrWorkspaceMountTarget, m.Volume)
@@ -150,7 +149,7 @@ func (f *Fleet) workspaceMounts(ctx context.Context, doc WSDoc, storeName, runti
 		if !fileSourceRe.MatchString(src) || path.IsAbs(src) || path.Clean(src) != src || src == ".." || strings.HasPrefix(src, "../") {
 			return nil, fmt.Errorf("%w: invalid file source %q", ErrWorkspaceMountTarget, src)
 		}
-		args = append(args, volumeMount(runtimeName, f.stateVolume, fm.Target, "workspaces/"+storeName+"/files/"+src, fm.Readonly)...)
+		args = append(args, f.stateMount(runtimeName, fm.Target, "workspaces/"+storeName+"/files/"+src, fm.Readonly)...)
 	}
 	return args, nil
 }

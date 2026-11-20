@@ -88,6 +88,8 @@ func (s *Server) networkView(w http.ResponseWriter, r *http.Request) {
 			}
 			rows = append(rows, row)
 		}
+		// processMode means egress is off: with no proxy there is no
+		// isolation to report.
 		resp := map[string]any{"processMode": f.egressProcessMode(), "rows": rows}
 		if err := f.egressDown(); err != nil {
 			resp["egressError"] = err.Error()

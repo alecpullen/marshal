@@ -4,10 +4,14 @@ Marshal has two long-running services, and on a development machine you want
 both running *this checkout's* build instead of a release. This is how to set
 that up, the day-to-day loop, and how to rebuild the setup from nothing.
 
-| Service | Unit | Address | Profile |
-|---|---|---|---|
-| `marshal-daemon` | `~/.config/systemd/user/marshal-daemon.service` (Linux) or `~/Library/LaunchAgents/dev.marshal.daemon.plist` (macOS) | unix socket | local |
-| `marshal-studio` | `~/.config/systemd/user/marshal-studio.service` | `http://127.0.0.1:7700` | server |
+| Service | Unit | Address |
+|---|---|---|
+| `marshal-daemon` | `~/.config/systemd/user/marshal-daemon.service` (Linux) or `~/Library/LaunchAgents/dev.marshal.daemon.plist` (macOS) | unix socket |
+| `marshal-studio` | `~/.config/systemd/user/marshal-studio.service` | `http://127.0.0.1:7700` |
+
+Both run the same daemon: `webbridge` has one shape, and `--profile` is retired.
+The studio is a second *process* only because a browser needs a loopback address
+of its own.
 
 Two helpers own them: `scripts/dev-daemon.sh` and `scripts/dev-studio.sh`.
 Both build into the repository root and restart the service; neither watches
@@ -57,9 +61,9 @@ script wraps.
 
 A Go change needs `--dev-image` for agents spawned by the studio, because the
 agent's `marshal` comes from the **container image**, not from the bridge's
-`--marshal-bin` (that only reaches host-process agents, which the server
-profile does not use while a container runtime is on `PATH`). A change under
-`app/` needs the SPA rebuilt with `flutter build web`, which is part of the
+`--marshal-bin` (that only reaches host-process agents; studio agents have a
+workspace, so they containerise when a rootless runtime is present). A change
+under `app/` needs the SPA rebuilt with `flutter build web`, which is part of the
 studio's default run: `//go:embed` bakes `web/bridge/static/` into `webbridge`,
 so the binary has to be relinked as well as the SPA rewritten.
 
@@ -107,10 +111,10 @@ bridge. The loop is: edit, run `./scripts/dev-studio.sh`, reload the tab.
 
 ## The agent image
 
-The studio's server profile containerises every agent whenever podman or
-docker is on `PATH`; `SetHostProcessesOnly` is called only for
-`--profile local` (`cmd/webbridge/main.go`). Without an agent image the studio
-serves, but every spawn fails, so the image is part of a usable setup.
+A daemon runs an agent in a container when the agent has a workspace, mounting
+its state from the daemon's state directory; on Linux that needs rootless
+Podman or Docker. Without an agent image the studio serves, but every spawn
+fails, so the image is part of a usable setup.
 
 `--dev-image` builds `build/Dockerfile.dev`, which copies the host-built
 `./marshal` into an image that adds only `git` and `ca-certificates`. That is
@@ -141,19 +145,17 @@ asks for it once per browser. `--token` prints it.
 | `$data_dir/studio/webbridge.env` | `WEBBRIDGE_TOKEN=…`, mode `0600`, read by the unit |
 | `$data_dir/studio/fleet.json` | the studio's own fleet |
 | `$data_dir/studio/webbridge.log` | `append:` stdout/stderr |
-| container-runtime volume `marshal-state` | `--state-dir` |
+| `$data_dir/studio/state` | `--state-dir` |
 
 `$data_dir` is `MARSHAL_DATA_DIR`, else `$XDG_DATA_HOME/marshal`, else
 `~/.local/share/marshal`.
 
-The state dir is the runtime's `marshal-state` **volume mountpoint**, not a
-directory beside it: agent containers mount subpaths of that volume
-(`work/<agent>`, `sockets/<agent>`, the shared home, the egress sidecar), so
-the bridge and its containers must resolve the same files. A rootless podman
-volume is writable and is used; with rootful docker the volume is not writable
-and the script falls back to `$data_dir/studio/state` — the studio still
-serves, but containerized agents cannot see their state. `--status` prints
-which one is in use.
+The state dir is a host directory, `$data_dir/studio/state`: agent containers
+bind subpaths of it (`work/<agent>`, `sockets/<agent>`, the shared home, the
+egress sidecar) from the daemon's state directory, and the user's config home is
+bound read-only beside it, so the bridge and its containers resolve the same
+files. On Linux a container needs those binds, so a rootless Podman or Docker is
+required and a rootful one is refused. `--status` prints the directory.
 
 `--install` rotates the token and signs every browser out; plain restarts keep
 it, so the browser stays signed in.
@@ -308,9 +310,10 @@ mid-flight.
 
 1. **Prerequisites.** Go 1.26+ and a C toolchain (cgo). Flutter 3.50+ for the
    Studio's web build (`flutter build web` from `app/`; there is no Node step
-   any more). podman or docker for containerized agents. systemd (Linux) or
+   any more). rootless podman or docker (Docker Desktop on macOS) for
+   containerized agents. systemd (Linux) or
    launchd (macOS) for the daemon; the studio helper is Linux-only (it writes a
-   systemd user unit — elsewhere run `webbridge --profile server` yourself).
+   systemd user unit — elsewhere run `webbridge` yourself).
 2. **Build and install the daemon.**
 
    ```bash
@@ -349,7 +352,7 @@ mid-flight.
 |---|---|
 | `dev-daemon.sh` exits non-zero after "did not answer" | It tails `$data_dir/daemon/webbridge.log`; also `systemctl --user status marshal-daemon`. Usually a missing `webbridge` beside `marshal`. |
 | Studio answers `401` | The token changed (a `--install` ran) or the browser has an old one. Re-paste `--token`. |
-| Studio serves but spawns fail | No `ghcr.io/marshal/agent:latest`; run `--dev-image`. `--status` says when it is missing or stale. |
+| Studio serves but spawns fail | No `ghcr.io/marshal/agent:latest`; run `--dev-image`. `--status` says when it is missing or stale. Or the runtime is rootful: agents need rootless podman or docker on Linux, and a rootful one answers 501. |
 | Agent exits with `GLIBC_2.x not found` | The dev image's base is older than the host's libc; rebuild with `--build-arg BASE_IMAGE=<host-matching image>`. |
 | `--install` refuses to write a unit | `MARSHAL_CONFIG_DIR`/`MARSHAL_DATA_DIR`/`XDG_*` point outside `$HOME`. The unit bakes those paths, so it would outlive a temp dir. Unset them, or pass `--force` deliberately. |
 | Version line unchanged after a rebuild | Two `+dirty` builds of one commit share a version; compare the start time. |

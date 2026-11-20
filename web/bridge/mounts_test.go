@@ -1,9 +1,43 @@
 package bridge
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestBindMountSpellsTheSourceAndTarget(t *testing.T) {
+	got := bindMount("/host/state", "/marshal/config", false)
+	want := []string{"--mount", "type=bind,source=/host/state,target=/marshal/config"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	ro := bindMount("/host/state", "/marshal/config", true)
+	if len(ro) != 2 || !strings.HasSuffix(ro[1], ",readonly") {
+		t.Fatalf("a readonly bind lacks the suffix: %q", ro)
+	}
+}
+
+func TestStateMountBindsUnderTheStateDir(t *testing.T) {
+	const stateDir = "/host/state"
+	got := strings.Join(stateMount("docker", "marshal-state", stateDir, "/work", "work/a1", false), " ")
+	if !strings.Contains(got, "type=bind") || !strings.Contains(got, "source="+filepath.Join(stateDir, "work/a1")) {
+		t.Fatalf("got %q", got)
+	}
+	if strings.Contains(got, "marshal-state") {
+		t.Fatalf("the volume name survived a host state dir: %q", got)
+	}
+}
+
+func TestStateMountFallsBackToTheVolume(t *testing.T) {
+	for _, runtime := range []string{"docker", "podman"} {
+		got := strings.Join(stateMount(runtime, "marshal-state", "", "/work", "work/a1", true), " ")
+		want := strings.Join(volumeMount(runtime, "marshal-state", "/work", "work/a1", true), " ")
+		if got != want {
+			t.Errorf("%s: got %q, want %q", runtime, got, want)
+		}
+	}
+}
 
 func TestVolumeMountUsesDockerSyntax(t *testing.T) {
 	got := strings.Join(volumeMount("docker", "marshal-state", "/work", "work/a1", false), " ")

@@ -76,8 +76,6 @@ func newDaemonHarness(t *testing.T) *daemonHarness {
 		}
 	}
 	fleet := bridge.NewFleet(ws, bin, nil, stateDir, bridge.Limits{}, "test", nil, "")
-	// The local profile runs its fleet as host processes (P4 D4).
-	fleet.SetHostProcessesOnly()
 
 	socket := filepath.Join(dir, "daemon.sock")
 	api := bridge.NewServer(fleet, "", "")

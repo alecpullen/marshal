@@ -43,15 +43,16 @@ address.
 > Behind a terminating proxy this never comes up; hitting the bridge
 > directly over HTTP on such a name will simply fail to load.
 
-## The local profile
+## The daemon
 
-`webbridge --profile local` is the user's own daemon, not a fleet: host
-processes only, no container machinery, and a unix socket instead of a bearer
-token.
+`webbridge` is the user's own daemon, not a fleet: a unix socket instead of a
+bearer token, and its agents are host processes unless they have a workspace.
 
 ```bash
-webbridge --profile local --socket ~/.local/share/marshal/daemon/marshal.sock --addr off
+webbridge --socket ~/.local/share/marshal/daemon/marshal.sock --addr off
 ```
+
+`--profile` is retired; `local` is ignored and `server` is refused.
 
 - `--socket <path>` names the listener (also `WEBBRIDGE_SOCKET`). Its default
   is `<data>/daemon/marshal.sock`, where `<data>` is `MARSHAL_DATA_DIR`, else
@@ -136,8 +137,8 @@ its project host through `project/hold` after every handshake, with the index
 watcher on. `GET /api/daemon` reports the pins and marks each pinned child,
 and `marshal daemon status` prints them.
 
-`--oauth-refresh` (also `WEBBRIDGE_OAUTH_REFRESH`, off unless asked; local
-profile only) supervises `marshal daemon refresh` beside the bridge. That
+`--oauth-refresh` (also `WEBBRIDGE_OAUTH_REFRESH`, off unless asked) supervises
+`marshal daemon refresh` beside the bridge. That
 helper holds `<data>/oauth-refresh.lock` and, every few seconds, re-reads the
 user config's modification time and size, refreshing the OAuth providers it
 names and rebuilding its workers when the file changes. One process refreshes:
@@ -227,8 +228,9 @@ are never logged: the audit log records `secret_set` and
 
 Agents reach the network through a proxy that enforces a per-agent
 policy, injects credentials the agent never sees, and logs every
-connection. `--egress on` (the default; `WEBBRIDGE_EGRESS=off` or
-`--egress off` disables it) starts it at bridge start:
+connection. `--egress on` (off unless asked; `--egress on` or
+`WEBBRIDGE_EGRESS=on` enables it) starts it at bridge start, and it fails to
+start without a usable container runtime:
 
 - **Container mode.** The bridge creates an internal network
   (`marshal-agents`), builds `marshal-egress:<version>` from a
@@ -240,17 +242,16 @@ connection. `--egress on` (the default; `WEBBRIDGE_EGRESS=off` or
   (mode 0600): `GET /policy` streams policy snapshots, `POST /log` takes
   connection records, `POST /blocked` reports refused requests, and
   `GET /leaf` mints a leaf certificate, so the sidecar never holds a CA key.
-- **Process mode** (no container runtime). The same proxy runs in the
-  bridge on `127.0.0.1:<port>` and agents get the proxy variables.
-  A process can ignore them, so this is advisory, and `GET /api/network`
-  reports `processMode: true`.
+  Egress applies to container agents only; a host agent has no proxy, and
+  `GET /api/network` reports `processMode: true` when egress is off, meaning
+  there is no isolation.
 
 Agent tokens are derived from the agent ID with a key kept in
 `<state-dir>/egress/token.key` (mode 0600), so a container that outlives
 a bridge restart keeps authenticating.
 
 Per-agent modes are `off`, `open` and `allowlist`. A workspace with no
-`[network]` is `open`. Injecting a credential into a host needs a
+`[network]` is `open`. Injecting a credential into an agent container needs a
 writable secrets backend (`local` or `openbao`), because the workspace CA
 key lives in the vault at `vault:ca/<workspace>`; with the `env` backend
 a spawn that asks for injection is refused. Provider keys stored at

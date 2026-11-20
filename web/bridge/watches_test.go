@@ -27,18 +27,31 @@ func TestWatchesListMergesStudioAndAgents(t *testing.T) {
 	ctl := newFakeAgent()
 	f := ctlFleet(t, ctl)
 	var mu sync.Mutex
-	agents := map[string]*fakeAgent{}
+	byRoot := map[string]*fakeAgent{}
 	n := 0
-	f.newRuntime = func(a Agent) (*Child, error) {
+	// A plain local agent runs on its project's child (P4 D10 decision 2), so
+	// the fake that answers an agent is that child — one per project root.
+	f.newProjectChild = func(root, socket string) (*Child, error) {
 		fa := newFakeAgent()
 		mu.Lock()
 		n++
 		if n == 2 {
 			fa.caps = map[string]any{} // an agent with no watchAccess
 		}
-		agents[a.ID] = fa
+		byRoot[filepath.Clean(root)] = fa
 		mu.Unlock()
 		return &Child{Transport: fa}, nil
+	}
+	// agentOf resolves an agent to the child its runtime runs on.
+	agentOf := func(t *testing.T, id string) *fakeAgent {
+		t.Helper()
+		a, ok := f.ws.Agent(id)
+		if !ok {
+			t.Fatalf("agent %s is not recorded", id)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return byRoot[filepath.Clean(a.Project)]
 	}
 	ctl.results["session/watch_list"] = map[string]any{"watches": []map[string]any{{"id": "w1", "name": "disk"}}}
 	withWatch, err := f.Spawn(t.Context(), t.TempDir(), SpawnOptions{})
@@ -49,8 +62,8 @@ func TestWatchesListMergesStudioAndAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agents[withWatch].results["session/watch_list"] = map[string]any{"watches": []map[string]any{{"id": "w9", "name": "ci"}}}
-	agents[withoutCap].results["session/watch_list"] = map[string]any{"watches": []map[string]any{{"id": "w5", "name": "never"}}}
+	agentOf(t, withWatch).results["session/watch_list"] = map[string]any{"watches": []map[string]any{{"id": "w9", "name": "ci"}}}
+	agentOf(t, withoutCap).results["session/watch_list"] = map[string]any{"watches": []map[string]any{{"id": "w5", "name": "never"}}}
 
 	rec := doReq(t, NewServer(f, ""), http.MethodGet, "/api/watches", nil, nil)
 	if rec.Code != http.StatusOK {
@@ -65,7 +78,7 @@ func TestWatchesListMergesStudioAndAgents(t *testing.T) {
 	if len(got) != 2 || owners["w1"] != "studio" || owners["w9"] != withWatch {
 		t.Fatalf("merged list = %s", rec.Body.String())
 	}
-	if n := len(agents[withoutCap].calls("session/watch_list")); n != 0 {
+	if n := len(agentOf(t, withoutCap).calls("session/watch_list")); n != 0 {
 		t.Fatal("an agent without watchAccess was asked for its watches")
 	}
 }

@@ -12,6 +12,8 @@ services:
     environment:
       WEBBRIDGE_ADDR: "0.0.0.0:7700"
       WEBBRIDGE_STATE_DIR: "/state"
+      WEBBRIDGE_STATE_VOLUME: "marshal-state"
+      WEBBRIDGE_EGRESS: "on"
 
 volumes:
   marshal-state:

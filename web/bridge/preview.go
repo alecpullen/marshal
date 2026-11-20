@@ -431,7 +431,7 @@ func (f *Fleet) forwardPreview(w http.ResponseWriter, r *http.Request, agentID s
 	var extra http.Header
 	if rt.child != nil && rt.child.Containerized {
 		h := f.egress
-		if h == nil || h.mode != egressModeContainer || h.previewPort.Load() == 0 {
+		if h == nil || h.previewPort.Load() == 0 {
 			http.Error(w, "preview is unavailable: the egress sidecar has no preview listener", http.StatusBadGateway)
 			return
 		}

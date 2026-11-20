@@ -47,6 +47,15 @@ func (l *EventLog) serveSSEKey(w http.ResponseWriter, r *http.Request, key strin
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Subscribe before the stream says it is open. The flush below is what tells
+	// the client its request is answered, so an event appended after the client
+	// has seen that must be able to reach it: subscribing afterwards leaves a
+	// window in which the event goes to no subscriber and is lost to a client
+	// that asked for no replay. Subscribing before the replay also keeps the
+	// property that events appended during the replay land on the channel, with
+	// IDs at or below the replayed window dropped as duplicates when drained.
+	ch, unsub := l.Subscribe(key)
+	defer unsub()
 	w.WriteHeader(http.StatusOK)
 	// A stream with nothing to say yet is silent until its first heartbeat, so
 	// a freshly opened connection looks exactly like one that never answered: a
@@ -54,12 +63,6 @@ func (l *EventLog) serveSSEKey(w http.ResponseWriter, r *http.Request, key strin
 	// fresh client. One comment line says the stream is open.
 	fmt.Fprint(w, ": connected\n\n")
 	flusher.Flush()
-
-	// Subscribe before replaying so events appended during the replay
-	// land on the channel; IDs at or below the replayed window are
-	// dropped as duplicates when drained.
-	ch, unsub := l.Subscribe(key)
-	defer unsub()
 
 	afterID := lastEventID(r)
 	var replay []Event

@@ -50,6 +50,7 @@ type UnitSpec struct {
 	Paths              Paths
 	Env                map[string]string // PATH and the location variables that were set
 	IdleSessionTimeout time.Duration     // written as --idle-session-timeout
+	Egress             bool              // written as --egress on or --egress off
 	// StudioAddr is the loopback address the Studio is served on, and
 	// empty means it is not served at all. Set, the daemon answers the
 	// Studio's HTTP API itself, so the browser drives this daemon's own
@@ -67,7 +68,6 @@ type Join struct{ URL, Name, CAFile string }
 // Args are the daemon's arguments, in the order decision 10 gives.
 func (u UnitSpec) Args() []string {
 	args := []string{
-		"--profile", "local",
 		"--socket", u.Paths.Socket,
 		"--state-dir", u.Paths.StateDir,
 		"--workspace", u.Paths.Registry,
@@ -93,9 +93,16 @@ func (u UnitSpec) Args() []string {
 	if u.StudioAddr != "" || u.Join != nil {
 		args = append(args, "--token-file", u.Paths.Token)
 	}
+	// The egress proxy is written either way, so the installed unit says
+	// whether its container agents get one; it is off unless asked for.
+	egress := "off"
+	if u.Egress {
+		egress = "on"
+	}
 	return append(args,
 		"--marshal-bin", u.Marshal,
 		"--idle-session-timeout", u.IdleSessionTimeout.String(),
+		"--egress", egress,
 		// The installed daemon always supervises a refresh helper, so the
 		// flag is written rather than configured (decision 5). It comes
 		// last: it is the one argument that is not a value the user set.

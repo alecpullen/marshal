@@ -370,6 +370,66 @@ func TestDaemonInstallWritesTheIdleTimeout(t *testing.T) {
 	}
 }
 
+// TestDaemonInstallWritesEgress pins that [daemon] egress is read from the
+// user config alone and written into the unit, so a change takes effect at
+// the next install and a project config cannot turn the proxy on.
+func TestDaemonInstallWritesEgress(t *testing.T) {
+	home := daemonTestEnv(t)
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	userConfig := filepath.Join(home, ".config", "marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(userConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userConfig, []byte("[daemon]\negress = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A project config in the working directory sets it back off; the unit
+	// must not pick that up.
+	work := t.TempDir()
+	projectConfig := filepath.Join(work, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(projectConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectConfig, []byte("[daemon]\negress = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+
+	webbridge := filepath.Join(t.TempDir(), "webbridge")
+	if err := os.WriteFile(webbridge, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return nil, nil
+	})
+	// install waits, briefly, for the daemon to answer; nothing is
+	// listening here, which is the "not answering yet" path.
+	fakeDaemonSocket(t, fakeDaemonClient{err: errors.New("dial unix: no such file or directory")})
+
+	var out, errOut bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"install", "--webbridge", webbridge},
+		strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatalf("runDaemon install: %v\nstderr: %s", err, errOut.String())
+	}
+
+	unitPath := filepath.Join(home, "Library", "LaunchAgents", "dev.marshal.daemon.plist")
+	body, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read the installed unit: %v", err)
+	}
+	unit := string(body)
+	for _, want := range []string{
+		"<string>--egress</string>",
+		"<string>on</string>",
+	} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("unit does not carry %q:\n%s", want, unit)
+		}
+	}
+}
+
 // TestDaemonInstallEnablesLinger pins D1's default: a Linux install reads the
 // user's linger bit, sets it when it is off, and says which it did. The bit is
 // a warning, not a gate — install has already succeeded by the time it runs.

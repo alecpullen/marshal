@@ -6,7 +6,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -44,12 +43,6 @@ const (
 	// Where the CA material mounts inside an agent container.
 	containerCABundle = "/marshal/ca-bundle.pem"
 	containerCACert   = "/marshal/ca.pem"
-)
-
-// Egress modes of the host.
-const (
-	egressModeContainer = "container"
-	egressModeProcess   = "process"
 )
 
 // EgressSpec is what a workspace asks of the proxy for one agent. The
@@ -90,8 +83,7 @@ type egressAgent struct {
 
 // egressHost owns the egress policy and the way agents reach the proxy.
 type egressHost struct {
-	f    *Fleet
-	mode string
+	f *Fleet
 
 	mu      sync.Mutex
 	agents  map[string]*egressAgent
@@ -109,13 +101,8 @@ type egressHost struct {
 	proxyAddr string
 
 	// previewPort is the host port the sidecar's preview listener is
-	// published on (container mode), 0 until known.
+	// published on, 0 until known.
 	previewPort atomic.Int32
-
-	// process mode
-	proxy   *EgressProxy
-	records chan EgressRecord
-	procSrv *http.Server
 
 	ctlSock net.Listener
 	ctlSrv  *http.Server
@@ -226,11 +213,8 @@ func (h *egressHost) snapshot() EgressPolicy {
 	return h.snapshotLocked()
 }
 
-// publishLocked wakes policy streams and updates the in-process proxy.
+// publishLocked wakes policy streams.
 func (h *egressHost) publishLocked() {
-	if h.proxy != nil {
-		h.proxy.SetPolicy(h.snapshotLocked())
-	}
 	close(h.changed)
 	h.changed = make(chan struct{})
 }
@@ -694,75 +678,6 @@ func (h *egressHost) listenControl() error {
 	return nil
 }
 
-// ---- process mode ---------------------------------------------------------
-
-// startProcessProxy runs the proxy in this process on loopback.
-func (h *egressHost) startProcessProxy() error {
-	h.records = make(chan EgressRecord, 1024)
-	h.proxy = NewEgressProxy(
-		func(ws, ca, host string) (*tls.Certificate, error) {
-			return h.f.leafFor(context.Background(), ws, ca, host)
-		},
-		h.records, h.f.noteBlocked, nil,
-	)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	h.proxyAddr = ln.Addr().String()
-	h.procSrv = &http.Server{Handler: h.proxy, ReadHeaderTimeout: 10 * time.Second}
-	h.wg.Add(2)
-	go func() {
-		defer h.wg.Done()
-		_ = h.procSrv.Serve(ln)
-	}()
-	go func() {
-		defer h.wg.Done()
-		h.drainRecords()
-	}()
-	h.mu.Lock()
-	h.proxy.SetPolicy(h.snapshotLocked())
-	h.mu.Unlock()
-	return nil
-}
-
-// drainRecords moves process-mode records into the network log in
-// batches.
-func (h *egressHost) drainRecords() {
-	tick := time.NewTicker(time.Second)
-	defer tick.Stop()
-	var batch []EgressRecord
-	flush := func() {
-		if len(batch) > 0 && h.f.netlog != nil {
-			if err := h.f.netlog.Append(batch); err != nil {
-				slog.Default().Warn("webbridge: network log append failed", "err", err)
-			}
-		}
-		batch = nil
-	}
-	for {
-		select {
-		case r := <-h.records:
-			batch = append(batch, r)
-			if len(batch) >= 200 {
-				flush()
-			}
-		case <-tick.C:
-			flush()
-		case <-h.stop:
-			for {
-				select {
-				case r := <-h.records:
-					batch = append(batch, r)
-				default:
-					flush()
-					return
-				}
-			}
-		}
-	}
-}
-
 func (h *egressHost) close() {
 	select {
 	case <-h.stop:
@@ -774,9 +689,6 @@ func (h *egressHost) close() {
 	defer cancel()
 	if h.ctlSrv != nil {
 		_ = h.ctlSrv.Shutdown(ctx)
-	}
-	if h.procSrv != nil {
-		_ = h.procSrv.Shutdown(ctx)
 	}
 	h.wg.Wait()
 	if h.ctlSock != nil {

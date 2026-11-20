@@ -388,19 +388,3 @@ func testSecretProvider(t *testing.T) SecretProvider {
 	}
 	return p
 }
-
-func TestPoolAdoptionRestoresTheRegistrationInProcessMode(t *testing.T) {
-	e := newWSSpawnEnv(t)
-	publishDoc(t, e.f, "svc", sampleDoc("svc"))
-	e.f.templates.SetBuild("svc", 1, "ok", "marshal-derived-svc", 1, 1)
-	startWSEgress(t, e)
-	e.f.egress.mode = egressModeProcess
-	meta, _ := e.f.templates.Meta("svc")
-	entry := poolEntry{name: "svc", version: 1, k: 0, container: "marshal-pool-svc-v1-0"}
-	if !e.f.pools.wiredForProxy(entry, meta) {
-		t.Fatal("a surviving pool container was refused in process mode")
-	}
-	if _, ok := e.f.egress.snapshot().Agents["pool-svc-v1-0"]; !ok {
-		t.Fatal("the registration was not restored, so the container's token would be denied")
-	}
-}

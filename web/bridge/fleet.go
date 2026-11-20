@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -149,11 +150,20 @@ type Fleet struct {
 	// Nil means the real runner (exec.Command); tests inject a fake so the
 	// derive path is exercisable without a daemon.
 	runner commandRunner
-	// hostOnly makes every agent, the control agent included, a host
-	// process, and stops the fleet from probing for a container runtime at
-	// all (decision 4). Set through SetHostProcessesOnly before anything
-	// starts.
-	hostOnly bool
+	// stateOnHost makes every state mount a bind of stateDir rather than a
+	// subpath of stateVolume, and userConfigDir the container agents' config
+	// home. Set through SetStateOnHost before anything starts.
+	stateOnHost bool
+	// userConfigDir is the host directory bound read-only as container
+	// agents' config home when stateOnHost is set ("" keeps the state
+	// subpath).
+	userConfigDir string
+	// requireRootless makes a host-state fleet on Linux use only a rootless
+	// container runtime: a rootful one is refused. Set by SetStateOnHost.
+	requireRootless bool
+	// rootless answers whether the detected runtime is rootless. Nil means
+	// probeRuntime's answer; tests inject one.
+	rootless func() bool
 	// projectEnv resolves a project's environment for its child (P4 D7).
 	// Nil means children inherit the bridge's environment. Set through
 	// SetProjectEnv before anything starts.
@@ -535,18 +545,10 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	f.workspaceEgress = f.agentWorkspaceEgress
 	f.addToWorkspace = f.addAgentHostToWorkspace
 	f.newRuntime = func(a Agent) (*Child, error) {
-		// The proxy wiring is prepared up front: a refusal (credential
-		// injection that cannot work) must stop the spawn.
-		pctx, pcancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer pcancel()
-		wiring, proxied, err := f.egressPrepare(pctx, a)
-		if err != nil {
-			return nil, err
-		}
-		runtime, name, ok := f.containerRuntime()
-		if !ok {
-			// No container runtime: fall back to a host process so a
-			// laptop without docker still works.
+		// A workspace is what makes a container: only an agent that has one
+		// runs in a container and is wired to egress. Every other agent is
+		// a host process.
+		if a.Workspace == nil {
 			child := &Child{MarshalBin: marshalBin}
 			// The own child serves viewers on a socket of its own, beside
 			// the project children's (decision 1). The directory is created
@@ -560,13 +562,19 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 				}
 				child.Args = []string{"--viewers", "unix://" + socket}
 			}
-			if proxied {
-				child.Env = os.Environ()
-				for k, v := range wiring.Env {
-					child.Env = append(child.Env, k+"="+v)
-				}
-			}
 			return child, nil
+		}
+		// The proxy wiring is prepared up front: a refusal (credential
+		// injection that cannot work) must stop the spawn.
+		pctx, pcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer pcancel()
+		wiring, _, err := f.egressPrepare(pctx, a)
+		if err != nil {
+			return nil, err
+		}
+		runtime, name, ok := f.containerRuntime()
+		if !ok {
+			return nil, f.needsRuntime()
 		}
 		cfg, err := f.containerConfigWith(a, runtime, name, wiring)
 		if err != nil {
@@ -628,6 +636,10 @@ func (f *Fleet) containerConfigWith(a Agent, runtime, runtimeName string, wiring
 	}
 	if a.ContainerName != "" {
 		cfg.Name = a.ContainerName
+	}
+	if f.stateOnHost {
+		cfg.StateDir = f.stateDir
+		cfg.HomeConfigDir = f.userConfigDir
 	}
 	if a.WorkSubpath != "" {
 		cfg.WorkSubpath = a.WorkSubpath
@@ -835,9 +847,10 @@ func (f *Fleet) spawnFromRequest(ctx context.Context, req SpawnRequest) (string,
 
 // runtimeProbe is the memoised result of looking for a container runtime.
 type runtimeProbe struct {
-	path string // absolute path, pinned at detect time
-	name string // "docker" or "podman", for user-facing messages
-	ok   bool
+	path     string // absolute path, pinned at detect time
+	name     string // "docker" or "podman", for user-facing messages
+	ok       bool
+	rootless bool // whether the runtime runs rootless
 }
 
 // probeRuntime resolves the container runtime once per process.
@@ -847,15 +860,32 @@ var probeRuntime = sync.OnceValue(func() runtimeProbe {
 		if err != nil {
 			continue
 		}
+		format := "{{json .SecurityOptions}}"
+		if candidate == "podman" {
+			format = "{{.Host.Security.Rootless}}"
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		err = exec.CommandContext(ctx, abs, "info").Run()
+		out, err := exec.CommandContext(ctx, abs, "info", "--format", format).Output()
 		cancel()
 		if err == nil {
-			return runtimeProbe{path: abs, name: candidate, ok: true}
+			return runtimeProbe{path: abs, name: candidate, ok: true, rootless: rootlessFromInfo(candidate, out)}
 		}
 	}
 	return runtimeProbe{}
 })
+
+// rootlessFromInfo reads whether the runtime named name ("docker" or
+// "podman") is rootless from the output of its info command, as
+// probeRuntime runs it.
+func rootlessFromInfo(name string, out []byte) bool {
+	switch name {
+	case "docker":
+		return strings.Contains(string(out), "rootless")
+	case "podman":
+		return strings.TrimSpace(string(out)) == "true"
+	}
+	return false
+}
 
 // detectedRuntime reports the container runtime's absolute path, its
 // name, and whether one is usable at all.
@@ -864,25 +894,77 @@ func detectedRuntime() (path, name string, ok bool) {
 	return p.path, p.name, p.ok
 }
 
-// SetHostProcessesOnly makes every agent, the control agent included, a
-// host process, and stops the fleet from ever probing for a container
-// runtime (decision 4). Call it before anything starts.
-func (f *Fleet) SetHostProcessesOnly() { f.hostOnly = true }
+// SetStateOnHost makes the fleet's state mounts binds of its state
+// directory, and binds userConfigDir read-only as container agents' config
+// home ("" keeps the state subpath). On Linux it also requires a rootless
+// container runtime. Call it before anything starts.
+func (f *Fleet) SetStateOnHost(userConfigDir string) {
+	f.stateOnHost = true
+	f.userConfigDir = userConfigDir
+	f.requireRootless = runtime.GOOS == "linux"
+}
+
+// stateMount is the package stateMount with this fleet's volume and, when
+// its state is on the host, its state directory.
+func (f *Fleet) stateMount(runtimeName, target, subpath string, readonly bool) []string {
+	stateDir := ""
+	if f.stateOnHost {
+		stateDir = f.stateDir
+	}
+	return stateMount(runtimeName, f.stateVolume, stateDir, target, subpath, readonly)
+}
 
 // SetProjectEnv makes project children start with their project's
 // environment (P4 D7). Without it they inherit the bridge's.
 func (f *Fleet) SetProjectEnv(p *ProjectEnv) { f.projectEnv = p }
 
-// containerRuntime is the fleet's container runtime: none when host-only,
-// without probing; otherwise the probe's answer.
+// containerRuntime is the fleet's container runtime: none when a host-state
+// fleet on Linux needs a rootless runtime and this one is not; otherwise the
+// probe's answer.
 func (f *Fleet) containerRuntime() (path, name string, ok bool) {
-	if f.hostOnly {
+	if f.probe != nil {
+		path, name, ok = f.probe()
+	} else {
+		path, name, ok = detectedRuntime()
+	}
+	if !ok {
 		return "", "", false
 	}
-	if f.probe != nil {
-		return f.probe()
+	if f.requireRootless && !f.runtimeIsRootless() {
+		return "", "", false
 	}
-	return detectedRuntime()
+	return path, name, true
+}
+
+// runtimeIsRootless is whether the runtime the probe finds is rootless: the
+// injected answer when a test set one, else the process-wide probe's. A test
+// that injects probe must inject this too, or the answer comes from the real
+// runtime on this machine.
+func (f *Fleet) runtimeIsRootless() bool {
+	if f.rootless != nil {
+		return f.rootless()
+	}
+	return probeRuntime().rootless
+}
+
+// needsRuntime is the error a container-only operation returns when
+// containerRuntime answers none: ErrWorkspaceNeedsRuntime, wrapped with
+// the reason when a runtime was found and refused.
+func (f *Fleet) needsRuntime() error {
+	if f.requireRootless {
+		var name string
+		var ok bool
+		if f.probe != nil {
+			_, name, ok = f.probe()
+		} else {
+			_, name, ok = detectedRuntime()
+		}
+		if ok && !f.runtimeIsRootless() {
+			return fmt.Errorf("%w: %s runs as root, and a daemon on the host needs a rootless runtime on Linux (rootless Docker or Podman)",
+				ErrWorkspaceNeedsRuntime, name)
+		}
+	}
+	return ErrWorkspaceNeedsRuntime
 }
 
 // socketDirFor is the per-agent ACP socket directory.
@@ -958,21 +1040,14 @@ func (f *Fleet) runtimeForRoot(root string) (*agentRuntime, error) {
 }
 
 // onProjectChild reports whether a runs on its project's child (P4 D10
-// decision 2): the local profile's plain host agents only. A git agent's tree
-// is deleted with the agent, a workspace needs a container, and a proxied
-// agent needs an environment of its own, so each of those keeps a child of its
-// own.
+// decision 2): a plain local agent of this daemon. A git agent's tree is
+// deleted with the agent, and a workspace is what makes a container, so each
+// of those keeps a child of its own.
 func (f *Fleet) onProjectChild(a Agent) bool {
-	if !f.hostOnly || a.Project == "" {
+	if a.Project == "" || a.Workspace != nil {
 		return false
 	}
-	if a.SourceKind == "git" || a.Workspace != nil {
-		return false
-	}
-	f.egressMu.Lock()
-	proxied := f.egress != nil
-	f.egressMu.Unlock()
-	return !proxied
+	return a.SourceKind != "git"
 }
 
 // projectRuntime is startRuntime for an agent whose session runs on its
@@ -1543,22 +1618,6 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 		applyResources(&a.Profile, wsRes.Doc.Resources)
 	}
 
-	// A declared base (e.g. node:20) carries no marshal. Derive an image
-	// that adds marshal on top, and run the agent against that. A marshal
-	// image is used as-is. A build failure refuses the spawn — running an
-	// agent in an environment the repo did not ask for is worse than
-	// refusing to run it.
-	if wsRes == nil && !strings.HasPrefix(a.Profile.Image, agentImageRepo) {
-		derived, err := f.ensureDerivedImage(ctx, a.Profile.Image)
-		if err != nil {
-			if src.kind == "git" && f.git != nil {
-				_ = f.git.RemoveTree(f.stateDir, a.ID)
-			}
-			return "", err
-		}
-		a.Profile.Image = derived
-	}
-
 	// Enforce the disk budget before acquiring a slot: refusing a new
 	// spawn is the control, not stopping an existing agent.
 	if err := f.enforceDisk(); err != nil {
@@ -1572,7 +1631,7 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 		_, rtName, ok := f.runtimeInfo()
 		if !ok {
 			cleanTree()
-			return "", ErrWorkspaceNeedsRuntime
+			return "", f.needsRuntime()
 		}
 		ex, err := f.buildWorkspaceExtras(ctx, a, wsRes.Doc, wsRes.ImageName, rtName)
 		if err != nil {

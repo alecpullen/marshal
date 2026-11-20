@@ -603,7 +603,6 @@ func TestPreviewForwardContainerModeGoesThroughTheSidecar(t *testing.T) {
 
 	p := newPreviewEnv(t, port)
 	h := newEgressHost(p.f)
-	h.mode = egressModeContainer
 	h.tokenKey = []byte("0123456789abcdef0123456789abcdef")
 	p.f.egress = h
 	px := NewEgressProxy(nil, nil, nil, nil)
@@ -642,7 +641,7 @@ func TestPreviewForwardContainerModeGoesThroughTheSidecar(t *testing.T) {
 }
 
 func TestEgressSidecarPublishesThePreviewListener(t *testing.T) {
-	args := strings.Join(egressSidecarArgs("docker", "marshal-state", "marshal-egress:dev"), " ")
+	args := strings.Join(egressSidecarArgs("docker", "marshal-state", "", "marshal-egress:dev"), " ")
 	for _, want := range []string{"-p 127.0.0.1::8081", "--preview-listen :8081", "--listen :3128"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("sidecar args lack %q:\n%s", want, args)

@@ -210,7 +210,7 @@ func TestLoadOfAnOwnedSessionIs409(t *testing.T) {
 // TestLoadOfAnAgentSessionIsUnchanged: an agent's load keeps today's body — the
 // agent's own view of cwd, then session/load on its child (decision 5).
 func TestLoadOfAnAgentSessionIsUnchanged(t *testing.T) {
-	f, fakeFor := hostOnlyProjectFleet(t)
+	f, fakeFor := childOnlyProjectFleet(t)
 	ctx := ctlContext(t)
 	root := t.TempDir()
 
@@ -314,7 +314,7 @@ func listing(rows ...map[string]any) any {
 // TestResolveSessionOrder: an agent's session and a client session on a project
 // child resolve to their own registries, and only the agent's names an agent.
 func TestResolveSessionOrder(t *testing.T) {
-	f, fakeFor := hostOnlyProjectFleet(t)
+	f, fakeFor := childOnlyProjectFleet(t)
 	ctx := ctlContext(t)
 	agentRoot, clientRoot := t.TempDir(), t.TempDir()
 

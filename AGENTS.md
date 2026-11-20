@@ -84,8 +84,9 @@ that host's own token, never the relay's. `--join URL` — the local daemon's
 bridge dial out and join one, where the joining bridge serves and the relay is
 its client.
 
-`webbridge --profile local` is the user's local daemon (P4): a unix socket,
-host processes only, and no container machinery. Each project runs its own
+`webbridge` is the user's daemon (P4; one-daemon D1): a unix socket, and agents
+as host processes unless they have a workspace, which runs them in a container
+(a rootless runtime on Linux, or Docker Desktop). Each project runs its own
 `marshal acp --viewers` child, started on the first attach and stopped 30s
 after its last session closes; `POST /api/projects/attach` upgrades a marshal
 client onto that child's viewer socket, relaying its frames unchanged. A
@@ -111,8 +112,8 @@ session, with its index watched, until `marshal daemon unpin`. A fleet agent
 the local daemon starts on a local project runs on that project's child,
 beside the TUI's sessions. The bridge follows each fleet agent's session, so a
 turn started from its session screen shows in the fleet and its requests reach
-the bridge. An agent with a child of its own — a git agent, a workspace agent,
-or any agent while the egress proxy is on — starts that child with a viewer
+the bridge. An agent with a child of its own — a git agent, or a workspace agent —
+starts that child with a viewer
 socket of its own (`<state>/v/a-<hash>.sock`) and opens with `⏎` too. A
 containerized agent serves viewers inside its container on `viewers.sock`,
 beside its control socket, and the bridge's attach dials it on the host side;

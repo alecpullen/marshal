@@ -183,20 +183,6 @@ func TestLibraryMemoryRoutes(t *testing.T) {
 	}
 }
 
-func TestLibraryProjectScopeWithoutAMountIs501(t *testing.T) {
-	s, f, _ := libraryServer(t)
-	if _, err := f.control(ctlContext(t)); err != nil {
-		t.Fatal(err)
-	}
-	f.ctl.mu.Lock()
-	f.ctl.containerized, f.ctl.boundRoots = true, []string{"/somewhere/else"}
-	f.ctl.mu.Unlock()
-	rec := doReq(t, s, http.MethodGet, "/api/library/skills?scope=project&project="+t.TempDir(), nil, nil)
-	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "project_library_unsupported") {
-		t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
-	}
-}
-
 func TestLibraryUnsupportedAgentIs501(t *testing.T) {
 	s, _, agent := libraryServer(t)
 	agent.handler = func(m string, _ json.RawMessage) (any, *rpcError, bool) {

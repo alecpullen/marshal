@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -85,10 +87,10 @@ func waitForDaemon(t *testing.T, client *http.Client) bridge.DaemonInfo {
 	return bridge.DaemonInfo{}
 }
 
-// TestTheLocalProfilesDefaults pins decision 2: each default applies
-// only when neither its flag nor its variable was given, and the
-// working-directory project is not registered.
-func TestTheLocalProfilesDefaults(t *testing.T) {
+// TestTheDaemonsDefaults pins the one daemon's defaults (OD1): each applies
+// only when neither its flag nor its variable was given, the egress proxy is
+// off, and no working-directory project is registered.
+func TestTheDaemonsDefaults(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	data := t.TempDir()
 	t.Setenv("MARSHAL_DATA_DIR", data)
@@ -114,28 +116,24 @@ func TestTheLocalProfilesDefaults(t *testing.T) {
 		t.Errorf("secrets = %q, want env", cfg.secrets)
 	}
 	if cfg.cwdRoot != "" {
-		t.Errorf("cwdRoot = %q, want empty: the local profile registers no working-directory project", cfg.cwdRoot)
+		t.Errorf("cwdRoot = %q, want empty: the daemon registers no working-directory project", cfg.cwdRoot)
 	}
 	if want := 30 * time.Minute; cfg.idleSessionTimeout != want {
 		t.Errorf("idleSessionTimeout = %s, want %s", cfg.idleSessionTimeout, want)
 	}
-	// The refresh helper is off unless asked: nothing else in the local
-	// profile's defaults starts a process.
+	// The refresh helper is off unless asked: nothing else in the daemon's
+	// defaults starts a process.
 	if cfg.oauthRefresh {
 		t.Errorf("oauthRefresh = true, want false: the refresh helper is asked for")
 	}
 }
 
-// TestTheLocalProfileRefuses pins decision 3, the settings that only the
-// local profile understands, and the relay's flags, whose refusals sit beside
-// them.
-func TestTheLocalProfileRefuses(t *testing.T) {
+// TestTheDaemonRefuses pins the settings the daemon refuses, and the relay's
+// flags, whose refusals sit beside them. The retired --profile is refused
+// unless it says local.
+func TestTheDaemonRefuses(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(keyFile, make([]byte, 32), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	// A token and a join secret file: parseConfig only records where they
 	// are, so neither needs contents until a bridge reads it.
 	tokenFile := filepath.Join(t.TempDir(), "studio.token")
@@ -146,20 +144,20 @@ func TestTheLocalProfileRefuses(t *testing.T) {
 		args []string
 		env  map[string]string
 		// want is the text the refusal must name. An empty want means the
-		// settings are accepted, which is what the join's token rule is
-		// pinned with.
+		// settings are accepted, which is what the join's token rule and the
+		// retired flag are pinned with.
 		want string
 	}{
-		{"egress flag", []string{"--profile", "local", "--egress", "on"}, nil, "local"},
-		{"egress env", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_EGRESS": "on"}, "local"},
-		{"secrets local", []string{"--profile", "local", "--secrets", "local", "--secrets-key-file", keyFile}, nil, "local"},
-		{"socket without the profile", []string{"--socket", "/tmp/x.sock"}, nil, "local"},
-		{"addr off without the profile", []string{"--addr", "off"}, nil, "local"},
-		{"idle timeout without the profile", []string{"--idle-session-timeout", "5m"}, nil, "local"},
-		{"idle timeout negative", []string{"--profile", "local", "--idle-session-timeout", "-5m"}, nil, "local"},
-		{"oauth refresh without the profile", []string{"--oauth-refresh"}, nil, "local"},
+		{"idle timeout negative", []string{"--idle-session-timeout", "-5m"}, nil, "cannot be negative"},
 		{"oauth refresh unparsable", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_OAUTH_REFRESH": "yes"}, "WEBBRIDGE_OAUTH_REFRESH"},
-		{"profile cloud", []string{"--profile", "cloud"}, nil, "local"},
+		// --profile is retired: local, or no flag at all, is every bridge.
+		{"profile local", []string{"--profile", "local"}, nil, ""},
+		{"profile cloud", []string{"--profile", "cloud"}, nil, "retired"},
+		{"profile server", []string{"--profile", "server"}, nil, "retired"},
+		// The settings the daemon once guarded behind the profile are its
+		// own: the egress proxy is off unless asked for, and asking is fine.
+		{"egress on", []string{"--egress", "on"}, nil, ""},
+		{"egress on from the variable", nil, map[string]string{"WEBBRIDGE_EGRESS": "on"}, ""},
 		// The token file is a listener's and a join's alike: with no
 		// listener and no join, there is nothing to hand it to.
 		{"token file without a listener or a join", []string{"--profile", "local", "--addr", "off", "--token-file", tokenFile}, nil, "the TCP listener or a join"},
@@ -196,11 +194,46 @@ func TestTheLocalProfileRefuses(t *testing.T) {
 			if err == nil {
 				t.Fatalf("parseConfig(%v) accepted the setting", tc.args)
 			}
-			// Every refusal names what to use instead: the local
-			// profile. A variable that does not parse names the
-			// variable instead, and a refusal about a flag names it.
+			// Every refusal names what to keep: the retired profile, the
+			// flag, or the setting. A variable that does not parse names
+			// the variable instead.
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error %q does not name %s", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestTheRetiredProfileWarnsOnce pins the one rule the retired flag still
+// carries: local, or no flag at all, is accepted, and only an explicit local
+// is worth a warning.
+func TestTheRetiredProfileWarnsOnce(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		env  map[string]string
+		want int
+	}{
+		{"flag", []string{"--profile", "local"}, nil, 1},
+		{"variable", nil, map[string]string{"WEBBRIDGE_PROFILE": "local"}, 1},
+		{"absent", nil, nil, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateWebbridgeEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			if _, err := parseConfig(tc.args, io.Discard); err != nil {
+				t.Fatalf("parseConfig(%v) refused the settings: %v", tc.args, err)
+			}
+			if got := strings.Count(buf.String(), "level=WARN"); got != tc.want {
+				t.Errorf("warnings = %d, want %d (%s)", got, tc.want, buf.String())
 			}
 		})
 	}
@@ -215,8 +248,8 @@ func TestTheIdleTimeoutParses(t *testing.T) {
 		args []string
 		want time.Duration
 	}{
-		{"five minutes", []string{"--profile", "local", "--idle-session-timeout", "5m"}, 5 * time.Minute},
-		{"zero", []string{"--profile", "local", "--idle-session-timeout", "0"}, 0},
+		{"five minutes", []string{"--idle-session-timeout", "5m"}, 5 * time.Minute},
+		{"zero", []string{"--idle-session-timeout", "0"}, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -246,7 +279,7 @@ func TestTheLocalProfileServesItsSocket(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"--profile", "local", "--addr", "off", "--socket", socket}, io.Discard, &stderr)
+		done <- run(ctx, []string{"--addr", "off", "--socket", socket}, io.Discard, &stderr)
 	}()
 
 	info := waitForDaemon(t, socketClient(socket))
@@ -294,7 +327,7 @@ func TestTheLocalProfileServesItsSocket(t *testing.T) {
 		t.Fatalf("socket still exists after shutdown: %v", err)
 	}
 	if strings.Contains(stderr.String(), "generated bearer token") {
-		t.Fatalf("the local profile generated a token: %q", stderr.String())
+		t.Fatalf("the daemon generated a token: %q", stderr.String())
 	}
 }
 
@@ -345,7 +378,7 @@ func TestTheLocalProfileSupervisesTheRefreshHelper(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"--profile", "local", "--addr", "off", "--socket", socket,
+		done <- run(ctx, []string{"--addr", "off", "--socket", socket,
 			"--oauth-refresh", "--marshal-bin", script}, io.Discard, io.Discard)
 	}()
 
@@ -384,9 +417,9 @@ func TestTheLocalProfileSupervisesTheRefreshHelper(t *testing.T) {
 	}
 }
 
-// TestTheLocalProfileStartsNoHelperUnasked: without --oauth-refresh, the
-// local profile runs no helper and reports none.
-func TestTheLocalProfileStartsNoHelperUnasked(t *testing.T) {
+// TestTheDaemonStartsNoHelperUnasked: without --oauth-refresh, the
+// daemon runs no helper and reports none.
+func TestTheDaemonStartsNoHelperUnasked(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
 	socket := localSocketPath(t)
@@ -396,7 +429,7 @@ func TestTheLocalProfileStartsNoHelperUnasked(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"--profile", "local", "--addr", "off", "--socket", socket,
+		done <- run(ctx, []string{"--addr", "off", "--socket", socket,
 			"--marshal-bin", script}, io.Discard, io.Discard)
 	}()
 
@@ -426,7 +459,7 @@ func TestASecondLocalDaemonRefusesToStart(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
 	socket := localSocketPath(t)
-	args := []string{"--profile", "local", "--addr", "off", "--socket", socket}
+	args := []string{"--addr", "off", "--socket", socket}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -443,7 +476,7 @@ func TestASecondLocalDaemonRefusesToStart(t *testing.T) {
 	secondRoot := t.TempDir()
 	secondState := filepath.Join(secondRoot, "state")
 	secondArgs := []string{
-		"--profile", "local", "--addr", "off", "--socket", socket,
+		"--addr", "off", "--socket", socket,
 		"--state-dir", secondState,
 		"--workspace", filepath.Join(secondRoot, "workspace.json"),
 	}

@@ -169,7 +169,7 @@ func (p *poolManager) start(name string, n, k int, image string) (poolEntry, err
 	f := p.f
 	rtPath, rtName, ok := f.runtimeInfo()
 	if !ok {
-		return poolEntry{}, ErrWorkspaceNeedsRuntime
+		return poolEntry{}, f.needsRuntime()
 	}
 	lctx, cancel := f.lifeContext()
 	defer cancel()
@@ -441,16 +441,14 @@ func (p *poolManager) wiredForProxy(e poolEntry, meta TemplateMeta) bool {
 	if h == nil {
 		return !workspaceNeedsProxy(doc)
 	}
-	if h.mode == egressModeContainer {
-		rt, ok := f.egressRuntimeName()
-		if !ok {
-			return false
-		}
-		format := fmt.Sprintf(`{{if index .NetworkSettings.Networks %q}}on{{end}}`, egressNetwork)
-		out, err := f.runRuntime(rt, "inspect", "--format", format, e.container)
-		if err != nil || strings.TrimSpace(string(out)) != "on" {
-			return false
-		}
+	rt, ok := f.egressRuntimeName()
+	if !ok {
+		return false
+	}
+	format := fmt.Sprintf(`{{if index .NetworkSettings.Networks %q}}on{{end}}`, egressNetwork)
+	out, err := f.runRuntime(rt, "inspect", "--format", format, e.container)
+	if err != nil || strings.TrimSpace(string(out)) != "on" {
+		return false
 	}
 	// Restore the registration the restart dropped.
 	id := poolPseudoID(e.container)

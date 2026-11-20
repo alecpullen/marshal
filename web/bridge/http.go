@@ -54,6 +54,12 @@ type Server struct {
 	// daemonInfo, when set, is what GET /api/daemon answers. Nil on a
 	// server that is not a daemon, which answers 404 (decision 8).
 	daemonInfo *DaemonInfo
+	// studioDir is the directory the Studio is served from, and
+	// studioLooked the candidates that were searched for it, in order.
+	// An empty studioDir answers the no-files page naming studioLooked
+	// (SetStudioDir, one-daemon D12).
+	studioDir    string
+	studioLooked []string
 	// refresh, when set, is the daemon's refresh helper, reported per
 	// request by GET /api/daemon (see SetRefreshHelper).
 	refresh *Helper
@@ -147,7 +153,7 @@ func (s *Server) publicURL(path string) string {
 }
 
 // ServeHTTP implements http.Handler: it is the web listener's handler.
-// Non-API paths are served by the embedded SPA (index.html fallback for
+// Non-API paths are served by the Studio's files (index.html fallback for
 // client-side routing); /api paths go through the mux so method mismatches
 // still produce 405. It has no bearer check — what arrives here came through
 // the operator's proxy, which authenticated the caller (webguard.go) — and
@@ -253,8 +259,9 @@ func (s *Server) route(api http.Handler, w http.ResponseWriter, r *http.Request)
 	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {
 		// Everything else that is not the API is the Flutter Studio, at the
-		// root.
-		studioHandler().ServeHTTP(w, r)
+		// root. It is served from the directory the daemon found, read on
+		// each request, or from the no-files page when it found none.
+		s.studioHandler().ServeHTTP(w, r)
 		return
 	}
 	api.ServeHTTP(w, r)

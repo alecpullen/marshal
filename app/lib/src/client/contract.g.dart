@@ -1814,6 +1814,7 @@ class DaemonInfo {
     this.refresh,
     required this.hosts,
     this.restart,
+    this.studioDir,
   });
 
   final String version;
@@ -1838,6 +1839,9 @@ class DaemonInfo {
   final List<DaemonHost> hosts;
   /// the daemon's own; filled per request
   final DaemonRestart? restart;
+  /// StudioDir is the directory the Studio is served from, or "" when the
+  /// daemon found none (one-daemon D12).
+  final String? studioDir;
 
   factory DaemonInfo.fromJson(Map<String, dynamic> json) {
     return DaemonInfo(
@@ -1872,6 +1876,7 @@ class DaemonInfo {
         json['restart'],
         DaemonRestart.fromJson,
       ),
+      studioDir: json['studioDir'] as String?,
     );
   }
 
@@ -1901,6 +1906,9 @@ class DaemonInfo {
     ];
     if (restart != null) {
       json['restart'] = restart!.toJson();
+    }
+    if (studioDir != null) {
+      json['studioDir'] = studioDir;
     }
     return json;
   }

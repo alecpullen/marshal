@@ -17,6 +17,9 @@ type DaemonInfo struct {
 	Refresh   *DaemonRefresh `json:"refresh,omitempty"` // filled per request
 	Hosts     []DaemonHost   `json:"hosts"`             // filled per request: the tunnel helper's last report
 	Restart   *DaemonRestart `json:"restart,omitempty"` // the daemon's own; filled per request
+	// StudioDir is the directory the Studio is served from, or "" when the
+	// daemon found none (one-daemon D12).
+	StudioDir string `json:"studioDir,omitempty"`
 }
 
 // DaemonRestartRequest is POST /api/daemon/restart's body (P6 B5).

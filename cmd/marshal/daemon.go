@@ -343,7 +343,7 @@ func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, []string, 
 			return daemon.UnitSpec{}, nil, err
 		}
 	}
-	previewURL, err := daemonPublicURL("daemon.preview_url", cfg.Daemon.PreviewURL)
+	previewURL, err := daemonPreviewURL(cfg.Daemon.PreviewURL)
 	if err != nil {
 		return daemon.UnitSpec{}, nil, err
 	}
@@ -456,6 +456,39 @@ func daemonPublicURL(key, setting string) (string, error) {
 	}
 	if u.Host == "" {
 		return "", fmt.Errorf("%s %q: no host", key, setting)
+	}
+	return base, nil
+}
+
+// daemonPreviewURL validates daemon.preview_url (D10): an http or https
+// origin, or a template with {token} once in its first host label.
+//
+// A template is written into the unit as it stands, and the daemon fills the
+// token in per preview. Its {token} is replaced with a plain one before the
+// origin check, so a template cannot smuggle a path, query or fragment past it.
+func daemonPreviewURL(setting string) (string, error) {
+	base := strings.TrimSpace(setting)
+	if !strings.Contains(base, "{token}") {
+		return daemonPublicURL("daemon.preview_url", base)
+	}
+	// The host is what sits after the scheme and before its port or path, as
+	// the bridge reads it.
+	host := base
+	if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+len("://"):]
+	}
+	if i := strings.IndexAny(host, "/:"); i >= 0 {
+		host = host[:i]
+	}
+	label := host
+	if i := strings.IndexByte(label, '.'); i >= 0 {
+		label = label[:i]
+	}
+	if strings.Count(base, "{token}") != 1 || !strings.Contains(label, "{token}") {
+		return "", fmt.Errorf("daemon.preview_url: {token} goes once, in the first label of the host, as in https://p{token}.preview.example.com")
+	}
+	if _, err := daemonPublicURL("daemon.preview_url", strings.Replace(base, "{token}", "0", 1)); err != nil {
+		return "", err
 	}
 	return base, nil
 }

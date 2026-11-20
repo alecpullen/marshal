@@ -8,58 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-
-	"marshal/internal/credentials"
 )
-
-// AddServer appends s to the file at path as a [servers.NAME] table (D6):
-// comments and order kept, the result checked as Load checks it, and written
-// atomically at 0600. A name already present is refused.
-func AddServer(path string, s Server) error {
-	if err := checkName("servers", s.Name); err != nil {
-		return err
-	}
-	if err := checkURLOrRelay(s.Name, s.URL, s.Relay); err != nil {
-		return err
-	}
-	if s.Relay != "" && s.CAFile != "" {
-		// D20: a relayed server's TLS is the one it is reached through.
-		return fmt.Errorf("fleet.toml: servers.%s.ca_file: a relayed server has no ca_file; its TLS is %s's", s.Name, s.Relay)
-	}
-	if s.TokenCmd != "" {
-		return fmt.Errorf("fleet.toml: servers.%s.token_cmd: the Studio adds no token_cmd profile; edit %s by hand", s.Name, path)
-	}
-
-	// Load checks the file the way it is read here: its privacy first, and a
-	// missing file as no servers at all.
-	f, err := Load(path)
-	if err != nil {
-		return err
-	}
-	if _, ok := f.Servers[s.Name]; ok {
-		return fmt.Errorf("%s is already in fleet.toml", s.Name)
-	}
-
-	src, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-	case errors.Is(err, fs.ErrNotExist):
-		// The write below puts its temporary file beside the target, so the
-		// directory is made first, private as the file it will hold.
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return fmt.Errorf("fleet.toml at %s: %w", path, err)
-		}
-		src = nil
-	default:
-		return fmt.Errorf("fleet.toml at %s: %w", path, err)
-	}
-
-	out := appendTable(src, s)
-	if _, err := decode(path, out); err != nil {
-		return err
-	}
-	return writePrivate(path, out)
-}
 
 // AddHost appends h to the file at path as a [hosts.NAME] table (D6, D8):
 // comments and order kept, the result checked as Load checks it, and written
@@ -77,9 +26,6 @@ func AddHost(path string, h Host) error {
 	f, err := Load(path)
 	if err != nil {
 		return err
-	}
-	if _, ok := f.Servers[h.Name]; ok {
-		return fmt.Errorf("%s is already in fleet.toml", h.Name)
 	}
 	if _, ok := f.Hosts[h.Name]; ok {
 		return fmt.Errorf("%s is already in fleet.toml", h.Name)
@@ -106,35 +52,6 @@ func AddHost(path string, h Host) error {
 	return writePrivate(path, out)
 }
 
-// RemoveServer deletes name's table from the file at path, and the token
-// open's keychain holds for it (D6). A server defined other than by its own
-// table is refused.
-func RemoveServer(path, name string, open OpenStore) error {
-	f, err := Load(path)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Lookup(name); err != nil {
-		return err
-	}
-
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("fleet.toml at %s: %w", path, err)
-	}
-	out, err := removeTable(path, "servers", name, src)
-	if err != nil {
-		return err
-	}
-	if _, err := decode(path, out); err != nil {
-		return err
-	}
-	if err := writePrivate(path, out); err != nil {
-		return err
-	}
-	return deleteToken(path, name, open)
-}
-
 // RemoveHost deletes name's [hosts.NAME] table from the file at path (D6, D8).
 // It touches no keychain: a host is reached by SSH, and holds no token.
 func RemoveHost(path, name string) error {
@@ -150,7 +67,7 @@ func RemoveHost(path, name string) error {
 	if err != nil {
 		return fmt.Errorf("fleet.toml at %s: %w", path, err)
 	}
-	out, err := removeTable(path, "hosts", name, src)
+	out, err := removeTable(path, name, src)
 	if err != nil {
 		return err
 	}
@@ -160,54 +77,26 @@ func RemoveHost(path, name string) error {
 	return writePrivate(path, out)
 }
 
-// tableHeaderRe is a table header naming one server or one host (decision 1):
-// the name bare or basic-quoted, spaces allowed inside the brackets, and an
-// optional trailing comment.
-var tableHeaderRe = regexp.MustCompile(`^\[\s*(servers|hosts)\s*\.\s*(?:"([^"]*)"|([A-Za-z0-9._-]+))\s*\]\s*(?:#.*)?$`)
+// tableHeaderRe is a [hosts.NAME] table header (D6, D8): the name bare or
+// basic-quoted, spaces allowed inside the brackets, and an optional trailing
+// comment.
+var tableHeaderRe = regexp.MustCompile(`^\[\s*hosts\s*\.\s*(?:"([^"]*)"|([A-Za-z0-9._-]+))\s*\]\s*(?:#.*)?$`)
 
-// tableHeader answers the table and name a header line defines, if the line is
-// one.
-func tableHeader(line string) (table, name string, ok bool) {
+// tableHeader answers the host name a header line defines, if the line is one.
+func tableHeader(line string) (name string, ok bool) {
 	m := tableHeaderRe.FindStringSubmatch(strings.TrimSpace(line))
 	if m == nil {
-		return "", "", false
+		return "", false
 	}
 	// A bare key is never empty, so an empty quoted one is no table's header:
 	// such a name does not load anyway (checkName).
-	if m[3] != "" {
-		return m[1], m[3], true
+	if m[2] != "" {
+		return m[2], true
 	}
-	if m[2] == "" {
-		return "", "", false
+	if m[1] == "" {
+		return "", false
 	}
-	return m[1], m[2], true
-}
-
-// appendTable answers src with s's table written after it (decision 2): one
-// blank line, then the header, url or relay, ca_file when set, and notify =
-// false only when notifications are off. No token_cmd is written.
-func appendTable(src []byte, s Server) []byte {
-	var b strings.Builder
-	b.Write(src)
-	if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
-		b.WriteByte('\n')
-	}
-	fmt.Fprintf(&b, "\n[servers.%s]\n", headerKey(s.Name))
-	if s.Relay != "" {
-		// A relayed server names where it is reached, in place of its url
-		// (D20).
-		fmt.Fprintf(&b, "relay = %s\n", tomlString(s.Relay))
-	} else {
-		fmt.Fprintf(&b, "url = %s\n", tomlString(s.URL))
-	}
-	if s.CAFile != "" {
-		// As given: a relative path stays relative to the file.
-		fmt.Fprintf(&b, "ca_file = %s\n", tomlString(s.CAFile))
-	}
-	if !s.Notify {
-		b.WriteString("notify = false\n")
-	}
-	return []byte(b.String())
+	return m[1], true
 }
 
 // appendHostTable answers src with h's table written after it (D6): one blank
@@ -263,20 +152,20 @@ func tomlString(s string) string {
 	return b.String()
 }
 
-// removeTable answers src without name's table in table (decision 1): from its
+// removeTable answers src without name's [hosts.NAME] table (D6, D8): from its
 // header line to the next table header, or the end of the file.
-func removeTable(path, table, name string, src []byte) ([]byte, error) {
+func removeTable(path, name string, src []byte) ([]byte, error) {
 	lines := strings.Split(string(src), "\n")
 
 	start := -1
 	for i, line := range lines {
-		if gotTable, got, ok := tableHeader(line); ok && gotTable == table && got == name {
+		if got, ok := tableHeader(line); ok && got == name {
 			start = i
 			break
 		}
 	}
 	if start < 0 {
-		return nil, fmt.Errorf("%s is not defined by its own [%s.%s] table; edit %s by hand", name, table, name, path)
+		return nil, fmt.Errorf("%s is not defined by its own [hosts.%s] table; edit %s by hand", name, name, path)
 	}
 
 	end := len(lines)
@@ -289,26 +178,6 @@ func removeTable(path, table, name string, src []byte) ([]byte, error) {
 
 	kept := append(lines[:start:start], lines[end:]...)
 	return []byte(strings.Join(kept, "\n")), nil
-}
-
-// deleteToken deletes name's keychain entry through open (D6). A missing entry
-// is success, and a store that cannot be opened is reported: the file has been
-// written by then, so what failed is named as the token alone.
-func deleteToken(path, name string, open OpenStore) error {
-	if open == nil {
-		open = func() (credentials.Store, error) { return credentials.New(keychainService) }
-	}
-	store, err := open()
-	switch {
-	case err != nil:
-		return fmt.Errorf("removed %s from %s, but its token: %w", name, path, err)
-	case store == nil:
-		return fmt.Errorf("removed %s from %s, but its token: this system has no keychain", name, path)
-	}
-	if err := store.Delete(KeychainKey(name)); err != nil {
-		return fmt.Errorf("removed %s from %s, but its token: %w", name, path, err)
-	}
-	return nil
 }
 
 // writePrivate writes src to path atomically at 0600: a temporary file in the

@@ -84,6 +84,49 @@ void main() {
     expect(fake.requests.single.uri, '/api/hosts');
   });
 
+  test('addHost posts the host and reads the list', () async {
+    fake.reply(
+      'POST',
+      '/api/hosts',
+      const FakeReply(
+        201,
+        body:
+            '{"hosts":[{"name":"laptop","ssh":"me@laptop","state":"live",'
+            '"socket":"/tmp/laptop.sock","since":1763300000000}]}',
+      ),
+    );
+
+    final list = await client.addHost(
+      const HostAdd(name: 'laptop', ssh: 'me@laptop'),
+    );
+
+    // The answer is the list the daemon left, which is what a row is read
+    // from: the add itself says nothing else.
+    expect(list.hosts, hasLength(1));
+    expect(list.hosts.single.name, 'laptop');
+    expect(list.hosts.single.ssh, 'me@laptop');
+    expect(fake.requests.single.method, 'POST');
+    expect(fake.requests.single.uri, '/api/hosts');
+    expect(
+      jsonDecode(fake.requests.single.body),
+      containsPair('ssh', 'me@laptop'),
+    );
+  });
+
+  test('removeHost deletes by name', () async {
+    fake.reply(
+      'DELETE',
+      '/api/hosts/laptop',
+      const FakeReply(200, body: '{"hosts":[]}'),
+    );
+
+    final list = await client.removeHost('laptop');
+
+    expect(list.hosts, isEmpty);
+    expect(fake.requests.single.method, 'DELETE');
+    expect(fake.requests.single.uri, '/api/hosts/laptop');
+  });
+
   test('agents decodes every agent', () async {
     fake.reply(
       'GET',

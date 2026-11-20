@@ -33,9 +33,30 @@ from harness import Skip, Suite
 _BOOTSTRAP = re.compile(r'<script[^>]+src="([^"]*flutter_bootstrap\.js)"')
 
 # The engine is fetched at run time. With `--no-web-resources-cdn` the build
-# carries it itself; without that flag it points at gstatic, and a network that
-# cannot reach the CDN never starts the Studio.
-_CDN = re.compile(r"gstatic\.com|fonts\.gstatic|cdn\.jsdelivr")
+# ships it itself — canvaskit/canvaskit.wasm beside the shell, and a bootstrap
+# whose build config sets this flag; without that flag the bootstrap leaves the
+# flag false and the engine comes from gstatic, so a network that cannot reach
+# the CDN never starts the Studio.
+#
+# A hostname search cannot ask this question: a *correct* build still spells
+# gstatic out in the bootstrap's dead branch
+# (`useLocalCanvasKit?E("https://www.gstatic.com/flutter-canvaskit",…)`), in
+# flutter.js.map's copied source, and as the engine's default font base. The
+# flag is what separates the two builds, and only the flag: Flutter 3.50 copies
+# canvaskit/ into a default build as well, so the wasm's presence alone says
+# nothing about where the engine is fetched from. Both are still checked here —
+# the flag for the CDN, the bytes for a serve that silently fell back to
+# index.html.
+_LOCAL_CANVASKIT = '"useLocalCanvasKit":true'
+
+# The engine's entry file, as the bootstrap names it for a build that carries
+# its own: a path relative to the document, so a same-origin path here.
+_ENGINE = "/canvaskit/canvaskit.wasm"
+
+# A wasm module starts with this: `\0asm` and the format version. Checking it
+# keeps the check from passing vacuously — a static handler that cannot find a
+# file falls back to index.html with a 200, which is HTML, not the engine.
+_WASM_MAGIC = "\0asm"
 
 
 def _bootstrap_path(html: str) -> str | None:
@@ -106,10 +127,12 @@ def register(s: Suite) -> None:
     def engine_is_not_fetched_from_a_cdn(c) -> None:
         """The engine must come from this bridge, or a private network fails.
 
-        A build made without `--no-web-resources-cdn` fetches CanvasKit from
-        gstatic at run time. On a network that cannot reach it the Studio never
-        starts at all, which is invisible on a development host with a route to
-        the internet.
+        A build made without `--no-web-resources-cdn` leaves the local-engine
+        flag false and fetches CanvasKit from gstatic at run time. On a network
+        that cannot reach it the Studio never starts at all, which is invisible
+        on a development host with a route to the internet. Two facts tell the
+        two builds apart, and both must hold: the served bootstrap says the
+        engine is local, and the engine itself is a file this daemon serves.
         """
         path = _bootstrap_path(c.get("studio_index") or "")
         if path is None:
@@ -117,13 +140,28 @@ def register(s: Suite) -> None:
         r = c.client.get(path)
         if r.status != 200:
             raise Skip(f"the bootstrap {path} is not served (HTTP {r.status})")
-        found = _CDN.search(r.raw)
         s.expect(
-            found is None,
-            f"the served Studio fetches {found.group(0) if found else ''} from a "
+            _LOCAL_CANVASKIT in r.raw,
+            f"the served Studio does not name its own CanvasKit engine: {path} "
+            f"carries no {_LOCAL_CANVASKIT}, so the engine is fetched from a "
             "CDN; build it with --no-web-resources-cdn",
             request=f"GET {path}",
-            response=found.group(0) if found else "",
+            response=next(
+                (line for line in r.raw.splitlines() if "CanvasKit" in line),
+                r.raw[:200],
+            ),
+        )
+        # The engine's own first bytes, not just its status: the static handler
+        # falls back to index.html with a 200 for a path it cannot find, so a
+        # status alone would pass vacuously on a build that ships no engine.
+        engine = c.client.get(_ENGINE, headers={"Range": "bytes=0-7"})
+        s.expect(
+            engine.status in (200, 206) and engine.raw.startswith(_WASM_MAGIC),
+            f"the served Studio has no local CanvasKit engine: GET {_ENGINE} "
+            f"answered HTTP {engine.status} with {engine.raw[:8]!r}, so the "
+            "engine is fetched from a CDN; build it with --no-web-resources-cdn",
+            request=f"GET {_ENGINE}",
+            response=engine.raw[:200],
         )
 
     def index_is_not_cached(c) -> None:

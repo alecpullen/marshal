@@ -432,10 +432,14 @@ func TestAFileThatCannotLoadKeepsTheTunnels(t *testing.T) {
 	f.start()
 	f.rec.wait(t, 0, hasState("box", contract.HostLive, ""))
 
-	f.writeFleet()
+	// Make the file non-private before rewriting it: with the rewrite first,
+	// a poll can see a valid private file with no hosts in between, which
+	// stops the tunnel for the right reason and masks what this test is
+	// about.
 	if err := os.Chmod(f.fleet, 0o644); err != nil {
 		t.Fatalf("make fleet.toml readable by others: %v", err)
 	}
+	f.writeFleet()
 
 	// Several polls: the same error is only written once.
 	time.Sleep(150 * time.Millisecond)

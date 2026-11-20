@@ -33,6 +33,14 @@ func sshOptions() []string {
 		"-o", "ConnectTimeout=15",
 		"-o", "ControlMaster=no",
 		"-o", "ControlPath=none",
+		// A host can be added from a browser session, so the daemon's ssh
+		// hands no credential and runs nothing but the status call and the
+		// forward. An -o on the command line wins over the config file, so
+		// these hold whatever ~/.ssh/config says for the host.
+		"-o", "ForwardAgent=no",
+		"-o", "ForwardX11=no",
+		"-o", "PermitLocalCommand=no",
+		"-o", "RemoteCommand=none",
 	}
 }
 

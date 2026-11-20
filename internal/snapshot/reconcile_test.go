@@ -1590,3 +1590,216 @@ func TestDiscoverWorkspaceMatchesFullDiscovery(t *testing.T) {
 		t.Fatalf("a workspace with both layouts must resolve to legacy, got %+v", ws)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Lost generations
+// ---------------------------------------------------------------------------
+
+// warningsMention reports whether any warning names substr.
+func warningsMention(warnings []MaintenanceWarning, substr string) bool {
+	for _, w := range warnings {
+		if strings.Contains(w.Message, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// sliceContains reports whether want is in list.
+func sliceContains(list []string, want string) bool {
+	for _, got := range list {
+		if got == want {
+			return true
+		}
+	}
+	return false
+}
+
+// sealAndRemove seals a fresh generation, makes another generation active, and
+// removes the sealed generation's directory — the state a store is left in when
+// a reclaimable archive disappears without its manifest record.
+func sealAndRemove(t *testing.T, ctx context.Context, cat *Catalog) (*GenerationRecord, *GenerationRecord) {
+	t.Helper()
+	sealed := activeGeneration(t, ctx, cat)
+	active, err := cat.CreateGeneration(ctx, "")
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	if err := cat.ActivateGeneration(active.ID); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+	dir, err := cat.GenerationDir(sealed.ID)
+	if err != nil {
+		t.Fatalf("GenerationDir: %v", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove the sealed generation's directory: %v", err)
+	}
+	return sealed, active
+}
+
+// A manifest record whose directory is gone describes history that is already
+// lost. Automatic reconciliation must keep the record so the loss stays
+// visible, while the explicit cleanup pass must drop it: otherwise the warning
+// is re-reported on every pass and no operation can ever resolve it, which is
+// the loop this test pins.
+func TestCleanupForgetsLostGenerationRecordThatReconcileKeeps(t *testing.T) {
+	requireGit(t)
+	_, cat, ctx := testCatalog(t)
+	sealed, active := sealAndRemove(t, ctx, cat)
+
+	// The automatic pass reports the loss and keeps the evidence.
+	report, err := cat.manager.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	out := report.Workspace(cat.Workspace())
+	if len(out.GenerationsForgotten) != 0 {
+		t.Fatalf("automatic reconciliation forgot %v", out.GenerationsForgotten)
+	}
+	if !warningsMention(out.Warnings, sealed.ID) {
+		t.Fatalf("automatic reconciliation did not warn about the lost generation: %v", out.Warnings)
+	}
+	man, err := cat.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if man.Generation(sealed.ID) == nil {
+		t.Fatal("automatic reconciliation removed the record of the lost generation")
+	}
+
+	// The explicit pass resolves it and states what was lost.
+	cleaned, err := cat.manager.Cleanup(ctx, CleanupOptions{RetentionDays: -1})
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if !sliceContains(cleaned.RecordsForgotten, sealed.ID) {
+		t.Fatalf("RecordsForgotten = %v, want [%s]", cleaned.RecordsForgotten, sealed.ID)
+	}
+	if !warningsMention(cleaned.Warnings, "permanently lost") {
+		t.Fatalf("cleanup did not state the loss: %v", cleaned.Warnings)
+	}
+	man, err = cat.Load()
+	if err != nil {
+		t.Fatalf("Load after cleanup: %v", err)
+	}
+	if man.Generation(sealed.ID) != nil {
+		t.Fatal("cleanup left the stale record in place")
+	}
+	if man.ActiveID != active.ID {
+		t.Fatalf("ActiveID = %q, want %q", man.ActiveID, active.ID)
+	}
+
+	// And idempotently: the next pass has nothing to report about it.
+	again, err := cat.manager.Cleanup(ctx, CleanupOptions{RetentionDays: -1})
+	if err != nil {
+		t.Fatalf("second Cleanup: %v", err)
+	}
+	if len(again.RecordsForgotten) != 0 || warningsMention(again.Warnings, sealed.ID) {
+		t.Fatalf("the loss was reported again: forgotten %v, warnings %v", again.RecordsForgotten, again.Warnings)
+	}
+}
+
+// Cleanup never forgets the record of the ACTIVE generation: capture cannot
+// continue without resolving where its snapshots went, so a silent drop would
+// hide the one state an operator has to act on.
+func TestCleanupKeepsLostActiveGenerationRecord(t *testing.T) {
+	requireGit(t)
+	_, cat, ctx := testCatalog(t)
+	rec := activeGeneration(t, ctx, cat)
+	dir, err := cat.GenerationDir(rec.ID)
+	if err != nil {
+		t.Fatalf("GenerationDir: %v", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove the active generation's directory: %v", err)
+	}
+
+	cleaned, err := cat.manager.Cleanup(ctx, CleanupOptions{RetentionDays: -1})
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if sliceContains(cleaned.RecordsForgotten, rec.ID) {
+		t.Fatalf("cleanup forgot the active generation's record: %v", cleaned.RecordsForgotten)
+	}
+	man, err := cat.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if man.Generation(rec.ID) == nil {
+		t.Fatal("cleanup removed the active generation's record")
+	}
+	if !warningsMention(cleaned.Warnings, rec.ID) {
+		t.Fatalf("cleanup did not report the lost active generation: %v", cleaned.Warnings)
+	}
+}
+
+// Cleanup never forgets a protected generation's record: it is the only
+// surviving statement that the migrated history existed.
+func TestCleanupKeepsLostProtectedGenerationRecord(t *testing.T) {
+	requireGit(t)
+	_, cat, ctx := testCatalog(t)
+	sealed, _ := sealAndRemove(t, ctx, cat)
+
+	man, err := cat.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	target := man.Generation(sealed.ID)
+	target.Origin = OriginLegacy
+	target.Protected = true
+	if err := cat.Save(man); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	cleaned, err := cat.manager.Cleanup(ctx, CleanupOptions{RetentionDays: -1})
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if sliceContains(cleaned.RecordsForgotten, sealed.ID) {
+		t.Fatalf("cleanup forgot a protected generation's record: %v", cleaned.RecordsForgotten)
+	}
+	man, err = cat.Load()
+	if err != nil {
+		t.Fatalf("Load after cleanup: %v", err)
+	}
+	if man.Generation(sealed.ID) == nil {
+		t.Fatal("cleanup removed a protected generation's record")
+	}
+	if !warningsMention(cleaned.Warnings, sealed.ID) {
+		t.Fatalf("cleanup did not report the lost protected generation: %v", cleaned.Warnings)
+	}
+}
+
+// `marshal snapshots status` is the command the warning tells the operator to
+// run first, so it must name the lost generation instead of reporting the
+// workspace as healthy.
+func TestStatusReportsLostGenerationRecord(t *testing.T) {
+	requireGit(t)
+	_, cat, ctx := testCatalog(t)
+	sealed, _ := sealAndRemove(t, ctx, cat)
+
+	st, err := cat.manager.BuildStoreStatus(ctx)
+	if err != nil {
+		t.Fatalf("BuildStoreStatus: %v", err)
+	}
+	var ws *WorkspaceStatus
+	for i := range st.Workspaces {
+		if st.Workspaces[i].Workspace == cat.Workspace() {
+			ws = &st.Workspaces[i]
+		}
+	}
+	if ws == nil {
+		t.Fatalf("status does not list workspace %s", cat.Workspace())
+	}
+	if len(ws.Missing) != 1 || ws.Missing[0].ID != sealed.ID || ws.Missing[0].State != GenerationSealed {
+		t.Fatalf("Missing = %+v, want the sealed lost generation %s", ws.Missing, sealed.ID)
+	}
+	if !warningsMention(ws.Warnings, sealed.ID) {
+		t.Fatalf("status did not warn about the lost generation: %v", ws.Warnings)
+	}
+	rendered := RenderStoreStatus(st)
+	if !strings.Contains(rendered, "LOST") || !strings.Contains(rendered, sealed.ID) {
+		t.Fatalf("rendered status does not report the loss:\n%s", rendered)
+	}
+}

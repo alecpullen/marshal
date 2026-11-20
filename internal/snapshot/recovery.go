@@ -770,6 +770,10 @@ type CleanupReport struct {
 	// GenerationsRemoved lists the versioned generations removed by automatic
 	// reconciliation and retention.
 	GenerationsRemoved []string
+	// RecordsForgotten lists the manifest records dropped for generations whose
+	// directories were already gone. Their snapshots were lost before this pass;
+	// the warning accompanying each one states that.
+	RecordsForgotten []string
 	// TempArtifactsRemoved lists the recognized legacy temporary artifacts that
 	// were removed, with their sizes.
 	TempArtifactsRemoved []RemovedArtifact
@@ -834,7 +838,13 @@ func (m *Manager) Cleanup(ctx context.Context, opts CleanupOptions) (*CleanupRep
 	//    the same bounded, whole-generation work the runtime performs; calling it
 	//    here means `snapshots cleanup` gets the same repair a session start
 	//    gets, without having to start a session.
-	reconciled, err := m.Reconcile(ctx)
+	//
+	//    It is the one pass allowed to forget a record whose generation is
+	//    already gone: this command exists to make the store maintainable again,
+	//    and a stale record for a sealed, unprotected generation can never be
+	//    resolved by any other operation. Automatic passes keep the record, so
+	//    the loss is still shown to the operator first.
+	reconciled, err := m.reconcile(ctx, reconcileOptions{forgetLostRecords: true})
 	if err != nil {
 		return report, err
 	}
@@ -842,6 +852,7 @@ func (m *Manager) Cleanup(ctx context.Context, opts CleanupOptions) (*CleanupRep
 		report.Reconciled = append(report.Reconciled, ws.Workspace)
 		report.StagingRemoved += len(ws.StagingRemoved)
 		report.GenerationsRemoved = append(report.GenerationsRemoved, ws.GenerationsRemoved...)
+		report.RecordsForgotten = append(report.RecordsForgotten, ws.GenerationsForgotten...)
 	}
 	report.LegacyUntouched = append(report.LegacyUntouched, reconciled.LegacyUntouched...)
 	report.Warnings = append(report.Warnings, reconciled.Warnings...)

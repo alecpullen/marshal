@@ -35,7 +35,7 @@ runs. The exit code is non-zero when any check fails.
 | F secrets | secrets, credentials, network view, egress decisions |
 | G forge | repos, issues, review drafts, CI history, webhook secrets |
 | H errors | socket-only routes, malformed and oversize bodies, unknown routes, traversal, SSE, MCP, clients, pending |
-| I studio shell | the served Studio shell, its bootstrap and cache policy, client-route fallback, and that the engine is not fetched from a CDN |
+| I studio shell | the Studio directory the daemon names, the shell it serves from it, its bootstrap and cache policy, client-route fallback, and that the engine is not fetched from a CDN |
 
 ## Writing a check
 
@@ -70,3 +70,6 @@ State passes between checks through `c.set(key, value)` / `c.get(key)`.
 - A group that needs a precondition the environment lacks skips its
   checks rather than failing, so a green run on a partial environment is
   not the same as a green run on a full one. Read the skip list.
+- The daemon under test needs its Studio files, or group I's shell checks
+  skip: `scripts/dev-daemon.sh --studio` builds and serves them in a
+  checkout.

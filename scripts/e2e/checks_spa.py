@@ -1,25 +1,26 @@
 """Group I — the Studio's shell and the API's boundaries.
 
-The bridge embeds the Studio's web build into its own binary
-(`web/bridge/assets.go`, `//go:embed static`). Since F8's cutover that build is
-the Flutter Studio's; the Svelte one, and the checks that grepped its bundle,
-went with it.
+The daemon serves the Studio's web build from its Studio directory
+(`share/marshal/studio`, found beside or above its binary), naming it in
+`GET /api/daemon`'s `studioDir`. Since F8's cutover that build is the Flutter
+Studio's; the Svelte one, and the checks that grepped its bundle, went with it.
 
 What is still worth pinning at the boundary a browser actually gets:
 
+- the daemon names the directory its Studio comes from;
 - the document at `/` is the Studio's index, never cached, and a client-side
   route falls back to it rather than 404ing;
-- a real build's bootstrap is served by this bridge, and the rendering engine
+- a real build's bootstrap is served by this daemon, and the rendering engine
   is not fetched from a CDN — the one defect that left the Studio blank on a
   private network that cannot reach gstatic;
 - `/api` belongs to the mux: an unknown path is a JSON 404 and never the shell,
   and `/mcp` keeps its own per-client authentication.
 
 The web listener serves /api with no bearer, so nothing here sends one.
-A Go-only checkout embeds a placeholder index instead of a build, so the checks
-that need the real bootstrap skip there rather than passing vacuously. The
-table in `docs/studio-flutter/f8-cutover.md` accounts for each retired Svelte
-check.
+A daemon with no Studio files answers 503 with a page naming where it looked,
+so the checks that need the real bootstrap skip there rather than passing
+vacuously. The table in `docs/studio-flutter/f8-cutover.md` accounts for each
+retired Svelte check.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ import re
 
 from harness import Skip, Suite
 
-# A real Studio document names its bootstrap; the placeholder names none.
+# A real Studio document names its bootstrap; the no-files page names none.
 _BOOTSTRAP = re.compile(r'<script[^>]+src="([^"]*flutter_bootstrap\.js)"')
 
 # The engine is fetched at run time. With `--no-web-resources-cdn` the build
@@ -48,6 +49,22 @@ def _bootstrap_path(html: str) -> str | None:
 
 def register(s: Suite) -> None:
     s.area("I studio shell")
+
+    def studio_dir_is_named(c) -> None:
+        """The daemon says which directory it serves the Studio from."""
+        r = c.client.get("/api/daemon")
+        body = s.expect_ok(r, request="GET /api/daemon")
+        if not isinstance(body, dict):
+            s.expect(False, "GET /api/daemon did not answer a JSON object", response=body)
+        if "studioDir" not in body:
+            raise Skip("this daemon does not report studioDir; it predates serving the Studio from a directory")
+        s.expect(
+            bool(str(body.get("studioDir") or "").strip()),
+            "the daemon serves no Studio files: studioDir is empty, so GET / "
+            "answers the no-files page",
+            request="GET /api/daemon",
+            response=body,
+        )
 
     def studio_shell_is_served(c) -> None:
         """The root document is the Studio's index, not the retired one."""
@@ -74,10 +91,10 @@ def register(s: Suite) -> None:
         c.set("studio_index", r.raw)
 
     def bootstrap_is_served(c) -> None:
-        """A real build's bootstrap must resolve from this bridge."""
+        """A real build's bootstrap must resolve from this daemon."""
         path = _bootstrap_path(c.get("studio_index") or "")
         if path is None:
-            raise Skip("the embedded tree is the placeholder, not a Studio build")
+            raise Skip("the daemon serves no Studio build, so there is no bootstrap")
         r = c.client.get(path)
         s.expect_status(r, 200, request=f"GET {path}")
         s.expect(
@@ -96,7 +113,7 @@ def register(s: Suite) -> None:
         """
         path = _bootstrap_path(c.get("studio_index") or "")
         if path is None:
-            raise Skip("the embedded tree is the placeholder, not a Studio build")
+            raise Skip("the daemon serves no Studio build, so there is no bootstrap")
         r = c.client.get(path)
         if r.status != 200:
             raise Skip(f"the bootstrap {path} is not served (HTTP {r.status})")
@@ -157,6 +174,7 @@ def register(s: Suite) -> None:
             request="GET /preview/anything",
         )
 
+    s.check("the daemon names its Studio directory", studio_dir_is_named)
     s.check("the root document is the Studio's index", studio_shell_is_served)
     s.check("the Studio's bootstrap resolves", bootstrap_is_served)
     s.check("the Studio does not fetch its engine from a CDN", engine_is_not_fetched_from_a_cdn)

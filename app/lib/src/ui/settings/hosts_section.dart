@@ -1,5 +1,6 @@
 import '../../model/age.dart';
-import '../../model/fleet_store.dart' show HostView, describeFailure;
+import '../../model/fleet_store.dart'
+    show HostTunnel, HostView, describeFailure;
 import '../../model/hosts_model.dart';
 import '../kit/kit.dart';
 import '../sections/section_page.dart';
@@ -43,7 +44,8 @@ class HostsSection extends StatelessWidget {
             RowItem(
               name: 'Add a host',
               description:
-                  'A server profile, added to `fleet.toml` and signed in to',
+                  'Another machine\'s daemon, reached over SSH and added to '
+                  '`fleet.toml`',
               onTap: () => _add(context),
             )
           else
@@ -60,9 +62,9 @@ class HostsSection extends StatelessWidget {
     );
   }
 
-  /// Adds a server profile: its name, its URL, the certificates it is trusted
-  /// with and its token. A draft that holds anything counts for the shell's
-  /// guard while the sheet is open (design-system.md §9).
+  /// Adds a host: its name and the SSH destination it is reached at. A draft
+  /// that holds anything counts for the shell's guard while the sheet is open
+  /// (design-system.md §9).
   Future<void> _add(BuildContext context) async {
     await Sheet.show<void>(
       context,
@@ -75,23 +77,24 @@ class HostsSection extends StatelessWidget {
     model.draftChanged(null);
   }
 
-  /// What the host is, in one line: a local daemon, or a server profile — and
-  /// a relayed profile says where it is reached (spec D23).
-  static String _kind(HostView host) => switch (host.kind.name) {
-    'local' => 'A local daemon, on this machine',
-    _ =>
-      host.via == null
-          ? 'A server profile, over TLS'
-          : 'A server profile, through ${host.via}',
-  };
+  /// What the host is, in one line: a local daemon, a host reached over SSH,
+  /// or a page's own host — and a relayed one says where it is reached
+  /// (spec D23).
+  static String _kind(HostView host) {
+    if (host.kind.name == 'local') return 'A local daemon, on this machine';
+    final destination = host.destination;
+    if (destination != null) return 'Over SSH to $destination';
+    final via = host.via;
+    if (via != null) return 'A server profile, through $via';
+    return 'The daemon that served this page';
+  }
 }
 
-/// What the add sheet holds (spec D6): a server's name and URL, the file whose
-/// certificates it is trusted with, and the token to reach it with.
+/// What the add sheet holds (spec D6): the host's name, and the SSH
+/// destination it is reached at — `you@machine`, or a Host from
+/// `~/.ssh/config`.
 ///
-/// The token is written and never read back, as Secrets' new value is. A
-/// failed add keeps the fields and says why under them; the sheet closes as
-/// added, because the profile is there and only the token is not.
+/// A failed add keeps the fields and says why under them.
 class HostForm extends StatefulWidget {
   const HostForm({super.key, required this.model, this.initialFailure});
 
@@ -107,9 +110,7 @@ class HostForm extends StatefulWidget {
 
 class _HostFormState extends State<HostForm> {
   final _name = TextEditingController();
-  final _url = TextEditingController();
-  final _caFile = TextEditingController();
-  final _token = TextEditingController();
+  final _destination = TextEditingController();
   String? _failure;
   bool _adding = false;
 
@@ -122,18 +123,12 @@ class _HostFormState extends State<HostForm> {
   @override
   void dispose() {
     _name.dispose();
-    _url.dispose();
-    _caFile.dispose();
-    _token.dispose();
+    _destination.dispose();
     super.dispose();
   }
 
-  HostDraft get _draft => HostDraft(
-    name: _name.text,
-    url: _url.text,
-    caFile: _caFile.text,
-    token: _token.text,
-  );
+  HostDraft get _draft =>
+      HostDraft(name: _name.text, destination: _destination.text);
 
   void _changed(String _) {
     widget.model.draftChanged(_draft);
@@ -167,33 +162,16 @@ class _HostFormState extends State<HostForm> {
       children: [
         Field(
           label: 'Name',
-          hint: 'studio',
+          hint: 'box',
           controller: _name,
           enabled: !_adding,
           onChanged: _changed,
         ),
         const SizedBox(height: Space.s16),
         Field(
-          label: 'URL',
-          hint: 'https://studio.example.com',
-          controller: _url,
-          enabled: !_adding,
-          onChanged: _changed,
-          onSubmitted: (_) => _add(),
-        ),
-        const SizedBox(height: Space.s16),
-        Field(
-          label: 'CA file',
-          hint: 'The certificates this host is trusted with',
-          controller: _caFile,
-          enabled: !_adding,
-          onChanged: _changed,
-        ),
-        const SizedBox(height: Space.s16),
-        Field(
-          label: 'Token',
-          hint: 'The token is written and never shown again',
-          controller: _token,
+          label: 'SSH destination',
+          hint: 'you@machine, or a Host from ~/.ssh/config',
+          controller: _destination,
           enabled: !_adding,
           onChanged: _changed,
           onSubmitted: (_) => _add(),
@@ -272,16 +250,16 @@ class _HostDetailState extends State<HostDetail> {
     return false;
   }
 
-  /// A refused token is not a silence: a server profile that refused one is
-  /// signed in to again, and one whose sign-in failed when it was added says
-  /// why beside the field (decision 5).
+  /// A refused token is not a silence: a host that refused one is signed in
+  /// to again, where this build keeps a token to sign in with (decision 6).
   @override
   Widget build(BuildContext context) {
     final e = Ember.of(context);
     final host = widget.host;
     final seen = host.lastContact;
     final server = host.kind.name != 'local';
-    final loginFailure = widget.model.loginFailure(host.name);
+    final destination = host.destination;
+    final tunnel = host.tunnel;
     final relayRefused = _relayRefused;
     final failure = _failure;
     final removeFailure = _removeFailure;
@@ -289,6 +267,10 @@ class _HostDetailState extends State<HostDetail> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _Fact('Kind', HostsSection._kind(host)),
+        if (destination != null) _Fact('SSH', destination),
+        if (tunnel != null) _Fact('Tunnel', _tunnelWords(tunnel)),
+        if (tunnel != null && tunnel.lastError.isNotEmpty)
+          _Fact('Last error', tunnel.lastError),
         _Fact('Reach', host.reachWords(widget.now)),
         _Fact(
           'Last contact',
@@ -310,17 +292,19 @@ class _HostDetailState extends State<HostDetail> {
           const SizedBox(height: Space.s12),
           Text('Sign in to the relay first.', style: e.small.tint(e.err)),
         ],
-        // A browser cannot remove a profile any more than it can add one, so
-        // the affordance follows the runner rather than the host's kind.
+        // A browser cannot remove a host any more than it can add one, so the
+        // affordance follows the runner rather than the host's kind. Only a
+        // host reached over SSH has a table of its own to delete.
         if (server && widget.model.canAdd) ...[
           const SizedBox(height: Space.s16),
           Row(
             children: [
-              Btn('Remove…', onTap: () => _remove(context)),
+              if (destination != null)
+                Btn('Remove…', onTap: () => _remove(context)),
               // Signing out is the browser's alone: it is what holds the token
               // that reached a relayed host (decision 6, spec D22).
               if (widget.model.canSignOut(host)) ...[
-                const SizedBox(width: Space.s12),
+                if (destination != null) const SizedBox(width: Space.s12),
                 Btn('Sign out', onTap: _signingOut ? null : _signOut),
               ],
             ],
@@ -332,12 +316,9 @@ class _HostDetailState extends State<HostDetail> {
         ],
         if (server &&
             !relayRefused &&
-            (host.refused || loginFailure != null)) ...[
+            host.refused &&
+            widget.model.canSignIn) ...[
           const SizedBox(height: Space.s20),
-          if (loginFailure != null) ...[
-            Text(loginFailure, style: e.small.tint(e.err)),
-            const SizedBox(height: Space.s12),
-          ],
           Field(
             label: 'Token',
             hint: 'The token is written and never shown again',
@@ -389,6 +370,15 @@ class _HostDetailState extends State<HostDetail> {
     }
   }
 
+  /// The tunnel's state in words, with how long it has been in it when the
+  /// daemon said when that changed: "live", "down 4m since", and so on.
+  String _tunnelWords(HostTunnel tunnel) {
+    final since = tunnel.since;
+    if (since == null) return tunnel.state;
+    return '${tunnel.state} since '
+        '${relativeAge(since, widget.now)} ago';
+  }
+
   /// Forgets the token this browser kept for the host, then asks it to try
   /// again: it reads "token refused" until it is signed in to with a new one
   /// (decision 6, spec D22).
@@ -420,8 +410,8 @@ class _HostDetailState extends State<HostDetail> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'The Studio stops showing it, and its profile and stored token '
-              'are deleted. Its daemon keeps running.',
+              'The Studio stops showing it, and its table is deleted from '
+              'fleet.toml. Its daemon keeps running.',
             ),
             const SizedBox(height: Space.s16),
             Align(

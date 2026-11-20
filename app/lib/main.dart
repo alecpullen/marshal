@@ -756,10 +756,27 @@ class _Settings {
          rediscover: registry.discover,
          forget: registry.forget,
          retry: registry.retry,
-         // A browser writes the host's own key; a native build leaves both
-         // unset and signs in through `marshal fleet login` (spec D21).
+         // A browser writes the host's own key; a native build signs in to
+         // nothing, because the daemon reaches its hosts over SSH (spec D21).
          storeToken: hostTokenWriters?.store,
          clearToken: hostTokenWriters?.clear,
+         // The tunnels the local daemon keeps, as `GET /api/daemon` reports
+         // them. A browser has no daemon of its own to ask (D7).
+         tunnels: kIsWeb
+             ? null
+             : () async => {
+                 for (final host in (await client.daemon()).hosts)
+                   host.name: HostTunnel(
+                     state: host.state.wire,
+                     lastError: host.lastError ?? '',
+                     since: host.since > 0
+                         ? DateTime.fromMillisecondsSinceEpoch(
+                             host.since,
+                             isUtc: true,
+                           )
+                         : null,
+                   ),
+               },
        ),
        environments = EnvironmentsModel(client),
        connections = ConnectionsModel(client),

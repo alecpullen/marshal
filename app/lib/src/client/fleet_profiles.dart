@@ -6,22 +6,18 @@ import 'fleet_profiles_stub.dart'
 // runner a build has is chosen the way `main.dart` chooses discovery: a
 // native build runs the binary, and a browser answers that it cannot add a
 // host. The commands themselves live in the lane where `dart:io` is allowed
-// (`fleet_profiles_io.dart`), and a token reaches the CLI on its stdin only —
-// never in argv and never in the environment (D7).
+// (`fleet_profiles_io.dart`).
 
 /// The `marshal fleet` commands that change fleet.toml (spec D6, D7).
 abstract interface class FleetProfiles {
   /// Whether this build can run them: false in a browser.
   bool get supported;
 
-  /// Adds the server [name] at [url], trusting the certificates [caFile]
-  /// holds when one is given: `marshal fleet add NAME URL [--ca-file PATH]`.
-  Future<void> add(String name, Uri url, {String? caFile});
+  /// Adds the host [name], reached over SSH at [destination]:
+  /// `marshal fleet add NAME DEST`.
+  Future<void> add(String name, String destination);
 
-  /// Stores [token] by writing it to `fleet login`'s stdin, never its argv.
-  Future<void> login(String name, String token);
-
-  /// Removes the server [name], and the token stored for it.
+  /// Removes the host [name] and its table.
   Future<void> remove(String name);
 }
 

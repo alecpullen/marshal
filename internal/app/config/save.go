@@ -331,19 +331,17 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			LoadGateThresholdTokens: strutil.Ptr(cfg.Skills.LoadGateThresholdTokens),
 		}
 	}
-	if cfg.Daemon != def.Daemon {
+	// DeepEqual, not ==: DaemonConfig.Retired is a slice. A save never writes
+	// a retired key (fileDaemon carries none of them).
+	if !reflect.DeepEqual(cfg.Daemon, def.Daemon) {
 		file.Daemon = &fileDaemon{
 			IdleSessionTimeout: strutil.Ptr(cfg.Daemon.IdleSessionTimeout.String()),
 			Egress:             strutil.Ptr(cfg.Daemon.Egress),
-			StudioAddr:         strutil.Ptr(cfg.Daemon.StudioAddr),
 			WebListen:          strutil.Ptr(cfg.Daemon.WebListen),
 			WebGroup:           strutil.Ptr(cfg.Daemon.WebGroup),
 			WebURL:             strutil.Ptr(cfg.Daemon.WebURL),
 			PreviewListen:      strutil.Ptr(cfg.Daemon.PreviewListen),
 			PreviewURL:         strutil.Ptr(cfg.Daemon.PreviewURL),
-			JoinURL:            strutil.Ptr(cfg.Daemon.JoinURL),
-			JoinName:           strutil.Ptr(cfg.Daemon.JoinName),
-			JoinCAFile:         strutil.Ptr(cfg.Daemon.JoinCAFile),
 		}
 	}
 	if cfg.Web != def.Web {

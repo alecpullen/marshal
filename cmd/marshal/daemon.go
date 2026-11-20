@@ -302,9 +302,8 @@ func daemonLingerLine(ctx context.Context, m *daemon.Manager) (string, bool) {
 }
 
 // daemonUnitSpec is decision 10's unit: the webbridge, the resolved marshal,
-// the paths internal/daemon resolves, the location environment, the idle
-// session timeout the user config gives, and the loopback address the Studio
-// is served on.
+// the paths internal/daemon resolves, the location environment, and the idle
+// session timeout the user config gives.
 func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 	webbridge, err := daemon.FindWebbridge(webbridgeOverride)
 	if err != nil {
@@ -321,28 +320,10 @@ func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 	if err != nil {
 		return daemon.UnitSpec{}, fmt.Errorf("read the user config: %w", err)
 	}
-	studioAddr, err := daemonStudioAddr(cfg.Daemon.StudioAddr)
-	if err != nil {
-		return daemon.UnitSpec{}, err
-	}
-	// The join is read from the same user config, for the same reason: a
-	// project must not point this machine's daemon at a relay.
-	join, err := daemonJoin(cfg.Daemon)
-	if err != nil {
-		return daemon.UnitSpec{}, err
-	}
 	paths := daemon.PathsFor(home)
-	// A join with no stored secret would install a unit that dies at start, so
-	// refuse here, where the user can act on it (D12: `marshal daemon
-	// join-token` is what stores it).
-	if join != nil {
-		if _, err := os.Stat(paths.JoinToken); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return daemon.UnitSpec{}, fmt.Errorf("daemon.join_url is set but %s is missing: run marshal daemon join-token first", paths.JoinToken)
-			}
-			return daemon.UnitSpec{}, fmt.Errorf("read the join secret: %w", err)
-		}
-	}
+	// The Studio address and the join are retired [daemon] keys: the
+	// listener settings that replaced them are filled in here by a later
+	// change, so both stay zero for now.
 	return daemon.UnitSpec{
 		Webbridge:          webbridge,
 		Marshal:            marshal,
@@ -350,8 +331,6 @@ func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 		Env:                daemonEnv(),
 		IdleSessionTimeout: cfg.Daemon.IdleSessionTimeout,
 		Egress:             cfg.Daemon.Egress,
-		StudioAddr:         studioAddr,
-		Join:               join,
 	}, nil
 }
 
@@ -361,19 +340,23 @@ func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 // A join without a name is refused here rather than at the relay: the name is
 // what the fleet's reader uses to tell this daemon from the relay's own
 // agents, so an unnamed join would join and be unreadable.
-func daemonJoin(cfg config.DaemonConfig) (*daemon.Join, error) {
-	url := strings.TrimSpace(cfg.JoinURL)
+//
+// Those three keys are retired, so no DaemonConfig carries them any more: the
+// caller passes their values. Nothing calls this until their replacement is
+// wired in.
+func daemonJoin(joinURL, joinName, joinCAFile string) (*daemon.Join, error) {
+	url := strings.TrimSpace(joinURL)
 	if url == "" {
 		return nil, nil
 	}
-	name := strings.TrimSpace(cfg.JoinName)
+	name := strings.TrimSpace(joinName)
 	if name == "" {
 		return nil, fmt.Errorf("daemon.join_url is set but daemon.join_name is empty: name the daemon that joins %s", url)
 	}
 	return &daemon.Join{
 		URL:    url,
 		Name:   name,
-		CAFile: strings.TrimSpace(cfg.JoinCAFile),
+		CAFile: strings.TrimSpace(joinCAFile),
 	}, nil
 }
 

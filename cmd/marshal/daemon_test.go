@@ -260,13 +260,10 @@ func TestDaemonInstallPassesExplicitPaths(t *testing.T) {
 			paths.Socket,
 			paths.StateDir,
 			paths.Registry,
-			// The Studio listener is the browser's door onto this daemon:
-			// the loopback address from the user config, and the token file
-			// the bridge reads or mints 0600, so the page starts signed in.
+			// The Studio listener's address is a retired key (one-daemon
+			// D10), so the installed unit serves none until the web listener
+			// takes its place.
 			"<string>--addr</string>",
-			"<string>127.0.0.1:7788</string>",
-			"<string>--token-file</string>",
-			"<string>" + paths.Token + "</string>",
 			"<string>--marshal-bin</string>",
 			// The installed daemon always refreshes (decision 5), so the
 			// flag is written into the unit rather than configured.
@@ -1712,106 +1709,6 @@ func daemonWriteUserConfig(t *testing.T, home, body string) {
 	}
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// daemonWriteJoinSecret stores the join secret daemonUnitSpec requires when
-// daemon.join_url is set, at the path the unit passes as --join-token-file.
-func daemonWriteJoinSecret(t *testing.T, home string) {
-	t.Helper()
-	path := daemon.PathsFor(home).JoinToken
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("join-secret\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestDaemonUnitSpecRefusesAJoinWithoutASecret: a unit installed with a join
-// and no stored secret would come up dead, so the install refuses and names the
-// command that stores one.
-func TestDaemonUnitSpecRefusesAJoinWithoutASecret(t *testing.T) {
-	home := daemonTestEnv(t)
-	daemonWriteUserConfig(t, home, "[daemon]\n"+
-		"join_url = \"https://relay.example.com\"\n"+
-		"join_name = \"box\"\n")
-
-	spec, err := daemonUnitSpec(daemonTestWebbridge(t), home)
-	if err == nil {
-		t.Fatalf("daemonUnitSpec accepted a join with no stored secret: %+v", spec.Join)
-	}
-	if !strings.Contains(err.Error(), "marshal daemon join-token") {
-		t.Errorf("error = %q, want it to name marshal daemon join-token", err)
-	}
-}
-
-// TestDaemonUnitSpecReadsTheJoin pins P8 D12's config: daemon.join_url,
-// join_name and join_ca_file become the unit's join and its arguments, and
-// they are read from the user config alone — as the Studio's address is, so a
-// project cannot point this machine's daemon at a relay.
-func TestDaemonUnitSpecReadsTheJoin(t *testing.T) {
-	home := daemonTestEnv(t)
-	daemonWriteUserConfig(t, home, "[daemon]\n"+
-		"join_url = \"https://relay.example.com\"\n"+
-		"join_name = \"box\"\n"+
-		"join_ca_file = \"/etc/marshal/relay-ca.pem\"\n")
-	daemonWriteJoinSecret(t, home)
-
-	// A project config names another relay; the unit must not pick it up.
-	work := t.TempDir()
-	projectConfig := filepath.Join(work, ".marshal", "config.toml")
-	if err := os.MkdirAll(filepath.Dir(projectConfig), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(projectConfig,
-		[]byte("[daemon]\njoin_url = \"https://elsewhere.example.com\"\njoin_name = \"other\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(work)
-
-	spec, err := daemonUnitSpec(daemonTestWebbridge(t), home)
-	if err != nil {
-		t.Fatalf("daemonUnitSpec: %v", err)
-	}
-	if spec.Join == nil {
-		t.Fatal("the unit joins no relay, want the user config's join")
-	}
-	want := daemon.Join{
-		URL:    "https://relay.example.com",
-		Name:   "box",
-		CAFile: "/etc/marshal/relay-ca.pem",
-	}
-	if *spec.Join != want {
-		t.Errorf("join = %+v, want %+v", *spec.Join, want)
-	}
-	joined := strings.Join(spec.Args(), " ")
-	for _, arg := range []string{
-		"--join https://relay.example.com",
-		"--join-name box",
-		"--join-token-file " + daemon.PathsFor(home).JoinToken,
-		"--join-ca-file /etc/marshal/relay-ca.pem",
-	} {
-		if !strings.Contains(joined, arg) {
-			t.Errorf("args = %q, want it to carry %q", joined, arg)
-		}
-	}
-}
-
-// TestDaemonUnitSpecRefusesAJoinWithoutAName: the name is what the relay's
-// fleet reader shows, so a join_url with no join_name is refused at install,
-// naming the key the user has to set.
-func TestDaemonUnitSpecRefusesAJoinWithoutAName(t *testing.T) {
-	home := daemonTestEnv(t)
-	daemonWriteUserConfig(t, home, "[daemon]\njoin_url = \"https://relay.example.com\"\n")
-
-	spec, err := daemonUnitSpec(daemonTestWebbridge(t), home)
-	if err == nil {
-		t.Fatalf("daemonUnitSpec accepted a join with no name: %+v", spec.Join)
-	}
-	if !strings.Contains(err.Error(), "daemon.join_name") {
-		t.Errorf("error = %q, want it to name daemon.join_name", err)
 	}
 }
 

@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -237,5 +239,79 @@ func TestDaemonEgressRoundTripsThroughASave(t *testing.T) {
 	}
 	if !loaded.Daemon.Egress {
 		t.Fatalf("Daemon.Egress = %v after round trip, want true", loaded.Daemon.Egress)
+	}
+}
+
+// TestARetiredDaemonKeyIsNamed pins the retirement of [daemon] studio_addr and
+// the join keys (one-daemon D10, D6): a file that still sets one is not read,
+// but its key is named in DaemonConfig.Retired — sorted, and named once even
+// when two layers set it — so a diagnostic can tell the user to drop it.
+func TestARetiredDaemonKeyIsNamed(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, filepath.Join(home, ".config", "marshal", "config.toml"),
+		"[daemon]\n"+
+			"studio_addr = \"127.0.0.1:7788\"\n"+
+			"join_url = \"https://relay.example.com\"\n")
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"join_url", "studio_addr"}
+	if !reflect.DeepEqual(cfg.Daemon.Retired, want) {
+		t.Fatalf("Daemon.Retired = %v, want %v", cfg.Daemon.Retired, want)
+	}
+
+	// A project file sets one of them again: it is already named, so it is
+	// not named twice, and join_name joins the list sorted.
+	writeFile(t, filepath.Join(work, ".marshal", "config.toml"),
+		"[daemon]\n"+
+			"join_name = \"box\"\n"+
+			"join_url = \"https://relay.example.com\"\n")
+
+	cfg, err = Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load with a project config: %v", err)
+	}
+	want = []string{"join_name", "join_url", "studio_addr"}
+	if !reflect.DeepEqual(cfg.Daemon.Retired, want) {
+		t.Fatalf("Daemon.Retired = %v, want %v", cfg.Daemon.Retired, want)
+	}
+}
+
+// TestASaveDropsTheRetiredDaemonKeys pins that a save never writes a retired
+// key back to a file: the four only ever leave it.
+func TestASaveDropsTheRetiredDaemonKeys(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	work := filepath.Join(dir, "work")
+	writeFile(t, filepath.Join(home, ".config", "marshal", "config.toml"),
+		"[daemon]\n"+
+			"studio_addr = \"127.0.0.1:7788\"\n"+
+			"join_url = \"https://relay.example.com\"\n"+
+			"join_name = \"box\"\n"+
+			"join_ca_file = \"/etc/marshal/relay-ca.pem\"\n")
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Daemon.Retired) != 4 {
+		t.Fatalf("Daemon.Retired = %v, want all four retired keys", cfg.Daemon.Retired)
+	}
+
+	path := filepath.Join(work, ".marshal", "config.toml")
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the saved config: %v", err)
+	}
+	for _, key := range []string{"studio_addr", "join_url", "join_name", "join_ca_file"} {
+		if strings.Contains(string(saved), key) {
+			t.Errorf("the saved config carries the retired key %q:\n%s", key, saved)
+		}
 	}
 }

@@ -687,3 +687,179 @@ func TestAServerFleetNamesItsClientAfterTheProfile(t *testing.T) {
 		t.Fatalf("the client's state names %q, want the profile's %q", got, serverProfile().Name)
 	}
 }
+
+// hostName is the host the host fleet's tests tunnel to.
+const hostName = "box"
+
+// runHostFleet runs Fleet on a socket under dir as a tunnel to hostName, with
+// the scripted programs, as runServerFleet does for a server profile.
+func runHostFleet(t *testing.T, fake *fakeDaemon, dir string, script *loopScript, opts ...Option) error {
+	t.Helper()
+	all := append([]Option{
+		withDaemonClient(fake),
+		withWorkingDir(dir),
+		WithHost(hostName),
+		WithProgramRunner(script.run),
+	}, opts...)
+	return Fleet(context.Background(), io.Discard, filepath.Join(dir, "box.sock"), all...)
+}
+
+// TestAHostFleetDialsWithoutASharedFilesystem pins the host's filesystem: the
+// host's agent runs on another machine, so its session is not dialled as one
+// that shares this machine's files.
+func TestAHostFleetDialsWithoutASharedFilesystem(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, home)
+
+	var shared []bool
+	script := loopFleetScript(t, dir)
+	script.onSession = func(_ context.Context, m tui.Model) tui.Model {
+		shared = append(shared, m.Host().SharedFilesystem())
+		return m
+	}
+
+	if err := runHostFleet(t, fake, dir, script); err != nil {
+		t.Fatalf("Fleet: %v", err)
+	}
+	if calls := fake.agentAttachCalls(); len(calls) != 1 || calls[0] != loopAgentID {
+		t.Fatalf("agent attaches = %+v, want the fleet's agent %q", calls, loopAgentID)
+	}
+	if len(shared) != 1 {
+		t.Fatalf("the loop opened %d sessions, want one", len(shared))
+	}
+	if shared[0] {
+		t.Fatal("the host's session was dialled with a shared filesystem")
+	}
+}
+
+// TestAHostFleetNeverOpensTheConnectPanel pins the host's panel: the host's
+// config is not this machine's, so its session screen offers no connect panel
+// even on a machine that has no user config yet.
+func TestAHostFleetNeverOpensTheConnectPanel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	// The config must land in this home, so the ambient overrides cannot send
+	// the read elsewhere.
+	t.Setenv("MARSHAL_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if _, err := os.Stat(config.UserConfigPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("this machine has a user config at %s; the test needs none", config.UserConfigPath(home))
+	}
+
+	dir := t.TempDir()
+	host := loopFleetScript(t, dir)
+	var onHost string
+	host.onSession = func(_ context.Context, m tui.Model) tui.Model {
+		onHost = sessionView(t, m)
+		return m
+	}
+	if err := runHostFleet(t, newFakeDaemon(t, dir, home), dir, host); err != nil {
+		t.Fatalf("Fleet: %v", err)
+	}
+	if len(host.sessions) != 1 {
+		t.Fatalf("the host's loop ran %d sessions, want one", len(host.sessions))
+	}
+	if onHost == "" {
+		t.Fatal("the host's session screen rendered nothing")
+	}
+	if strings.Contains(onHost, connectPanelTitle) {
+		t.Fatalf("the host's session screen opened the connect panel:\n%s", onHost)
+	}
+}
+
+// TestAHostFleetsVersionNoteNamesTheHost pins the host's note: an agent from
+// another build is named as the host's, with no advice to restart a daemon that
+// is not here.
+func TestAHostFleetsVersionNoteNamesTheHost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, home)
+	if err := runHostFleet(t, fake, dir, loopFleetScript(t, dir), withAgentVersion("other")); err != nil {
+		t.Fatalf("Fleet: %v", err)
+	}
+
+	rt := fake.lastRuntime()
+	if rt == nil {
+		t.Fatal("the fake served no runtime")
+	}
+	var notes []string
+	for _, msg := range rt.State.Messages() {
+		if strings.Contains(msg.Content, hostName+"'s agent") {
+			notes = append(notes, msg.Content)
+		}
+	}
+	if len(notes) != 1 {
+		t.Fatalf("notes = %d, want exactly one: %v", len(notes), notes)
+	}
+	for _, want := range []string{"other", "dev", hostName + "'s agent"} {
+		if !strings.Contains(notes[0], want) {
+			t.Errorf("note = %q, want it to name %q", notes[0], want)
+		}
+	}
+	if strings.Contains(notes[0], "Restart the daemon") {
+		t.Errorf("note = %q, want no daemon restart advice on a host", notes[0])
+	}
+}
+
+// TestAHostFleetNamesItsClientAfterTheHost pins the host's name: the fleet
+// client the loop builds is the host's, so the footer and a rejected request
+// name the machine the screen is showing.
+func TestAHostFleetNamesItsClientAfterTheHost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	dir := t.TempDir()
+	var wired acpclient.Fleet
+	err := runHostFleet(t, newFakeDaemon(t, dir, home), dir, loopFleetScript(t, dir),
+		withFleetWiring(func(client acpclient.Fleet, _ *fleet.Watch) { wired = client }),
+	)
+	if err != nil {
+		t.Fatalf("Fleet: %v", err)
+	}
+	if wired == nil {
+		t.Fatal("the loop wired no fleet client")
+	}
+	if got := wired.State().Server; got != hostName {
+		t.Fatalf("the client's state names %q, want the host's %q", got, hostName)
+	}
+}
+
+// TestAHostFleetThatCannotBeReachedNamesTheTunnel pins the probe's failure: a
+// tunnel that does not answer is the host's daemon and names it, rather than
+// advising a daemon install on this machine.
+func TestAHostFleetThatCannotBeReachedNamesTheTunnel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	fake := newFakeDaemon(t, t.TempDir(), home)
+	fake.infoErr = errors.New("connect: no such file or directory")
+
+	dir := t.TempDir()
+	socket := filepath.Join(dir, "box.sock")
+	err := Fleet(context.Background(), io.Discard, socket,
+		withDaemonClient(fake),
+		WithHost(hostName),
+		noProgram(t),
+	)
+	if err == nil {
+		t.Fatal("Fleet succeeded with no daemon on the other end of the tunnel")
+	}
+	for _, want := range []string{hostName + "'s daemon does not answer through its tunnel", socket} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Fleet error = %q, want it to name %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "marshal daemon install") {
+		t.Errorf("Fleet error = %q, want no install advice for a host's daemon", err)
+	}
+}

@@ -34,6 +34,13 @@ func withTokenRunner(run fleetprofile.CommandRunner) Option {
 	return func(o *options) { o.tokenRunner = run }
 }
 
+// WithHost marks the loop's socket as the tunnel to the host name: another
+// machine's daemon. Nothing of its sessions is read as a local file, no
+// connect panel opens, and its notes name the host.
+func WithHost(name string) Option {
+	return func(o *options) { o.host = name }
+}
+
 // withFleetClient replaces the client built for the socket; tests inject it.
 func withFleetClient(f acpclient.Fleet) Option {
 	return func(o *options) {
@@ -79,6 +86,11 @@ func Fleet(ctx context.Context, stdout io.Writer, socket string, opts ...Option)
 	info, err := runOpts.daemonClientFor().Info(probeCtx)
 	cancel()
 	if err != nil {
+		// A tunnel that does not answer is the host's daemon, not this
+		// machine's: installing one here would not help.
+		if runOpts.host != "" {
+			return fmt.Errorf("launch: %s's daemon does not answer through its tunnel at %s: %v; marshal daemon status shows the tunnel", runOpts.host, socket, err)
+		}
 		return fmt.Errorf("launch: no daemon answers on %s: %v; `marshal daemon install` starts one", socket, err)
 	}
 	if info.Profile != daemonProfileLocal {

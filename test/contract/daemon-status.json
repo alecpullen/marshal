@@ -16,6 +16,7 @@
     "pid": 4321,
     "startedAt": 1763300000000,
     "socket": "/home/u/.local/share/marshal/daemon/daemon.sock",
+    "previewAddr": "127.0.0.1:54321",
     "projects": [
       "/home/u/src/marshal"
     ],
@@ -46,6 +47,7 @@
         "ssh": "me@box",
         "state": "live",
         "socket": "/home/u/.local/share/marshal/daemon/hosts/box.sock",
+        "previewPort": 54400,
         "since": 1763300000000
       }
     ]

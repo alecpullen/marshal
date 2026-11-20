@@ -218,6 +218,17 @@ Plan: [plans/2026-11-20-od-7-hosts-from-a-browser-plan.md](plans/2026-11-20-od-7
 | `app/lib/src/client/fleet_profiles.dart` | — | Reshape | One implementation over the home daemon's `BridgeClient`. `fleet_profiles_io.dart` and `fleet_profiles_stub.dart` are deleted. |
 | `app/lib/src/ui/settings/hosts_section.dart` | — | Reshape | A browser's add row is real, and its read-only note goes. |
 
+## Plan 8 — Previews in a browser (D11, open question 1)
+
+Plan: [plans/2026-11-20-od-8-browser-previews-plan.md](plans/2026-11-20-od-8-browser-previews-plan.md).
+
+| File | Lines | Action | What |
+|---|---:|---|---|
+| `web/bridge/preview.go` | — | Reshape | `preview_url` and the preview origin header may be a `{token}` template; the listener reads a templated host; `PreviewHandler` relays a recorded forwarded preview. |
+| `web/bridge/previewrelay.go` | — | Add | The relay table (by token and by agent and port), bounded and expiring, and the relay itself over each host's preview forward. |
+| `web/bridge/hostforward.go` | — | Reshape | The preview origin is chosen by the caller's `Host`, and a forwarded preview's link is recorded. |
+| `cmd/marshal/daemon.go` | — | Reshape | `daemon.preview_url` accepts a template. |
+
 ## Stays as it is
 
 - The socket, its peer check and every socket-only route.

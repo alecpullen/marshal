@@ -51,7 +51,7 @@ func newAttachHarness(t *testing.T) *attachHarness {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, filepath.Join(dir, "state"), Limits{}, "", nil, "marshal-state")
+	f := NewFleet(ws, "unused", nil, filepath.Join(dir, "state"), Limits{}, "")
 	f.lingerDur = 5 * time.Minute
 	t.Cleanup(f.Close)
 

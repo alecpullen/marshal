@@ -184,7 +184,7 @@ func newDeliveryHarness(t *testing.T) *deliveryHarness {
 	if err := ws.PutRepo(Repo{ID: "repo", URL: h.bare, Branch: "main", OwnerID: DefaultOwnerID}); err != nil {
 		t.Fatal(err)
 	}
-	h.fleet = NewFleet(ws, "", nil, t.TempDir(), Limits{}, "", nil, "")
+	h.fleet = NewFleet(ws, "", nil, t.TempDir(), Limits{}, "")
 	t.Cleanup(func() { h.fleet.Close() })
 	var err error
 	h.store, err = OpenFactoryStore(t.TempDir())

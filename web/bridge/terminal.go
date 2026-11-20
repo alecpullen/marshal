@@ -909,7 +909,7 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 	}
 	args = append(args, extras.mounts...)
 	for _, v := range wiring.Volumes {
-		args = append(args, f.stateMount(rtName, v.Target, v.Subpath, v.ReadOnly)...)
+		args = append(args, stateMount(f.stateDir, v.Target, v.Subpath, v.ReadOnly)...)
 	}
 	env := map[string]string{"TERM": "xterm-256color"}
 	for k, v := range extras.env {

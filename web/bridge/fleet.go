@@ -150,16 +150,12 @@ type Fleet struct {
 	// Nil means the real runner (exec.Command); tests inject a fake so the
 	// derive path is exercisable without a daemon.
 	runner commandRunner
-	// stateOnHost makes every state mount a bind of stateDir rather than a
-	// subpath of stateVolume, and userConfigDir the container agents' config
-	// home. Set through SetStateOnHost before anything starts.
-	stateOnHost bool
 	// userConfigDir is the host directory bound read-only as container
-	// agents' config home when stateOnHost is set ("" keeps the state
-	// subpath).
+	// agents' config home ("" keeps the state subpath). Set through
+	// SetConfigHome.
 	userConfigDir string
-	// requireRootless makes a host-state fleet on Linux use only a rootless
-	// container runtime: a rootful one is refused. Set by SetStateOnHost.
+	// requireRootless makes a fleet on Linux use only a rootless container
+	// runtime: a rootful one is refused. Set by SetConfigHome.
 	requireRootless bool
 	// rootless answers whether the detected runtime is rootless. Nil means
 	// probeRuntime's answer; tests inject one.
@@ -234,26 +230,19 @@ type Fleet struct {
 	blockedSeen map[string]time.Time
 	// blockedPending holds blocks no decision has answered yet.
 	blockedPending map[string]networkBlockDelta
-	// stateDir is where git mirrors and agent working trees live.
+	// stateDir is where git mirrors and agent working trees live, and the
+	// host directory every state mount binds under.
 	stateDir string
 	// workingDrafts is the durable store of incomplete manual factory
 	// handoffs. The factory routes open it beside stateDir and Close
 	// releases it; nil when this fleet has no factory API.
 	workingDrafts *WorkingDraftStore
-	// stateVolume is the name of the shared state volume mounted at
-	// stateDir. Agents mount subpaths of it.
-	stateVolume string
 	// audit is the security-relevant action log. Nil in tests that do
 	// not opt in; auditf tolerates that.
 	audit *AuditLog
 	// limits bounds concurrency and disk usage. Zero values mean
 	// "default" (4 concurrent) or "unlimited" (no disk/clone cap).
 	limits Limits
-
-	// projectMounts maps host paths to the bridge's in-container view,
-	// for translating LocalPath agent workspace mounts to the daemon's
-	// view. Empty when the bridge is a host process.
-	projectMounts []ProjectMount
 
 	// ctl is the lazily started control agent (see control.go).
 	ctl *controlRuntime
@@ -482,12 +471,10 @@ func (f *Fleet) SetFactoryController(c *FactoryController) {
 	f.backfillFactoryOnce.Do(f.backfillFactoryPulls)
 }
 
-func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string, projectMounts []ProjectMount, stateVolume string) *Fleet {
+// NewFleet builds a fleet whose state lives under stateDir on the host.
+func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string) *Fleet {
 	if stateDir == "" {
 		stateDir = filepath.Dir(ws.path)
-	}
-	if stateVolume == "" {
-		stateVolume = "marshal-state"
 	}
 	maxConcurrent := limits.MaxConcurrent
 	if maxConcurrent <= 0 {
@@ -500,27 +487,25 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		runtimes:     make(map[string]*agentRuntime),
 		sessionAgent: make(map[string]string),
 		orphans:      make(map[string][]string), reconciled: make(map[string]bool),
-		slots:         newSlots(maxConcurrent),
-		stateDir:      stateDir,
-		stateVolume:   stateVolume,
-		audit:         NewAuditLog(stateDir),
-		limits:        limits,
-		projectMounts: projectMounts,
-		done:          make(chan struct{}),
-		inboxWake:     make(chan struct{}, 1),
-		inboxDelay:    inboxSettleDelay,
-		inboxEvery:    inboxTick,
-		inboxStopped:  make(chan struct{}),
-		rateLimits:    make(map[string]time.Time),
-		provisioning:  make(map[string]string),
-		ctl:           newControlRuntime(),
-		usage:         NewUsageLog(stateDir),
-		templates:     NewTemplateStore(stateDir),
-		wsParses:      newWSParseCache(),
-		buildLog:      NewEventLog(),
-		builds:        newBuildLimiter(),
-		wsExtras:      make(map[string]wsExtras),
-		recipes:       NewRecipeStore(stateDir),
+		slots:        newSlots(maxConcurrent),
+		stateDir:     stateDir,
+		audit:        NewAuditLog(stateDir),
+		limits:       limits,
+		done:         make(chan struct{}),
+		inboxWake:    make(chan struct{}, 1),
+		inboxDelay:   inboxSettleDelay,
+		inboxEvery:   inboxTick,
+		inboxStopped: make(chan struct{}),
+		rateLimits:   make(map[string]time.Time),
+		provisioning: make(map[string]string),
+		ctl:          newControlRuntime(),
+		usage:        NewUsageLog(stateDir),
+		templates:    NewTemplateStore(stateDir),
+		wsParses:     newWSParseCache(),
+		buildLog:     NewEventLog(),
+		builds:       newBuildLimiter(),
+		wsExtras:     make(map[string]wsExtras),
+		recipes:      NewRecipeStore(stateDir),
 	}
 	f.pools = newPoolManager(f)
 	f.notify = newNotifier(f)
@@ -621,7 +606,7 @@ func (f *Fleet) containerConfigWith(a Agent, runtime, runtimeName string, wiring
 		Name:          containerNameFor(a.ID),
 		WorkspaceDir:  a.Project,
 		SocketDir:     socketDirFor(f.stateDir, a.ID),
-		StateVolume:   f.stateVolume,
+		StateDir:      f.stateDir,
 		WorkSubpath:   "work/" + a.ID,
 		SocketSubpath: "sockets/" + a.ID,
 		CPUs:          a.Profile.CPUs,
@@ -633,13 +618,10 @@ func (f *Fleet) containerConfigWith(a Agent, runtime, runtimeName string, wiring
 		// home, so memories and usage outlive any single container.
 		HomeConfigSubpath: homeConfigSubpath,
 		HomeDataSubpath:   homeDataSubpath,
+		HomeConfigDir:     f.userConfigDir,
 	}
 	if a.ContainerName != "" {
 		cfg.Name = a.ContainerName
-	}
-	if f.stateOnHost {
-		cfg.StateDir = f.stateDir
-		cfg.HomeConfigDir = f.userConfigDir
 	}
 	if a.WorkSubpath != "" {
 		cfg.WorkSubpath = a.WorkSubpath
@@ -650,14 +632,10 @@ func (f *Fleet) containerConfigWith(a Agent, runtime, runtimeName string, wiring
 	}
 	f.ensureHomes()
 	// A LocalPath agent works on the host checkout itself, so its
-	// workspace is a bind mount of the daemon's view of that path.
-	// Git-sourced agents use a volume subpath instead.
+	// workspace is a bind mount of that path. Git-sourced agents use a
+	// state subpath instead.
 	if a.SourceKind == "local" {
-		hostPath, err := f.localMountFor(a)
-		if err != nil {
-			return cfg, fmt.Errorf("bridge: refuse local agent mount for %s: %w (declare the root with --project-mount)", a.ID, err)
-		}
-		cfg.LocalMount = hostPath
+		cfg.LocalMount = a.Project
 	}
 	if a.Workspace != nil {
 		mounts, env, err := f.workspaceRuntimeExtras(a, runtimeName)
@@ -669,37 +647,20 @@ func (f *Fleet) containerConfigWith(a Agent, runtime, runtimeName string, wiring
 	return cfg, nil
 }
 
-// Subpaths of the state volume that hold the shared homes.
+// Subpaths of the state directory that hold the shared homes.
 const (
 	homeConfigSubpath = "home/config"
 	homeDataSubpath   = "home/data"
 )
 
-// ensureHomes creates the shared home directories under a local state
-// dir, so a bind of them never starts with a missing source. With a named
-// volume the runtime owns the layout and this is a harmless no-op on the
-// bridge's own view of stateDir.
+// ensureHomes creates the shared home directories under the state dir, so a
+// bind of them never starts with a missing source.
 func (f *Fleet) ensureHomes() {
 	for _, sub := range []string{homeConfigSubpath, homeDataSubpath} {
 		if err := os.MkdirAll(filepath.Join(f.stateDir, sub), 0o700); err != nil {
 			slog.Default().Warn("webbridge: create shared home failed", "dir", sub, "err", err)
 		}
 	}
-}
-
-// localMountFor resolves the bind-mount source for a LocalPath agent.
-//
-// Two situations look alike and are not. With no declared roots the
-// bridge is a host process: its own view is the daemon's view, and the
-// path passes through unchanged. With roots declared the bridge is
-// containerized, and a path under none of them is a misconfiguration —
-// returned as an error here, where it can name --project-mount, rather
-// than deferred to the runtime's "mounts denied", which cannot.
-func (f *Fleet) localMountFor(a Agent) (string, error) {
-	if len(f.projectMounts) == 0 {
-		return a.Project, nil
-	}
-	return TranslateToHost(f.projectMounts, a.Project)
 }
 
 func (f *Fleet) FleetLog() *EventLog { return f.fleetLog }
@@ -894,24 +855,12 @@ func detectedRuntime() (path, name string, ok bool) {
 	return p.path, p.name, p.ok
 }
 
-// SetStateOnHost makes the fleet's state mounts binds of its state
-// directory, and binds userConfigDir read-only as container agents' config
-// home ("" keeps the state subpath). On Linux it also requires a rootless
+// SetConfigHome binds userConfigDir read-only as container agents' config
+// home ("" keeps the state subpath), and on Linux requires a rootless
 // container runtime. Call it before anything starts.
-func (f *Fleet) SetStateOnHost(userConfigDir string) {
-	f.stateOnHost = true
+func (f *Fleet) SetConfigHome(userConfigDir string) {
 	f.userConfigDir = userConfigDir
 	f.requireRootless = runtime.GOOS == "linux"
-}
-
-// stateMount is the package stateMount with this fleet's volume and, when
-// its state is on the host, its state directory.
-func (f *Fleet) stateMount(runtimeName, target, subpath string, readonly bool) []string {
-	stateDir := ""
-	if f.stateOnHost {
-		stateDir = f.stateDir
-	}
-	return stateMount(runtimeName, f.stateVolume, stateDir, target, subpath, readonly)
 }
 
 // SetProjectEnv makes project children start with their project's

@@ -231,7 +231,7 @@ func TestDiscoverRouteInternalFailureIs500(t *testing.T) {
 	}
 	ws.mu.Unlock()
 
-	fleet := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "", nil, "")
+	fleet := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "")
 	t.Cleanup(fleet.Close)
 	s := NewServer(fleet)
 

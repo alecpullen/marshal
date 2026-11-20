@@ -562,7 +562,7 @@ func newDiscoveryFleet(t *testing.T) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatalf("load workspace: %v", err)
 	}
-	f := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "", nil, "")
+	f := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "")
 	t.Cleanup(f.Close)
 	return f
 }

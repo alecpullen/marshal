@@ -127,14 +127,16 @@ func (f *Fleet) workspaceMounts(ctx context.Context, doc WSDoc, storeName, runti
 			if err != nil {
 				return nil, err
 			}
-			args = append(args, f.stateMount(runtimeName, m.Target, "repos/"+filepath.Base(mirror), true)...)
+			args = append(args, stateMount(f.stateDir, m.Target, "repos/"+filepath.Base(mirror), true)...)
 		case m.Volume != "" && m.Repo == "":
 			if !volumeNameRe.MatchString(m.Volume) {
 				return nil, fmt.Errorf("%w: invalid volume name %q", ErrWorkspaceMountTarget, m.Volume)
 			}
 			// The marshal- namespace belongs to the bridge: its state
-			// volume holds fleet.json, credentials and every agent's work.
-			if m.Volume == f.stateVolume || strings.HasPrefix(m.Volume, "marshal-") {
+			// holds fleet.json, credentials and every agent's work. The
+			// prefix stays reserved, so an old marshal-state volume cannot
+			// be mounted by name.
+			if strings.HasPrefix(m.Volume, "marshal-") {
 				return nil, fmt.Errorf("%w: volume %q is reserved for the bridge", ErrWorkspaceMountTarget, m.Volume)
 			}
 			args = append(args, plainVolumeMount(m.Volume, m.Target, m.Readonly)...)
@@ -149,7 +151,7 @@ func (f *Fleet) workspaceMounts(ctx context.Context, doc WSDoc, storeName, runti
 		if !fileSourceRe.MatchString(src) || path.IsAbs(src) || path.Clean(src) != src || src == ".." || strings.HasPrefix(src, "../") {
 			return nil, fmt.Errorf("%w: invalid file source %q", ErrWorkspaceMountTarget, src)
 		}
-		args = append(args, f.stateMount(runtimeName, fm.Target, "workspaces/"+storeName+"/files/"+src, fm.Readonly)...)
+		args = append(args, stateMount(f.stateDir, fm.Target, "workspaces/"+storeName+"/files/"+src, fm.Readonly)...)
 	}
 	return args, nil
 }

@@ -379,7 +379,7 @@ func TestFactoryHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	fleet := NewFleet(NewWorkspace(t.TempDir()), "", nil, t.TempDir(), Limits{}, "", nil, "")
+	fleet := NewFleet(NewWorkspace(t.TempDir()), "", nil, t.TempDir(), Limits{}, "")
 	defer fleet.Close()
 	srv := NewServer(fleet)
 	srv.factoryRoutes(NewFactoryAPI(store, nil, fleet))
@@ -1090,7 +1090,7 @@ type factoryCompletionHTTP struct {
 // capability, exactly as the controller's own opener consults them.
 func newFactoryCompletionHTTP(t *testing.T, base Forge, factory FactoryForge) *factoryCompletionHTTP {
 	t.Helper()
-	fleet := NewFleet(NewWorkspace(filepath.Join(t.TempDir(), "fleet.json")), "", nil, t.TempDir(), Limits{}, "", nil, "")
+	fleet := NewFleet(NewWorkspace(filepath.Join(t.TempDir(), "fleet.json")), "", nil, t.TempDir(), Limits{}, "")
 	t.Cleanup(fleet.Close)
 	root := t.TempDir()
 	if err := fleet.ws.AddProject(root); err != nil {

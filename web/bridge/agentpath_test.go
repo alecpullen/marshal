@@ -242,7 +242,7 @@ func testFleetWithContainerizedAgent(t *testing.T) (*Fleet, *capturingTransport)
 	// A workspace is what keeps an agent in a container (Task 4), so the
 	// fleet publishes a built one: an agent given it stays containerised,
 	// which is the view these tests are about.
-	f := NewFleet(ws, "unused", nil, shortStateDir(t), Limits{}, "", nil, "marshal-state")
+	f := NewFleet(ws, "unused", nil, shortStateDir(t), Limits{}, "")
 	f.runner = func(name string, args ...string) ([]byte, error) { return nil, nil }
 	publishDoc(t, f, "w", sampleDoc("w"))
 	if err := f.templates.SetBuild("w", 1, "ok", "marshal-derived-w", 1, 1); err != nil {

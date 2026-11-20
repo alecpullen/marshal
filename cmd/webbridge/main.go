@@ -69,23 +69,19 @@ type config struct {
 	previewAddr string
 	// previewURL is the public origin preview links name, for a proxy that
 	// publishes previews.
-	previewURL  string
-	marshalBin  string
-	cwdRoot     string
-	projects    []string
-	workspace   string
-	stateDir    string
-	stateVolume string
-	agentEnv    stringList
+	previewURL string
+	marshalBin string
+	cwdRoot    string
+	projects   []string
+	workspace  string
+	stateDir   string
+	agentEnv   stringList
 	// maxConcurrent bounds concurrent agents (0 = default 4).
 	maxConcurrent int
 	// maxDiskMB bounds the state directory size in MB (0 = unlimited).
 	maxDiskMB int64
 	// maxCloneMB bounds a single clone size in MB (0 = unlimited).
 	maxCloneMB int64
-	// projectMounts maps host paths to the bridge's in-container view,
-	// for translating LocalPath agent workspace mounts.
-	projectMounts []bridge.ProjectMount
 	// secrets selects the secret backend: env (default), local or openbao.
 	secrets         string
 	secretsKeyFile  string
@@ -140,12 +136,8 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	cwdRoot := fs.String("cwd-root", envOr("WEBBRIDGE_CWD_ROOT", ""), "default cwd for session list/load (defaults to the working directory)")
 	var projects stringList
 	fs.Var(&projects, "project", "project root to manage (repeatable)")
-	var projectMounts stringList
-	fs.Var(&projectMounts, "project-mount", "host:container path mapping for local project mounts (repeatable)")
 	workspace := fs.String("workspace", envOr("WEBBRIDGE_WORKSPACE", ""), "fleet workspace path")
 	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", defaultStateDir), "directory for repo mirrors and agent workspaces (defaults to /state)")
-	stateVolume := fs.String("state-volume", envOr("WEBBRIDGE_STATE_VOLUME", ""),
-		"named volume holding the state, for a containerized bridge (default: state on the host)")
 	var agentEnv stringList
 	fs.Var(&agentEnv, "agent-env", "KEY=VALUE handed to every agent container (repeatable)")
 	maxConcurrent := fs.Int("max-concurrent", 0, "max concurrent agents (0 = default 4)")
@@ -198,15 +190,10 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{socket: *socket, webListen: *webListen, webGroup: *webGroup, previewAddr: *previewAddr, previewURL: *previewURL, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
+	cfg := config{socket: *socket, webListen: *webListen, webGroup: *webGroup, previewAddr: *previewAddr, previewURL: *previewURL, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
 		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL,
 		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh, tunnels: *tunnels, studioDir: *studioDir}
-	pm, err := parseProjectMounts(projectMounts)
-	if err != nil {
-		return config{}, err
-	}
-	cfg.projectMounts = pm
 	given := givenFrom(fs)
 	if err := applyDaemonDefaults(&cfg, given, *profile); err != nil {
 		return config{}, err
@@ -445,23 +432,6 @@ func localProjectEnv() (*bridge.ProjectEnv, error) {
 	return bridge.NewProjectEnv([]string{exe, "print-env"}), nil
 }
 
-// parseProjectMounts parses repeatable --project-mount HOST:CONTAINER
-// flags into ProjectMount entries.
-func parseProjectMounts(specs []string) ([]bridge.ProjectMount, error) {
-	var mounts []bridge.ProjectMount
-	for _, s := range specs {
-		parts := strings.SplitN(s, ":", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return nil, fmt.Errorf("--project-mount %q: expected HOST:CONTAINER", s)
-		}
-		mounts = append(mounts, bridge.ProjectMount{
-			Host:      filepath.Clean(parts[0]),
-			Container: filepath.Clean(parts[1]),
-		})
-	}
-	return mounts, nil
-}
-
 // askpassResponse answers one git credential prompt. Git asks for a
 // username and a password separately, so the prompt text selects which
 // value to return.
@@ -607,22 +577,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		MaxConcurrent: cfg.maxConcurrent,
 		MaxDiskMB:     cfg.maxDiskMB,
 		MaxCloneMB:    cfg.maxCloneMB,
-	}, daemonVersion(), cfg.projectMounts, cfg.stateVolume)
+	}, daemonVersion())
 
-	// The daemon's state is on the host unless a named volume was given: the
-	// fleet then binds its state directory into the mounts it hands out,
-	// instead of naming a volume. This must precede every start below —
-	// egress, reattach, the poller and the scheduler — so no agent or probe
-	// starts with the other answer.
-	if cfg.stateVolume == "" {
-		stateOnHost := ""
-		if home, herr := os.UserHomeDir(); herr != nil {
-			slog.Default().Warn("webbridge: no home directory for container agents' config; using the state subpath", "err", herr)
-		} else {
-			stateOnHost = appconfig.UserDir(home)
-		}
-		fleet.SetStateOnHost(stateOnHost)
+	// A container agent's config home is the user's own, bound read-only, so
+	// a sign-in made once serves every agent. The fleet's state is always on
+	// the host, so this must precede every start below — egress, reattach,
+	// the poller and the scheduler — and no probe may run before it.
+	configHome := ""
+	if home, herr := os.UserHomeDir(); herr != nil {
+		slog.Default().Warn("webbridge: no home directory for container agents' config; using the state subpath", "err", herr)
+	} else {
+		configHome = appconfig.UserDir(home)
 	}
+	fleet.SetConfigHome(configHome)
 
 	// A project child starts with its project's environment (decision 7). A
 	// bridge that cannot name its own binary leaves children inheriting the

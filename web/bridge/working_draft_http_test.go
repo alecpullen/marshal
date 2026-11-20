@@ -96,7 +96,7 @@ type workingDraftHTTPEnv struct {
 
 func newWorkingDraftHTTPEnv(t *testing.T) *workingDraftHTTPEnv {
 	t.Helper()
-	fleet := NewFleet(NewWorkspace(filepath.Join(t.TempDir(), "fleet.json")), "", nil, t.TempDir(), Limits{}, "", nil, "")
+	fleet := NewFleet(NewWorkspace(filepath.Join(t.TempDir(), "fleet.json")), "", nil, t.TempDir(), Limits{}, "")
 	t.Cleanup(fleet.Close)
 	root := t.TempDir()
 	other := t.TempDir()

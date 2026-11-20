@@ -59,7 +59,7 @@ func TestFactoryStartupRecoveryBeforeDispatchAndParkedSkip(t *testing.T) {
 	if err := ws.PutAgent(bridge.Agent{ID: "parked", Project: root, FactoryItemID: "old-item", FactoryRole: "implementer", FactoryParked: true}); err != nil {
 		t.Fatal(err)
 	}
-	fleet := bridge.NewFleet(ws, "nonexistent-fixture-binary", nil, state, bridge.Limits{}, "", nil, "")
+	fleet := bridge.NewFleet(ws, "nonexistent-fixture-binary", nil, state, bridge.Limits{}, "")
 	defer fleet.Close()
 	store, err := bridge.OpenFactoryStore(filepath.Join(state, "factory", "v1"))
 	if err != nil {

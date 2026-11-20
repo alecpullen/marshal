@@ -287,7 +287,7 @@ func newPlannerTestEnv(t *testing.T) *plannerTestEnv {
 	if err := env.ws.PutProjectSettings(env.root, ProjectSettings{Intake: ProjectIntake{RepoID: env.repo.ID}}); err != nil {
 		t.Fatalf("store project settings: %v", err)
 	}
-	env.fleet = NewFleet(env.ws, "unused", nil, env.stateDir, Limits{}, "", nil, "")
+	env.fleet = NewFleet(env.ws, "unused", nil, env.stateDir, Limits{}, "")
 	t.Cleanup(env.fleet.Close)
 	env.provisioner = &fakePlannerProvisioner{stateDir: env.stateDir}
 	env.use(newFakePlannerBackend())

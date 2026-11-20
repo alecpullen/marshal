@@ -70,7 +70,7 @@ func TestPlainAgentsNeverProbeTheRuntime(t *testing.T) {
 // spawn, a workspace build (wsbuild.go) — and writeErr maps it to 501 rather
 // than falling through to 502.
 func TestNoRuntimeAnswers501ForContainerOnlyOperations(t *testing.T) {
-	f := testFleetWithStateVolume(t, "marshal-state")
+	f := containerFleet(t)
 	f.probe = func() (path, name string, ok bool) { return "", "", false }
 
 	_, err := f.runtimeName()

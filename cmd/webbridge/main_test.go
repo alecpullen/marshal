@@ -50,9 +50,6 @@ func TestParseConfigDefaults(t *testing.T) {
 	if cfg.egress != "off" {
 		t.Errorf("egress = %q, want off", cfg.egress)
 	}
-	if cfg.stateVolume != "" {
-		t.Errorf("stateVolume = %q, want empty: the daemon keeps its state on the host", cfg.stateVolume)
-	}
 	if cfg.cwdRoot != "" {
 		t.Errorf("cwdRoot = %q, want empty: the daemon registers no working-directory project", cfg.cwdRoot)
 	}
@@ -322,16 +319,6 @@ func TestParseConfigProjects(t *testing.T) {
 	}
 }
 
-func TestParseProjectMountRejectsMalformed(t *testing.T) {
-	if _, err := parseProjectMounts([]string{"no-colon"}); err == nil {
-		t.Fatal("accepted a mapping with no colon")
-	}
-	got, err := parseProjectMounts([]string{"/h:/c"})
-	if err != nil || len(got) != 1 || got[0].Host != "/h" || got[0].Container != "/c" {
-		t.Fatalf("got %+v, err %v", got, err)
-	}
-}
-
 func TestParseConfigRejectsArgs(t *testing.T) {
 	if _, err := parseConfig([]string{"bogus"}, io.Discard); err == nil {
 		t.Fatal("positional arg: expected error, got nil")
@@ -366,24 +353,6 @@ func TestAskpassModeShortCircuitsRun(t *testing.T) {
 	}
 	if strings.TrimSpace(out.String()) != "sk-secret" {
 		t.Fatalf("askpass printed %q, want the secret", out.String())
-	}
-}
-
-func TestParseConfigStateVolume(t *testing.T) {
-	t.Setenv("WEBBRIDGE_STATE_VOLUME", "")
-	cfg, err := parseConfig(nil, io.Discard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.stateVolume != "" {
-		t.Fatalf("default = %q, want empty: the daemon keeps its state on the host", cfg.stateVolume)
-	}
-	cfg, err = parseConfig([]string{"--state-volume", "prod-state"}, io.Discard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.stateVolume != "prod-state" {
-		t.Fatalf("got %q", cfg.stateVolume)
 	}
 }
 

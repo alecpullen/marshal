@@ -156,7 +156,8 @@ func TestEgressContainerTopology(t *testing.T) {
 	joined := strings.Join(runs[0], " ")
 	for _, want := range []string{
 		"--name marshal-egress", "--network marshal-agents",
-		"target=/egress,volume-subpath=egress", "-p 127.0.0.1::8081", "marshal-egress:v1 egress --listen :3128 --preview-listen :8081 --control unix:///egress/control.sock",
+		"--mount type=bind,source=" + filepath.Join(f.stateDir, egressSubpath) + ",target=" + egressMountDir,
+		"-p 127.0.0.1::8081", "marshal-egress:v1 egress --listen :3128 --preview-listen :8081 --control unix:///egress/control.sock",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("sidecar args missing %q:\n%s", want, joined)
@@ -213,7 +214,7 @@ func TestEgressAgentWiringAndPolicy(t *testing.T) {
 	}
 	cfg := ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: containerNameFor(a.ID),
-		StateVolume: "marshal-state", WorkSubpath: "work/ag1", SocketSubpath: "sockets/ag1", SocketDir: "/s",
+		StateDir: t.TempDir(), WorkSubpath: "work/ag1", SocketSubpath: "sockets/ag1", SocketDir: "/s",
 		Env: withEnv(map[string]string{"X": "1"}, w.Env), Network: w.Network, ExtraVolumes: w.Volumes,
 	}
 	joined := strings.Join(newContainerTransport(cfg).buildRunArgs(), " ")
@@ -315,9 +316,10 @@ func TestEgressInjectionAddsCAMountAndEnv(t *testing.T) {
 		w.Env["GIT_SSL_CAINFO"] == "" || w.Env["REQUESTS_CA_BUNDLE"] == "" || w.Env["CURL_CA_BUNDLE"] == "" {
 		t.Fatalf("CA env = %v", w.Env)
 	}
-	cfg := ContainerConfig{RuntimeName: "docker", StateVolume: "v", ExtraVolumes: w.Volumes, Network: w.Network, Image: "i", Name: "n"}
+	stateDir := t.TempDir()
+	cfg := ContainerConfig{RuntimeName: "docker", StateDir: stateDir, ExtraVolumes: w.Volumes, Network: w.Network, Image: "i", Name: "n"}
 	joined := strings.Join(newContainerTransport(cfg).buildRunArgs(), " ")
-	if !strings.Contains(joined, "target=/marshal/ca,volume-subpath=ca,readonly") {
+	if !strings.Contains(joined, "source="+filepath.Join(stateDir, "ca")+",target=/marshal/ca,readonly") {
 		t.Errorf("CA not mounted read-only:\n%s", joined)
 	}
 	for _, e := range w.Env {

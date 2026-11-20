@@ -40,7 +40,7 @@ func previewReportFleet(t *testing.T, repo Repo, cred *Credential) (*Fleet, *Wor
 			t.Fatalf("put credential: %v", err)
 		}
 	}
-	f := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "", nil, "")
+	f := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "")
 	t.Cleanup(f.Close)
 	return f, ws
 }

@@ -121,7 +121,7 @@ func newStudioBridge(t *testing.T, home, root string) *studioBridge {
 	// A host-process fleet: this test starts no container and spawns no worker.
 	// The controller is built without effects, so an approval is journalled and
 	// nothing is dispatched.
-	fleet := bridge.NewFleet(ws, "", nil, stateDir, bridge.Limits{}, "test", nil, "")
+	fleet := bridge.NewFleet(ws, "", nil, stateDir, bridge.Limits{}, "test")
 	t.Cleanup(fleet.Close)
 
 	api := bridge.NewFactoryAPI(store, bridge.NewFactoryController(store, nil, nil), fleet)

@@ -17,22 +17,53 @@ type sseEvent struct {
 	data string
 }
 
+// sseReadTimeout bounds one event's read. Without it a stream that is open but
+// silent blocks until the package's own test timeout, which is exactly how a
+// lost event presented itself: a 20-minute hang that named no event. The bound
+// turns that into a failure in seconds.
+const sseReadTimeout = 10 * time.Second
+
 // readSSEEvent reads one event frame (id/data lines up to the blank
 // separator). Comment lines (": ...") are skipped and reading
 // continues, so heartbeats do not satisfy a test waiting for an event.
 func readSSEEvent(t *testing.T, rd *bufio.Reader) sseEvent {
 	t.Helper()
+	type read struct {
+		ev  sseEvent
+		err error
+	}
+	done := make(chan read, 1)
+	go func() {
+		ev, err := readSSEEventBlocking(rd)
+		done <- read{ev: ev, err: err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("read SSE line: %v", r.err)
+		}
+		return r.ev
+	case <-time.After(sseReadTimeout):
+		t.Fatalf("no SSE event within %s: the stream is open and silent", sseReadTimeout)
+		return sseEvent{}
+	}
+}
+
+// readSSEEventBlocking is readSSEEvent's body, off the test's goroutine so a
+// silent stream cannot hold it. It must not touch t: the test's cleanup closes
+// the response body, and that is what releases it after a timeout.
+func readSSEEventBlocking(rd *bufio.Reader) (sseEvent, error) {
 	var ev sseEvent
 	for {
 		line, err := rd.ReadString('\n')
 		if err != nil {
-			t.Fatalf("read SSE line: %v", err)
+			return sseEvent{}, err
 		}
 		line = strings.TrimRight(line, "\r\n")
 		switch {
 		case line == "":
 			if ev.data != "" {
-				return ev
+				return ev, nil
 			}
 		case strings.HasPrefix(line, ":"):
 			// heartbeat comment: skip

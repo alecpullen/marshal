@@ -448,3 +448,223 @@ ca_file = "edge.pem"
 		}
 	}
 }
+
+// TestAHostTableLoads holds D6's [hosts.<name>] table: ssh and marshal are
+// read, and notifications are on unless the table turns them off.
+func TestAHostTableLoads(t *testing.T) {
+	f, err := Load(writeFleet(t, `
+[hosts.attic]
+ssh = "me@attic"
+
+[hosts.basement]
+ssh = "basement"
+marshal = "/opt/marshal/bin/marshal"
+notify = false
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := sortedNames(f.Hosts); len(got) != 2 || got[0] != "attic" || got[1] != "basement" {
+		t.Fatalf("hosts = %v, want attic and basement", got)
+	}
+
+	attic, ok := f.Hosts["attic"]
+	if !ok {
+		t.Fatalf("hosts = %v, want attic", sortedNames(f.Hosts))
+	}
+	if attic.Name != "attic" || attic.SSH != "me@attic" || attic.Marshal != "" {
+		t.Fatalf("attic = %+v", attic)
+	}
+	if !attic.Notify {
+		t.Fatal("attic's absent notify reads false, want true")
+	}
+
+	basement := f.Hosts["basement"]
+	if basement.SSH != "basement" || basement.Marshal != "/opt/marshal/bin/marshal" {
+		t.Fatalf("basement = %+v", basement)
+	}
+	if basement.Notify {
+		t.Fatal("basement's notify = false reads true")
+	}
+
+	if len(f.Servers) != 0 {
+		t.Fatalf("servers = %v, want none", sortedNames(f.Servers))
+	}
+}
+
+// TestAHostNeedsAnSSHDestination holds D6's rule that ssh is what a host is.
+func TestAHostNeedsAnSSHDestination(t *testing.T) {
+	_, err := Load(writeFleet(t, `
+[hosts.attic]
+marshal = "~/.local/bin/marshal"
+`))
+	if err == nil {
+		t.Fatal("a host with no ssh destination loaded, want a refusal")
+	}
+	want := "fleet.toml: hosts.attic.ssh: a host needs an ssh destination, as ssh takes it: \"you@machine\" or a Host from ~/.ssh/config"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
+// TestAHostDestinationMayNotLookLikeAnOption holds D6's rule that ssh never
+// reads the destination as one of its own options.
+func TestAHostDestinationMayNotLookLikeAnOption(t *testing.T) {
+	_, err := Load(writeFleet(t, "[hosts.attic]\nssh = \"-oProxyCommand=x\"\n"))
+	if err == nil {
+		t.Fatal("a destination starting with \"-\" loaded, want a refusal")
+	}
+	for _, want := range []string{"hosts.attic.ssh", "option", `never starts with "-"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to name %q", err, want)
+		}
+	}
+}
+
+// TestAHostDestinationMayNotHoldWhitespace holds D6's rule that a destination
+// is one argument.
+func TestAHostDestinationMayNotHoldWhitespace(t *testing.T) {
+	// "\t" in a TOML basic string is a tab.
+	cases := map[string]string{
+		"a space": "me@box extra",
+		"a tab":   `me@box\textra`,
+	}
+	for name, ssh := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(writeFleet(t, "[hosts.attic]\nssh = \""+ssh+"\"\n"))
+			if err == nil {
+				t.Fatalf("destination %q loaded, want a refusal", ssh)
+			}
+			for _, want := range []string{"hosts.attic.ssh", "whitespace"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want it to name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestAHostsMarshalIsAbsoluteOrHome holds D6's rule for marshal: the remote
+// binary's path, absolute or relative to the remote home.
+func TestAHostsMarshalIsAbsoluteOrHome(t *testing.T) {
+	path := writeFleet(t, `
+[hosts.absolute]
+ssh = "me@attic"
+marshal = "/opt/marshal/bin/marshal"
+
+[hosts.home]
+ssh = "me@attic"
+marshal = "~/.local/bin/marshal"
+`)
+	f, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := f.Hosts["absolute"].Marshal, "/opt/marshal/bin/marshal"; got != want {
+		t.Fatalf("marshal = %q, want %q", got, want)
+	}
+	if got, want := f.Hosts["home"].Marshal, "~/.local/bin/marshal"; got != want {
+		t.Fatalf("marshal = %q, want %q", got, want)
+	}
+
+	_, err = Load(writeFleet(t, "[hosts.path]\nssh = \"me@attic\"\nmarshal = \"bin/marshal\"\n"))
+	if err == nil {
+		t.Fatal("a bare relative marshal loaded, want a refusal")
+	}
+	for _, want := range []string{"hosts.path.marshal", "bin/marshal"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to name %q", err, want)
+		}
+	}
+}
+
+// TestAHostRefusesTheServerKeys holds D6's rule that a host takes none of the
+// server's keys, and that the refusal names the new shape.
+func TestAHostRefusesTheServerKeys(t *testing.T) {
+	cases := map[string]string{
+		"url":       `url = "https://attic.example.com"`,
+		"relay":     `relay = "hub"`,
+		"ca_file":   `ca_file = "/etc/ssl/attic.pem"`,
+		"token_cmd": `token_cmd = "pass show fleet/attic"`,
+		"token":     `token = "s3cret"`,
+	}
+	for key, line := range cases {
+		t.Run(key, func(t *testing.T) {
+			_, err := Load(writeFleet(t, "[hosts.attic]\nssh = \"me@attic\"\n"+line+"\n"))
+			if err == nil {
+				t.Fatalf("hosts.attic took %s, want a refusal", key)
+			}
+			for _, want := range []string{"hosts.attic." + key, `ssh = "you@machine"`} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want it to name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestANameIsNotBothAServerAndAHost holds D6's rule that one name means one
+// thing: the two tables hold different shapes, so both is a refusal.
+func TestANameIsNotBothAServerAndAHost(t *testing.T) {
+	_, err := Load(writeFleet(t, `
+[servers.home]
+url = "https://fleet.example.com"
+
+[hosts.home]
+ssh = "me@home"
+`))
+	if err == nil {
+		t.Fatal("a name that is both a server and a host loaded, want a refusal")
+	}
+	want := "fleet.toml: home is both a server and a host; keep the [hosts.home] table"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
+// TestLookupHostNamesTheFileAndItsHosts holds D6's lookup: the error names the
+// file and the hosts it holds, and an empty file shows a starter table.
+func TestLookupHostNamesTheFileAndItsHosts(t *testing.T) {
+	f, err := Load(writeFleet(t, `
+[hosts.attic]
+ssh = "me@attic"
+
+[hosts.basement]
+ssh = "basement"
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	h, err := f.LookupHost("basement")
+	if err != nil {
+		t.Fatalf("LookupHost(basement): %v", err)
+	}
+	if h.SSH != "basement" {
+		t.Fatalf("LookupHost(basement) = %+v", h)
+	}
+
+	_, err = f.LookupHost("shed")
+	if err == nil {
+		t.Fatal("LookupHost(shed) answered a host, want an error")
+	}
+	for _, want := range []string{f.Path, "attic", "basement", "shed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to name %q", err, want)
+		}
+	}
+
+	empty, err := Load(filepath.Join(t.TempDir(), fileName))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	_, err = empty.LookupHost("shed")
+	if err == nil {
+		t.Fatal("LookupHost answered a host from an empty file, want an error")
+	}
+	for _, want := range []string{empty.Path, "[hosts.shed]", `ssh = "you@machine"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to hold %q", err, want)
+		}
+	}
+}

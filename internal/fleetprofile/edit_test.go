@@ -391,3 +391,158 @@ func TestAddServerWritesARelay(t *testing.T) {
 		t.Fatalf("the refused add changed the file:\n%s", got)
 	}
 }
+
+// TestAddHostAppendsATableAndKeepsComments holds D6's edit: the file keeps its
+// comments and gains the host's table at its end, private, and Load reads it
+// back.
+func TestAddHostAppendsATableAndKeepsComments(t *testing.T) {
+	body := `# hosts I reach
+
+[local]
+notify = false
+`
+	path := writeFleet(t, body)
+	h := Host{Name: "attic", SSH: "me@attic", Marshal: "/opt/marshal/bin/marshal", Notify: true}
+
+	if err := AddHost(path, h); err != nil {
+		t.Fatalf("AddHost: %v", err)
+	}
+
+	want := body + "\n[hosts.attic]\nssh = \"me@attic\"\nmarshal = \"/opt/marshal/bin/marshal\"\n"
+	if got := readText(t, path); got != want {
+		t.Fatalf("fleet.toml =\n%s\nwant\n%s", got, want)
+	}
+
+	f, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	attic, ok := f.Hosts["attic"]
+	if !ok {
+		t.Fatalf("hosts = %v, want attic", sortedNames(f.Hosts))
+	}
+	if attic.SSH != h.SSH || attic.Marshal != h.Marshal || !attic.Notify {
+		t.Fatalf("attic = %+v", attic)
+	}
+	if f.Local.Notify {
+		t.Fatal("local.notify = false was lost: it reads true")
+	}
+
+	if !modeChecked(t) {
+		t.Log("this platform's file modes carry no owner or group bits")
+		return
+	}
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if perm := fileInfo.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("fleet.toml is mode %04o, want 0600", perm)
+	}
+}
+
+// TestAddHostWritesMarshalAndNotifyOnlyWhenSet holds D6's table: marshal is
+// written only when the host names it, and notify = false only when
+// notifications are off.
+func TestAddHostWritesMarshalAndNotifyOnlyWhenSet(t *testing.T) {
+	path := writeFleet(t, "")
+
+	if err := AddHost(path, Host{Name: "on", SSH: "me@on", Notify: true}); err != nil {
+		t.Fatalf("AddHost(on): %v", err)
+	}
+	if err := AddHost(path, Host{Name: "off", SSH: "me@off", Marshal: "~/.local/bin/marshal", Notify: false}); err != nil {
+		t.Fatalf("AddHost(off): %v", err)
+	}
+
+	want := `
+[hosts.on]
+ssh = "me@on"
+
+[hosts.off]
+ssh = "me@off"
+marshal = "~/.local/bin/marshal"
+notify = false
+`
+	if got := readText(t, path); got != want {
+		t.Fatalf("fleet.toml =\n%s\nwant\n%s", got, want)
+	}
+
+	f, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !f.Hosts["on"].Notify {
+		t.Fatal("on's notify was written or lost: it reads false")
+	}
+	if f.Hosts["off"].Notify {
+		t.Fatal("off's notify = false was lost: it reads true")
+	}
+}
+
+// TestAddHostRefusesANameAlreadyPresent holds D6's one-name-one-thing rule for
+// the edit path too: a name the file holds as a host or as a server is
+// refused.
+func TestAddHostRefusesANameAlreadyPresent(t *testing.T) {
+	cases := map[string]string{
+		"in hosts":   "[hosts.attic]\nssh = \"me@attic\"\n",
+		"in servers": "[servers.attic]\nurl = \"https://attic.example.com\"\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeFleet(t, body)
+
+			err := AddHost(path, Host{Name: "attic", SSH: "me@other", Notify: true})
+			if err == nil {
+				t.Fatal("a duplicate name was added, want a refusal")
+			}
+			if want := "attic is already in fleet.toml"; err.Error() != want {
+				t.Fatalf("error = %q, want %q", err, want)
+			}
+			if got := readText(t, path); got != body {
+				t.Fatalf("the refused add changed the file:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestRemoveHostDeletesOnlyItsTable holds D6's remove: the tables around it,
+// and their comments, are kept.
+func TestRemoveHostDeletesOnlyItsTable(t *testing.T) {
+	path := writeFleet(t, `# hosts I reach
+
+[hosts.attic]
+# attic's own
+ssh = "me@attic"
+
+[hosts.basement]
+ssh = "basement"
+
+[hosts.shed]
+ssh = "me@shed"
+`)
+
+	if err := RemoveHost(path, "basement"); err != nil {
+		t.Fatalf("RemoveHost(basement): %v", err)
+	}
+
+	want := `# hosts I reach
+
+[hosts.attic]
+# attic's own
+ssh = "me@attic"
+
+[hosts.shed]
+ssh = "me@shed"
+`
+	if got := readText(t, path); got != want {
+		t.Fatalf("fleet.toml =\n%s\nwant\n%s", got, want)
+	}
+
+	f, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := sortedNames(f.Hosts); len(got) != 2 || got[0] != "attic" || got[1] != "shed" {
+		t.Fatalf("hosts = %v, want attic and shed", got)
+	}
+}

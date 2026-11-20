@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	toml "github.com/pelletier/go-toml/v2"
 
@@ -29,6 +30,7 @@ import (
 type File struct {
 	Path    string            // where it was read from
 	Servers map[string]Server // by name
+	Hosts   map[string]Host   // by name
 	Local   Local
 }
 
@@ -42,6 +44,15 @@ type Server struct {
 	Notify   bool
 }
 
+// Host is one [hosts.<name>] table (one-daemon D6): a remote daemon reached
+// by forwarding its socket over SSH.
+type Host struct {
+	Name    string
+	SSH     string // the destination, exactly as ssh takes it
+	Marshal string // the remote binary: absolute or "~/"-relative; "" is marshal on the remote PATH
+	Notify  bool
+}
+
 // Local is the file's [local] table.
 type Local struct {
 	Notify bool
@@ -53,11 +64,12 @@ const fileName = "fleet.toml"
 // serverNameRe is what a server's name may hold (decision 2).
 var serverNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
-// rawFile, rawServer and rawLocal decode the file. They are separate from the
-// types above so that decoding can be strict and a missing notify can read as
-// true.
+// rawFile, rawServer, rawHost and rawLocal decode the file. They are separate
+// from the types above so that decoding can be strict and a missing notify can
+// read as true.
 type rawFile struct {
 	Servers map[string]rawServer `toml:"servers"`
+	Hosts   map[string]rawHost   `toml:"hosts"`
 	Local   rawLocal             `toml:"local"`
 }
 
@@ -67,6 +79,20 @@ type rawServer struct {
 	TokenCmd string  `toml:"token_cmd"`
 	CAFile   string  `toml:"ca_file"`
 	Notify   *bool   `toml:"notify"`
+	Token    *string `toml:"token"`
+}
+
+// rawHost decodes one [hosts.<name>] table (D6). The retired server keys are
+// pointers so that each can be refused by name: a host is reached over SSH,
+// and has no url, TLS, relay or token of its own.
+type rawHost struct {
+	SSH      string  `toml:"ssh"`
+	Marshal  string  `toml:"marshal"`
+	Notify   *bool   `toml:"notify"`
+	URL      *string `toml:"url"`
+	Relay    *string `toml:"relay"`
+	CAFile   *string `toml:"ca_file"`
+	TokenCmd *string `toml:"token_cmd"`
 	Token    *string `toml:"token"`
 }
 
@@ -82,7 +108,7 @@ func Path(home string) string {
 // Load reads and checks the file at path (decisions 2 and 3). A missing file
 // is the empty File, with notifications on.
 func Load(path string) (File, error) {
-	empty := File{Path: path, Servers: map[string]Server{}, Local: Local{Notify: true}}
+	empty := File{Path: path, Servers: map[string]Server{}, Hosts: map[string]Host{}, Local: Local{Notify: true}}
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -118,6 +144,7 @@ func decode(path string, src []byte) (File, error) {
 	f := File{
 		Path:    path,
 		Servers: make(map[string]Server, len(raw.Servers)),
+		Hosts:   make(map[string]Host, len(raw.Hosts)),
 		Local:   Local{Notify: true},
 	}
 	if raw.Local.Notify != nil {
@@ -129,6 +156,20 @@ func decode(path string, src []byte) (File, error) {
 			return File{}, err
 		}
 		f.Servers[name] = srv
+	}
+	for _, name := range sortedNames(raw.Hosts) {
+		h, err := buildHost(name, raw.Hosts[name])
+		if err != nil {
+			return File{}, err
+		}
+		f.Hosts[name] = h
+	}
+	// One name means one thing: a table is a host or a server, never both
+	// (D6).
+	for _, name := range sortedNames(f.Hosts) {
+		if _, both := f.Servers[name]; both {
+			return File{}, fmt.Errorf("fleet.toml: %s is both a server and a host; keep the [hosts.%s] table", name, name)
+		}
 	}
 	// A relay names another server, so it is checked once they are all built
 	// (D20).
@@ -162,7 +203,7 @@ func buildServer(path, name string, raw rawServer) (Server, error) {
 	if raw.Token != nil {
 		return Server{}, fmt.Errorf("fleet.toml: servers.%s.token: tokens are not kept in this file; run `marshal fleet login %s` or set token_cmd", name, name)
 	}
-	if err := checkName(name); err != nil {
+	if err := checkName("servers", name); err != nil {
 		return Server{}, err
 	}
 	if err := checkURLOrRelay(name, raw.URL, raw.Relay); err != nil {
@@ -187,21 +228,82 @@ func buildServer(path, name string, raw rawServer) (Server, error) {
 	return srv, nil
 }
 
-// checkName applies decision 2's rule for a server's name.
-func checkName(name string) error {
+// checkName applies decision 2's rule for a name in table, which is "servers"
+// or "hosts": what a table's name may hold, and what it may not mean.
+func checkName(table, name string) error {
+	noun := "server"
+	if table == "hosts" {
+		noun = "host"
+	}
 	if name == "local" {
-		return errors.New("fleet.toml: servers.local: \"local\" names the daemon's table, not a server; choose another name")
+		return fmt.Errorf("fleet.toml: %s.local: \"local\" names the daemon's table, not a %s; choose another name", table, noun)
 	}
 	if !serverNameRe.MatchString(name) {
-		return fmt.Errorf("fleet.toml: servers.%s: a server's name may hold only letters, digits, '.', '_' and '-'", name)
+		return fmt.Errorf("fleet.toml: %s.%s: a %s's name may hold only letters, digits, '.', '_' and '-'", table, name, noun)
 	}
 	// Dots alone pass the character rule but are a path segment in every URL
-	// the name builds: ".." would climb out of /api/hosts/<name> and answer
-	// from the relay's own API. Neither is a server name.
+	// or socket path the name builds: ".." would climb out of
+	// /api/hosts/<name> and answer from the relay's own API, or out of the
+	// daemon's hosts directory. Neither is a name.
 	if name == "." || name == ".." {
-		return fmt.Errorf("fleet.toml: servers.%s: a server's name may not be dots alone", name)
+		return fmt.Errorf("fleet.toml: %s.%s: a %s's name may not be dots alone", table, name, noun)
 	}
 	return nil
+}
+
+// buildHost checks one [hosts.<name>] table and answers its host (D6): an SSH
+// destination and, optionally, the remote binary's path.
+func buildHost(name string, raw rawHost) (Host, error) {
+	if err := checkName("hosts", name); err != nil {
+		return Host{}, err
+	}
+	// A host is reached over SSH: the server keys say how it used to be
+	// reached, so each is refused by name, in the order a reader meets them
+	// in a server table.
+	for _, retired := range []struct {
+		key string
+		set bool
+	}{
+		{"url", raw.URL != nil},
+		{"relay", raw.Relay != nil},
+		{"ca_file", raw.CAFile != nil},
+		{"token_cmd", raw.TokenCmd != nil},
+		{"token", raw.Token != nil},
+	} {
+		if retired.set {
+			return Host{}, fmt.Errorf("fleet.toml: hosts.%s.%s: a host is reached over SSH and takes no %s; set ssh = \"you@machine\" (docs/one-daemon/design.md D6)", name, retired.key, retired.key)
+		}
+	}
+	if raw.SSH == "" {
+		return Host{}, fmt.Errorf("fleet.toml: hosts.%s.ssh: a host needs an ssh destination, as ssh takes it: \"you@machine\" or a Host from ~/.ssh/config", name)
+	}
+	// ssh reads a destination starting with "-" as one of its own options.
+	if strings.HasPrefix(raw.SSH, "-") {
+		return Host{}, fmt.Errorf("fleet.toml: hosts.%s.ssh: %q is read by ssh as an option; a destination never starts with \"-\"", name, raw.SSH)
+	}
+	// A destination is one argument: whitespace would split it, and a control
+	// character has no place in one.
+	for _, r := range raw.SSH {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return Host{}, fmt.Errorf("fleet.toml: hosts.%s.ssh: %q holds whitespace or a control character; a destination is one word", name, raw.SSH)
+		}
+	}
+	if raw.Marshal != "" {
+		if !filepath.IsAbs(raw.Marshal) && !strings.HasPrefix(raw.Marshal, "~/") {
+			return Host{}, fmt.Errorf("fleet.toml: hosts.%s.marshal: %q is neither absolute nor under \"~/\"; write the remote binary's path, as \"/opt/marshal/bin/marshal\" or \"~/.local/bin/marshal\"", name, raw.Marshal)
+		}
+		for _, r := range raw.Marshal {
+			if unicode.IsControl(r) {
+				return Host{}, fmt.Errorf("fleet.toml: hosts.%s.marshal: %q holds a control character", name, raw.Marshal)
+			}
+		}
+	}
+
+	h := Host{Name: name, SSH: raw.SSH, Marshal: raw.Marshal, Notify: true}
+	if raw.Notify != nil {
+		h.Notify = *raw.Notify
+	}
+	return h, nil
 }
 
 // checkRelay applies D20's rules for a relayed server: its relay names a
@@ -294,6 +396,19 @@ func (f File) Lookup(name string) (Server, error) {
 		return Server{}, fmt.Errorf("fleet.toml at %s names no servers; add one:\n\n[servers.%s]\nurl = \"https://fleet.example.com\"\ntoken_cmd = \"pass show fleet/%s\"\n", f.Path, name, name)
 	}
 	return Server{}, fmt.Errorf("fleet.toml at %s has no server %q; it names %s", f.Path, name, strings.Join(names, ", "))
+}
+
+// LookupHost answers the named host, or an error naming the file and the
+// hosts it holds (D6).
+func (f File) LookupHost(name string) (Host, error) {
+	if h, ok := f.Hosts[name]; ok {
+		return h, nil
+	}
+	names := sortedNames(f.Hosts)
+	if len(names) == 0 {
+		return Host{}, fmt.Errorf("fleet.toml at %s names no hosts; add one:\n\n[hosts.%s]\nssh = \"you@machine\"\n", f.Path, name)
+	}
+	return Host{}, fmt.Errorf("fleet.toml at %s has no host %q; it names %s", f.Path, name, strings.Join(names, ", "))
 }
 
 // sortedNames answers m's keys, sorted.

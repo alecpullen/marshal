@@ -16,7 +16,7 @@ import (
 // comments and order kept, the result checked as Load checks it, and written
 // atomically at 0600. A name already present is refused.
 func AddServer(path string, s Server) error {
-	if err := checkName(s.Name); err != nil {
+	if err := checkName("servers", s.Name); err != nil {
 		return err
 	}
 	if err := checkURLOrRelay(s.Name, s.URL, s.Relay); err != nil {
@@ -61,6 +61,51 @@ func AddServer(path string, s Server) error {
 	return writePrivate(path, out)
 }
 
+// AddHost appends h to the file at path as a [hosts.NAME] table (D6, D8):
+// comments and order kept, the result checked as Load checks it, and written
+// atomically at 0600. A name already in the file is refused.
+func AddHost(path string, h Host) error {
+	// buildHost is the check Load applies to the table this writes: the name,
+	// the ssh destination and the marshal path, with no retired server key
+	// set.
+	if _, err := buildHost(h.Name, rawHost{SSH: h.SSH, Marshal: h.Marshal}); err != nil {
+		return err
+	}
+
+	// Load checks the file the way it is read here: its privacy first, and a
+	// missing file as no hosts at all.
+	f, err := Load(path)
+	if err != nil {
+		return err
+	}
+	if _, ok := f.Servers[h.Name]; ok {
+		return fmt.Errorf("%s is already in fleet.toml", h.Name)
+	}
+	if _, ok := f.Hosts[h.Name]; ok {
+		return fmt.Errorf("%s is already in fleet.toml", h.Name)
+	}
+
+	src, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+	case errors.Is(err, fs.ErrNotExist):
+		// The write below puts its temporary file beside the target, so the
+		// directory is made first, private as the file it will hold.
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return fmt.Errorf("fleet.toml at %s: %w", path, err)
+		}
+		src = nil
+	default:
+		return fmt.Errorf("fleet.toml at %s: %w", path, err)
+	}
+
+	out := appendHostTable(src, h)
+	if _, err := decode(path, out); err != nil {
+		return err
+	}
+	return writePrivate(path, out)
+}
+
 // RemoveServer deletes name's table from the file at path, and the token
 // open's keychain holds for it (D6). A server defined other than by its own
 // table is refused.
@@ -77,7 +122,7 @@ func RemoveServer(path, name string, open OpenStore) error {
 	if err != nil {
 		return fmt.Errorf("fleet.toml at %s: %w", path, err)
 	}
-	out, err := removeTable(path, name, src)
+	out, err := removeTable(path, "servers", name, src)
 	if err != nil {
 		return err
 	}
@@ -90,23 +135,52 @@ func RemoveServer(path, name string, open OpenStore) error {
 	return deleteToken(path, name, open)
 }
 
-// serverHeaderRe is a table header naming one server (decision 1): the name
-// bare or basic-quoted, spaces allowed inside the brackets, and an optional
-// trailing comment.
-var serverHeaderRe = regexp.MustCompile(`^\[\s*servers\s*\.\s*(?:"([^"]*)"|([A-Za-z0-9._-]+))\s*\]\s*(?:#.*)?$`)
+// RemoveHost deletes name's [hosts.NAME] table from the file at path (D6, D8).
+// It touches no keychain: a host is reached by SSH, and holds no token.
+func RemoveHost(path, name string) error {
+	f, err := Load(path)
+	if err != nil {
+		return err
+	}
+	if _, err := f.LookupHost(name); err != nil {
+		return err
+	}
 
-// serverHeader answers the server a header line defines, if the line is one.
-func serverHeader(line string) (string, bool) {
-	m := serverHeaderRe.FindStringSubmatch(strings.TrimSpace(line))
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("fleet.toml at %s: %w", path, err)
+	}
+	out, err := removeTable(path, "hosts", name, src)
+	if err != nil {
+		return err
+	}
+	if _, err := decode(path, out); err != nil {
+		return err
+	}
+	return writePrivate(path, out)
+}
+
+// tableHeaderRe is a table header naming one server or one host (decision 1):
+// the name bare or basic-quoted, spaces allowed inside the brackets, and an
+// optional trailing comment.
+var tableHeaderRe = regexp.MustCompile(`^\[\s*(servers|hosts)\s*\.\s*(?:"([^"]*)"|([A-Za-z0-9._-]+))\s*\]\s*(?:#.*)?$`)
+
+// tableHeader answers the table and name a header line defines, if the line is
+// one.
+func tableHeader(line string) (table, name string, ok bool) {
+	m := tableHeaderRe.FindStringSubmatch(strings.TrimSpace(line))
 	if m == nil {
-		return "", false
+		return "", "", false
 	}
-	// A bare key is never empty, so an empty quoted one is no server's header:
+	// A bare key is never empty, so an empty quoted one is no table's header:
 	// such a name does not load anyway (checkName).
-	if m[2] != "" {
-		return m[2], true
+	if m[3] != "" {
+		return m[1], m[3], true
 	}
-	return m[1], m[1] != ""
+	if m[2] == "" {
+		return "", "", false
+	}
+	return m[1], m[2], true
 }
 
 // appendTable answers src with s's table written after it (decision 2): one
@@ -131,6 +205,26 @@ func appendTable(src []byte, s Server) []byte {
 		fmt.Fprintf(&b, "ca_file = %s\n", tomlString(s.CAFile))
 	}
 	if !s.Notify {
+		b.WriteString("notify = false\n")
+	}
+	return []byte(b.String())
+}
+
+// appendHostTable answers src with h's table written after it (D6): one blank
+// line, then the header, ssh, marshal when set, and notify = false only when
+// notifications are off.
+func appendHostTable(src []byte, h Host) []byte {
+	var b strings.Builder
+	b.Write(src)
+	if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+		b.WriteByte('\n')
+	}
+	fmt.Fprintf(&b, "\n[hosts.%s]\n", headerKey(h.Name))
+	fmt.Fprintf(&b, "ssh = %s\n", tomlString(h.SSH))
+	if h.Marshal != "" {
+		fmt.Fprintf(&b, "marshal = %s\n", tomlString(h.Marshal))
+	}
+	if !h.Notify {
 		b.WriteString("notify = false\n")
 	}
 	return []byte(b.String())
@@ -169,20 +263,20 @@ func tomlString(s string) string {
 	return b.String()
 }
 
-// removeTable answers src without name's table (decision 1): from its header
-// line to the next table header, or the end of the file.
-func removeTable(path, name string, src []byte) ([]byte, error) {
+// removeTable answers src without name's table in table (decision 1): from its
+// header line to the next table header, or the end of the file.
+func removeTable(path, table, name string, src []byte) ([]byte, error) {
 	lines := strings.Split(string(src), "\n")
 
 	start := -1
 	for i, line := range lines {
-		if got, ok := serverHeader(line); ok && got == name {
+		if gotTable, got, ok := tableHeader(line); ok && gotTable == table && got == name {
 			start = i
 			break
 		}
 	}
 	if start < 0 {
-		return nil, fmt.Errorf("%s is not defined by its own [servers.%s] table; edit %s by hand", name, name, path)
+		return nil, fmt.Errorf("%s is not defined by its own [%s.%s] table; edit %s by hand", name, table, name, path)
 	}
 
 	end := len(lines)

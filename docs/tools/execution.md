@@ -20,7 +20,11 @@ read or a repository-state query.
 | `progress` | no | `{profile, source, title}` opts the run into a live progress card; the `progress-reporting` skill documents the record format |
 
 Runs with the workspace root as the current working directory, subject to
-conservative guardrails. Never use it to create or modify files — no
+conservative guardrails. The root is the one this request is bound to — the
+worktree root while the session is isolated — not the directory Marshal was
+launched from. A command that writes through a relative path therefore lands in
+the tree it was admitted for, and an absolute path is judged against the roots
+that operation may reach. Never use it to create or modify files — no
 redirection, heredocs, or tee; those bypass diff review, backups, and rollback.
 Use `git.*` for repository state and the workspace tools for worktree isolation
 and merging.

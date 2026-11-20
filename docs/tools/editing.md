@@ -21,12 +21,33 @@ generation, and diagnostics are identical whichever one is used.
 
 | Arg | Required | Notes |
 |---|---|---|
-| `path` | yes | relative to the workspace |
+| `path` | yes | relative to the workspace, or an absolute path contained in a permitted root |
 | `old_string` | yes | must match byte-for-byte, including indentation, and be unique |
 | `new_string` | yes | |
 
 Include surrounding lines in `old_string` to disambiguate. Edit several files
 with several calls rather than one large call.
+
+**Paths.** `path` resolves from the workspace root this request is bound to —
+the worktree root while the session is isolated, not the directory Marshal was
+launched from. An absolute path is accepted when it resolves inside one of the
+roots the *write* operation is granted:
+
+- the bound workspace root;
+- an explicitly configured additional root, or a named alias such as
+  `@run/task-1-brief.md`, which resolves from that alias's own root;
+- any other root the caller granted for writing.
+
+A project checkout a worktree may consult is a **read reference**, never an
+implicit write target: `../<project>/file.go` reads, but writing there is
+refused exactly as it is when no worktree is active. An absolute spelling alone
+does not require System access — containment does. Symlinks are resolved
+*before* the containment check, so a new file beneath a symlinked parent is
+judged against the root its bytes would really land in.
+
+The approval preview and the failed-patch retry hint resolve through this same
+resolver, so the diff you approve and the lines you are told to re-read are the
+copy this tool would edit.
 
 **Failure modes:**
 
@@ -44,12 +65,18 @@ usually means the change was already applied — not that the tool is broken.
 
 | Arg | Required | Notes |
 |---|---|---|
-| `path` | yes | relative to the workspace |
+| `path` | yes | relative to the workspace, or an absolute path contained in a permitted write root |
 | `content` | yes | exact file content |
 
 Prefer this over `file.edit` when writing a whole new file or replacing most of
 a file's content; use `file.edit` for targeted edits. Never write files via
 `shell.run` redirection or heredocs — those bypass diff review and rollback.
+
+`path` follows `file.edit`'s rules: one target resolved from the bound workspace
+root (the worktree while isolated) or from the alias that names it, accepted
+only when it lands inside a root this write is granted. A read-only reference
+root stays read-only — an absolute or `../` spelling does not turn it into a
+write target. A `~` prefix expands to the home directory before resolution.
 
 New files skip the stale/read guard, because there is no on-disk version to be
 stale against. Existing files must have been read this session.

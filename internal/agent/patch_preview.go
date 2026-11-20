@@ -32,25 +32,40 @@ func PreviewPatchDiff(workspaceRoot string, patchText string, system bool) (stri
 // It is the shared preview path for file.write_patch and file.edit, so a
 // caller never has to round file.edit's structured fields through patch text
 // just to render a diff.
+//
+// workspaceRoot is the explicit root a caller with no tool binding has. The
+// runner resolves through the tool's own resolver instead — see
+// PreviewResolvedFilePatches — so a worktree session previews the copy the
+// tool would really edit.
 func PreviewFilePatches(workspaceRoot string, patches []patch.FilePatch, system bool) (string, error) {
-	var diffs []string
-	for _, fp := range patches {
-		var path string
-		if system && filepath.IsAbs(fp.Path) {
+	return PreviewResolvedFilePatches(func(rel string) (string, error) {
+		if system && filepath.IsAbs(rel) {
 			// System access: absolute paths anywhere on the filesystem are
 			// previewable. No containment check — the approval prompt is the
 			// gate, and the diff is what the user decides on.
-			abs, err := filepath.Abs(fp.Path)
+			abs, err := filepath.Abs(rel)
 			if err != nil {
-				return "", fmt.Errorf("resolve absolute path %s: %w", fp.Path, err)
+				return "", fmt.Errorf("resolve absolute path %s: %w", rel, err)
 			}
-			path = filepath.Clean(abs)
-		} else {
-			resolved, err := pathutil.SafeWorkspacePath(workspaceRoot, fp.Path)
-			if err != nil {
-				return "", err
-			}
-			path = resolved
+			return filepath.Clean(abs), nil
+		}
+		return pathutil.SafeWorkspacePath(workspaceRoot, rel)
+	}, patches)
+}
+
+// PreviewResolvedFilePatches dry-runs already-parsed patches against the
+// files resolve names and returns the combined unified diff, writing nothing.
+// resolve is the write tool's own path resolver (registry.Tool.ResolvePath
+// bound for a write), so the preview reads the same target the tool would
+// touch: the bound worktree copy, a named artifact alias, or a permitted
+// absolute path. A path the resolver refuses fails the preview rather than
+// falling back to a same-named file under the launch directory.
+func PreviewResolvedFilePatches(resolve func(string) (string, error), patches []patch.FilePatch) (string, error) {
+	var diffs []string
+	for _, fp := range patches {
+		path, err := resolve(fp.Path)
+		if err != nil {
+			return "", err
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {

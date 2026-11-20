@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -58,7 +59,7 @@ func failedPatchTargetHint(r *Runner, toolName string, args json.RawMessage, exe
 		end += blockLines - 1
 	}
 	return fmt.Sprintf("\n\nre-read the exact bytes before retrying: file.read %s start_line=%d end_line=%d (%d lines)",
-		pathutil.WorkspaceRelative(r.State.WorkingDir, path), start, end, end-start+1)
+		pathutil.WorkspaceRelative(r.workspaceRoot(), path), start, end, end-start+1)
 }
 
 // newline keeps the line-count arithmetic above free of escape noise.
@@ -95,7 +96,7 @@ func failingPatchTarget(r *Runner, toolName string, args json.RawMessage, execEr
 	// actually broke, and a file the patch applies to cleanly is never reported
 	// as the failing target.
 	for _, fp := range patches {
-		resolved, resolves := resolvePatchPath(r, fp.Path)
+		resolved, resolves := resolvePatchPath(r, toolName, fp.Path)
 		if !resolves {
 			continue
 		}
@@ -112,15 +113,23 @@ func failingPatchTarget(r *Runner, toolName string, args json.RawMessage, execEr
 	return "", "", false
 }
 
-// resolvePatchPath resolves a patch's File: header the way the file tools do:
-// system access accepts an absolute path, otherwise the path resolves against
-// the workspace root with symlink containment. Named-root aliases ("@name/...")
-// are a tool-layer concept this reader does not model — such a path simply
-// fails to resolve and the hint degrades to nothing rather than describing the
-// wrong file.
-func resolvePatchPath(r *Runner, rel string) (string, bool) {
+// resolvePatchPath resolves a patch's File: header the way the failing write
+// tool would, so the hint names the copy that tool really edits: the bound
+// worktree, a named artifact alias ("@name/..."), or a permitted absolute
+// path. The tool's own resolver is the only authority here — when it refuses
+// the path the hint degrades to nothing rather than describing a same-named
+// file under some other root. A tool with no resolver (an injected fake) keeps
+// the explicit-root behavior.
+func resolvePatchPath(r *Runner, toolName, rel string) (string, bool) {
 	if rel == "" {
 		return "", false
+	}
+	if tool, ok := r.Registry.Lookup(toolName); ok && tool.ResolvePath != nil {
+		resolved, err := tool.ResolvePath(context.Background(), rel, true)
+		if err != nil {
+			return "", false
+		}
+		return resolved, true
 	}
 	if r.State.SystemAccess() && filepath.IsAbs(rel) {
 		abs, err := pathutil.ResolveAbsolute(filepath.Clean(rel))
@@ -129,7 +138,7 @@ func resolvePatchPath(r *Runner, rel string) (string, bool) {
 		}
 		return abs, true
 	}
-	resolved, err := pathutil.ResolveWithinRoots(r.State.WorkingDir, nil, rel)
+	resolved, err := pathutil.ResolveWithinRoots(r.workspaceRoot(), nil, rel)
 	if err != nil {
 		return "", false
 	}

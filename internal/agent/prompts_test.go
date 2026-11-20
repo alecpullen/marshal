@@ -1005,6 +1005,28 @@ func TestBuildSystemPromptIncludesWorkingDir(t *testing.T) {
 	}
 }
 
+// TestInitialPromptNamesBoundWorkspace pins the first prompt a turn sends: it
+// names the root the session is actually bound to. A session in a worktree
+// used to keep describing the launch directory, so every relative path the
+// model wrote went one tree too far up.
+func TestInitialPromptNamesBoundWorkspace(t *testing.T) {
+	state := newTestState(t)
+	projectRoot := state.WorkingDir
+	worktree := t.TempDir()
+	state.SetWorkspace(session.Workspace{ProjectRoot: projectRoot, ActiveRoot: worktree, Branch: "feat/bound"})
+
+	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.pinPromptAccess()
+
+	msg := r.systemPromptMessage()
+	if !strings.Contains(msg.Content, "The workspace root is "+worktree) {
+		t.Fatalf("initial prompt does not name the bound workspace %q:\n%s", worktree, msg.Content)
+	}
+	if strings.Contains(msg.Content, "The workspace root is "+projectRoot) {
+		t.Fatalf("initial prompt still names the launch directory %q:\n%s", projectRoot, msg.Content)
+	}
+}
+
 func TestBuildSystemPromptOmitsWorkingDirWhenEmpty(t *testing.T) {
 	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, promptAccessAct, "", "", "")
 	if strings.Contains(msg.Content, "The workspace root is") {

@@ -992,6 +992,33 @@ func BuildInteractionStateMessage(access interaction.State) schema.ChatMessage {
 	}
 }
 
+// buildWorkspaceStateMessage renders the workspace binding in force for this
+// request: the root relative paths and shell.run's cwd come from, the project
+// checkout that stays a read-only reference while the session is isolated, and
+// the commit-first step a worktree session owes before merging back.
+//
+// It belongs in the per-request tail, not the system prompt: an interactive
+// parent can rebind the session mid-turn, and the turn-start prompt is
+// cache-stable.
+func buildWorkspaceStateMessage(root, projectRoot, branch string) schema.ChatMessage {
+	var b strings.Builder
+	b.WriteString("Current workspace: root=")
+	b.WriteString(root)
+	if branch != "" {
+		b.WriteString(" (git worktree on branch ")
+		b.WriteString(branch)
+		b.WriteString(")")
+	}
+	b.WriteString(". Relative paths in tool arguments resolve from this root, and shell.run runs with this directory as its cwd.")
+	if projectRoot != "" && projectRoot != root {
+		b.WriteString(" The project checkout ")
+		b.WriteString(projectRoot)
+		b.WriteString(" stays readable as a reference but is not a write target; commit your work in this worktree before merging it back.")
+	}
+	b.WriteString(" This is the authoritative workspace for this request; it supersedes the turn-start description above.")
+	return schema.ChatMessage{Role: schema.RoleUser, Content: b.String(), Volatile: true}
+}
+
 // BuildToolResultMessage formats a tool result for the model. The
 // "Tool <name> result:" first line is a display convention for the model
 // only — no code parses it (summarization and spill operate on

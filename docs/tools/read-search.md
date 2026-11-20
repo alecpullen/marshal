@@ -27,12 +27,24 @@ The boundary, in one line each:
 
 | Arg | Required | Notes |
 |---|---|---|
-| `path` | yes | relative to the workspace |
+| `path` | yes | relative to the workspace, or an absolute path contained in a readable root |
 | `start_line` | no | 1-based, inclusive |
 | `end_line` | no | 1-based, inclusive |
 
 Lines are clipped at 1500 characters. A ranged read over the byte budget is
 truncated with a footer rather than refused.
+
+`path` resolves from the workspace root this request is bound to — the worktree
+root while the session is isolated, not the directory Marshal was launched
+from. An absolute path is accepted when it resolves inside a root the *read*
+operation is granted: the bound workspace root, an explicitly configured
+additional root, a named alias (`@run/plan.md`), or the project checkout a
+worktree session may consult as a reference. A read grant does not make a root
+writable, and the two are judged separately.
+
+A `~` prefix expands to the home directory before resolution. Symlinks are
+resolved before the containment check, so a link inside an allowed root cannot
+pivot a read elsewhere on disk.
 
 **Call sequence:** `repo.search` or `symbols` to find the site → `file.read` with
 `start_line`/`end_line` to read it → `file.edit` to change it → `shell.run` to
@@ -60,11 +72,16 @@ again.
 | Arg | Required | Notes |
 |---|---|---|
 | `query` | yes | |
-| `path` | no | directory or file to search |
+| `path` | no | directory or file to search; resolves by the same rules as `file.read` |
 | `max_results` | no | default and hard cap 200 |
 | `mode` | no | `auto` (default), `substring`, `regex` |
 | `include` | no | glob filter |
 | `context` | no | 0-3 surrounding lines |
+
+`path` shares `file.read`'s resolver exactly, so a filter that works for one
+works for the other: the bound workspace root, a permitted absolute path, or a
+named alias. An absolute spelling alone does not require System access; it still
+has to land inside a readable root.
 
 `mode=auto` treats a pattern-shaped query as RE2 when it compiles, and falls
 back to a literal substring match silently when it does not. A query that looks

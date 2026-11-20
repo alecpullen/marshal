@@ -14,6 +14,20 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// previewPatchesForTool renders the approval diff for a patch-bearing call
+// through the tool's own path resolver, so the preview reads the copy the tool
+// would really edit — the bound worktree, a named artifact alias, or a
+// permitted absolute path. A tool with no resolver (an injected fake, or a
+// non-native registration) keeps the explicit-root behavior.
+func (r *Runner) previewPatchesForTool(ctx context.Context, tool registry.Tool, patches []patch.FilePatch) (string, error) {
+	if tool.ResolvePath == nil {
+		return PreviewFilePatches(r.workspaceRoot(), patches, r.State.SystemAccess())
+	}
+	return PreviewResolvedFilePatches(func(rel string) (string, error) {
+		return tool.ResolvePath(ctx, rel, true)
+	}, patches)
+}
+
 // requestApproval blocks until the TUI (or any caller driving
 // session.PendingToolCall) resolves the pending approval, or ctx is
 // cancelled. It registers the request in the session's canonical prompt
@@ -31,7 +45,7 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 
 	diff := ""
 	if patches, ok := patch.FromToolArgs(toolName, argsMap); ok {
-		if preview, previewErr := PreviewFilePatches(r.State.WorkingDir, patches, r.State.SystemAccess()); previewErr == nil {
+		if preview, previewErr := r.previewPatchesForTool(ctx, tool, patches); previewErr == nil {
 			diff = preview
 		}
 	}

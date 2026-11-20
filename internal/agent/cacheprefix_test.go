@@ -125,8 +125,8 @@ func TestPromptPrefixStableAcrossSteps(t *testing.T) {
 	}
 
 	last := p.Requests[len(p.Requests)-1].Messages
-	if len(last) < 2 {
-		t.Fatalf("last request has %d messages, want a working-state tail and an interaction tail", len(last))
+	if len(last) < 3 {
+		t.Fatalf("last request has %d messages, want a workspace, a working-state and an interaction tail", len(last))
 	}
 	interaction := last[len(last)-1]
 	if !interaction.Volatile || !strings.Contains(interaction.Content, "Current interaction state:") {
@@ -136,14 +136,18 @@ func TestPromptPrefixStableAcrossSteps(t *testing.T) {
 	if !tail.Volatile || !strings.Contains(tail.Content, "Current Todos") {
 		t.Fatalf("second-to-last message must be the volatile working state with todos, got %+v", tail)
 	}
-	for i, m := range last[:len(last)-2] {
-		if m.Volatile || strings.Contains(m.Content, "Current working state") {
-			t.Fatalf("message %d is a stale working-state copy; exactly one tail is allowed", i)
+	workspace := last[len(last)-3]
+	if !workspace.Volatile || !strings.Contains(workspace.Content, "Current workspace:") {
+		t.Fatalf("third-to-last message must be the volatile workspace tail, got %+v", workspace)
+	}
+	for i, m := range last[:len(last)-3] {
+		if m.Volatile || strings.Contains(m.Content, "Current working state") || strings.Contains(m.Content, "Current workspace:") {
+			t.Fatalf("message %d is a stale tail copy; exactly one of each tail message is allowed", i)
 		}
 	}
 	// Review focus 2: the tail is wire-only and never reaches the transcript.
 	for _, m := range state.Messages() {
-		if strings.Contains(m.Content, "Current working state") || strings.Contains(m.Content, "Current interaction state:") {
+		if strings.Contains(m.Content, "Current working state") || strings.Contains(m.Content, "Current interaction state:") || strings.Contains(m.Content, "Current workspace:") {
 			t.Fatalf("working-state tail leaked into the session transcript: %q", m.Content)
 		}
 	}
@@ -199,8 +203,8 @@ func TestWithWorkingStateDoesNotMutateInput(t *testing.T) {
 	in[0] = schema.ChatMessage{Role: schema.RoleSystem, Content: "sys"}
 	out := r.withWorkingState(in)
 
-	if len(in) != 1 || len(out) != 3 {
-		t.Fatalf("len(in)=%d len(out)=%d, want 1 and 3 (working state + interaction tail)", len(in), len(out))
+	if len(in) != 1 || len(out) != 4 {
+		t.Fatalf("len(in)=%d len(out)=%d, want 1 and 4 (workspace + working state + interaction tail)", len(in), len(out))
 	}
 	if spare := in[:2][1]; spare.Volatile || spare.Content != "" {
 		t.Fatalf("withWorkingState wrote into the caller's backing array: %+v", spare)
@@ -210,8 +214,11 @@ func TestWithWorkingStateDoesNotMutateInput(t *testing.T) {
 			t.Fatalf("tail message %d not marked Volatile: %+v", i, msg)
 		}
 	}
-	if !strings.Contains(out[2].Content, "Current interaction state:") {
-		t.Fatalf("last tail message is not the interaction tuple: %+v", out[2])
+	if !strings.Contains(out[1].Content, "Current workspace:") {
+		t.Fatalf("first tail message is not the workspace binding: %+v", out[1])
+	}
+	if !strings.Contains(out[3].Content, "Current interaction state:") {
+		t.Fatalf("last tail message is not the interaction tuple: %+v", out[3])
 	}
 }
 

@@ -32,6 +32,14 @@ branch that is not already present.
 There is deliberately no removal path (`workspace.go:20`) — the tool covers
 mechanics, and the `using-worktrees` skill covers judgment.
 
+**What the model is told.** The turn-start system prompt names the root the
+session is actually bound to — the worktree root while isolated, never the
+launch directory. Because an interactive parent can rebind mid-turn, each
+request also carries a volatile `Current workspace: root=…` tail message naming
+the binding in force for that request, the project checkout it may still read
+as a reference, and the commit-first step before merging back. That message
+rides after the transcript, so a rebind never rewrites the cache-stable prefix.
+
 If the worktree directory is removed while the session is running — a merged
 branch cleaned up from another terminal, `git worktree remove` — the next tool
 call returns the session to the project root and writes one system notice

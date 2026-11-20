@@ -29,6 +29,9 @@ type fleetRecorder struct {
 	overlapped bool
 	hold       time.Duration
 	err        error
+	// ctxErr is the error the command's context ended with, which is what a
+	// command run through exec.CommandContext reports.
+	ctxErr error
 }
 
 // command is the fleetCommand this recorder is installed as.
@@ -51,8 +54,22 @@ func (f *fleetRecorder) command(ctx context.Context, args ...string) error {
 
 	f.mu.Lock()
 	f.running--
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		f.ctxErr = ctxErr
+		if err == nil {
+			err = ctxErr
+		}
+	}
 	f.mu.Unlock()
 	return err
+}
+
+// observedCancel is the error the fleet command saw its context end with, or nil
+// when it was left to finish.
+func (f *fleetRecorder) observedCancel() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ctxErr
 }
 
 // recorded is every call's arguments, in the order they started.
@@ -166,6 +183,7 @@ func TestAnAddRefusesAFlagLikeValue(t *testing.T) {
 	}{
 		{"a flag for a name", contract.HostAdd{Name: "--no-notify", SSH: "me@workshop"}, "name"},
 		{"a flag for a destination", contract.HostAdd{Name: "workshop", SSH: "-oProxyCommand=touch /tmp/x"}, "ssh"},
+		{"a flag for the marshal path", contract.HostAdd{Name: "workshop", SSH: "me@workshop", Marshal: "-oX"}, "marshal"},
 		{"no name", contract.HostAdd{SSH: "me@workshop"}, "name"},
 		{"no destination", contract.HostAdd{Name: "workshop"}, "ssh"},
 	} {
@@ -183,6 +201,24 @@ func TestAnAddRefusesAFlagLikeValue(t *testing.T) {
 			rec.nothing(t)
 		})
 	}
+}
+
+// TestAnAddRefusesAnUnknownField: the body's every field is known, so a typo is
+// refused rather than dropped — a caller who wrote "marshal" as "mashal" would
+// otherwise get the host's default binary without ever being told.
+func TestAnAddRefusesAnUnknownField(t *testing.T) {
+	rec := &fleetRecorder{}
+	s := hostEditServer(t, rec)
+
+	body := map[string]string{"name": "workshop", "ssh": "me@workshop", "mashal": "/opt/marshal/bin/marshal"}
+	res := doReq(t, s, http.MethodPost, hostsPath, body, nil)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("POST %s with an unknown field = %d, body = %s, want 400", hostsPath, res.Code, res.Body.String())
+	}
+	if answer := res.Body.String(); !strings.Contains(answer, "mashal") {
+		t.Fatalf("the refusal = %s, want it to name the unknown field", answer)
+	}
+	rec.nothing(t)
 }
 
 // TestRemovingAHostRunsFleetRemove: the name comes from the path, the CLI is
@@ -204,6 +240,27 @@ func TestRemovingAHostRunsFleetRemove(t *testing.T) {
 	decodeBody(t, res, &got)
 	if len(got.Hosts) != 1 || got.Hosts[0] != box {
 		t.Fatalf("the answer = %+v, want the reported host %+v", got.Hosts, box)
+	}
+}
+
+// TestARemoveRefusesAFlagLikeName: the name comes out of the path, so it is
+// checked before the CLI sees it — as it arrives, and percent-encoded, which
+// decodes to the same flag-shaped name.
+func TestARemoveRefusesAFlagLikeName(t *testing.T) {
+	for _, path := range []string{hostForwardPrefix + "-oX", hostForwardPrefix + "%2DoX"} {
+		t.Run(path, func(t *testing.T) {
+			rec := &fleetRecorder{}
+			s := hostEditServer(t, rec)
+
+			res := doReq(t, s, http.MethodDelete, path, nil, nil)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("DELETE %s = %d, body = %s, want 400", path, res.Code, res.Body.String())
+			}
+			if answer := res.Body.String(); !strings.Contains(answer, "name") {
+				t.Fatalf("the refusal = %s, want it to name the field", answer)
+			}
+			rec.nothing(t)
+		})
 	}
 }
 
@@ -237,6 +294,32 @@ func TestHostEditsRunOneAtATime(t *testing.T) {
 	rec.mu.Unlock()
 	if overlapped {
 		t.Fatal("two fleet edits overlapped, want one at a time")
+	}
+}
+
+// TestAHostEditStopsWhenItsCallerGoesAway exercises the budget editHosts puts on
+// one edit (hostEditTimeout): the command runs under the request's context, so a
+// caller that goes away ends it instead of leaving a write nobody waits for.
+func TestAHostEditStopsWhenItsCallerGoesAway(t *testing.T) {
+	rec := &fleetRecorder{hold: time.Hour}
+	s := hostEditServer(t, rec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancel() // the caller is gone before the edit starts
+
+	req := httptest.NewRequest(http.MethodPost, hostsPath,
+		strings.NewReader(`{"name":"workshop","ssh":"me@workshop"}`)).WithContext(ctx)
+	req.Host = "localhost"
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	s.ServeHTTP(res, req)
+
+	if err := rec.observedCancel(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the fleet command saw %v, want its context cancelled", err)
+	}
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("an edit whose caller went away = %d, body = %s, want 400", res.Code, res.Body.String())
 	}
 }
 
@@ -283,10 +366,18 @@ func TestTheForwardStillOwnsLongerPaths(t *testing.T) {
 func TestTheDefaultFleetCommandCarriesTheLastLine(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "marshal")
-	script := "#!/bin/sh\n" +
-		"echo 'marshal fleet add: reading fleet.toml' >&2\n" +
-		"echo 'marshal fleet add: workshop is already in fleet.toml' >&2\n" +
-		"exit 1\n"
+	// The stand-in reports the argv it was given when it is not `fleet add …`:
+	// a wrong assembly then answers the test with that line instead of the
+	// reason, so the assertion on the reason fails.
+	script := `#!/bin/sh
+case "$1 $2" in
+  'fleet add') ;;
+  *) echo "marshal fleet add: unexpected argv: $*" >&2; exit 9 ;;
+esac
+echo 'marshal fleet add: reading fleet.toml' >&2
+echo 'marshal fleet add: workshop is already in fleet.toml' >&2
+exit 1
+`
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the stand-in marshal binary: %v", err)
 	}
@@ -302,6 +393,29 @@ func TestTheDefaultFleetCommandCarriesTheLastLine(t *testing.T) {
 	decodeBody(t, res, &body)
 	if want := "workshop is already in fleet.toml"; body["error"] != want {
 		t.Fatalf("the answer = %q, want the second line %q", body["error"], want)
+	}
+}
+
+// TestAFleetCommandThatCannotRunAnswersASentence: when the command never
+// starts, the error names a binary path and a syscall on the daemon's machine,
+// which is not the caller's to read.
+func TestAFleetCommandThatCannotRunAnswersASentence(t *testing.T) {
+	f := testFleet(t)
+	missing := filepath.Join(t.TempDir(), "no-such-marshal")
+	f.marshalBin = missing
+	s := NewServer(f)
+
+	res := doReq(t, s, http.MethodPost, hostsPath, contract.HostAdd{Name: "workshop", SSH: "me@workshop"}, nil)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("an add whose command could not run = %d, body = %s, want 400", res.Code, res.Body.String())
+	}
+	var body map[string]string
+	decodeBody(t, res, &body)
+	if body["error"] != fleetStartFailure {
+		t.Fatalf("the answer = %q, want %q", body["error"], fleetStartFailure)
+	}
+	if strings.Contains(res.Body.String(), missing) {
+		t.Fatalf("the answer %s names the binary path, want it not to", res.Body.String())
 	}
 }
 

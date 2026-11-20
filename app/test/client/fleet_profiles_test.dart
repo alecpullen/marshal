@@ -41,9 +41,12 @@ void main() {
   });
 
   test("a refusal carries the daemon's words", () async {
+    // Every refusal these routes answer is JSON (web/bridge/hostedit.go's
+    // 400s and 501, and the 403 guard's answer): what a form shows is the
+    // sentence inside it, not the body.
     transport.answer = const Response(
-      status: 409,
-      body: 'the name "box" is taken',
+      status: 400,
+      body: '{"error":"the name \\"box\\" is taken"}',
     );
 
     await expectLater(

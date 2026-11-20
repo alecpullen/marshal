@@ -23,6 +23,7 @@ func TestStatusArgvAsksForTheJSONStatus(t *testing.T) {
 		"-o", "ForwardX11=no",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RemoteCommand=none",
+		"-o", "ClearAllForwardings=yes",
 		"me@box",
 		"'marshal' daemon status --json",
 	}
@@ -59,6 +60,7 @@ func TestForwardArgvWithoutPreviews(t *testing.T) {
 		"-o", "ForwardX11=no",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RemoteCommand=none",
+		"-o", "ClearAllForwardings=yes",
 		"-o", "ExitOnForwardFailure=yes",
 		"-o", "StreamLocalBindUnlink=yes",
 		"-o", "ServerAliveInterval=15",
@@ -95,6 +97,7 @@ func TestForwardArgvForwardsThePreviewPort(t *testing.T) {
 		"-o", "ForwardX11=no",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RemoteCommand=none",
+		"-o", "ClearAllForwardings=yes",
 		"-o", "ExitOnForwardFailure=yes",
 		"-o", "StreamLocalBindUnlink=yes",
 		"-o", "ServerAliveInterval=15",

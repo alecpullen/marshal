@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'bridge_client.dart';
 import 'contract.g.dart';
 import 'transport.dart';
@@ -58,7 +60,26 @@ class _DaemonFleetProfiles implements FleetProfiles {
     try {
       await command();
     } on BridgeFailure catch (failure) {
-      throw FleetProfileFailure(failure.message);
+      throw FleetProfileFailure(_daemonMessage(failure.message));
     }
+  }
+
+  /// The daemon's sentence out of a refusal.
+  ///
+  /// These routes answer their refusals as JSON — `{"error": "…"}` — so the
+  /// body is unwrapped and its own words are what a form shows, rather than
+  /// the blob they are wrapped in. A body that is not that shape is the
+  /// message as it stands.
+  static String _daemonMessage(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        final detail = decoded['error'];
+        if (detail is String && detail.trim().isNotEmpty) return detail.trim();
+      }
+    } catch (_) {
+      // Not JSON: the body is the message.
+    }
+    return body;
   }
 }

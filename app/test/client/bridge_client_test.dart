@@ -107,10 +107,9 @@ void main() {
     expect(list.hosts.single.ssh, 'me@laptop');
     expect(fake.requests.single.method, 'POST');
     expect(fake.requests.single.uri, '/api/hosts');
-    expect(
-      jsonDecode(fake.requests.single.body),
-      containsPair('ssh', 'me@laptop'),
-    );
+    final body = jsonDecode(fake.requests.single.body) as Map<String, dynamic>;
+    expect(body, containsPair('ssh', 'me@laptop'));
+    expect(body, containsPair('name', 'laptop'));
   });
 
   test('removeHost deletes by name', () async {
@@ -125,6 +124,21 @@ void main() {
     expect(list.hosts, isEmpty);
     expect(fake.requests.single.method, 'DELETE');
     expect(fake.requests.single.uri, '/api/hosts/laptop');
+  });
+
+  test('removeHost escapes a name that needs it', () async {
+    // The name is a path segment, so one with a space in it is encoded rather
+    // than read as a different route: nothing else pins the escaping.
+    fake.reply(
+      'DELETE',
+      '/api/hosts/a%20b',
+      const FakeReply(200, body: '{"hosts":[]}'),
+    );
+
+    await client.removeHost('a b');
+
+    expect(fake.requests.single.method, 'DELETE');
+    expect(fake.requests.single.uri, '/api/hosts/a%20b');
   });
 
   test('agents decodes every agent', () async {

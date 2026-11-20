@@ -42,6 +42,11 @@ const (
 	fleetRemovePrefix = "marshal fleet remove: "
 )
 
+// fleetStartFailure is what a caller reads when the fleet command could not be
+// started at all: the raw error names a binary path and a syscall, which is the
+// daemon machine's business, not the caller's.
+const fleetStartFailure = "could not run marshal fleet"
+
 // addHost answers POST /api/hosts: it runs `fleet add` and answers 201 with the
 // HostList after it.
 func (s *Server) addHost(w http.ResponseWriter, r *http.Request) {
@@ -50,7 +55,7 @@ func (s *Server) addHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body contract.HostAdd
-	if !decodeJSON(w, r, &body) {
+	if !decodeStrictJSON(w, r, &body) {
 		return
 	}
 	for _, field := range []struct{ name, value string }{
@@ -61,6 +66,13 @@ func (s *Server) addHost(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": reason})
 			return
 		}
+	}
+	// The binary on the host is optional — empty is the CLI's own default — so
+	// it is not required here, but a flag-shaped path never reaches the CLI
+	// either.
+	if reason := hostFlagRefusal("marshal", body.Marshal); reason != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": reason})
+		return
 	}
 	args := []string{"add", body.Name, body.SSH}
 	if body.Marshal != "" {
@@ -97,10 +109,16 @@ func (s *Server) removeHost(w http.ResponseWriter, r *http.Request) {
 // starts with a dash would be read as a flag. The CLI refuses both too; this is
 // the check that keeps anything flag-shaped from reaching it at all.
 func hostFieldRefusal(field, value string) string {
-	switch {
-	case value == "":
+	if value == "" {
 		return field + " is required"
-	case strings.HasPrefix(value, "-"):
+	}
+	return hostFlagRefusal(field, value)
+}
+
+// hostFlagRefusal is the same check for a field the caller may leave empty: a
+// value that starts with a dash would be read as a flag.
+func hostFlagRefusal(field, value string) string {
+	if strings.HasPrefix(value, "-") {
 		return field + " must not start with -"
 	}
 	return ""
@@ -109,10 +127,13 @@ func hostFieldRefusal(field, value string) string {
 // editHosts runs one fleet.toml edit, under hostsEdits: two edits at once would
 // interleave their writes to the one file (D15).
 func (s *Server) editHosts(ctx context.Context, args ...string) error {
-	ctx, cancel := context.WithTimeout(ctx, hostEditTimeout)
-	defer cancel()
 	s.hostsEdits.Lock()
 	defer s.hostsEdits.Unlock()
+	// The budget is one edit's, so it starts once this edit holds the lock: a
+	// request queued behind another has not spent it on waiting. Its cancel
+	// runs before the unlock, since a defer taken later runs first.
+	ctx, cancel := context.WithTimeout(ctx, hostEditTimeout)
+	defer cancel()
 	return s.runFleet(ctx, args...)
 }
 
@@ -142,8 +163,15 @@ func (s *Server) defaultFleetCommand(ctx context.Context, args ...string) error 
 		if line := fleetLastLine(stderr.String()); line != "" {
 			return errors.New(line)
 		}
-		// Nothing on stderr: the exit status is what there is to say.
-		return err
+		// Nothing on stderr: the exit status is what there is to say. A
+		// command that never started — no binary there, no permission to run
+		// it — carries a path and a syscall this caller has no business
+		// reading, so it is answered as a sentence.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return errors.New(exit.ProcessState.String())
+		}
+		return errors.New(fleetStartFailure)
 	}
 	return nil
 }

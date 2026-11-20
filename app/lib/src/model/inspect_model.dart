@@ -227,8 +227,9 @@ class InspectModel extends ChangeNotifier {
       if ((ws.targetRoot ?? '').isNotEmpty) ws.targetRoot!,
     ].join(' · ');
     if (target.isNotEmpty) lines.add('target: $target');
-    if ((ws.execution ?? '').isNotEmpty)
+    if ((ws.execution ?? '').isNotEmpty) {
       lines.add('execution: ${ws.execution}');
+    }
     switch (ws.integration) {
       case null:
       case '':

@@ -39,18 +39,34 @@ func TestMain(m *testing.M) {
 
 func TestParseConfigDefaults(t *testing.T) {
 	// Ensure env vars do not leak host state into the defaults test.
-	for _, k := range []string{"WEBBRIDGE_ADDR", "WEBBRIDGE_TOKEN", "WEBBRIDGE_MARSHAL_BIN", "WEBBRIDGE_CWD_ROOT", "WEBBRIDGE_PROFILE", "WEBBRIDGE_SOCKET"} {
+	for _, k := range []string{"WEBBRIDGE_ADDR", "WEBBRIDGE_TOKEN", "WEBBRIDGE_MARSHAL_BIN", "WEBBRIDGE_CWD_ROOT", "WEBBRIDGE_PROFILE", "WEBBRIDGE_SOCKET", "WEBBRIDGE_STATE_DIR", "WEBBRIDGE_WORKSPACE", "WEBBRIDGE_EGRESS", "WEBBRIDGE_STATE_VOLUME"} {
 		t.Setenv(k, "")
 	}
+	data := t.TempDir()
+	t.Setenv("MARSHAL_DATA_DIR", data)
+
 	cfg, err := parseConfig(nil, io.Discard)
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
 	}
-	if cfg.profile != "server" {
-		t.Errorf("profile = %q, want server", cfg.profile)
+	dir := filepath.Join(data, "daemon")
+	if want := filepath.Join(dir, "marshal.sock"); cfg.socket != want {
+		t.Errorf("socket = %q, want %q", cfg.socket, want)
 	}
-	if cfg.socket != "" {
-		t.Errorf("socket = %q, want empty in the server profile", cfg.socket)
+	if want := filepath.Join(dir, "state"); cfg.stateDir != want {
+		t.Errorf("stateDir = %q, want %q", cfg.stateDir, want)
+	}
+	if want := filepath.Join(dir, "fleet.json"); cfg.workspace != want {
+		t.Errorf("workspace = %q, want %q", cfg.workspace, want)
+	}
+	if cfg.egress != "off" {
+		t.Errorf("egress = %q, want off", cfg.egress)
+	}
+	if cfg.stateVolume != "" {
+		t.Errorf("stateVolume = %q, want empty: the daemon keeps its state on the host", cfg.stateVolume)
+	}
+	if cfg.cwdRoot != "" {
+		t.Errorf("cwdRoot = %q, want empty: the daemon registers no working-directory project", cfg.cwdRoot)
 	}
 	if cfg.addr != "127.0.0.1:7700" {
 		t.Errorf("addr = %q, want 127.0.0.1:7700", cfg.addr)
@@ -60,9 +76,6 @@ func TestParseConfigDefaults(t *testing.T) {
 	}
 	if cfg.marshalBin != "marshal" {
 		t.Errorf("marshalBin = %q, want marshal", cfg.marshalBin)
-	}
-	if cfg.cwdRoot == "" {
-		t.Error("cwdRoot empty; want fallback to working directory")
 	}
 }
 
@@ -318,8 +331,8 @@ func TestParseConfigStateVolume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.stateVolume != "marshal-state" {
-		t.Fatalf("default = %q, want marshal-state", cfg.stateVolume)
+	if cfg.stateVolume != "" {
+		t.Fatalf("default = %q, want empty: the daemon keeps its state on the host", cfg.stateVolume)
 	}
 	cfg, err = parseConfig([]string{"--state-volume", "prod-state"}, io.Discard)
 	if err != nil {

@@ -236,12 +236,16 @@ func TestAJoiningBridgeReachesItsRelay(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// The relay: a bridge that names the one host that may join it.
+	// The relay: a bridge that names the one host that may join it. Each
+	// bridge takes a socket of its own: every webbridge serves one, and two
+	// daemons on one path refuse to start.
+	relaySocket := localSocketPath(t)
 	relayStderr := &relayLog{}
 	relayDone := make(chan error, 1)
 	go func() {
 		relayDone <- run(ctx, []string{
 			"--addr", "127.0.0.1:0", "--preview-addr", "off", "--egress", "off",
+			"--socket", relaySocket,
 			"--token", relayToken,
 			"--relay-join", hostName + "=" + secretPath,
 			"--cwd-root", filepath.Join(root, "relay-project"),
@@ -253,10 +257,12 @@ func TestAJoiningBridgeReachesItsRelay(t *testing.T) {
 
 	// The joiner: a bridge that dials out to that relay and serves what the
 	// relay reverses onto it.
+	joinSocket := localSocketPath(t)
 	joinDone := make(chan error, 1)
 	go func() {
 		joinDone <- run(ctx, []string{
 			"--addr", "127.0.0.1:0", "--preview-addr", "off", "--egress", "off",
+			"--socket", joinSocket,
 			"--token", hostToken,
 			"--join", relayURL, "--join-name", hostName, "--join-token-file", secretPath,
 			"--cwd-root", filepath.Join(root, "joiner-project"),

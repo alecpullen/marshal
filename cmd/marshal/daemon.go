@@ -953,13 +953,19 @@ func daemonStudioLine(info daemon.Info) string {
 // daemonHostLine renders one host's tunnel for `marshal daemon status`
 // (one-daemon D7): where the tunnel goes, its state, and — when it is down —
 // its last error, which is why the reader consulted this line, as the web line
-// does for a listener that bound nothing.
+// does for a listener that bound nothing. A live host that serves previews
+// says where they are, because that loopback port is the only way to reach
+// them; a host with no port, and one that is down whatever it last reported,
+// say nothing about previews.
 func daemonHostLine(h daemon.HostInfo) string {
 	line := fmt.Sprintf("host %s (%s): %s", h.Name, h.SSH, h.State)
 	if h.State == contract.HostDown {
 		if lastErr := strings.TrimSpace(h.LastError); lastErr != "" {
 			line += " (" + lastErr + ")"
 		}
+	}
+	if h.State == contract.HostLive && h.PreviewPort > 0 {
+		line += fmt.Sprintf(", previews on localhost:%d", h.PreviewPort)
 	}
 	return line
 }

@@ -1,0 +1,136 @@
+package app
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+
+	"marshal/internal/agent"
+	"marshal/internal/app/session"
+	"marshal/internal/filetrack"
+	"marshal/internal/snapshot"
+	"marshal/internal/subagentwork"
+	"marshal/internal/tools/native"
+)
+
+// bindSubagentWorkspace fixes one child's whole tool surface to the workspace
+// its dispatcher recorded, and returns the native options that express it.
+//
+// The split it implements is the point of the function: a child shares its
+// parent's CONVERSATION (command service, policy, approvals, watches) but
+// never its WORKSPACE POINTER. Every resource that names a directory or an
+// undo slot is resolved once, here, from the recorded binding, so a parent
+// that later rebinds to another checkout cannot retarget a running child.
+//
+//   - The child's own state is bound to the recorded root with
+//     BindIsolatedWorkspace, which also marks it dispatcher-bound: if the root
+//     disappears the child fails in it instead of silently landing somewhere
+//     else. This happens BEFORE anything reads the child's authority, because
+//     the authority snapshot carries the workspace root.
+//   - CommandDir and WorkspaceRoot are the bound root, so file resolution and
+//     every managed command capture the child's tree rather than following
+//     whatever root the parent selects next.
+//   - Backup ownership differs by mode. A shared child edits the parent's own
+//     checkout, so its /undo evidence must stay in the conversation's slot
+//     (BackupState = parent). An isolated child's writes are its own, so the
+//     evidence falls back to its own workspace state.
+//   - The file ledger is namespaced per isolated task, so a read in one
+//     child's copy cannot license an edit in a sibling's different copy.
+//     Shared children reuse the conversation's ledger with their own actor
+//     identity, which is what keeps one working tree under one conversation.
+//   - No language-server lease is borrowed: the parent's LSPSync and LSPIndex
+//     are mutable state aimed at whichever root the parent last selected, so a
+//     child bound elsewhere must not rescan through them. Diagnostics fall back
+//     to the configured root-local checkers, which run in the bound root.
+//     Project-index symbols are retained: that query is explicitly
+//     project-scoped and read-only.
+//
+// The returned options are the base for the child's registration. The caller
+// still owns the policy clone, the registry assembly and the scope view,
+// because those must see the fully assembled child registry.
+func bindSubagentWorkspace(parent, child *session.State, req agent.SubagentRequest, opts native.Options) (native.Options, error) {
+	if child == nil {
+		return opts, errors.New("agent.run: a child session state is required")
+	}
+	binding := req.Binding
+	root := strings.TrimSpace(binding.Root)
+	if root == "" {
+		return opts, errors.New("agent.run: the dispatch carries no workspace binding")
+	}
+	switch binding.Mode {
+	case subagentwork.ModeIsolated, subagentwork.ModeShared:
+	default:
+		return opts, fmt.Errorf("agent.run: workspace mode %q is not one this build can bind", binding.Mode)
+	}
+
+	// A child is never offered mode.request: it has no transport of its own,
+	// so a capability request would publish a prompt nothing can settle. The
+	// scope view also excludes the tool; this keeps the registration honest
+	// even for a caller that assembles its own view.
+	child.BindIsolatedWorkspace(root)
+
+	opts.SessionState = child
+	// The child owns its workspace scope. Sharing the parent's state here is
+	// what let a child's backup, active root and previews follow the parent.
+	opts.WorkspaceState = child
+	opts.WorkspaceRoot = root
+	opts.CommandDir = root
+	opts.AccessRequests = false
+
+	opts.BackupState = nil
+	switch binding.Mode {
+	case subagentwork.ModeShared:
+		// The shared child writes into the parent's checkout, so the
+		// conversation's /undo must see it — and must keep seeing it after the
+		// parent rebinds, which is why the owner is captured here rather than
+		// resolved from the parent later.
+		opts.BackupState = parent
+	case subagentwork.ModeIsolated:
+		// An isolated child's writes are its own tree's; borrowing the
+		// conversation's ledger would let a read of one root-relative name in
+		// this child license an edit of a different copy in a sibling.
+		if opts.DB != nil {
+			opts.FileTracker = filetrack.New(opts.DB.SQLDB(), subagentLedgerNamespace(parent, req))
+		}
+	}
+
+	// Diagnostics: keep the project-scoped symbol query, drop the parent's
+	// mutable language-server state.
+	opts.LSPSync = nil
+	opts.LSPIndex = nil
+	return opts, nil
+}
+
+// subagentLedgerNamespace is the stable ledger key of one isolated child: the
+// owning conversation plus the task identity its dispatcher allocated. It is
+// derived, never random, so a resumed dispatch reads the same ledger.
+func subagentLedgerNamespace(parent *session.State, req agent.SubagentRequest) string {
+	owner := ""
+	if parent != nil {
+		owner = parent.SessionID()
+	}
+	key := strings.TrimSpace(req.TaskKey)
+	if key == "" {
+		// A request that arrived without a task key still gets its own
+		// namespace rather than the conversation's: the actor ID is the next
+		// stable identity the dispatcher allocated for this child.
+		key = strings.TrimSpace(req.ActorID)
+	}
+	if key == "" {
+		return owner + "/subagent"
+	}
+	return owner + "/subagent/" + key
+}
+
+// bindSubagentSnapshotter gives a child an exact-root view of the
+// conversation's snapshotter, so its pre-write snapshots and restores act on
+// the workspace it was bound to and never on whichever checkout the parent
+// rebinds to later. A snapshotter that is not the rooted implementation (a
+// test fake) is passed through unchanged.
+func bindSubagentSnapshotter(snap session.Snapshotter, root string) session.Snapshotter {
+	rooted, ok := snap.(*snapshot.Rooted)
+	if !ok || strings.TrimSpace(root) == "" {
+		return snap
+	}
+	return rooted.Bound(root)
+}

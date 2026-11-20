@@ -736,6 +736,10 @@ type conversationCommandService struct {
 	// reload re-syncs through the generation that is live now rather than the
 	// one that admitted it.
 	lsp native.LSPSync
+	// lspRoot reports the workspace root that seam currently serves, so a
+	// completion only rescans when the command ran in that same workspace. Nil
+	// when no seam is installed or the caller cannot name one.
+	lspRoot func() string
 }
 
 // nextGeneration is the generation a build should commit. It is read from the
@@ -756,28 +760,62 @@ func (s *conversationCommandService) nextGeneration() int {
 	return s.generation + 1
 }
 
-// setLiveLSP records the rescan seam of the generation that just became live.
-func (s *conversationCommandService) setLiveLSP(sync native.LSPSync) {
+// setLiveLSP records the rescan seam of the generation that just became live,
+// together with the reader for the workspace root that seam actually serves.
+func (s *conversationCommandService) setLiveLSP(sync native.LSPSync, root func() string) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	s.lsp = sync
+	s.lspRoot = root
 	s.mu.Unlock()
 }
 
-// rescanLSP announces files a settled command changed on disk. A nil seam (no
-// language server configured, or none live yet) is a no-op.
-func (s *conversationCommandService) rescanLSP() {
+// rescanLSP announces files a settled command changed on disk.
+//
+// It is root-specific: the rescan reaches the live language server only when the
+// command ran in the workspace that server actually serves. A child dispatched
+// into its own checkout runs its commands there, and those commands changed a
+// tree the parent's server holds no documents for — rescanning it would re-sync
+// whichever root the parent selected last instead of the one that changed, and
+// would hand a child's completion to a lease that is not the child's. A nil seam
+// (no language server configured, or none live yet) is a no-op.
+func (s *conversationCommandService) rescanLSP(dir string) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	sync := s.lsp
+	root := s.lspRoot
 	s.mu.Unlock()
-	if sync != nil {
-		sync.Rescan()
+	if sync == nil {
+		return
 	}
+	// An unknown root or an unknown command directory proves nothing, so the
+	// rescan proceeds: suppressing a legitimate re-sync is worse than one
+	// wasted no-op scan.
+	if root != nil {
+		if served := root(); served != "" && dir != "" && !sameWorkspaceDir(served, dir) {
+			return
+		}
+	}
+	sync.Rescan()
+}
+
+// sameWorkspaceDir reports whether two spellings name the same directory,
+// resolving symlinks so a root compared literally still matches the path a
+// command captured through it.
+func sameWorkspaceDir(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	resolvedA, errA := filepath.EvalSymlinks(a)
+	resolvedB, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && resolvedA == resolvedB
 }
 
 // newConversationCommandService creates the conversation's command service and
@@ -817,8 +855,10 @@ func newConversationCommandService(ctx context.Context, cfg config.Config, state
 		// The rescan follows the files the command changed on disk, which
 		// happened whether or not the outcome was stored, so it is not gated on
 		// the durable write. It resolves the LIVE handle, so a command admitted
-		// before a reload still re-syncs through the generation running now.
-		svc.rescanLSP()
+		// before a reload still re-syncs through the generation running now —
+		// and it names the directory the command actually ran in, so a child's
+		// completion does not re-sync the parent's workspace.
+		svc.rescanLSP(info.Dir)
 		if err != nil {
 			// Surface the failure and leave the record pending: it is already in
 			// the transcript in memory, and the manager retries the durable write.
@@ -852,13 +892,13 @@ func commandLaunchPolicy(cfg config.Config, state *session.State, generation int
 // commitLaunchPolicy atomically installs policy as the service's defaults for
 // future launches. It is called only after a candidate generation has been
 // fully built and validated, so a failed candidate never mutates the service.
-func (s *conversationCommandService) commitLaunchPolicy(policy native.LaunchPolicy, liveLSP native.LSPSync) {
+func (s *conversationCommandService) commitLaunchPolicy(policy native.LaunchPolicy, liveLSP native.LSPSync, lspRoot func() string) {
 	if s == nil || s.manager == nil {
 		return
 	}
 	s.manager.CommitLaunchPolicy(policy)
 	s.generation = policy.Generation
-	s.setLiveLSP(liveLSP)
+	s.setLiveLSP(liveLSP, lspRoot)
 }
 
 // buildAgentRunner is the test-facing form: children serialize on a private
@@ -1624,7 +1664,15 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// which the new defaults become the service's — atomically, for future
 	// launches only. A failure returned earlier leaves the service, its
 	// callbacks and the previous generation exactly as they were.
-	commandService.commitLaunchPolicy(commandLaunchPolicy(cfg, state, commandService.nextGeneration(), commandRunner, native.ResourcesOf(commandRunner)), lspSync)
+	//
+	// The seam is committed with the root it serves, so a settled command only
+	// rescans the workspace it actually ran in and a child's completion never
+	// re-syncs whichever root the parent selected last.
+	var lspRoot func() string
+	if lspHandle != nil {
+		lspRoot = lspHandle.Root
+	}
+	commandService.commitLaunchPolicy(commandLaunchPolicy(cfg, state, commandService.nextGeneration(), commandRunner, native.ResourcesOf(commandRunner)), lspSync, lspRoot)
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, watchManager, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
 }
 
@@ -2419,12 +2467,10 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		childPol := pol
 		if baseNativeOpts.WorkspaceRoot != "" {
 			childOpts := baseNativeOpts
-			childOpts.SessionState = childState    // per-agent: active call, output, approvals
-			childOpts.WorkspaceState = parentState // per-workspace: backups, active root
-			// The child writes into the parent's file ledger (there is one
-			// working tree), so it names itself as the writer: a stale-file
-			// error can then say "last written by a subagent", which is what
-			// tells the orchestrator to serialise instead of guessing.
+			// The child writes into the conversation's file ledger, so it names
+			// itself as the writer: a stale-file error can then say "last
+			// written by a subagent", which is what tells the orchestrator to
+			// serialise instead of guessing.
 			childOpts.AgentID = req.ActorID
 			if childOpts.AgentID == "" {
 				// Never let an unidentified child collapse into its label: two
@@ -2450,6 +2496,17 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 			// states would silently hand children a working shell.sudo. Clear
 			// the authorizer here so the documented gate is the real one.
 			childOpts.CommandAuthorizer = nil
+			// Bind the child's whole tool surface to the workspace its
+			// dispatcher recorded BEFORE anything reads its authority: the
+			// authority snapshot carries the workspace root. This is what
+			// stops a child from following a parent that later rebinds, and
+			// what gives the child its own undo slot, ledger and command
+			// directory.
+			boundOpts, bindErr := bindSubagentWorkspace(parentState, childState, req, childOpts)
+			if bindErr != nil {
+				return nil, nil, bindErr
+			}
+			childOpts = boundOpts
 			childReg := registry.New()
 			// The child's engine reads the captured owner's live config/rules,
 			// evaluates against the child registry, and admits through the
@@ -2459,7 +2516,6 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 			if pol != nil {
 				childPol = pol.Clone()
 				childPol.SetConfigSource(childState.PolicySnapshot)
-				childPol.WithRegistry(childReg)
 				childAuthorizer := policy.NewAuthorizer(childPol, childState.InteractionAuthority())
 				childOpts.CommandAdmission = childAuthorizer.BeginCommand
 				childOpts.SetupAuthorizer = childAuthorizer
@@ -2468,16 +2524,26 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 				return nil, nil, fmt.Errorf("agent.run: child registry: %w", err)
 			}
 			// Copy non-native tools (MCP, skills, desktop) from the parent's
-			// scoped registry so the child still sees them. The authoritative
-			// exclusion list lives on SubtaskScopeView's doc comment
-			// (internal/agent/subagent.go) — don't duplicate it here. Inherit
-			// copies each tool's handler, so a session-bound MCP client's tool
-			// keeps this session's identity and authority in the child and the
-			// child cannot claim a stronger one.
+			// scoped registry so the child still sees them. Inherit skips a
+			// name the child already holds, so a child's own registration
+			// always wins; a copied session-bound MCP tool keeps this
+			// session's identity and authority in the child.
 			if err := childReg.Inherit(agent.SubtaskScopeView(parentReg)); err != nil {
 				return nil, nil, fmt.Errorf("agent.run: inherit session tools: %w", err)
 			}
-			roReg = childReg
+			// Apply the ONE scope view to the FULLY assembled registry, so the
+			// exclusions hold for native registration and inherited tools
+			// alike: the child's own native registration would otherwise
+			// re-add mode.request, tools.select, the workspace lifecycle pair
+			// and privileged execution after the parent's view filtered them.
+			// The list lives in SubtaskScopeView; this call site must not keep
+			// a second copy of it.
+			roReg = agent.SubtaskScopeView(childReg)
+			// Point the child policy at the registry it will actually dispatch
+			// through, not the unfiltered one it was assembled from.
+			if childPol != nil && pol != nil {
+				childPol.WithRegistry(roReg)
+			}
 		} else {
 			roReg = agent.SubtaskScopeView(parentReg)
 		}
@@ -2631,8 +2697,12 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		// ID. Without this, a background child can clobber files with no
 		// rollback coverage — the parent's dispatch-time snapshot records
 		// changedFilesForTool("agent.run", ...) which is always empty.
+		//
+		// The view is bound to the child's recorded root, not the parent's
+		// live one: a child that kept the mutable parent pointer would
+		// snapshot and restore whichever checkout the parent rebinds to next.
 		if snap := parentState.Snapshotter(); snap != nil {
-			child.Snapshotter = snap
+			child.Snapshotter = bindSubagentSnapshotter(snap, req.Binding.Root)
 			child.SnapshotRecorder = database
 		}
 		// A background child's writes must drop the parent's cached reads;

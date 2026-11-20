@@ -11,6 +11,7 @@ import (
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/subagentwork"
 	"marshal/internal/tools/registry"
 	"marshal/internal/watch/watchctx"
 )
@@ -74,6 +75,19 @@ type SubagentRequest struct {
 	ActorID string
 	// ActorLabel is the human writer name shown alongside ActorID.
 	ActorLabel string
+	// TaskKey is the stable identity of this child's owned work, allocated by
+	// the dispatcher before the workspace exists. It is opaque: nothing parses
+	// it, and it keys the child's workspace record and its isolated ledger.
+	TaskKey string
+	// Binding is the workspace this child is bound to. The factory never
+	// re-derives it from the parent's current workspace, so a later parent
+	// rebind cannot retarget a running child. Mode decides whether the child
+	// shares the captured checkout or owns an isolated worktree.
+	Binding subagentwork.Binding
+	// Target is the parent checkout and branch this child's work is destined
+	// for. It is recorded with the child's evidence so a later integration
+	// names the same target the dispatch captured.
+	Target subagentwork.Target
 }
 
 // SubagentModelPreview describes what model a subagent will use before it
@@ -169,9 +183,20 @@ func subagentReportImages(args agentRunArgs, child *Runner) []schema.ImageRef {
 // surfaces during an ad-hoc task), and question.ask (a subtask runs in its
 // own orphaned child session.State that no ACP client or TUI ever sees —
 // there is no live user who could answer a question, so the call would block
-// forever). All other tools are visible so the child can perform
-// implementation work; their own Risk levels and the shared policy engine
-// still gate approval for writes, commands, and destructive tools.
+// forever).
+//
+// It also excludes the tools that would let a child escape the workspace its
+// dispatcher bound it to: mode.request and tools.select widen a child's own
+// surface, workspace.worktree and workspace.finish rebind a checkout or merge
+// it (the parent owns integration), and shell.sudo is privileged execution. A
+// child asks its parent; it never re-targets itself.
+//
+// All other tools are visible so the child can perform implementation work;
+// their own Risk levels and the shared policy engine still gate approval for
+// writes, commands, and destructive tools. The list lives HERE and nowhere
+// else: the app applies this one view to the fully assembled child registry,
+// so native registration and inherited session tools are filtered by the same
+// rule and no second, narrower copy of the exclusion set can drift.
 func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 	view := registry.New()
 	for _, tool := range src.List() {
@@ -179,7 +204,10 @@ func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 			continue
 		}
 		switch tool.Name {
-		case "agent.run", "agent.await", "agent.kill", "agent.steer", "question.ask":
+		case "agent.run", "agent.await", "agent.kill", "agent.steer", "question.ask",
+			"mode.request", "tools.select",
+			"workspace.worktree", "workspace.finish",
+			"shell.sudo":
 			continue
 		}
 		_ = view.Register(tool)
@@ -372,10 +400,30 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		if args.Description != "" {
 			actorLabel = fmt.Sprintf("a subagent (%s)", args.Description)
 		}
+		// The child is bound to the workspace captured HERE, at dispatch, and
+		// never to a pointer the parent keeps moving: a parent that enters or
+		// leaves a worktree after this call must not retarget a running child.
+		// Until dispatch allocates a durable owned workspace, the child shares
+		// the conversation's own checkout, which is why the mode is
+		// ModeShared and the root is the parent's current active root.
+		workspace := state.Workspace()
+		binding := subagentwork.Binding{
+			Mode:        subagentwork.ModeShared,
+			Root:        workspace.ActiveRoot,
+			ProjectRoot: workspace.ProjectRoot,
+			Branch:      workspace.Branch,
+			BaseSHA:     workspace.BaseSha,
+		}
+		target := subagentwork.Target{
+			Root:    workspace.ActiveRoot,
+			Branch:  workspace.Branch,
+			BaseSHA: workspace.BaseSha,
+		}
 		child, childState, err := factory(SubagentRequest{
 			Agent: args.Agent, Model: args.Model,
 			Temperature: args.Temperature, Thinking: args.Thinking, System: args.System,
 			ActorID: string(workID), ActorLabel: actorLabel,
+			TaskKey: string(workID), Binding: binding, Target: target,
 		})
 		if err != nil {
 			state.ExitSubagentWork(workID)

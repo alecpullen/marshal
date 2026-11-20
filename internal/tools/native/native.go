@@ -70,6 +70,15 @@ type Options struct {
 	// Unset means "same as SessionState", which is every caller but the
 	// subagent factory.
 	WorkspaceState *session.State
+	// BackupState owns the /undo evidence a committed write produces. It is a
+	// separate owner from WorkspaceState because the two differ for exactly
+	// one caller: a shared-mode subagent child works in the parent's captured
+	// checkout (its own workspace root) while its rollback evidence must stay
+	// in the conversation's undo slot, which is the parent's.
+	//
+	// Unset means "same as the workspace state", so every caller that has one
+	// working tree keeps today's behavior.
+	BackupState *session.State
 	// AccessRequests reports that the caller has attached an access resolver
 	// and a transport that can present a capability request (the TUI or ACP).
 	// It gates mode.request: with it false the tool fails closed instead of
@@ -250,6 +259,10 @@ type toolSet struct {
 	maxOutputBytes int
 	sessionState   *session.State
 	workspaceState *session.State
+	// backupStateOwner owns /undo evidence when it differs from the workspace
+	// state (a shared-mode subagent child). nil means "use the workspace
+	// state"; see backupState().
+	backupStateOwner *session.State
 	// accessRequests reports whether the caller promised an attached access
 	// resolver/transport. Defaults false: a standalone registration (tests,
 	// embedded registries) has nobody to answer a capability request, so
@@ -494,6 +507,18 @@ func (t *toolSet) wsState() *session.State {
 	return t.sessionState
 }
 
+// backupState returns the state that owns /undo evidence for a committed
+// write. It falls back to the workspace state, which is every caller with one
+// working tree; only a shared-mode subagent child names a different owner, so
+// its edits stay visible to the conversation's /undo while its own tool
+// bindings are still the child's.
+func (t *toolSet) backupState() *session.State {
+	if t.backupStateOwner != nil {
+		return t.backupStateOwner
+	}
+	return t.wsState()
+}
+
 func newToolSet(opts Options) (*toolSet, error) {
 	if opts.WorkspaceRoot == "" {
 		return nil, errors.New("workspace root is required")
@@ -538,24 +563,25 @@ func newToolSet(opts Options) (*toolSet, error) {
 	jobManager := opts.JobManager
 
 	ts := &toolSet{
-		root:            root,
-		additionalRoots: additionalRoots,
-		namedRoots:      opts.NamedRoots,
-		pathGrants:      opts.PathGrants,
-		runner:          runner,
-		testCommand:     testCommand,
-		maxOutputBytes:  maxOutputBytes,
-		sessionState:    opts.SessionState,
-		workspaceState:  opts.WorkspaceState,
-		accessRequests:  opts.AccessRequests,
-		db:              opts.DB,
-		projectID:       opts.ProjectID,
-		fileTracker:     opts.FileTracker,
-		agentLabel:      opts.AgentLabel,
-		agentID:         opts.AgentID,
-		jobManager:      jobManager,
-		commandDir:      opts.CommandDir,
-		diagnostics:     newDiagnosticsChecker(opts),
+		root:             root,
+		additionalRoots:  additionalRoots,
+		namedRoots:       opts.NamedRoots,
+		pathGrants:       opts.PathGrants,
+		runner:           runner,
+		testCommand:      testCommand,
+		maxOutputBytes:   maxOutputBytes,
+		sessionState:     opts.SessionState,
+		workspaceState:   opts.WorkspaceState,
+		backupStateOwner: opts.BackupState,
+		accessRequests:   opts.AccessRequests,
+		db:               opts.DB,
+		projectID:        opts.ProjectID,
+		fileTracker:      opts.FileTracker,
+		agentLabel:       opts.AgentLabel,
+		agentID:          opts.AgentID,
+		jobManager:       jobManager,
+		commandDir:       opts.CommandDir,
+		diagnostics:      newDiagnosticsChecker(opts),
 
 		commandAdmission:       opts.CommandAdmission,
 		commandAuthorizer:      opts.CommandAuthorizer,

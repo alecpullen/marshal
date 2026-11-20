@@ -1,6 +1,7 @@
 # One daemon plan 4: the Studio as files — implementation plan
 
-Date: 2026-11-20. Status: approved 2026-11-20.
+Date: 2026-11-20. Status: approved 2026-11-20. Amended 2026-11-20: Task 5
+also runs the browser tests and a served-Studio smoke test.
 
 Base: `main` at `bbdc4486`, with plans [1](2026-11-20-od-1-one-daemon-plan.md),
 [2](2026-11-20-od-2-hosts-over-ssh-plan.md) and
@@ -330,12 +331,16 @@ passes.
   shows no file under `share/`.
 - `grep -rn 'dev-studio' scripts .github` prints nothing.
 
-## Task 5: CI builds the Studio on its own, and checks it fetches nothing
+## Task 5: CI builds the Studio on its own, and tests it in a browser
 
-**Goal:** the `app` job builds the Studio into `share/marshal/studio` and
-fails on a CDN URL. No step links `webbridge` to embed it.
+**Goal:**
+- The `app` job builds the Studio into `share/marshal/studio`, and fails on a
+  CDN URL.
+- It runs the browser-only tests in Chrome.
+- It serves the build from a real daemon, through plan 3's guard.
+- No step links `webbridge` to embed the Studio.
 
-**Files:** `.github/workflows/go-checks.yml`.
+**Files:** `.github/workflows/go-checks.yml`, `scripts/studio-smoke.sh` (new).
 
 **Steps:**
 1. In the `app` job:
@@ -350,10 +355,38 @@ fails on a CDN URL. No step links `webbridge` to embed it.
    `checks_spa.py`'s `_CDN` (`:36`), and a comment there says so.
 3. Upload the build as an artifact named `studio-web`. Task 6 does not
    consume this one: the release builds its own.
+4. Add a step named "Browser tests", which runs `flutter test --platform
+   chrome` over the browser-only tests: `test/client/transport_web_test.dart`,
+   and any test marked `@TestOn('browser')`. Chrome is on `ubuntu-latest`.
+   Today `flutter test` on the VM skips these, so the browser transport has no
+   test in CI.
+5. Add `scripts/studio-smoke.sh`. It needs a built `webbridge` and a Studio
+   build.
+   - It makes a short temporary directory and starts `webbridge --socket
+     <tmp>/s.sock --state-dir <tmp>/state --workspace <tmp>/fleet.json
+     --web-listen 127.0.0.1:0 --studio-dir share/marshal/studio`, with
+     `MARSHAL_DATA_DIR` pointed into the temporary directory.
+   - It waits up to 20 s for `curl --unix-socket <tmp>/s.sock
+     http://d/api/daemon` to answer, and reads `webListen` from it with
+     `python3 -c`.
+   - It checks, failing with a message on the first that does not hold:
+     1. `GET /` on the web listener answers 200, and its body names
+        `flutter_bootstrap.js`;
+     2. `GET /api/agents` answers 200 with a JSON array;
+     3. `POST /api/agents` with `Sec-Fetch-Site: cross-site` answers 403
+        (plan 3's guard);
+     4. `GET /api/agents` with `Host: evil.example` answers 403.
+   - It stops the daemon on exit, whatever happened.
+6. Add a step named "The Studio is served", which builds `webbridge` (`go
+   build -o webbridge ./cmd/webbridge`; the job needs Go set up, as the `go`
+   job does) and runs `scripts/studio-smoke.sh`.
 
-**Verify:** `python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/go-checks.yml'))"`
-succeeds, or `actionlint` passes if it is installed. The CI run on the pull
-request is the real check.
+**Verify:**
+- `python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/go-checks.yml'))"`
+  succeeds, or `actionlint` passes if it is installed.
+- `bash -n scripts/studio-smoke.sh` passes, and so does running it locally
+  after `scripts/dev-daemon.sh --studio --no-restart`.
+- The CI run on the pull request is the real check.
 
 ## Task 6: Releases carry the Studio beside the binaries
 

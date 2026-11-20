@@ -279,7 +279,20 @@ or similar.
   machine. `marshal daemon status` says so beside the address.
 - The Studio never receives a 401 from Marshal. Its `unauthorized` state
   (`HostReach.unauthorized`, `StateMessage.unauthorized`) now means the proxy
-  refused the request, and reads "signed out: reload to sign in again".
+  refused the request, and reads "signed out: reload to sign in again". A
+  proxy's redirect to its login page reads the same way.
+- Marshal checks no browser's identity, but its web listener refuses what a
+  browser sends on another site's behalf. The bearer token used to stop that,
+  so plan 3 adds a guard before the token goes. It refuses:
+  - a `Host` other than the loopback names and `web_url`'s host (DNS
+    rebinding);
+  - a state-changing request whose `Sec-Fetch-Site` or `Origin` is another
+    site's (CSRF);
+  - an `/api/` body that is not JSON.
+
+  `/hooks/`, `/status/` and `/mcp` carry their own credentials and are
+  exempt. The socket is unchanged. Added on 2026-11-20, after plan 3's
+  approval, when planning the browser client found the gap.
 
 **D14. `marshal studio` opens the app.**
 - It opens the native Studio when one is installed.

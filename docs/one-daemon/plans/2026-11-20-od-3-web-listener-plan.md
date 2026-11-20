@@ -1,6 +1,8 @@
 # One daemon plan 3: the web listener — implementation plan
 
-Date: 2026-11-20. Status: approved 2026-11-20.
+Date: 2026-11-20. Status: approved 2026-11-20. Amended 2026-11-20: Task 14
+(the request guard) is new, Task 16 handles a proxy's redirect, and the tasks
+after 13 are renumbered.
 
 Base: `main` at `bbdc4486`, with [plan 1](2026-11-20-od-1-one-daemon-plan.md)
 and [plan 2](2026-11-20-od-2-hosts-over-ssh-plan.md) applied first. Every
@@ -40,6 +42,19 @@ open question 2. Planning settled these, and design.md records them:
   otherwise vanish without a word.
 - **Plan 3 depends on plan 2,** despite design.md's earlier note: the forward
   dials plan 2's tunnel sockets.
+- **The web listener guards against other sites (added after approval).** The
+  bearer token was the only thing that stopped another site from driving the
+  daemon through the user's browser. So before it goes, the web listener
+  refuses three things:
+  - a `Host` that is not this daemon's (DNS rebinding);
+  - a state-changing request a browser makes for another site (CSRF);
+  - an `/api/` body that is not JSON.
+
+  `/hooks/`, `/status/` and `/mcp` carry their own credentials and are exempt,
+  and the socket is unchanged.
+- **A proxy's redirect means signed out.** Most proxies send a fetch to their
+  login page with a redirect, not a 401. The browser's transport follows no
+  redirect, and reads one as signed out (D13).
 
 Inventory: [inventory.md](../inventory.md) §Plan 3.
 Authoring workflow: [marshal-writing-plans](../../../internal/skills/builtin/marshal-writing-plans.md).
@@ -308,7 +323,20 @@ func socketOnly(path string) bool
 ```
 
 ```go
-// web/bridge/http.go after Task 14
+// web/bridge/webguard.go (Task 14)
+
+// webGuard checks what the web listener is sent on another site's behalf
+// (D13). It answers the status and reason of a refusal, or ok.
+func (s *Server) webGuard(r *http.Request) (status int, reason string, ok bool)
+
+// allowedHost reports whether host (a Host header, or an Origin's host)
+// names this daemon: localhost, 127.0.0.1 or ::1 on any port, or the public
+// URL's host name.
+func (s *Server) allowedHost(host string) bool
+```
+
+```go
+// web/bridge/http.go after Task 15
 
 // NewServer builds a server over a *Fleet or a *Registry. For a fleet, the
 // first string after it is the public URL. For a registry, the *EventLog
@@ -326,7 +354,7 @@ PublicURL     string // --public-url
 PreviewListen string // --preview-addr
 PreviewURL    string // --preview-url
 
-// internal/daemon/client.go (Task 18)
+// internal/daemon/client.go (Task 19)
 
 // PostMCP sends one MCP JSON-RPC message to /mcp over the socket with
 // credential as its bearer, and answers the status and body.
@@ -371,11 +399,11 @@ func readCredentialFile(path string) (string, error)
 // app/lib/src/client/bridge_client.dart
 Future<HostList> hosts() => _objectOf('/api/hosts', HostList.fromJson);
 
-// app/lib/src/client/relayed_transport.dart after Task 16
+// app/lib/src/client/relayed_transport.dart after Task 17
 /// [relay] with every route under `/api/hosts/<host>`.
 Transport relayedTransport(Transport relay, {required String host});
 
-// app/lib/src/client/transport_web.dart after Task 15
+// app/lib/src/client/transport_web.dart after Task 16
 WebTransport({this.base});
 ```
 
@@ -582,7 +610,7 @@ loopback listener of their own.
 5. **`run`.**
    - Delete the token block (`:705–724`). Build the server with
      `bridge.NewServer(fleet, "", cfg.publicURL, factory)`: no token, so
-     `ServeHTTP` has no bearer check. Task 14 removes the argument.
+     `ServeHTTP` has no bearer check. Task 15 removes the argument.
    - Delete the TCP listener block (`:913–960`). Open the web listener after
      `ListenLocal` returns and before the socket's `Serve` goroutine starts:
      `unix` puts `web.sock` in the socket's directory, and `SetDaemonInfo`,
@@ -958,7 +986,76 @@ It runs after Task 10, which stops `cmd/marshal/studio.go` calling
   prints nothing. (`relay.go`, the viewer attach's frame relay, stays:
   inventory, "Stays as it is".)
 
-## Task 14: The bridge holds no token
+## Task 14: The web listener refuses requests made on another site's behalf
+
+**Goal:** before the token goes, `ServeHTTP` refuses three requests:
+- one whose `Host` is not this daemon's;
+- a state-changing request a browser makes for another site;
+- an `/api/` body that is not JSON.
+
+`SocketHandler` is unchanged.
+
+**Files:** `web/bridge/webguard.go` (new), `web/bridge/webguard_test.go` (new),
+`web/bridge/http.go`.
+
+**Steps:**
+1. Add `allowedHost`, as Contracts declares it.
+   - It drops a port, lower-cases the name, and trims a trailing dot.
+   - It is true for `localhost`, `127.0.0.1` and `::1`, and for the public
+     URL's host name (`s.publicURLBase`, which the unit fills from
+     `web_url`).
+   - No name is resolved.
+2. Add `webGuard`, as Contracts declares it. It checks, in this order:
+   1. A path under `/hooks/` or `/status/`, or exactly `/mcp`, is exempt and
+      answers ok. Each carries its own credential, and `/mcp` checks its own
+      `Origin` (`mcp.go:197`).
+   2. `allowedHost(r.Host)` false answers 403: `this daemon does not answer to
+      host <host>; set [daemon] web_url to the address the proxy publishes
+      (docs/one-daemon/design.md D13)`.
+   3. GET, HEAD and OPTIONS answer ok.
+   4. A `Sec-Fetch-Site` header other than `same-origin` or `none` answers
+      403: `cross-site request refused`.
+   5. With no `Sec-Fetch-Site` but an `Origin` header, the origin must parse,
+      and its host must pass `allowedHost` and equal `r.Host`'s host name or
+      the public URL's. `null` fails. A failure answers 403 with the same
+      reason.
+   6. A path under `/api/` with a body (`ContentLength` > 0, or chunked)
+      whose media type is not `application/json` answers 415: `the API takes
+      application/json`. Parameters such as `charset` are allowed.
+   7. Otherwise, ok.
+
+   A request with neither `Sec-Fetch-Site` nor `Origin` (curl, the e2e suite,
+   a CLI) passes steps 4 and 5. It is not a browser acting for another site.
+3. At the start of `ServeHTTP`, run `webGuard`, and on a refusal write
+   `{"error": reason}` with its status. `SocketHandler` does not call it: its
+   callers are peer-checked as the owner.
+4. Tests (new). The server is built with a public URL of
+   `https://studio.example.com`, and the token argument stays `""` until
+   Task 15.
+   - `TestTheWebListenerRefusesAnotherHost`: `Host: evil.example:7700`
+     answers 403, and the reason names `web_url`.
+   - `TestTheWebListenerAnswersLoopbackHosts`: `localhost:7700`,
+     `127.0.0.1:7700` and `[::1]:7700`.
+   - `TestTheWebListenerAnswersThePublicHost`: `studio.example.com`, with
+     and without a port.
+   - `TestACrossSitePostIsRefused`: `Sec-Fetch-Site: cross-site` and
+     `same-site` each answer 403 on `POST /api/agents`.
+   - `TestASameOriginPostPasses`: `Sec-Fetch-Site: same-origin` reaches the
+     route.
+   - `TestAnOriginFromAnotherSiteIsRefused`: no `Sec-Fetch-Site`, and
+     `Origin: https://evil.example` or `null`.
+   - `TestARequestWithNeitherHeaderPasses`.
+   - `TestAnAPIBodyMustBeJSON`: `text/plain` answers 415, and
+     `application/json; charset=utf-8` passes.
+   - `TestHooksStatusAndMCPAreExempt`: a cross-site POST to each passes the
+     guard. Its own handler then decides.
+   - `TestTheSocketHasNoGuard`: `SocketHandler` with `Host: evil.example`
+     still answers.
+
+**Verify:** `go test ./web/bridge -run 'WebListener|CrossSite|SameOrigin|Origin|NeitherHeader|APIBody|Exempt|SocketHasNoGuard' -count=1`
+passes.
+
+## Task 15: The bridge holds no token
 
 **Goal:**
 - `bearerAuth`, the sign-in handover and the network agent attach are deleted.
@@ -1011,7 +1108,7 @@ call), and the wiring line in `cmd/webbridge/main.go`.
 - `grep -rn 'bearerAuth\|studioRoute\|networkAgentAttach\|s.token' web/bridge/*.go`
   prints nothing.
 
-## Task 15: The browser sends no token
+## Task 16: The browser sends no token
 
 **Goal:** `WebTransport` sends no `Authorization`, and the page's token store
 and sign-in code are deleted.
@@ -1032,11 +1129,21 @@ and sign-in code are deleted.
 3. In `main.dart`, delete the studio code import (`:13–14`) and the call
    (`:98`).
 4. In `host_discovery_stub.dart`, drop the `TokenStoreWeb` import and use.
-   The relayed transport's token argument is Task 16's, so pass `token: () async
+   The relayed transport's token argument is Task 17's, so pass `token: () async
    => ''` here until then. An empty token passes its null check, and the
    forward ignores the header.
-5. In `transport_web_test.dart`, delete the tests that check the token. Keep
-   the rest, built with `WebTransport(base: …)`.
+5. A proxy's redirect is a sign-out (D13).
+   - `_fetch` sets `redirect: 'manual'` on its `RequestInit`, so a
+     redirect is never followed to a login page on another origin.
+   - `_check` treats a response whose `type` is `opaqueredirect` as the 401
+     path does: it throws the `Unauthorized` that `bridgeFailure(401, …)`
+     builds, with the body `signed out: reload to sign in again`.
+   - The class comment says why: most proxies answer an expired session with
+     a redirect, not a 401.
+6. In `transport_web_test.dart`, delete the tests that check the token. Keep
+   the rest, built with `WebTransport(base: …)`. Add `a redirect is a
+   sign-out`: a fake bridge that answers 302 to another origin makes `send`
+   throw `Unauthorized`, and makes `lines` fail with it.
 
 **Verify:**
 - `cd app && flutter analyze` reports nothing new.
@@ -1045,7 +1152,7 @@ and sign-in code are deleted.
   `cd app && flutter test test/client/` passes.
 - `grep -rn 'TokenStoreWeb\|adoptStudioCode' app/lib` prints nothing.
 
-## Task 16: A forwarded host carries no token, and a refusal is the proxy's
+## Task 17: A forwarded host carries no token, and a refusal is the proxy's
 
 **Goal:**
 - The relayed transport is a path prefix and nothing else.
@@ -1129,7 +1236,7 @@ goldens.
 - `grep -rn "token refused\|refused this page\|HostTokenProvider\|storeToken" app/lib`
   prints nothing.
 
-## Task 17: The fleet client has no rejected state
+## Task 18: The fleet client has no rejected state
 
 **Goal:** a 401 is an ordinary failure to the fleet client.
 `acpclient.FleetRejected` and the fleet screen's two cases for it are gone.
@@ -1164,7 +1271,7 @@ tests: `internal/fleetclient/client_test.go`,
   passes.
 - `grep -rn 'FleetRejected\|reject()' internal/` prints nothing.
 
-## Task 18: `marshal mcp` relays a local MCP client over the socket
+## Task 19: `marshal mcp` relays a local MCP client over the socket
 
 **Goal:** `marshal mcp --credential-file PATH [--socket PATH]` reads MCP
 JSON-RPC lines on stdin, POSTs each to `/mcp` over the daemon's socket with
@@ -1207,7 +1314,7 @@ dispatch line in `cmd/marshal/main.go`.
        only.
    - **The end.** Stdin closing waits for the requests in flight, then
      returns nil. The context ending returns its error.
-4. Add `mcp` to `AGENTS.md`'s subcommand list in Task 20, not here.
+4. Add `mcp` to `AGENTS.md`'s subcommand list in Task 21, not here.
 
 **Tests:**
 - `TestPostMCPSendsTheCredential` (`client_test.go`): on a socket stub, the
@@ -1229,7 +1336,7 @@ dispatch line in `cmd/marshal/main.go`.
 **Verify:** `go test ./internal/daemon ./cmd/marshal ./test/daemon -run 'MCP' -count=1`
 passes.
 
-## Task 19: The e2e suite dials the web listener
+## Task 20: The e2e suite dials the web listener
 
 **Goal:** the suite sends no token, and `--base` takes a unix socket or a
 loopback URL.
@@ -1261,9 +1368,9 @@ loopback URL.
 - `python3 -m py_compile scripts/e2e/*.py` succeeds.
 - `grep -rn 'token' scripts/e2e/*.py` prints only the preview-token and
   status-link checks.
-- Task 21 runs the suite.
+- Task 22 runs the suite.
 
-## Task 20: The development box and the docs follow
+## Task 21: The development box and the docs follow
 
 **Goal:** `dev-studio.sh` runs its daemon on a loopback web listener with no
 token, and the docs describe the web listener.
@@ -1305,7 +1412,10 @@ token, and the docs describe the web listener.
        bearer check, behind the operator's proxy (one-daemon D10, D13);
      - `GET /api/hosts` and `/api/hosts/<name>/…` forward to each host's
        tunnel;
-     - the socket-only routes are not served there.
+     - the socket-only routes are not served there;
+     - it answers only `localhost`, the loopback addresses and `web_url`'s
+       host, and refuses a cross-site state-changing request and a non-JSON
+       `/api/` body (`web/bridge/webguard.go`).
    - Delete the sentence "The bridge serves the agent attach on its network
      listener behind the bearer token, over TLS or on a loopback address, and
      refuses it 403 elsewhere."
@@ -1325,7 +1435,7 @@ token, and the docs describe the web listener.
 - `grep -n -- '--relay-join\|join-token\|marshal daemon token' AGENTS.md docs/dev-loop.md`
   prints nothing.
 
-## Task 21: Full verification
+## Task 22: Full verification
 
 **Steps:**
 1. `gofmt -l .` prints nothing, and `go vet ./...` passes.
@@ -1351,6 +1461,11 @@ token, and the docs describe the web listener.
       dir>/web.sock http://x/api/agents` answers, and `web.sock` is `0600`.
    7. An old unit with `--addr off --token-file …` starts, with one warning in
       `webbridge.log`.
+   8. The guard (Task 14):
+      - `curl -H 'Host: evil.example' 127.0.0.1:7700/api/agents` answers 403;
+      - a page on another origin that `fetch`es `POST /api/agents` with
+        `mode: 'no-cors'` is refused (403 in the daemon's log);
+      - the Studio itself still spawns an agent.
 7. **The e2e suite** against the web listener: `python3 scripts/e2e/run_e2e.py
    --base unix:<daemon dir>/web.sock ...`, with the workspace and the agent
    image `scripts/e2e/README.md` names. Every group passes, or each failure
@@ -1363,6 +1478,12 @@ token, and the docs describe the web listener.
    reaches it.
 
 ## Integration notes
+
+- **`web_url` must name what the proxy publishes.** The guard answers only
+  `localhost`, the loopback addresses and `web_url`'s host. A proxy that
+  passes its public `Host` through (Tailscale Serve, Cloudflare, Caddy) needs
+  `web_url` set to that address, or every request is refused, with a reason
+  that says so.
 
 - **The browser needs a proxy from here on.** A web Studio that was reached
   on `127.0.0.1:7788` with a token now needs `web_listen`. Anything beyond

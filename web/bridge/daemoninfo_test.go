@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -55,6 +56,27 @@ func TestTheDaemonRouteAnswersItsInfo(t *testing.T) {
 	}
 	if len(got.Projects) != 2 || got.Projects[0] != "/home/u/alpha" || got.Projects[1] != "/home/u/zeta" {
 		t.Fatalf("projects = %v, want them sorted", got.Projects)
+	}
+}
+
+// TestThePreviewAddrIsReported: a daemon that started a preview listener
+// reports its bound address, and the listener's port with it, so a caller can
+// reach that origin and name it back (one-daemon open question 1).
+func TestThePreviewAddrIsReported(t *testing.T) {
+	s := daemonTestServer(t)
+	s.SetPreviewAddr(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 54400})
+
+	rec := viaHandler(t, s.SocketHandler(), http.MethodGet, "/api/daemon")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("socket /api/daemon status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got DaemonInfo
+	decodeBody(t, rec, &got)
+	if got.PreviewAddr != "127.0.0.1:54400" {
+		t.Fatalf("previewAddr = %q, want the bound preview address", got.PreviewAddr)
+	}
+	if port := s.previewPort.Load(); port != 54400 {
+		t.Fatalf("preview port = %d, want SetPreviewAddr to set 54400", port)
 	}
 }
 

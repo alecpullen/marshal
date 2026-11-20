@@ -64,6 +64,13 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	// daemon serves whatever directory it was given, and answers "" when it
 	// found no files (one-daemon D12).
 	out.StudioDir = s.studioDir
+	// The preview listener's own address, for a caller that reaches it
+	// through a way of its own: it names it back as the origin of the links
+	// it issues (one-daemon open question 1).
+	out.PreviewAddr = ""
+	if addr := s.previewAddr.Load(); addr != nil {
+		out.PreviewAddr = *addr
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

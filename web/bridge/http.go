@@ -47,6 +47,10 @@ type Server struct {
 	// previewPort is the port of the separate preview listener, 0 until
 	// the host has started one (see SetPreviewPort).
 	previewPort atomic.Int32
+	// previewAddr is the preview listener's bound address (host:port), nil
+	// until the host has started one. GET /api/daemon reports it (see
+	// SetPreviewAddr).
+	previewAddr atomic.Pointer[string]
 	// previewURL, when set, is the public origin issued preview links
 	// name in place of the request's host and the preview port (see
 	// SetPreviewURL).

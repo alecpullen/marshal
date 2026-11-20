@@ -7,6 +7,7 @@ package bridge
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -98,6 +99,14 @@ func (s *Server) hostForward(w http.ResponseWriter, r *http.Request) {
 			// X-Forwarded-* is added (D10).
 			out.Header.Del("Authorization")
 			out.Header.Del("Cookie")
+			// A preview link on the host names the host's own preview port,
+			// which this daemon reaches through the tunnel. The caller cannot
+			// choose that origin through the forward (one-daemon open
+			// question 1).
+			out.Header.Del(contract.PreviewOriginHeader)
+			if host.PreviewPort > 0 {
+				out.Header.Set(contract.PreviewOriginHeader, fmt.Sprintf("http://localhost:%d", host.PreviewPort))
+			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})

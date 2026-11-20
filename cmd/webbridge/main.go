@@ -849,7 +849,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if perr != nil {
 			slog.Default().Warn("webbridge: previews unavailable", "err", perr)
 		} else {
-			api.SetPreviewPort(pln.Addr().(*net.TCPAddr).Port)
+			api.SetPreviewAddr(pln.Addr().(*net.TCPAddr))
 			if cfg.previewURL != "" {
 				if uerr := api.SetPreviewURL(cfg.previewURL); uerr != nil {
 					slog.Default().Warn("webbridge: preview URL", "err", uerr)

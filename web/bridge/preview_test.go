@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // previewEnv is a workspace-spawned agent declaring one preview port.
@@ -105,6 +107,23 @@ func (p *previewEnv) issue(t *testing.T, port int) (string, string) {
 		t.Fatalf("preview URL %q is not on the preview origin", raw)
 	}
 	return u.Query().Get("t"), u.RequestURI()
+}
+
+// issueNamingURL asks for a preview of the env's declared port, naming origin
+// as the way the caller reaches this daemon's preview listener.
+func (p *previewEnv) issueNamingURL(t *testing.T, origin string) string {
+	t.Helper()
+	rec := p.do("POST", "/api/agents/"+p.id+"/preview/"+strconv.Itoa(p.port), func(r *http.Request) {
+		r.Header.Set(contract.PreviewOriginHeader, origin)
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("issue = %d %s", rec.Code, rec.Body)
+	}
+	var out struct{ URL string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body %s: %v", rec.Body, err)
+	}
+	return out.URL
 }
 
 func TestPreviewAuthUndeclaredPortIs403(t *testing.T) {
@@ -404,6 +423,109 @@ func TestAPreviewURLKeepsTheToken(t *testing.T) {
 	}
 	if tok := u.Query().Get("t"); len(tok) < 30 {
 		t.Fatalf("issued URL %q carries no token", out.URL)
+	}
+}
+
+// TestAPreviewOriginHeaderNamesTheLink: the origin a caller reaches this
+// daemon's preview listener through is the origin the issued link takes, in
+// place of the daemon's own idea of it. A localhost name carries the token in
+// the host, so the link needs no ?t=; any other host keeps it (one-daemon open
+// question 1).
+func TestAPreviewOriginHeaderNamesTheLink(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	want := "/preview/" + p.id + "/3000/"
+
+	t.Run("localhost", func(t *testing.T) {
+		raw := p.issueNamingURL(t, "http://localhost:54400")
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		if u.Scheme != "http" || u.Port() != "54400" {
+			t.Fatalf("issued URL %q is not on the origin the caller named", raw)
+		}
+		host := u.Hostname()
+		if !strings.HasPrefix(host, "p") || !strings.HasSuffix(host, ".localhost") {
+			t.Fatalf("host = %q, want p<token>.localhost", host)
+		}
+		tok := strings.TrimSuffix(strings.TrimPrefix(host, "p"), ".localhost")
+		if !p.f.previewTokenValid(tok, p.id, 3000) {
+			t.Fatalf("the host carries %q, which is not the token issued", tok)
+		}
+		if u.Path != want || u.RawQuery != "" {
+			t.Fatalf("issued URL %q, want %s with no ?t=", raw, want)
+		}
+	})
+
+	t.Run("another host", func(t *testing.T) {
+		raw := p.issueNamingURL(t, "http://box.lan:54400")
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		if u.Scheme != "http" || u.Host != "box.lan:54400" {
+			t.Fatalf("issued URL %q, want it on http://box.lan:54400", raw)
+		}
+		if u.Path != want {
+			t.Fatalf("issued URL %q, want the path %s", raw, want)
+		}
+		if tok := u.Query().Get("t"); !p.f.previewTokenValid(tok, p.id, 3000) {
+			t.Fatalf("the link carries %q, which is not the token issued", tok)
+		}
+	})
+}
+
+// TestABadPreviewOriginHeaderIsIgnored: a header that is not an http origin
+// with a host and a port in range is no way in, so the link is the one the
+// daemon issues without it (one-daemon open question 1).
+func TestABadPreviewOriginHeaderIsIgnored(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	for _, origin := range []string{
+		"http://box.lan",         // no port
+		"http://box.lan:54400/x", // a path
+		"http://box.lan:99999/",  // a port out of range
+		"ftp://box.lan:54400",    // not http
+		"garbage",                // not an origin at all
+	} {
+		t.Run(origin, func(t *testing.T) {
+			raw := p.issueNamingURL(t, origin)
+			u, err := url.Parse(raw)
+			if err != nil {
+				t.Fatalf("parse %q: %v", raw, err)
+			}
+			if u.Scheme != "http" || u.Host != "example.com:9911" {
+				t.Fatalf("issued URL %q, want the origin the request alone names", raw)
+			}
+			if tok := u.Query().Get("t"); !p.f.previewTokenValid(tok, p.id, 3000) {
+				t.Fatalf("the link carries %q, which is not the token issued", tok)
+			}
+		})
+	}
+}
+
+// TestTheHeaderWinsOverThePreviewURL: a configured public origin is what the
+// daemon publishes, but a caller that knows its own way in is answered with
+// that: the header decides (one-daemon open question 1).
+func TestTheHeaderWinsOverThePreviewURL(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	if err := p.srv.SetPreviewURL("https://preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	published, err := url.Parse(p.issueURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.Host != "preview.example.com" {
+		t.Fatalf("issued URL %q, want the configured origin without a header", published)
+	}
+
+	raw := p.issueNamingURL(t, "http://box.lan:54400")
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	if u.Host != "box.lan:54400" {
+		t.Fatalf("issued URL %q, want the caller's own origin over the preview URL", raw)
 	}
 }
 

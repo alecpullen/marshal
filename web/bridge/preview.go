@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // previewTokenTTL is how long a preview token stays valid.
@@ -229,6 +231,12 @@ func (s *Server) issuePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	origin, tokenInHost := s.previewOrigin(r, pp, tokenOf(u))
+	if host, port, ok := previewOriginFrom(r); ok {
+		// The caller knows its own way in to the preview listener, so the
+		// origin it names is the one the link takes, in place of the preview
+		// URL and the request's host (one-daemon open question 1).
+		origin, tokenInHost = previewOriginOn(requestScheme(r), host, port, tokenOf(u))
+	}
 	if tokenInHost {
 		// The origin carries the credential, so the URL needs no ?t=.
 		u = u[:strings.Index(u, "?t=")]
@@ -239,6 +247,18 @@ func (s *Server) issuePreview(w http.ResponseWriter, r *http.Request) {
 // SetPreviewPort records the port of the preview listener, so issued
 // URLs point at that origin rather than the API's.
 func (s *Server) SetPreviewPort(port int) { s.previewPort.Store(int32(port)) }
+
+// SetPreviewAddr records the preview listener's bound address, which
+// GET /api/daemon reports. It also sets the preview port, as SetPreviewPort
+// did.
+func (s *Server) SetPreviewAddr(addr *net.TCPAddr) {
+	if addr == nil {
+		return
+	}
+	bound := addr.String()
+	s.previewAddr.Store(&bound)
+	s.SetPreviewPort(addr.Port)
+}
 
 // CheckPreviewURL refuses a base that is not an http or https origin: a host,
 // and no userinfo, no path beyond "/", no query and no fragment.
@@ -315,10 +335,7 @@ func (s *Server) previewOrigin(r *http.Request, port int, tok string) (origin st
 	if s.previewURL != "" {
 		return s.previewURL, false
 	}
-	scheme, host := "http", r.Host
-	if r.TLS != nil {
-		scheme = "https"
-	}
+	scheme, host := requestScheme(r), r.Host
 	if s.publicURLBase != "" {
 		if u, err := url.Parse(s.publicURLBase); err == nil && u.Host != "" {
 			scheme, host = u.Scheme, u.Host
@@ -327,6 +344,13 @@ func (s *Server) previewOrigin(r *http.Request, port int, tok string) (origin st
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
+	return previewOriginOn(scheme, host, port, tok)
+}
+
+// previewOriginOn is the preview origin on host:port, with the token in the
+// host name when that host is a localhost name (and tokenInHost true), and in
+// the ?t= query otherwise. See previewOrigin for why.
+func previewOriginOn(scheme, host string, port int, tok string) (origin string, tokenInHost bool) {
 	if isLocalhostName(host) {
 		return fmt.Sprintf("%s://p%s.localhost:%d", scheme, tok, port), true
 	}
@@ -334,6 +358,46 @@ func (s *Server) previewOrigin(r *http.Request, port int, tok string) (origin st
 		host = "[" + host + "]" // bare IPv6
 	}
 	return fmt.Sprintf("%s://%s:%d", scheme, host, port), false
+}
+
+// requestScheme is the scheme the caller reached this server with.
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+// previewOriginFrom reads PreviewOriginHeader: an http origin with a host and
+// a port, and no path, query or fragment. ok is false for anything else, and
+// the header is then ignored.
+func previewOriginFrom(r *http.Request) (host string, port int, ok bool) {
+	raw := r.Header.Get(contract.PreviewOriginHeader)
+	if raw == "" {
+		return "", 0, false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", 0, false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", 0, false
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", 0, false
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", 0, false
+	}
+	host, rawPort := u.Hostname(), u.Port()
+	if host == "" || rawPort == "" {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(rawPort)
+	if err != nil || n < 1 || n > 65535 {
+		return "", 0, false
+	}
+	return host, n, true
 }
 
 // tokenOf is the token in an issued preview path's ?t= query.

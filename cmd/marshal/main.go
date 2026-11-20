@@ -1,51 +1,42 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/x/term"
 
 	"marshal/internal/acp"
 	"marshal/internal/app/config"
 	"marshal/internal/buildinfo"
-	"marshal/internal/credentials"
+	"marshal/internal/daemon"
 	"marshal/internal/fleetprofile"
 	"marshal/internal/launch"
 	"marshal/internal/llm/provider"
 	"marshal/internal/procenv"
 	"marshal/internal/repo"
 	"marshal/internal/trust"
+	"marshal/web/bridge/contract"
 )
 
 var appRunner = launch.Run
 var attachRunner = launch.Attach
 var fleetRunner = launch.Fleet
-var fleetServerRunner = launch.ServerFleet
 
-// fleetLoginStore opens the keychain `marshal fleet login` writes to; tests
-// replace it.
-var fleetLoginStore fleetprofile.OpenStore = func() (credentials.Store, error) {
-	return credentials.New("marshal")
-}
+// hostOption is launch.WithHost, indirected so a test can read the name a
+// runner was handed: launch's options are unexported.
+var hostOption = launch.WithHost
 
-// fleetTokenStore and fleetTokenRunner resolve a server's token for
-// `marshal fleet token`. They are the pair an attach resolves it with:
-// fleetprofile.Token falls back to the keychain and to /bin/sh when either is
-// nil. A test replaces them, so it never opens the developer's keychain or
-// runs a script of theirs.
-var fleetTokenStore fleetprofile.OpenStore
-var fleetTokenRunner fleetprofile.CommandRunner
+// fleetHostWait is how long `marshal fleet add` and `remove` wait for the local
+// daemon's report to catch up with the file. A test sets it to zero.
+var fleetHostWait = 5 * time.Second
 
-// fleetStdoutIsTerminal reports whether a writer is a terminal. `marshal fleet
+// fleetStdoutIsTerminal reports whether a writer is a terminal. `marshal daemon
 // token` refuses one, so a token never reaches scrollback (F1 decision 3). A
 // test replaces it, because a test binary has no terminal to point at.
 var fleetStdoutIsTerminal = func(w io.Writer) bool {
@@ -243,12 +234,11 @@ func runAttach(ctx context.Context, args []string, stdout, stderr io.Writer, emb
 }
 
 // runFleet dispatches `marshal fleet`: it runs the fleet screen on the local
-// daemon (P5 F4), on the server profile `--server NAME` names (P5 F7), or
-// stores a token for `login NAME` (decision 10).
+// daemon (P5 F4), on the tunnel to the host `--host NAME` names (D8), or
+// writes and deletes a host's table in fleet.toml.
 func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, embedded bool) error {
 	// --embedded is refused wherever it appears in the invocation, and says
-	// why: the fleet screen reads a daemon, so there is nothing to embed, and
-	// login writes the keychain.
+	// why: the fleet screen reads a daemon, so there is nothing to embed.
 	if embedded {
 		return fmt.Errorf("marshal fleet: --embedded cannot be combined with fleet: the fleet screen needs the daemon")
 	}
@@ -258,42 +248,41 @@ func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		}
 	}
 
-	server := ""
-	jsonOut := false
+	host := ""
 	rest := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		switch {
-		case args[i] == "--json":
-			if jsonOut {
-				return fmt.Errorf("marshal fleet: --json given more than once")
-			}
-			jsonOut = true
-		case args[i] == "--server":
-			// An empty value is refused here as it is after `--server=`: an
+		case args[i] == "--server" || strings.HasPrefix(args[i], "--server="):
+			// D8: a remote daemon is a host, reached through the local
+			// daemon's tunnel, and the token a bridge wanted is gone with the
+			// bridge.
+			return fmt.Errorf("marshal fleet: --server is retired; a remote daemon is a host: marshal fleet --host NAME (docs/one-daemon/design.md D8)")
+		case args[i] == "--host":
+			// An empty value is refused here as it is after `--host=`: an
 			// empty name is indistinguishable from no flag, and would quietly
 			// open the local daemon's fleet instead of the one named.
 			if i+1 >= len(args) || args[i+1] == "" {
-				return fmt.Errorf("marshal fleet: --server requires a server name")
+				return fmt.Errorf("marshal fleet: --host requires a host name")
 			}
-			if server != "" {
-				return fmt.Errorf("marshal fleet: --server given more than once")
+			if host != "" {
+				return fmt.Errorf("marshal fleet: --host given more than once")
 			}
-			server = args[i+1]
+			host = args[i+1]
 			i++
-		case strings.HasPrefix(args[i], "--server="):
-			if server != "" {
-				return fmt.Errorf("marshal fleet: --server given more than once")
+		case strings.HasPrefix(args[i], "--host="):
+			if host != "" {
+				return fmt.Errorf("marshal fleet: --host given more than once")
 			}
-			server = strings.TrimPrefix(args[i], "--server=")
-			if server == "" {
-				return fmt.Errorf("marshal fleet: --server requires a server name")
+			host = strings.TrimPrefix(args[i], "--host=")
+			if host == "" {
+				return fmt.Errorf("marshal fleet: --host requires a host name")
 			}
 		case len(rest) > 0 && rest[0] == "add" &&
-			(args[i] == "--ca-file" || strings.HasPrefix(args[i], "--ca-file=") || args[i] == "--relay" || strings.HasPrefix(args[i], "--relay=") || args[i] == "--no-notify"):
+			(args[i] == "--marshal" || strings.HasPrefix(args[i], "--marshal=") || args[i] == "--no-notify"):
 			// add is the one subcommand with flags of its own, and they follow
 			// the name, so they are handed to runFleetAdd rather than read here.
 			rest = append(rest, args[i])
-			if (args[i] == "--ca-file" || args[i] == "--relay") && i+1 < len(args) {
+			if args[i] == "--marshal" && i+1 < len(args) {
 				rest = append(rest, args[i+1])
 				i++
 			}
@@ -309,51 +298,28 @@ func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return fmt.Errorf("marshal fleet: find home directory: %w", err)
 	}
 
-	// The subcommands name a profile and act on it; anything else is refused.
+	// The subcommands name a host and act on its table; anything else is
+	// refused.
 	if len(rest) > 0 {
 		switch rest[0] {
-		case "login":
-			if server != "" {
-				return fmt.Errorf("marshal fleet: --server cannot be combined with login: login names its server")
-			}
-			if jsonOut {
-				return fmt.Errorf("marshal fleet: --json is only for servers")
-			}
-			return runFleetLogin(ctx, rest[1:], stdin, stderr, home)
+		case "login", "token":
+			// D8: a host is reached over SSH, so there is no token to store or
+			// print.
+			return fmt.Errorf("marshal fleet %s: retired; a host is reached over SSH and needs no token", rest[0])
 		case "servers":
-			if server != "" {
-				return fmt.Errorf("marshal fleet: --server cannot be combined with servers: servers lists them")
-			}
-			return runFleetServers(ctx, rest[1:], stdout, home, jsonOut)
+			return fmt.Errorf("marshal fleet servers: retired; marshal daemon status lists the hosts")
 		case "add":
-			if server != "" {
-				return fmt.Errorf("marshal fleet: --server cannot be combined with add: add writes the file")
-			}
-			if jsonOut {
-				return fmt.Errorf("marshal fleet: --json is only for servers")
+			if host != "" {
+				return fmt.Errorf("marshal fleet: --host cannot be combined with add: add writes the file")
 			}
 			return runFleetAdd(ctx, rest[1:], stderr, home)
 		case "remove":
-			if server != "" {
-				return fmt.Errorf("marshal fleet: --server cannot be combined with remove: remove names its server")
-			}
-			if jsonOut {
-				return fmt.Errorf("marshal fleet: --json is only for servers")
+			if host != "" {
+				return fmt.Errorf("marshal fleet: --host cannot be combined with remove: remove names its host")
 			}
 			return runFleetRemove(ctx, rest[1:], stderr, home)
-		case "token":
-			if server != "" {
-				return fmt.Errorf("marshal fleet: --server cannot be combined with token: token names its server")
-			}
-			if jsonOut {
-				return fmt.Errorf("marshal fleet: --json is only for servers")
-			}
-			return runFleetToken(ctx, rest[1:], stdout, stderr, home)
 		}
 		return fmt.Errorf("marshal fleet: unexpected argument %q", rest[0])
-	}
-	if jsonOut {
-		return fmt.Errorf("marshal fleet: --json is only for servers")
 	}
 
 	// Decision 9: the file is read once per invocation, and a file that cannot
@@ -362,139 +328,122 @@ func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if err != nil {
 		return fmt.Errorf("marshal fleet: %w", err)
 	}
-	if server == "" {
+	if host == "" {
 		return fleetRunner(ctx, stdout, config.DaemonSocketPath(home), notifyOption(file.Local.Notify))
 	}
-	srv, err := file.Lookup(server)
+	h, err := file.LookupHost(host)
 	if err != nil {
 		return fmt.Errorf("marshal fleet: %w", err)
 	}
-	if srv.Relay != "" {
-		// D20: the screen runs on a server's own url, and a relayed profile
-		// has none to dial.
-		return fmt.Errorf("marshal fleet: %s is reached through %s, and the fleet screen does not relay yet", srv.Name, srv.Relay)
-	}
-	return fleetServerRunner(ctx, stdout, srv, notifyOption(srv.Notify))
-}
-
-// FleetServers is the `marshal fleet servers --json` document (F1): the server
-// profiles fleet.toml names, for a program to read. No form of the command
-// carries a token.
-type FleetServers struct {
-	SchemaVersion int           `json:"schemaVersion"` // 1
-	Servers       []FleetServer `json:"servers"`
-}
-
-// FleetServer is one server profile as that document lists it. A relayed
-// profile carries a relay and no url (D20).
-type FleetServer struct {
-	Name   string `json:"name"`
-	URL    string `json:"url"`
-	Relay  string `json:"relay,omitempty"`
-	CAFile string `json:"caFile,omitempty"`
-}
-
-// runFleetServers is `marshal fleet servers`: it lists the server profiles the
-// fleet file names, one name per line, or the FleetServers document with
-// --json. The token fields are never read, so a token cannot appear in either
-// form.
-func runFleetServers(ctx context.Context, args []string, stdout io.Writer, home string, jsonOut bool) error {
-	if err := ctx.Err(); err != nil {
+	tunnel, err := hostTunnel(ctx, home, host)
+	if err != nil {
 		return err
 	}
-	if len(args) > 0 {
-		if strings.HasPrefix(args[0], "-") {
-			return fmt.Errorf("marshal fleet servers: unexpected flag %q", args[0])
-		}
-		return fmt.Errorf("marshal fleet servers: unexpected argument %q", args[0])
-	}
-	file, err := fleetprofile.Load(fleetprofile.Path(home))
-	if err != nil {
-		return fmt.Errorf("marshal fleet servers: %w", err)
-	}
-	names := make([]string, 0, len(file.Servers))
-	for name := range file.Servers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	if !jsonOut {
-		for _, name := range names {
-			if _, err := fmt.Fprintln(stdout, name); err != nil {
-				return fmt.Errorf("marshal fleet servers: %w", err)
-			}
-		}
-		return nil
-	}
-
-	doc := FleetServers{SchemaVersion: 1, Servers: make([]FleetServer, 0, len(names))}
-	for _, name := range names {
-		srv := file.Servers[name]
-		doc.Servers = append(doc.Servers, FleetServer{
-			Name:   name,
-			URL:    srv.URL,
-			Relay:  srv.Relay,
-			CAFile: srv.CAFile,
-		})
-	}
-	enc := json.NewEncoder(stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(doc); err != nil {
-		return fmt.Errorf("marshal fleet servers: %w", err)
-	}
-	return nil
+	return fleetRunner(ctx, stdout, tunnel.Socket, notifyOption(h.Notify), hostOption(host))
 }
 
-// runFleetAdd is `marshal fleet add NAME URL [--ca-file PATH] [--no-notify]`,
-// or `marshal fleet add NAME --relay HUB [--no-notify]` for a relayed server
-// (D20): it writes the profile to the fleet file, which keeps its comments,
-// and says how to store the token that profile now needs.
+// hostTunnel reads the local daemon's report of the host name (D7): the host
+// is reached through the tunnel that daemon keeps, so its socket is the one to
+// run the screen on.
+func hostTunnel(ctx context.Context, home, name string) (daemon.HostInfo, error) {
+	socket := config.DaemonSocketPath(home)
+	infoCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
+	defer cancel()
+	info, err := daemonClientFor(socket).Info(infoCtx)
+	if err != nil {
+		return daemon.HostInfo{}, fmt.Errorf("marshal fleet: the local daemon is not answering on %s, and it keeps the tunnel to %s; marshal daemon start", socket, name)
+	}
+	var found daemon.HostInfo
+	for _, h := range info.Hosts {
+		if h.Name == name {
+			found = h
+			break
+		}
+	}
+	if found.Name == "" {
+		return daemon.HostInfo{}, fmt.Errorf("marshal fleet: the daemon reports no tunnel to %s; wait a few seconds after adding it, or run marshal daemon install if the daemon predates hosts", name)
+	}
+	if found.State != contract.HostLive {
+		if found.LastError != "" {
+			return daemon.HostInfo{}, fmt.Errorf("marshal fleet: %s is %s: %s", name, found.State, found.LastError)
+		}
+		return daemon.HostInfo{}, fmt.Errorf("marshal fleet: %s is %s", name, found.State)
+	}
+	return found, nil
+}
+
+// waitForHost waits up to fleetHostWait for the local daemon's report to list
+// name (present) or not list it, and returns silently either way: add and
+// remove have already written the file, and the tunnel helper catches up on
+// its own schedule.
+func waitForHost(ctx context.Context, home, name string, present bool) {
+	if fleetHostWait <= 0 {
+		return
+	}
+	socket := config.DaemonSocketPath(home)
+	deadline := time.Now().Add(fleetHostWait)
+	for {
+		infoCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
+		info, err := daemonClientFor(socket).Info(infoCtx)
+		cancel()
+		if err != nil {
+			// Nothing answered, so no report is coming: there is nothing to
+			// wait for.
+			return
+		}
+		listed := false
+		for _, h := range info.Hosts {
+			if h.Name == name {
+				listed = true
+				break
+			}
+		}
+		if listed == present {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// runFleetAdd is `marshal fleet add NAME DEST [--marshal PATH] [--no-notify]`
+// (D6, D8): it writes the host's table to the fleet file, which keeps its
+// comments, and waits for the local daemon's report to pick it up.
 func runFleetAdd(ctx context.Context, args []string, stderr io.Writer, home string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	var name, rawURL, relay, caFile string
+	var marshalPath string
 	notify := true
-	// A path may follow --ca-file and a name --relay, so the flags are read by
-	// position and the rest are the name and the url.
+	// A path may follow --marshal, so the flags are read by position and the
+	// rest are the name and the ssh destination.
 	positionals := make([]string, 0, 2)
 	for i := 0; i < len(args); i++ {
 		switch {
-		case args[i] == "--ca-file":
+		case args[i] == "--marshal":
 			if i+1 >= len(args) || args[i+1] == "" ||
 				strings.HasPrefix(args[i+1], "-") {
-				return fmt.Errorf("marshal fleet add: --ca-file requires a path")
+				return fmt.Errorf("marshal fleet add: --marshal requires a path")
 			}
-			if caFile != "" {
-				return fmt.Errorf("marshal fleet add: --ca-file given more than once")
+			if marshalPath != "" {
+				return fmt.Errorf("marshal fleet add: --marshal given more than once")
 			}
-			caFile = args[i+1]
+			marshalPath = args[i+1]
 			i++
-		case strings.HasPrefix(args[i], "--ca-file="):
-			if caFile != "" {
-				return fmt.Errorf("marshal fleet add: --ca-file given more than once")
+		case strings.HasPrefix(args[i], "--marshal="):
+			if marshalPath != "" {
+				return fmt.Errorf("marshal fleet add: --marshal given more than once")
 			}
-			caFile = strings.TrimPrefix(args[i], "--ca-file=")
-			if caFile == "" {
-				return fmt.Errorf("marshal fleet add: --ca-file requires a path")
-			}
-		case args[i] == "--relay":
-			if i+1 >= len(args) || args[i+1] == "" {
-				return fmt.Errorf("marshal fleet add: --relay requires a server name")
-			}
-			if relay != "" {
-				return fmt.Errorf("marshal fleet add: --relay given more than once")
-			}
-			relay = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "--relay="):
-			if relay != "" {
-				return fmt.Errorf("marshal fleet add: --relay given more than once")
-			}
-			relay = strings.TrimPrefix(args[i], "--relay=")
-			if relay == "" {
-				return fmt.Errorf("marshal fleet add: --relay requires a server name")
+			marshalPath = strings.TrimPrefix(args[i], "--marshal=")
+			if marshalPath == "" {
+				return fmt.Errorf("marshal fleet add: --marshal requires a path")
 			}
 		case args[i] == "--no-notify":
 			notify = false
@@ -504,165 +453,48 @@ func runFleetAdd(ctx context.Context, args []string, stderr io.Writer, home stri
 			positionals = append(positionals, args[i])
 		}
 	}
-	if relay != "" && caFile != "" {
-		// D20: a relayed server's TLS is the one it is reached through.
-		return fmt.Errorf("marshal fleet add: --ca-file cannot be combined with --relay: a relayed server has no ca_file; its TLS is %s's", relay)
-	}
 	switch {
-	case len(positionals) == 0 && relay != "":
-		return fmt.Errorf("marshal fleet add: a server name is required")
-	case len(positionals) == 0:
-		return fmt.Errorf("marshal fleet add: a server name and a url are required")
-	case relay != "" && len(positionals) > 1:
-		return fmt.Errorf("marshal fleet add: --relay takes no url: %s is reached through %s", positionals[0], relay)
-	case relay == "" && len(positionals) == 1:
-		return fmt.Errorf("marshal fleet add: a url is required for %s", positionals[0])
-	case relay == "" && len(positionals) > 2:
+	case len(positionals) < 2:
+		return fmt.Errorf("marshal fleet add: a host name and an ssh destination are required")
+	case len(positionals) > 2:
 		return fmt.Errorf("marshal fleet add: unexpected argument %q", positionals[2])
 	}
-	name = positionals[0]
-	if relay == "" {
-		rawURL = positionals[1]
-	}
+	name, dest := positionals[0], positionals[1]
 
 	// Notify is a bool that reads as on when the file omits it, so the absent
 	// flag writes nothing and --no-notify writes notify = false.
-	srv := fleetprofile.Server{Name: name, URL: rawURL, Relay: relay, CAFile: caFile, Notify: notify}
-	if err := fleetprofile.AddServer(fleetprofile.Path(home), srv); err != nil {
+	h := fleetprofile.Host{Name: name, SSH: dest, Marshal: marshalPath, Notify: notify}
+	if err := fleetprofile.AddHost(fleetprofile.Path(home), h); err != nil {
 		return fmt.Errorf("marshal fleet add: %w", err)
 	}
-	fmt.Fprintf(stderr, "Added %s. Store its token with `marshal fleet login %s`.\n", name, name)
+	waitForHost(ctx, home, name, true)
+	fmt.Fprintf(stderr, "Added %s. marshal fleet --host %s opens its fleet once its tunnel is live; marshal daemon status shows it.\n", name, name)
 	return nil
 }
 
-// runFleetRemove is `marshal fleet remove NAME`: it deletes the profile's table
-// from the fleet file, keeping the file's comments, and the token the keychain
-// holds for it.
+// runFleetRemove is `marshal fleet remove NAME`: it deletes the host's table
+// from the fleet file, keeping the file's comments, and waits for the local
+// daemon's report to drop it.
 func runFleetRemove(ctx context.Context, args []string, stderr io.Writer, home string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	switch {
 	case len(args) == 0:
-		return fmt.Errorf("marshal fleet remove: a server name is required")
+		return fmt.Errorf("marshal fleet remove: a host name is required")
 	case len(args) > 1:
-		return fmt.Errorf("marshal fleet remove: at most one server name")
+		return fmt.Errorf("marshal fleet remove: at most one host name")
 	case strings.HasPrefix(args[0], "-"):
 		return fmt.Errorf("marshal fleet remove: unexpected flag %q", args[0])
 	}
 	name := args[0]
 
-	if err := fleetprofile.RemoveServer(fleetprofile.Path(home), name, fleetLoginStore); err != nil {
+	if err := fleetprofile.RemoveHost(fleetprofile.Path(home), name); err != nil {
 		return fmt.Errorf("marshal fleet remove: %w", err)
 	}
+	waitForHost(ctx, home, name, false)
 	fmt.Fprintf(stderr, "Removed %s.\n", name)
 	return nil
-}
-
-// runFleetToken is `marshal fleet token NAME`: it writes the token
-// fleetprofile resolves for that profile and a newline, for a program to read.
-// It refuses a terminal, so a token never reaches scrollback (F1 decision 3).
-func runFleetToken(ctx context.Context, args []string, stdout, stderr io.Writer, home string) error {
-	switch {
-	case len(args) == 0:
-		return fmt.Errorf("marshal fleet token: a server name is required")
-	case len(args) > 1:
-		return fmt.Errorf("marshal fleet token: at most one server name")
-	case strings.HasPrefix(args[0], "-"):
-		return fmt.Errorf("marshal fleet token: unexpected flag %q", args[0])
-	}
-	name := args[0]
-	if fleetStdoutIsTerminal(stdout) {
-		return fmt.Errorf("marshal fleet token: %s's token is for a program, so this refuses to print it to a terminal; pipe or redirect it", name)
-	}
-	file, err := fleetprofile.Load(fleetprofile.Path(home))
-	if err != nil {
-		return fmt.Errorf("marshal fleet token: %w", err)
-	}
-	srv, err := file.Lookup(name)
-	if err != nil {
-		return fmt.Errorf("marshal fleet token: %w", err)
-	}
-	token, err := fleetprofile.Token(ctx, srv, fleetTokenStore, fleetTokenRunner, stderr)
-	if err != nil {
-		return fmt.Errorf("marshal fleet token: %w", err)
-	}
-	if _, err := fmt.Fprintln(stdout, token); err != nil {
-		return fmt.Errorf("marshal fleet token: %w", err)
-	}
-	return nil
-}
-
-// runFleetLogin is `marshal fleet login NAME` (decision 10): it stores a token
-// for a profile the file names, under the keychain key decision 4 reads.
-func runFleetLogin(ctx context.Context, args []string, stdin io.Reader, stderr io.Writer, home string) error {
-	switch {
-	case len(args) == 0:
-		return fmt.Errorf("marshal fleet login: a server name is required")
-	case len(args) > 1:
-		return fmt.Errorf("marshal fleet login: at most one server name")
-	case strings.HasPrefix(args[0], "-"):
-		return fmt.Errorf("marshal fleet login: unexpected flag %q", args[0])
-	}
-	name := args[0]
-
-	file, err := fleetprofile.Load(fleetprofile.Path(home))
-	if err != nil {
-		return fmt.Errorf("marshal fleet login: %w", err)
-	}
-	srv, err := file.Lookup(name)
-	if err != nil {
-		return fmt.Errorf("marshal fleet login: %w", err)
-	}
-	// A stored token would never be read for a profile whose token comes from
-	// token_cmd, so naming it is a mistake worth reporting.
-	if srv.TokenCmd != "" {
-		return fmt.Errorf("marshal fleet login: %s reads its token from token_cmd, so a stored token would never be read", name)
-	}
-
-	token, err := readFleetToken(name, stdin, stderr)
-	if err != nil {
-		return err
-	}
-	store, err := fleetLoginStore()
-	if err != nil {
-		return fmt.Errorf("marshal fleet login: open the keychain: %w", err)
-	}
-	if err := store.Set(fleetprofile.KeychainKey(name), []byte(token)); err != nil {
-		return fmt.Errorf("marshal fleet login: store the token for %s: %w", name, err)
-	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	fmt.Fprintf(stderr, "Stored the token for %s.\n", name)
-	return nil
-}
-
-// readFleetToken reads the token for name: without echo and behind a prompt
-// on a terminal, else one line from stdin, so a password manager can pipe it
-// in (decision 10).
-func readFleetToken(name string, stdin io.Reader, stderr io.Writer) (string, error) {
-	var raw []byte
-	if f, ok := stdin.(*os.File); ok && term.IsTerminal(f.Fd()) {
-		fmt.Fprintf(stderr, "Token for %s: ", name)
-		b, err := term.ReadPassword(f.Fd())
-		fmt.Fprintln(stderr)
-		if err != nil {
-			return "", fmt.Errorf("marshal fleet login: read the token: %w", err)
-		}
-		raw = b
-	} else {
-		line, err := bufio.NewReader(stdin).ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return "", fmt.Errorf("marshal fleet login: read the token: %w", err)
-		}
-		raw = []byte(line)
-	}
-	token := strings.TrimSpace(string(raw))
-	if token == "" {
-		return "", fmt.Errorf("marshal fleet login: the token for %s is empty", name)
-	}
-	return token, nil
 }
 
 // localNotify is local.notify for plain marshal and marshal attach, printing

@@ -8,7 +8,7 @@ Opening a project takes the user to its project agent. Restore their last active
 
 “Find out why CI is failing” should start work with the project's configured defaults. Place overrides under **Options**. Keep issue, recipe and draft selection available there. Bring up planning or a work item when the request calls for it. An explicit request to plan produces a plan for discussion before implementation.
 
-Keep projects, recent threads, **Needs you**, and a single **Marshal** entry in primary navigation. Keep boards, fleet overview, settings, and other management views available through secondary navigation and their existing links. In a thread, show **Stop** while work runs. Put permission choices beside the relevant ask and **View diff** beside the change. Use the existing composer, ask card, thread rows and inspector.
+Keep **Marshal**, **Overview**, **Needs you**, and **Pull requests** in primary navigation alongside projects and recent threads. Overview retains the fleet dashboard. Rename the existing Inbox to Needs you throughout Studio, preserving its links, filters, inline answers, and ready-for-review pull requests. Marshal can summarize the same queue in conversation. Pull requests retains its dedicated review screen and check groups. Keep boards, settings, and other management views available through secondary navigation and their existing links. In a thread, show **Stop** while work runs. Put permission choices beside the relevant ask and **View diff** beside the change. Use the existing composer, ask card, thread rows and inspector.
 
 ## Asking Marshal to coordinate
 

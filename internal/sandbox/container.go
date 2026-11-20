@@ -79,7 +79,7 @@ func (c *Container) Run(ctx context.Context, req native.CommandRequest) (native.
 		image = defaultContainerImage
 	}
 
-	args, err := c.buildArgs(req.Command, image, workdir)
+	args, err := c.buildArgsWithEnv(req.Command, image, workdir, req.Environment)
 	if err != nil {
 		return native.CommandResult{Meta: metaFor(c.Capabilities(), c.cfg)}, err
 	}
@@ -152,6 +152,48 @@ func (c *Container) buildContainerEnv() []string {
 }
 
 func (c *Container) buildArgs(command, image, workdir string) ([]string, error) {
+	return c.buildArgsWithEnv(command, image, workdir, nil)
+}
+
+// CaptureCommandEnvironment reports the environment the runtime is asked to
+// place inside the sandbox: the shell `-e` inputs, filtered by the configured
+// allow/deny policy. The runtime CLI's own host environment (buildContainerEnv)
+// is a different thing and is deliberately excluded — a variable that exists
+// only on the host to configure docker or podman is not a value the image's
+// shell has. A value only the image or its login script produces stays unknown.
+func (c *Container) CaptureCommandEnvironment(dir string) ([]string, map[string]string, error) {
+	env := c.shellEnvironment()
+	return env, knownCommandEnvironment(env), nil
+}
+
+// shellEnvironment is the filtered set of variables passed into the container.
+// A nil allowlist keeps the safe defaults; an explicit-empty one passes
+// nothing at all, not even PATH.
+func (c *Container) shellEnvironment() []string {
+	if c.cfg.EnvAllowlist != nil {
+		env := make([]string, 0, len(c.cfg.EnvAllowlist))
+		for _, key := range c.cfg.EnvAllowlist {
+			if c.envDenySet[key] {
+				continue
+			}
+			if envutil.IsDangerousKey(key) || envutil.IsSecretKey(key) {
+				continue
+			}
+			if v, ok := os.LookupEnv(key); ok {
+				env = append(env, key+"="+v)
+			}
+		}
+		return env
+	}
+	return envutil.FilterKeys(envutil.AllowList(os.Environ()), c.envDenySet)
+}
+
+// buildArgsWithEnv builds the runtime argv. A non-nil shellEnv is the captured
+// container environment: those entries become the `-e` inputs, and the
+// runtime's own host environment is still built separately for the CLI. A nil
+// shellEnv keeps the legacy derivation from the configured allowlist and the
+// host process.
+func (c *Container) buildArgsWithEnv(command, image, workdir string, shellEnv []string) ([]string, error) {
 	args := []string{"run", "--rm"}
 
 	// Network policy. --network none is enforced when AllowNetwork=false;
@@ -182,6 +224,9 @@ func (c *Container) buildArgs(command, image, workdir string) ([]string, error) 
 
 	// Pass through allowlisted env so the command has PATH/HOME/etc inside
 	// the container.
+	//   - A captured shellEnv (a prepared command) is used as-is: it is the
+	//     exact list the preparation analyzed, so policy and launch judge the
+	//     same values and a later ambient change cannot swap one for another.
 	//   - Nil allowlist: use AllowList defaults (PATH, HOME, etc. minus
 	//     secrets/dangerous keys), matching the restricted backend.
 	//   - Explicit-empty allowlist (len=0 and != nil): no env vars are
@@ -193,7 +238,15 @@ func (c *Container) buildArgs(command, image, workdir string) ([]string, error) 
 	// Apply the same secret/dangerous-key filtering the restricted backend
 	// uses: a user-supplied allowlist must not be used to inject secrets,
 	// dynamic-loader keys, or shell-hijack variables into the container.
-	if c.cfg.EnvAllowlist != nil {
+	if shellEnv != nil {
+		// Already filtered by the backend that captured it: re-applying a
+		// second policy here would drop values the sandbox deliberately passes
+		// (PATH is a shell-hijack key for an injected allowlist, but it is this
+		// backend's own safe default).
+		for _, kv := range shellEnv {
+			args = append(args, "-e", kv)
+		}
+	} else if c.cfg.EnvAllowlist != nil {
 		for _, key := range c.cfg.EnvAllowlist {
 			if c.envDenySet[key] {
 				continue

@@ -733,3 +733,65 @@ func TestContainerParseQuotedArgs(t *testing.T) {
 		t.Fatalf("inner argv = %v, want the exact command preserved", inner)
 	}
 }
+
+// TestContainerCaptureSeparatesShellAndLauncher pins the two environments a
+// container launch has: the shell `-e` inputs placed inside the image, and the
+// runtime CLI's own host environment. A host-only runtime variable (DOCKER_HOST)
+// configures the launcher and is not a value the image's shell has, so it must
+// never be advertised as a known shell fact.
+func TestContainerCaptureSeparatesShellAndLauncher(t *testing.T) {
+	t.Setenv("PATH", "/captured/bin")
+	t.Setenv("DOCKER_HOST", "unix:///tmp/marshal-docker.sock")
+	c := newContainer(Config{Backend: "container", ContainerImage: "alpine:latest"}, "docker", "/usr/bin/docker", nil)
+
+	env, known, err := c.CaptureCommandEnvironment("/workspace")
+	if err != nil {
+		t.Fatalf("CaptureCommandEnvironment: %v", err)
+	}
+	if got := envValue(env, "PATH"); got != "/captured/bin" {
+		t.Fatalf("captured shell PATH = %q, want /captured/bin", got)
+	}
+	if got := envValue(env, "DOCKER_HOST"); got != "" {
+		t.Fatalf("runtime-only host variable advertised inside the image: DOCKER_HOST=%q", got)
+	}
+	if _, ok := known["DOCKER_HOST"]; ok {
+		t.Fatalf("runtime-only host variable advertised as a known shell value: %v", known)
+	}
+	// PWD inside the image is produced by the image's shell, not by the host.
+	if _, ok := known["PWD"]; ok {
+		t.Fatalf("host PWD guessed as an image shell value: %v", known)
+	}
+
+	// The runtime CLI still receives its own host environment.
+	if got := envValue(c.buildContainerEnv(), "DOCKER_HOST"); got != "unix:///tmp/marshal-docker.sock" {
+		t.Fatalf("runtime CLI lost its host environment: DOCKER_HOST=%q", got)
+	}
+
+	// The shell inputs come from the captured list, not a fresh host read: a
+	// later ambient change must not swap the value the command was prepared
+	// with.
+	t.Setenv("PATH", "/ambient/bin")
+	args, err := c.buildArgsWithEnv("echo hi", "alpine:latest", "/workspace", env)
+	if err != nil {
+		t.Fatalf("buildArgsWithEnv: %v", err)
+	}
+	foundCaptured := false
+	for i, a := range args {
+		if a != "-e" || i+1 >= len(args) {
+			continue
+		}
+		value := args[i+1]
+		if value == "DOCKER_HOST=unix:///tmp/marshal-docker.sock" {
+			t.Fatalf("runtime-only host variable passed into the image: %v", args)
+		}
+		if value == "PATH=/captured/bin" {
+			foundCaptured = true
+		}
+		if value == "PATH=/ambient/bin" {
+			t.Fatalf("shell inputs re-read the ambient host environment: %v", args)
+		}
+	}
+	if !foundCaptured {
+		t.Fatalf("captured shell environment did not reach the image: %v", args)
+	}
+}

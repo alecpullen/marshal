@@ -94,6 +94,19 @@ func testerTestRunTool(tool Tool) Tool {
 		call.Args = []byte(`{}`)
 		return original(ctx, call)
 	}
+	// Preparation must strip the same override execution does, or the tester's
+	// evaluated command would differ from the one it actually runs. The facts
+	// are copied so a consumer cannot mutate the value the next call sees.
+	if prepare := tool.PrepareCommand; prepare != nil {
+		testerTool.PrepareCommand = func(ctx context.Context, call ToolCall) (CommandFacts, error) {
+			call.Args = []byte(`{}`)
+			facts, err := prepare(ctx, call)
+			if err != nil {
+				return CommandFacts{}, err
+			}
+			return cloneCommandFacts(facts), nil
+		}
+	}
 	testerTool.Internal = false
 	return testerTool
 }

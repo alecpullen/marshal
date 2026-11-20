@@ -58,6 +58,9 @@ func (t *toolSet) shellRunTool() registry.Tool {
 		Description: "Run a command with the workspace root as current working directory. Prefer repo.search, symbols and file.read to broad searches. Never use shell.run to create or modify files (including redirection, heredocs or tee); use file.write or file.edit. Use git.* for repository state and workspace tools for worktrees. Commands are not killed by elapsed time: they continue in background with a job_id. agent.await reports status, exit code, stop cause and output; agent.kill stops a job.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","description":"live progress card for work >30s with measurable progress. Download bytes: {\"profile\":\"download\",\"source\":\"events-v1\"} (real Content-Length). Go tests: {\"profile\":\"tests\",\"source\":\"go-test-json\"} (no producer). For custom or multi-phase jobs or producers, load skill progress-reporting.","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false},"timeout_seconds":{"type":"integer","description":"maximum seconds this call waits before the still-running command continues in the background; it never limits the command's lifetime. Omit or pass 0 for the foreground wait."},"background":{"type":"boolean","description":"start the command and return its job_id immediately"}},"required":["command"],"additionalProperties":false}`),
 		Risk:        registry.RiskCommand,
+		// PrepareCommand resolves the exact command, cwd and launch
+		// environment policy evaluates and launch must use.
+		PrepareCommand: t.prepareCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[shellRunArgs](tool, call.Args)
@@ -96,7 +99,8 @@ func (t *toolSet) testRunTool() registry.Tool {
 		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","description":"live progress card for a command you will watch (roughly >30s with something real to count). Common: {\"profile\":\"download\",\"source\":\"events-v1\"} for byte counts from a real Content-Length, {\"profile\":\"tests\",\"source\":\"go-test-json\"} for go tests, which needs no producer. Load skill progress-reporting for a multi-phase or custom job, or to write a producer.","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false}},"additionalProperties":false}`),
 		Risk:   registry.RiskCommand,
 		// Internal: the general agent runs tests through shell.run; only the swarm tester (TesterView) gets this constrained tool.
-		Internal: true,
+		Internal:       true,
+		PrepareCommand: t.prepareCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[testRunArgs](tool, call.Args)
@@ -265,13 +269,7 @@ func (t *toolSet) commandAttempt(ctx context.Context, toolName, invocationID, co
 // guessed, and copying the whole process environment would make the admission
 // fingerprint depend on unrelated ambient state.
 func knownEnvironment() map[string]string {
-	env := make(map[string]string, 8)
-	for _, name := range []string{"HOME", "PATH", "PWD", "SHELL", "TMPDIR", "USER"} {
-		if value, ok := os.LookupEnv(name); ok {
-			env[name] = value
-		}
-	}
-	return env
+	return knownEnvironmentFrom(os.Environ())
 }
 
 // runManagedCommandWithProgress launches one ordinary command through the

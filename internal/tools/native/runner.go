@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"time"
 
@@ -29,7 +30,27 @@ func (execRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, e
 	// are unchanged.
 	cmd := shellCommand(req.Command)
 	cmd.Dir = req.Dir
+	// A prepared command pins the environment it was approved with. Nil is the
+	// legacy direct call, which inherits this process's environment.
+	if req.Environment != nil {
+		cmd.Env = cloneEnv(req.Environment)
+	}
 	return runCmd(ctx, cmd, req)
+}
+
+// CaptureCommandEnvironment reports the environment this runner gives a child:
+// the whole ambient environment it inherits, with PWD naming the directory the
+// child actually runs in rather than whichever directory this process was
+// started from.
+func (execRunner) CaptureCommandEnvironment(dir string) ([]string, map[string]string, error) {
+	env := cloneEnv(os.Environ())
+	if dir != "" {
+		env = setEnvValue(env, "PWD", dir)
+	}
+	if env == nil {
+		env = []string{}
+	}
+	return env, knownEnvironmentFrom(env), nil
 }
 
 // shellCommand builds the shell-wrapped command for the shell path. It

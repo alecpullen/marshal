@@ -67,6 +67,13 @@ type Tool struct {
 	// no path.
 	ResolvePath func(context.Context, string, bool) (string, error)
 
+	// PrepareCommand prepares the actual native command a call would run: the
+	// normalized bytes, the exact directory and workspace, and the captured
+	// launch environment. Policy evaluation and launch consume this one
+	// preparation so they agree on what is about to execute. Nil for an
+	// optional tool that runs no shell command.
+	PrepareCommand CommandPreparer
+
 	// validator is the compiled form of Schema, built once by Register.
 	// Shared by pointer through cloneTool: jsonschema.Schema is immutable
 	// after compilation and safe for concurrent use.

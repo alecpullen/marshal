@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"log/slog"
+	"os"
 
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
@@ -23,11 +24,25 @@ func (p *Passthrough) Run(ctx context.Context, req native.CommandRequest) (nativ
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
+	// A prepared command pins its captured environment; nil keeps the legacy
+	// behavior of inheriting this process's environment.
+	if req.Environment != nil {
+		cmd.Env = cloneEnvStrings(req.Environment)
+	}
 	meta := registry.SandboxMeta{
 		Enabled: true,
 		Backend: "passthrough",
 	}
 	return executeCommand(runCtx, cmd, req, meta)
+}
+
+// CaptureCommandEnvironment reports the environment passthrough gives a child:
+// the ambient environment unchanged, because the backend inherits it. PWD names
+// the directory the child actually runs in, so a local PWD fact corresponds to
+// the captured cwd rather than the parent process's.
+func (p *Passthrough) CaptureCommandEnvironment(dir string) ([]string, map[string]string, error) {
+	env, known := localCommandEnvironment(os.Environ(), dir)
+	return env, known, nil
 }
 
 func (p *Passthrough) Capabilities() Capabilities {

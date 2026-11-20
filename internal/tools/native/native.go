@@ -201,6 +201,11 @@ type CommandRequest struct {
 	Dir            string
 	Timeout        time.Duration
 	MaxOutputBytes int
+	// Environment, when non-nil, is the captured launch environment: the exact
+	// "KEY=VALUE" list the child receives, including an intentionally empty
+	// list. Nil keeps the legacy behavior — the runner inherits or builds its
+	// own environment — which only a direct (unprepared) caller may rely on.
+	Environment []string
 	// RetainOutputTail keeps recent output and forwards all observer bytes.
 	// The default preserves prefix capture for existing non-managed callers.
 	RetainOutputTail bool

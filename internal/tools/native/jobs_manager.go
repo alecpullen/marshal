@@ -345,6 +345,11 @@ type LaunchSpec struct {
 	Dir string
 	// Runner overrides the manager's CommandRunner for this execution.
 	Runner CommandRunner
+	// Environment, when non-nil, is the captured launch environment prepared
+	// for this exact command: the "KEY=VALUE" list the process receives,
+	// including an intentionally empty list. Nil keeps the legacy behavior in
+	// which the runner inherits or builds its own environment.
+	Environment []string
 	// MaxOutputBytes bounds the retained tail of each stream. Non-positive
 	// uses the manager's configured limit.
 	MaxOutputBytes int
@@ -964,6 +969,11 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	if command == "" {
 		return JobInfo{}, fmt.Errorf("command is required")
 	}
+	// The captured environment is copied before the goroutine starts, so a
+	// caller that reuses or mutates its slice cannot change what an already
+	// admitted execution launches with. Nil stays nil: it is the explicit
+	// "runner decides" legacy spelling.
+	environment := cloneEnv(spec.Environment)
 	// An admitted command must already name the directory its admission bound:
 	// the attempt the authorizer approved captured that exact cwd, so a launch
 	// that would resolve one later could run an approved command somewhere it
@@ -1193,15 +1203,16 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	// receive a settled snapshot before the admission it settles.
 	m.notifyChange()
 
-	go m.runJob(j, jobCtx, jobDir, command, runner, limit, lease)
+	go m.runJob(j, jobCtx, jobDir, command, environment, runner, limit, lease)
 
 	return admitted, nil
 }
 
-func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, runner CommandRunner, limit int, lease session.WorkLease) {
+func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, environment []string, runner CommandRunner, limit int, lease session.WorkLease) {
 	req := CommandRequest{
 		Command:        command,
 		Dir:            dir,
+		Environment:    environment,
 		MaxOutputBytes: limit,
 		// Managed commands never derive an execution deadline from a caller's
 		// wait budget, and they keep a bounded recent tail rather than a

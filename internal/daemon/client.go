@@ -29,7 +29,16 @@ const (
 	pinPath           = "/api/projects/pin"
 	daemonRestartPath = "/api/daemon/restart"
 	daemonHostsPath   = "/api/daemon/hosts"
+
+	// mcpPath is the bridge's MCP endpoint. It authenticates per client with
+	// that client's own credential rather than with the daemon's identity, so
+	// a caller of PostMCP carries one.
+	mcpPath = "/mcp"
 )
+
+// mcpAnswerLimit bounds the answer PostMCP reads: one MCP answer is one
+// JSON-RPC message, and 8 MiB is far more than any the endpoint produces.
+const mcpAnswerLimit = 8 << 20
 
 // ChildInfo is the contract's DaemonChild; see that declaration.
 type ChildInfo = contract.DaemonChild
@@ -220,6 +229,37 @@ func (c *Client) ReportHosts(ctx context.Context, hosts []HostInfo) error {
 		detail = refused.Error
 	}
 	return fmt.Errorf("daemon answered %s: %s", resp.Status, detail)
+}
+
+// PostMCP sends one MCP JSON-RPC message to /mcp over the socket with
+// credential as its bearer, and answers the status and body. It is the relay
+// `marshal mcp` runs on: the endpoint's identity is the client's own
+// credential, not the daemon's, so the credential is the caller's to supply.
+//
+// A non-2xx is an answer and not an error: the status and the body are the
+// caller's to read, because what to make of a refusal is the relay's decision.
+// A transport failure is the error.
+func (c *Client) PostMCP(ctx context.Context, credential string, body []byte) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+c.host+mcpPath, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("daemon request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+credential)
+	req.Header.Set("Content-Type", "application/json")
+	// The transport negotiates either form; this endpoint always answers JSON.
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("daemon at %s: %w", c.socket, err)
+	}
+	defer resp.Body.Close()
+
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, mcpAnswerLimit))
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("read daemon answer: %w", err)
+	}
+	return resp.StatusCode, answer, nil
 }
 
 // Restart asks the daemon to restart, calling progress for each line. It

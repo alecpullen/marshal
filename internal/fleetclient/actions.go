@@ -52,9 +52,6 @@ func (c *Client) actionAnswering(ctx context.Context, method, path string, body,
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if err := c.authorize(ctx, req); err != nil {
-		return err
-	}
 	resp, err := c.actionClient().Do(req)
 	if err != nil {
 		// The bridge was not reached: status 0 and the dial's text (decision 2).

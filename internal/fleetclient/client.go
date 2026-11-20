@@ -4,7 +4,6 @@ package fleetclient
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,11 +28,9 @@ const streamPath = "/api/events?stream=fleet"
 
 // Transport is how the client reaches one bridge.
 type Transport struct {
-	Server  string       // the name the screen shows
+	Server  string       // the name the screen shows: `local`, or a host's
 	BaseURL string       // "http://daemon" on the socket
 	HTTP    *http.Client // no overall timeout: the stream is long-lived
-	// Token is the bearer token for one connect; nil sends none.
-	Token func(ctx context.Context) (string, error)
 	// Local marks the local daemon: GET /api/daemon is read.
 	Local bool
 }
@@ -54,30 +51,6 @@ func Socket(path string) Transport {
 			},
 		},
 		Local: true,
-	}
-}
-
-// tlsHandshakeTimeout bounds a server profile's TLS handshake, so an endpoint
-// that accepts the connection and then says nothing cannot hold a connect open.
-const tlsHandshakeTimeout = 10 * time.Second
-
-// HTTPS is a server profile's transport: the bridge at base, over tlsConfig
-// (nil for a loopback http base), with the token on every request.
-func HTTPS(name, base string, tlsConfig *tls.Config, token func(ctx context.Context) (string, error)) Transport {
-	return Transport{
-		Server:  name,
-		BaseURL: strings.TrimSuffix(base, "/"),
-		// No overall timeout: the stream is long-lived. No proxy either: a
-		// server profile names a host, and the environment's proxy is not
-		// part of the configuration the profile carries.
-		HTTP: &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig:     tlsConfig,
-				Proxy:               nil,
-				TLSHandshakeTimeout: tlsHandshakeTimeout,
-			},
-		},
-		Token: token,
 	}
 }
 
@@ -486,9 +459,6 @@ func (c *Client) openStream(ctx context.Context) (*http.Response, error) {
 		// what happened after it.
 		req.Header.Set("Last-Event-ID", c.lastEventID)
 	}
-	if err := c.authorize(ctx, req); err != nil {
-		return nil, err
-	}
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fleet stream: %w", err)
@@ -504,29 +474,11 @@ func (c *Client) openStream(ctx context.Context) (*http.Response, error) {
 	return resp, nil
 }
 
-// authorize sets the bearer token, when the transport has one.
-func (c *Client) authorize(ctx context.Context, req *http.Request) error {
-	if c.transport.Token == nil {
-		return nil
-	}
-	token, err := c.transport.Token(ctx)
-	if err != nil {
-		return fmt.Errorf("fleet token: %w", err)
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	return nil
-}
-
 // get reads one GET answer, bounded by ctx.
 func (c *Client) get(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.transport.BaseURL+path, nil)
 	if err != nil {
 		return fmt.Errorf("fleet request: %w", err)
-	}
-	if err := c.authorize(ctx, req); err != nil {
-		return err
 	}
 	resp, err := c.httpClient().Do(req)
 	if err != nil {

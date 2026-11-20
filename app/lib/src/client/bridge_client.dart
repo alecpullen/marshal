@@ -35,6 +35,21 @@ class BridgeClient {
   /// page cannot read `fleet.toml`, so the daemon names the hosts instead.
   Future<HostList> hosts() => _objectOf('/api/hosts', HostList.fromJson);
 
+  /// POST /api/hosts: adds a host on this daemon's machine, and answers the
+  /// list it left (one-daemon D15, plan 7).
+  ///
+  /// The daemon runs `marshal fleet add` itself, on the machine that keeps the
+  /// tunnels: a host is never written into a `fleet.toml` this app cannot see.
+  Future<HostList> addHost(HostAdd host) =>
+      _objectOf('/api/hosts', HostList.fromJson, method: 'POST', body: host);
+
+  /// DELETE /api/hosts/{name}: removes it, and answers the list it left.
+  Future<HostList> removeHost(String name) => _objectOf(
+    '/api/hosts/${Uri.encodeComponent(name)}',
+    HostList.fromJson,
+    method: 'DELETE',
+  );
+
   /// GET /api/agents: every agent the bridge supervises.
   Future<List<AgentStatus>> agents() =>
       _listOf('/api/agents', AgentStatus.fromJson);

@@ -73,6 +73,12 @@ type Server struct {
 	// hosts is the tunnel helper's last report, sorted by name and never
 	// nil once reported: GET /api/daemon answers it.
 	hosts []DaemonHost
+	// fleetCmd runs a host edit on this machine (hostedit.go). Nil runs the
+	// fleet's own marshal binary.
+	fleetCmd fleetCommand
+	// hostsEdits is one fleet.toml edit at a time: adding and removing a host
+	// both write the one file, so they never overlap (one-daemon D15).
+	hostsEdits sync.Mutex
 	// hostTransports is one HTTP transport per host socket path: a forward to
 	// a host dials its tunnel socket through the transport built for it, and
 	// keeps it, so a stream keeps its connection (hostforward.go).
@@ -277,6 +283,11 @@ func (s *Server) routes() {
 	// tunnel helper last reported, and the forward to each host's socket. Both
 	// are /api/ routes, so both listeners serve them.
 	s.mux.HandleFunc("GET "+hostsPath, s.listHosts)
+	// Adding and removing a host run the CLI on this machine, which owns the
+	// fleet.toml write (one-daemon D15, plan 7). The name pattern is one
+	// segment, so a longer path is still the forward below.
+	s.mux.HandleFunc("POST "+hostsPath, s.addHost)
+	s.mux.HandleFunc("DELETE "+hostForwardPrefix+"{name}", s.removeHost)
 	s.mux.Handle(hostForwardPrefix, http.HandlerFunc(s.hostForward))
 	s.mux.HandleFunc("GET /api/config", s.config)
 	s.mux.HandleFunc("GET /api/projects", s.listProjects)

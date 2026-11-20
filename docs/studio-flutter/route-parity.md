@@ -77,6 +77,8 @@ issues, and so does a route the client issues that has no row.
 | DELETE | `/api/factory/working-drafts/X` | deleteWorkingDraft |  |
 | GET | `/api/factory/working-drafts/installation` | — | dropped: the installation draft is the web client’s onboarding; the app has no onboarding screen |
 | GET | `/api/hosts` | hosts | the browser's discovery reads the hosts the daemon forwards to |
+| POST | `/api/hosts` | addHost | the Studio adds a host on the daemon's machine, which runs `marshal fleet add` |
+| DELETE | `/api/hosts/X` | removeHost | the same, for `marshal fleet remove` |
 | * | `/api/hosts/X/…` | — | dropped: the relayed transport prefixes every route; no method names it |
 | GET | `/api/inbox` | inbox |  |
 | GET | `/api/library/memory` | memory |  |

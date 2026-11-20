@@ -18,9 +18,9 @@ class HostDraft {
 ///
 /// A host appears because discovery found it: from the table `marshal fleet`
 /// keeps in `fleet.toml`, or — in a browser — because the daemon that served
-/// the page forwards to it (one-daemon D10). A native build adds and removes
-/// hosts by running those commands through [add] and [remove]; a browser
-/// lists the hosts its daemon forwards to, and adds none.
+/// the page forwards to it (one-daemon D10). Both builds add and remove hosts
+/// through [add] and [remove], which run on the daemon this app is attached
+/// to: the one that keeps the tunnels (one-daemon D15).
 class HostsModel extends SectionModel<HostView> {
   HostsModel(
     this._read, {
@@ -45,8 +45,9 @@ class HostsModel extends SectionModel<HostView> {
   /// and is marked with its last contact rather than dropped (F2 decision 8).
   final List<HostView> Function() _read;
 
-  /// The `marshal fleet` commands that edit `fleet.toml` (spec D6, D7), or
-  /// null in a build whose composition root gave it none.
+  /// The hosts commands that edit `fleet.toml` (spec D6, D7), as the daemon
+  /// this app is attached to runs them, or null in a build whose composition
+  /// root gave it none.
   final FleetProfiles? profiles;
 
   /// Finds the hosts again, so the one just added is listed and the rows are
@@ -63,7 +64,8 @@ class HostsModel extends SectionModel<HostView> {
   /// The draft the open add form holds, so the shell's guard sees it.
   HostDraft? _draft;
 
-  /// Whether this build can add a host: a browser cannot.
+  /// Whether this app can add a host: it can, with the daemon's command
+  /// runner to add through.
   bool get canAdd => profiles?.supported ?? false;
 
   /// The open add form changed: a draft that holds anything is an edit the

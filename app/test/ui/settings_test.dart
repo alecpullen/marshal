@@ -127,7 +127,11 @@ void main() {
     expect(find.text('live'), findsOneWidget);
   });
 
-  testWidgets('the add row is planned in a browser', (tester) async {
+  testWidgets('the add row is planned without a daemon to add through', (
+    tester,
+  ) async {
+    // A build with no profiles has no daemon to run the commands through, so
+    // the row is where a host will be added, marked planned.
     await pump(tester, place());
 
     final planned = tester.widgetList<StateMessage>(find.byType(StateMessage));
@@ -138,20 +142,6 @@ void main() {
             message.message == 'Add a host',
       ),
       hasLength(1),
-    );
-  });
-
-  testWidgets('a browser says where hosts are added', (tester) async {
-    // A browser cannot run `marshal fleet add`: it lists the hosts its daemon
-    // forwards to, so the add row says where hosts are added (one-daemon D15).
-    await pump(tester, place());
-
-    expect(
-      find.text(
-        'Add hosts with `marshal fleet add` on the machine this daemon runs '
-        'on.',
-      ),
-      findsOneWidget,
     );
   });
 
@@ -168,6 +158,31 @@ void main() {
       findsNothing,
       reason: 'a host is reached over SSH, not over a URL',
     );
+  });
+
+  testWidgets('a browser adds a host through its daemon', (tester) async {
+    // A browser adds a host exactly as the native app does: the daemon this
+    // Studio is attached to runs `marshal fleet add` on its own machine, which
+    // is the one that keeps the tunnels (one-daemon D15).
+    final runner = _Runner();
+    await pump(tester, place(profiles: runner));
+
+    expect(
+      find.text(
+        "Another machine's daemon, reached over SSH from the machine this "
+        'daemon runs on',
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Add a host'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(EditableText).at(0), 'box');
+    await tester.enterText(find.byType(EditableText).at(1), 'me@box');
+    await tester.tap(find.widgetWithText(Btn, 'Add'));
+    await tester.pumpAndSettle();
+
+    expect(runner.calls, ['add box me@box']);
+    expect(find.text('Name'), findsNothing, reason: 'the sheet closed');
   });
 
   testWidgets('a failed add shows its words and keeps the fields', (
@@ -242,7 +257,7 @@ void main() {
     // Nothing is removed until the confirmation says what is lost.
     expect(runner.calls, isEmpty);
     expect(find.textContaining('stops showing it'), findsOneWidget);
-    expect(find.textContaining('Its daemon keeps running'), findsOneWidget);
+    expect(find.textContaining('Its own daemon keeps running'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(Btn, 'Remove'));
     await tester.pumpAndSettle();

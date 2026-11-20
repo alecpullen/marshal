@@ -24,8 +24,9 @@ func sshProgram(ssh string) string {
 }
 
 // sshOptions are the options both commands share: no PTY, never a password
-// prompt, a bounded connect, and a connection of their own (a forward's
-// control socket would otherwise be inherited by the status command).
+// prompt, a bounded connect, a connection of their own (a forward's control
+// socket would otherwise be inherited by the status command), and no forward
+// but the ones the caller names itself.
 func sshOptions() []string {
 	return []string{
 		"-T",
@@ -33,6 +34,27 @@ func sshOptions() []string {
 		"-o", "ConnectTimeout=15",
 		"-o", "ControlMaster=no",
 		"-o", "ControlPath=none",
+		// A host can be added from a browser session, so the daemon's ssh
+		// hands no credential, opens no forward of its own and runs nothing
+		// but the status call and the forward. An -o on the command line wins
+		// over the config file per keyword, so these hold whatever
+		// ~/.ssh/config says for the host.
+		"-o", "ForwardAgent=no",
+		"-o", "ForwardX11=no",
+		"-o", "PermitLocalCommand=no",
+		"-o", "RemoteCommand=none",
+		// A LocalForward/RemoteForward/DynamicForward in the owner's config
+		// (under `Host *` it lands on every host) is a forward of theirs that
+		// would be opened on this tunnel; clearing them is the only way to
+		// take no more than a tunnel from a host. Both call sites put these
+		// options before their own -L arguments, and ssh applies an option at
+		// its argv position, so the -L forwards below still stand.
+		"-o", "ClearAllForwardings=yes",
+		// What no -o clears: a config ProxyCommand or ProxyJump still decides
+		// the route to the host, which is the owner's to define, and
+		// SendEnv/SetEnv still name the environment variables ssh passes. So
+		// this is closed for forwards, credentials and commands — not against
+		// every line of ~/.ssh/config.
 	}
 }
 

@@ -8,9 +8,11 @@ import '../sections/section_page.dart';
 /// Settings' Hosts section (F7 decision 7): every host discovery found, with
 /// its kind, what this app can reach of it and when it was last heard from.
 ///
-/// A host is named in `fleet.toml` and found by discovery. A build that can
-/// run `marshal fleet` adds one here; a browser cannot, and says what it
-/// reaches instead (spec D22).
+/// A host is named in `fleet.toml` and found by discovery. A host is added
+/// here, and a server profile removed here, in either build: the commands run
+/// on the daemon this app is attached to, which is the one that keeps the
+/// tunnels (one-daemon D15). A build with no daemon to add through keeps the
+/// row and marks it planned.
 class HostsSection extends StatelessWidget {
   const HostsSection({super.key, required this.model, this.state, this.now});
 
@@ -43,24 +45,24 @@ class HostsSection extends StatelessWidget {
           if (model.canAdd)
             RowItem(
               name: 'Add a host',
-              description:
-                  'Another machine\'s daemon, reached over SSH and added to '
-                  '`fleet.toml`',
+              description: _addDescription,
               onTap: () => _add(context),
             )
           else
-            RowItem.planned(
-              name: 'Add a host',
-              description:
-                  'Add hosts with `marshal fleet add` on the machine this '
-                  'daemon runs on.',
-            ),
+            RowItem.planned(name: 'Add a host', description: _addDescription),
         ]),
       ],
       detail: (context, host) =>
           HostDetail(model: model, host: host, now: clock),
     );
   }
+
+  /// What the add row says the host is: another machine's daemon, which the
+  /// daemon this app is attached to reaches over SSH. It reads the same in
+  /// both builds, and where there is no daemon to add through.
+  static const _addDescription =
+      'Another machine\'s daemon, reached over SSH from the machine this '
+      'daemon runs on';
 
   /// Adds a host: its name and the SSH destination it is reached at. A draft
   /// that holds anything counts for the shell's guard while the sheet is open
@@ -258,8 +260,8 @@ class _HostDetailState extends State<HostDetail> {
                     'heard from.',
           style: e.small.tint(e.muted),
         ),
-        // A browser cannot remove a host any more than it can add one, so the
-        // affordance follows the runner rather than the host's kind. Only a
+        // The affordance follows the runner rather than the host's kind: a
+        // build with no daemon to remove a host through offers nothing. Only a
         // host reached over SSH has a table of its own to delete.
         if (server && widget.model.canAdd && destination != null) ...[
           const SizedBox(height: Space.s16),
@@ -300,8 +302,8 @@ class _HostDetailState extends State<HostDetail> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'The Studio stops showing it, and its table is deleted from '
-              'fleet.toml. Its daemon keeps running.',
+              'The Studio stops showing it, and this daemon deletes its table '
+              'from fleet.toml. Its own daemon keeps running.',
             ),
             const SizedBox(height: Space.s16),
             Align(

@@ -2162,6 +2162,38 @@ class HostList {
   }
 }
 
+/// HostAdd is POST /api/hosts's body: a host to add to fleet.toml on this
+/// daemon's machine (one-daemon D15, plan 7).
+class HostAdd {
+  const HostAdd({
+    required this.name,
+    required this.ssh,
+    this.marshal,
+  });
+
+  final String name;
+  final String ssh;
+  final String? marshal;
+
+  factory HostAdd.fromJson(Map<String, dynamic> json) {
+    return HostAdd(
+      name: json['name'] as String,
+      ssh: json['ssh'] as String,
+      marshal: json['marshal'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['ssh'] = ssh;
+    if (marshal != null) {
+      json['marshal'] = marshal;
+    }
+    return json;
+  }
+}
+
 /// DaemonChild is one project child as GET /api/daemon reports it.
 class DaemonChild {
   const DaemonChild({

@@ -745,7 +745,10 @@ class _Settings {
     required HostRegistry registry,
   }) : hosts = HostsModel(
          () => store.hosts,
-         profiles: fleetProfiles(),
+         // Hosts are added and removed on the daemon that keeps the tunnels —
+         // the one this app runs beside, never a host reached through a
+         // forward (one-daemon D15, plan 7). The first host is that daemon.
+         profiles: fleetProfiles(registry.hosts.first.client),
          rediscover: registry.discover,
          forget: registry.forget,
          // The tunnels the local daemon keeps, as `GET /api/daemon` reports

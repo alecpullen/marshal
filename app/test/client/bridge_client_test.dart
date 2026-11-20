@@ -47,34 +47,39 @@ void main() {
     expect(fake.requests.single.uri, '/api/daemon');
   });
 
-  test('relayHosts reads the relay\'s hosts', () async {
+  test('hosts reads /api/hosts', () async {
     fake.reply(
       'GET',
-      '/api/relay/hosts',
+      '/api/hosts',
       const FakeReply(
         200,
         body:
-            '{"hosts":[{"name":"laptop","connected":true,'
-            '"since":1763300000000,"lastContact":1763300060000},'
-            '{"name":"build","connected":false}]}',
+            '{"hosts":[{"name":"laptop","ssh":"me@laptop","state":"live",'
+            '"socket":"/tmp/laptop.sock","since":1763300000000},'
+            '{"name":"build","ssh":"me@build","state":"down",'
+            '"socket":"/tmp/build.sock","lastError":"connection refused",'
+            '"since":1763300060000}]}',
       ),
     );
 
-    final relayed = await client.relayHosts();
+    final reported = await client.hosts();
 
-    expect(relayed.hosts, hasLength(2));
-    expect(relayed.hosts.first.name, 'laptop');
-    expect(relayed.hosts.first.connected, isTrue);
-    expect(relayed.hosts.first.since, 1763300000000);
-    expect(relayed.hosts.first.lastContact, 1763300060000);
-    // A host the relay names whether or not it is joined, so one that has
-    // never joined carries no times at all.
-    expect(relayed.hosts.last.name, 'build');
-    expect(relayed.hosts.last.connected, isFalse);
-    expect(relayed.hosts.last.since, isNull);
-    expect(relayed.hosts.last.lastContact, isNull);
+    expect(reported.hosts, hasLength(2));
+    expect(reported.hosts.first.name, 'laptop');
+    expect(reported.hosts.first.ssh, 'me@laptop');
+    expect(reported.hosts.first.state, HostState.hostLive);
+    expect(reported.hosts.first.socket, '/tmp/laptop.sock');
+    expect(reported.hosts.first.lastError, isNull);
+    expect(reported.hosts.first.since, 1763300000000);
+    // A host whose tunnel is down is still listed: its last error is why, and
+    // the row stays so the person can see it rather than lose the host.
+    expect(reported.hosts.last.name, 'build');
+    expect(reported.hosts.last.ssh, 'me@build');
+    expect(reported.hosts.last.state, HostState.hostDown);
+    expect(reported.hosts.last.socket, '/tmp/build.sock');
+    expect(reported.hosts.last.lastError, 'connection refused');
     expect(fake.requests.single.method, 'GET');
-    expect(fake.requests.single.uri, '/api/relay/hosts');
+    expect(fake.requests.single.uri, '/api/hosts');
   });
 
   test('agents decodes every agent', () async {

@@ -261,9 +261,8 @@ func TestDaemonInstallPassesExplicitPaths(t *testing.T) {
 			paths.StateDir,
 			paths.Registry,
 			// The Studio listener's address is a retired key (one-daemon
-			// D10), so the installed unit serves none until the web listener
-			// takes its place.
-			"<string>--addr</string>",
+			// D10): the installed unit writes no --addr, and the web
+			// listener is the only door the daemon opens.
 			"<string>--marshal-bin</string>",
 			// The installed daemon always refreshes (decision 5), so the
 			// flag is written into the unit rather than configured.

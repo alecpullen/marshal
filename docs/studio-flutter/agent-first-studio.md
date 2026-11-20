@@ -1,6 +1,8 @@
 # Conversations in Marshal Studio
 
-Design proposal for review · 21 November 2026
+Design approved · 21 November 2026
+
+[Implementation plan](plans/2026-11-21-agent-first-studio-plan.md)
 
 ## Starting work
 

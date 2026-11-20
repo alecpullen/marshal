@@ -4,44 +4,29 @@ The fleet control plane. Serves the REST API, the SSE streams, the MCP
 endpoint, and the embedded SPA.
 
 ```bash
-webbridge --project /path/to/repo --addr 127.0.0.1:7700
+webbridge --project /path/to/repo --web-listen 127.0.0.1:7700
 ```
 
-The listen address defaults to `127.0.0.1:7700`, so the bridge is not
-reachable off-host unless you say otherwise.
+The web listener is off unless you ask for it. It takes `unix` (a `web.sock`
+beside the daemon's own), an absolute socket path, or a loopback `host:port`,
+and refuses anything else: it serves the Studio and the API with no bearer
+check, so the operator's proxy in front of it is the only thing
+authenticating a browser (one-daemon D3, D13).
 
-## Serving over HTTPS
+| Flag | Meaning |
+|---|---|
+| `--web-listen` | the web listener: `unix`, an absolute socket path, or a loopback `host:port` (default: none) |
+| `--web-group` | share a unix `--web-listen` with this group (`0660`) |
+| `--preview-addr` | loopback address for previews (default: a free port on `127.0.0.1`; `off` disables) |
+| `--preview-url` | the public origin preview links name, for a proxy that publishes previews |
 
-`webbridge` will serve TLS directly when given a certificate and key:
+`--addr` and `--token-file` are retired and ignored, and `--token`, `--tls-cert`
+and `--tls-key` are refused.
 
-```bash
-webbridge --tls-cert /etc/ssl/marshal.crt --tls-key /etc/ssl/marshal.key
-```
+## TLS belongs to the proxy
 
-Both flags are also readable from `WEBBRIDGE_TLS_CERT` and
-`WEBBRIDGE_TLS_KEY`. Supplying only one is a startup error rather than a
-silent fall back to plaintext.
-
-**Certificate lifecycle is deliberately out of scope.** `webbridge` does
-not implement ACME, and does not renew anything. Every deployment already
-solves this, and differently:
-
-- **A terminating reverse proxy** (Caddy, Traefik, nginx) in front of a
-  plaintext `webbridge` on loopback. The common homelab shape, especially
-  with a wildcard certificate.
-- **Your own certificates**, passed with the flags above — an internal CA,
-  a wildcard for your domain, or `tailscale cert`, which issues a
-  publicly-trusted certificate for a `*.ts.net` name and renews it.
-
-When something else terminates TLS, set `--public-url` to the externally
-reachable base (`https://marshal.example.dev`). URLs handed to MCP clients
-are built from it, so without it they will point at the internal listen
-address.
-
-> **Note on `.dev` domains:** the entire `.dev` TLD is on the HSTS preload
-> list, so browsers refuse plaintext HTTP to a `.dev` hostname outright.
-> Behind a terminating proxy this never comes up; hitting the bridge
-> directly over HTTP on such a name will simply fail to load.
+`webbridge` serves no TLS itself (one-daemon D3): a certificate, and the login
+in front of it, are the proxy's business.
 
 ## The daemon
 
@@ -49,7 +34,7 @@ address.
 bearer token, and its agents are host processes unless they have a workspace.
 
 ```bash
-webbridge --socket ~/.local/share/marshal/daemon/marshal.sock --addr off
+webbridge --socket ~/.local/share/marshal/daemon/marshal.sock --web-listen unix
 ```
 
 `--profile` is retired; `local` is ignored and `server` is refused.
@@ -59,14 +44,16 @@ webbridge --socket ~/.local/share/marshal/daemon/marshal.sock --addr off
   `$XDG_DATA_HOME/marshal`, else `~/.local/share/marshal`. The directory is
   created `0700`, and the socket is `0600` and peer-checked by user ID, so it
   needs no token.
-- `--addr off` disables the loopback TCP listener, and the preview listener
-  with it; with the TCP listener on, its bearer token still applies.
-- The Studio listener's bind outcome is reported, not swallowed: `GET
-  /api/daemon` answers `studioAddr` (the address actually bound, so a
-  configured port `0` names its own) and `studioError` (why nothing bound). A
-  busy Studio port never stops the daemon — the socket is the daemon's real
-  interface — but the failure is logged at error level and repeated by
-  `marshal studio` by name, instead of surfacing as "nothing is serving".
+- `--web-listen unix` puts the web listener's `web.sock` beside the daemon's own,
+  mode `0600`. An absolute socket path with `--web-group` shares it with a
+  group (`0660`) instead. `--preview-addr off` disables the preview listener,
+  which otherwise opens whether or not the web listener does.
+- The web listener's bind outcome is reported, not swallowed: `GET /api/daemon`
+  answers `webListen` (the address actually bound, so a configured port `0`
+  names its own) and `webError` (why nothing bound). A busy web port never
+  stops the daemon — the socket is the daemon's real interface — but the
+  failure is logged at error level and reported by name, instead of surfacing
+  as "nothing is serving".
 - The state directory defaults to `<data>/daemon/state` and the fleet registry
   to `<data>/daemon/fleet.json`, so a daemon and a bridge run by hand never
   share either.
@@ -82,29 +69,15 @@ webbridge --socket ~/.local/share/marshal/daemon/marshal.sock --addr off
   git-sourced, workspace or containerized agent keeps a child each. Releasing
   an agent closes its session, never the child.
 
-### Studio sign-in
-
-The Studio is served on the `--addr` listener, and that listener's bearer token
-is long-lived. `marshal studio` never puts it in a URL: it mints a single-use
-code over the socket (`POST /api/studio/code`, socket only) and opens
-`http://<addr>/#code=<code>`. A fragment never leaves the browser, so the code
-reaches no request line and no access log. The page posts it once to `POST
-/api/studio/session` — the one `/api` route without a bearer token — and gets
-the token back in the response body. A code is deleted when redeemed and
-expires after two minutes, so one recovered from scrollback or history
-afterwards is worthless, and the exchange refuses a cross-origin caller. `GET
-/api/studio/hello` answers the daemon's identity without a secret, so the
-launcher can confirm a port belongs to this daemon before sending it anything.
-
 Two routes upgrade a marshal client onto a session and relay its frames: `POST
 /api/projects/attach` onto a project's child, and `POST
 /api/agents/{id}/attach` onto one agent's session, whose `101 Switching
 Protocols` carries `Marshal-Session` (the agent's session) and `Marshal-Agent`
-(its ID). The project attach is served on the socket alone — the TCP listener
-answers 404 there. The agent attach is served on both: the socket without a
-token, and the TCP listener behind the same bearer token as every `/api`
-route, and only for a request that arrived over TLS or on a loopback
-connection, which the listener refuses with 403 `the agent attach needs TLS`.
+(its ID). Both are the socket's own, and so are pin, restart, the hosts report
+and enrollment: that set is the one `socketOnly` names (`web/bridge/http.go`),
+none of it is on the mux, and the web listener answers every route in it 404 —
+whatever credential a request carried, and whether or not the listener bound a
+TCP address rather than a unix one.
 Neither attach resumes a paused agent: it refuses an unknown
 agent with 404, a runtime that fails to start with 502, and an agent that is
 paused (`resume it first`), runs on a child of its own with no viewer socket
@@ -130,8 +103,8 @@ every session an agent record names, paused or live.
 
 A project can be pinned, which keeps its child running with no session:
 `marshal daemon pin [dir]` and `marshal daemon unpin [dir]` change the pins
-through `POST /api/projects/pin`, a route the socket serves and the TCP
-listener does not. The pins are the fleet registry's `pinned` list, so they
+through `POST /api/projects/pin`, a route the socket serves and the web
+listener answers 404 for. The pins are the fleet registry's `pinned` list, so they
 survive a restart; a pinned child is started at the daemon's start and holds
 its project host through `project/hold` after every handshake, with the index
 watcher on. `GET /api/daemon` reports the pins and marks each pinned child,

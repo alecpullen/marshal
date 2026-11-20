@@ -532,7 +532,7 @@ class _ShellState extends State<Shell> {
     return relativeAge(oldest ?? _now, _now);
   }
 
-  /// The host that refused this page's token, for the state that says so.
+  /// The host the operator's proxy refused, for the state that says so.
   String _refusingHost() {
     for (final host in widget.hosts) {
       if (host.refused) return host.name;

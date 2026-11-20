@@ -158,7 +158,7 @@ String _reach(HostReachView reach) => switch (reach) {
   HostReachView.live => 'live',
   HostReachView.stale => 'stale',
   HostReachView.unreachable => 'unreachable',
-  HostReachView.unauthorized => 'token refused',
+  HostReachView.unauthorized => 'signed out',
 };
 
 /// When a host was last heard from, relatively and shortly (§8).

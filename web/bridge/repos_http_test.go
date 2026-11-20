@@ -49,7 +49,7 @@ func TestVaultCredentialResolvesIntoGitEnv(t *testing.T) {
 func testCredServer(t *testing.T) (*Server, *Fleet) {
 	t.Helper()
 	f := testFleetWithAudit(t)
-	return NewServer(f, ""), f
+	return NewServer(f), f
 }
 
 func TestCredentialRoutes(t *testing.T) {

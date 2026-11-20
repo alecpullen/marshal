@@ -353,29 +353,6 @@ func TestTheInboxRouteAnswersTheGroups(t *testing.T) {
 	}
 }
 
-// TestTheInboxRouteNeedsTheToken checks that the route sits behind the same
-// bearer check as the rest of /api/.
-func TestTheInboxRouteNeedsTheToken(t *testing.T) {
-	const token = "tok"
-	e := newWSSpawnEnv(t)
-	s := NewServer(e.f, token)
-	auth := map[string]string{"Authorization": "Bearer " + token}
-
-	if rec := doReq(t, s, http.MethodGet, "/api/inbox", nil, nil); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /api/inbox without a token = %d, want 401", rec.Code)
-	}
-	if rec := doReq(t, s, http.MethodGet, "/api/inbox", nil, auth); rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/inbox with a token = %d, want 200", rec.Code)
-	}
-	// The same pair for GET /api/agents, the route it is registered beside.
-	if rec := doReq(t, s, http.MethodGet, "/api/agents", nil, nil); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /api/agents without a token = %d, want 401", rec.Code)
-	}
-	if rec := doReq(t, s, http.MethodGet, "/api/agents", nil, auth); rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/agents with a token = %d, want 200", rec.Code)
-	}
-}
-
 // inboxShorten sets the inbox loop's settle delay and tick. The loop reads
 // both fresh each turn, so this takes effect without restarting it.
 func inboxShorten(t *testing.T, f *Fleet, delay, every time.Duration) {

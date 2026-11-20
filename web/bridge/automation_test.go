@@ -123,7 +123,7 @@ func newAutoEnvOn(t *testing.T, f *Fleet, a *Automations) *autoEnv {
 	if err := f.ws.PutProjectSettings(root, ProjectSettings{Automations: a}); err != nil {
 		t.Fatal(err)
 	}
-	e := &autoEnv{f: f, srv: NewServer(f, ""), forge: stub, root: root, tips: map[string]string{}}
+	e := &autoEnv{f: f, srv: NewServer(f), forge: stub, root: root, tips: map[string]string{}}
 	f.auto.branchHead = func(_ context.Context, _ Repo, branch string) (string, error) {
 		if sha, ok := e.tips[branch]; ok {
 			return sha, nil

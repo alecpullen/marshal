@@ -48,7 +48,8 @@ Marshal follows a plan. "As `X` does" means `X` exists and is the model to copy.
 - The TCP listener, the bearer token, the sign-in handover and the relay:
   plan 3.
 - SSH hosts: plan 2.
-- Retiring `compose.yaml`, `Dockerfile.bridge` and named-volume state: plan 4.
+- Retiring `compose.yaml`, `Dockerfile.bridge` and named-volume state: plan 5
+  (plan 4 when this plan was written).
   This plan keeps volume mode working wherever `--state-volume` is given.
 - Rootful Linux runtimes for host state, and running containers as the
   daemon's uid.
@@ -656,7 +657,7 @@ passes.
 **Steps:**
 1. `compose.yaml`: add `WEBBRIDGE_STATE_VOLUME: "marshal-state"` and
    `WEBBRIDGE_EGRESS: "on"` to the bridge's `environment`. These keep today's
-   behaviour until plan 4 retires the file.
+   behaviour until plan 5 retires the file.
 2. `scripts/dev-studio.sh`:
    - In the `ExecStart` line (`:281`), drop `"--profile" "server"`. Add
      `"--socket" "$studio_dir/marshal.sock"`, so it does not collide with the

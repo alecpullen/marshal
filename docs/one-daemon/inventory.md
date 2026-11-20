@@ -49,7 +49,7 @@ Plan: [plans/2026-11-20-od-1-one-daemon-plan.md](plans/2026-11-20-od-1-one-daemo
 | `cmd/webbridge/main.go` | 1,183 | Cut | The `--profile` flag (`:146`). `applyProfile` (`:307–375`) becomes the one daemon's defaults, without the refusals. The `cfg.profile == "local"` branches (`:260`, `:779`, `:853`, `:923`, `:959`) now always run. The working-directory project (`:260–266`) goes. |
 | `web/bridge/fleet.go` | — | Cut | The `hostOnly` field (`:156`), `SetHostProcessesOnly` (`:870`), its branch in `containerRuntime` (`:879`), and its clause in `onProjectChild` (`:966`). In `newRuntime` (`:537`), the container path is taken only per D4. Today it is taken whenever a runtime answers. |
 | `web/bridge/derive.go:106`, `egress_fleet.go:43`, `wsbuild.go:248`, `wsspawn.go:58` | — | Cut | The `!f.hostOnly` guards. |
-| `web/bridge/container.go` | 549 | Reshape | Mount agent state from the daemon's state directory by path, not as subpaths of a named volume (A5). Verify this before plan 4. |
+| `web/bridge/container.go` | 549 | Reshape | Mount agent state from the daemon's state directory by path, not as subpaths of a named volume (A5). Verify this before plan 5. |
 | `web/bridge/mounts.go` | 62 / 132 | Reshape | The same: `volumeMount` builds subpath mounts of the shared volume. |
 | `cmd/webbridge/local_test.go` | — / 476 | Reshape | Local-profile defaults and refusals become the one daemon's defaults. |
 | `cmd/webbridge/main_test.go` | — / 538 | Reshape | Its profile cases go. |
@@ -58,7 +58,7 @@ Plan: [plans/2026-11-20-od-1-one-daemon-plan.md](plans/2026-11-20-od-1-one-daemo
 | `web/bridge/fleet.go` | — | Cut | The plain-agent derive step in `Spawn` (`:1546–1560`). |
 | Rootless check | — | Add | `runtimeProbe.rootless`, `rootlessFromInfo` and `Fleet.needsRuntime`. On Linux, a daemon with host state refuses a rootful runtime. |
 | `[daemon] egress` | — | Add | A config field, `UnitSpec.Egress` and `--egress on\|off` in the unit. `--egress` defaults to `off`. |
-| `scripts/dev-studio.sh`, `compose.yaml` | — | Reshape | Run on the new `webbridge` until plans 3 and 4 delete them. The dev studio drops `resolve_state_dir`, the volume-mountpoint workaround. |
+| `scripts/dev-studio.sh`, `compose.yaml` | — | Reshape | Run on the new `webbridge` until plans 3, 4 and 5 change or delete them. The dev studio drops `resolve_state_dir`, the volume-mountpoint workaround. |
 
 ## Plan 2 — Hosts over SSH (D6–D9, D15)
 
@@ -95,7 +95,10 @@ Plan: [plans/2026-11-20-od-2-hosts-over-ssh-plan.md](plans/2026-11-20-od-2-hosts
 | `app/lib/src/ui/settings/hosts_section.dart` | 483 | Reshape | D15's form and detail. Sign in shows only where the browser keeps a token, until plan 3. |
 | `app/test/ui/settings_test.dart`, `app/test/support/screens.dart` | — / 441, 2,295 | Reshape | The Hosts fixtures and their states. |
 
-## Plan 3 — The web listener (D2, D3, D10–D14)
+## Plan 3 — The web listener (D2, D3, D10, D11, D13, D14)
+
+Plan: [plans/2026-11-20-od-3-web-listener-plan.md](plans/2026-11-20-od-3-web-listener-plan.md).
+D12 (the Studio served from files) was split out into plan 4 while planning.
 
 ### Go
 
@@ -107,21 +110,23 @@ Plan: [plans/2026-11-20-od-2-hosts-over-ssh-plan.md](plans/2026-11-20-od-2-hosts
 | `web/bridge/hostrelay.go` | 537 / 704 | Cut / Reshape | The join half goes: `relayJoin`, `join`, `signal`, `take`, `newTransport`, `relayConn` and `left` (`:150–370`, about 220 lines). The secrets in `NewHostRelay` go too. The forward half stays: `relayForward`, `splitForward`, `newProxy`, `rewrite`, `relayed`, `forwardFailed` and `relayHosts` (`:382–522`). It dials the host's tunnel socket and drops `X-Marshal-Host-Token`. |
 | `web/bridge/attach.go` | 485 | Cut | `overTLSOrLoopback`, `networkAgentAttach` and `hasToken` (`:430–482`, 53 lines). |
 | `web/bridge/http.go` | — | Cut | The token and `networkAttach` setup (`:146–152`). In `ServeHTTP`, the relay-join branch (`:181–187`) and the `studioRoute` calls (`:191`, `:236`). |
-| `web/bridge/assets.go` | 194 / 185 | Reshape | Serve the Studio's files from a directory, in place of `//go:embed static` (`:28`). |
-| `web/bridge/static/` | placeholder | Delete | The embed's placeholder index. |
 | `cmd/webbridge/main.go` | — | Cut | The flags `--token`, `--token-file`, `--tls-cert`, `--tls-key`, `--relay-join`, `--join`, `--join-name`, `--join-token-file` and `--join-ca-file`. The functions `applyRelay` (`:376–431`), `readSecretFile` (`:432–452`), `readRelaySecrets` (`:453–467`), `buildJoiner` (`:468–481`), `genToken` (`:595–611`), `readOrCreateToken` (`:612–635`) and the TLS branch of `serveHTTP` (`:1159–1168`). The TCP listener block (`:913–960`) becomes the web listener. |
 | `cmd/webbridge/tokenfile_test.go` | — / 62 | Delete | `readOrCreateToken`. |
 | `cmd/webbridge/relay_test.go` | — / 301 | Delete | The relay and join flags. |
 | `internal/daemon/client.go` | — | Cut | `MintStudioCode` (`:232–272`). |
 | `internal/daemon/daemon.go` | 104 | Reshape | The `Token` and `JoinToken` paths (`:41–42`), the join arguments (`:79`) and `--token-file` (`:93–94`) go. `StudioAddr` becomes `WebListen`. |
 | `internal/daemon/studio_test.go` | — / 128 | Reshape | Becomes the unit-arguments test for `web_listen`. |
-| `internal/app/config` | — | Reshape | `studio_addr`, `join_url`, `join_name` and `join_ca_file` (27 references across `defaults.go`, `file_types.go`, `merge.go`, `save.go` and `types.go`) become `web_listen`, `web_group` and `web_url`. |
+| `internal/app/config` | — | Reshape | `studio_addr`, `join_url`, `join_name` and `join_ca_file` (27 references across `defaults.go`, `file_types.go`, `merge.go`, `save.go` and `types.go`) are retired: still read, only to be named by `marshal daemon install`. `web_listen`, `web_group`, `web_url`, `preview_listen` and `preview_url` come in. |
 | `web/bridge/contract` | — | Reshape | `DaemonInfo.studioAddr` and `studioError` become `webListen` and `webError`. `DaemonJoin` goes, and `RelayHosts` becomes `Hosts`. Regenerate `contract.g.dart`. |
 | `cmd/marshal/studio.go` | 154 / 131 | Reshape | D14. |
 | `cmd/marshal/daemon.go`, `main.go` | — | Cut | `marshal daemon join-token` (`daemon.go:95`) and `marshal daemon token` (`:97`), moved here from plan 2, and `fleetStdoutIsTerminal` (`main.go:51`), which only `daemon token` uses after plan 2. |
 | `internal/fleetclient`, `internal/acpclient/fleet.go`, `internal/app/tui/fleet` | — | Cut | The fleet client's 401 handling (`unauthorized`, `reject`), `acpclient.FleetRejected` and the fleet screen's two cases for it (`events.go:63`, `view.go:836`). Moved here from plan 2: after it, nothing the client dials answers 401. |
 | Web listener | — | Add | The unix socket or loopback listener, with its mode and group, refusing any other address (D3, D10). Also `GET /api/hosts`, and the preview listener's own setting (D11). |
-| `marshal mcp` | — | Add | Only if open question 2 is accepted. |
+| `marshal mcp` | — | Add | Open question 2, accepted: `cmd/marshal/mcp.go` and `daemon.Client.PostMCP`. |
+| `web/bridge/webguard.go` | — | Add | The web listener's guard: the `Host` allow-list, the cross-site refusal and the JSON-only API body (D13, added after approval). |
+| `scripts/studio-smoke.sh` | — | Add (plan 4) | CI serves the Studio build from a real daemon and checks the guard. Plan 4's CI task also runs the browser tests in Chrome. |
+| `web/bridge/weblisten.go`, `hostforward.go` | — | Add | `ParseWebListen`, `ListenWeb` and `CheckLoopback`; `GET /api/hosts` and the forward to the tunnel sockets, refusing socket-only routes. |
+| `web/bridge/preview.go` | — | Reshape | `SetPreviewURL`, for a proxy that publishes previews on a hostname of their own. The preview listener opens whether or not the web listener does. |
 
 ### Dart
 
@@ -138,24 +143,46 @@ Plan: [plans/2026-11-20-od-2-hosts-over-ssh-plan.md](plans/2026-11-20-od-2-hosts
 | `app/lib/main.dart` | 824 | Cut | The host-token wiring (`:11`, `:761–762`). |
 | `app/lib/src/model/hosts_model.dart`, `app/lib/src/ui/settings/hosts_section.dart` | — | Cut | The browser's `storeToken`, `clearToken`, `signIn`, `signOut` and `canSignOut`, and the detail's Token field, Sign in and Sign out. Plan 2 left them for relayed hosts. |
 
-### Tests, CI and release
+### Tests and scripts
 
 | File | Lines | Action | What |
 |---|---:|---|---|
 | `scripts/e2e/e2e_client.py` | 124 | Reshape | No `Authorization` header. It dials the web listener, over a unix socket or loopback. |
 | `scripts/e2e/harness.py` | 279 | Reshape | `--token` goes. `--base` accepts a socket path. |
 | `scripts/e2e/checks_errors.py` | 349 | Reshape | Group H loses its bearer checks (`:41`, `:167`, `:316`). |
-| `scripts/e2e/checks_spa.py` | 198 | Reshape | Group I loses the bearer contract (`:151–171`) and checks the Studio served from its directory. |
+| `scripts/e2e/checks_spa.py` | 198 | Reshape | Group I loses the bearer contract (`:151–171`). Plan 4 makes it check the Studio served from its directory. |
+| `scripts/dev-studio.sh` | 535 | Reshape | Its daemon serves a loopback web listener with no token. Plan 4 deletes it. |
+
+## Plan 4 — The Studio as files (D12)
+
+Plan: [plans/2026-11-20-od-4-studio-as-files-plan.md](plans/2026-11-20-od-4-studio-as-files-plan.md).
+Split out of plan 3 while planning it.
+
+| File | Lines | Action | What |
+|---|---:|---|---|
+| `web/bridge/assets.go` | 194 / 185 | Reshape | Serve the Studio's files from a directory, in place of `//go:embed static` (`:28`). |
+| `web/bridge/static/` | placeholder | Delete | The embed's placeholder index. |
 | `.github/workflows/go-checks.yml` | — | Reshape | `webbridge` builds without `flutter build web` first (`:85–93`). The web build and its CDN check become their own step. |
 | `scripts/dev-studio.sh` | 535 | Delete | The second, server-profile daemon, its unit and its token. A Studio rebuild becomes a `flutter build web` into the web listener's directory, run from `scripts/dev-daemon.sh` when that daemon has `web_listen` set. |
 | `.github/workflows/release.yaml` | — | Reshape | The `studio-web` job (`:72–88`) publishes an asset instead of feeding the embed. `app-darwin` and `app-linux` copy that directory into the bundle (`:154`, `:276`). |
+| Studio directory | — | Add | `FindStudioDir`, `Server.SetStudioDir`, `webbridge --studio-dir` and `DaemonInfo.studioDir`, with `share/marshal/studio` beside or above the binaries. |
+| `.goreleaser.yaml` | — | Reshape | The archive carries `share/marshal/studio/**/*`, and the formula installs it into `pkgshare`. |
+| `scripts/install.sh`, `install_test.sh` | — | Reshape | Install the Studio at `<prefix>/../share/marshal/studio`, and remove it on `--uninstall`. |
+| `scripts/dev-daemon.sh` | 248 | Reshape | `--studio` builds the Studio into the checkout's `share/marshal/studio`. `--dev-image` and `--agent-image` move here from `dev-studio.sh`. |
+| `scripts/e2e/checks_spa.py` | — | Reshape | Group I checks that the daemon names its Studio directory. |
+| `.gitignore`, `.gitattributes` | — | Reshape | Ignore `/share/`, and drop the `web/bridge/static` attributes. |
 
-## Plan 4 — Retire the containerized daemon, and the docs (D5)
+## Plan 5 — Retire the containerized daemon, and the docs (D5)
+
+Plan: [plans/2026-11-20-od-5-retire-the-container-daemon-plan.md](plans/2026-11-20-od-5-retire-the-container-daemon-plan.md).
 
 | File | Lines | Action | What |
 |---|---:|---|---|
 | `compose.yaml` | 17 | Delete | |
 | `build/Dockerfile.bridge` | 30 | Delete | |
+| `web/bridge/fleet.go`, `mounts.go`, `container.go`, `egress_fleet.go`, `terminal.go`, `wsspawn.go` | — | Cut | Named-volume state: `volumeMount`, `ContainerConfig.StateVolume`, `Fleet.stateVolume` and `stateOnHost`. Project mounts: `ProjectMount`, `TranslateToHost` and `Fleet.projectMounts`. `NewFleet` loses both parameters (41 callers), and `SetStateOnHost` becomes `SetConfigHome`. |
+| `docs/DEPLOYMENT.md` | 88 | Reshape | "Running Marshal on a server": a Linux machine with `marshal daemon install`. |
+| `CHANGELOG.md` | — | Reshape | One "One daemon" block under Unreleased, for plans 1–5. |
 | `.goreleaser.yaml` | — | Cut | The two `Dockerfile.bridge` entries under `dockers` (`:156`, `:165`) and their manifests. The agent image entries stay. |
 | `cmd/webbridge/main.go` | — | Cut | `--state-volume` (`:162`), `--project-mount` (`:157`) and `parseProjectMounts` (`:550–567`). This depends on plan 1 having confirmed A5. |
 | `AGENTS.md` | — | Reshape | Web control plane: the local profile, the relay paragraph, `marshal fleet --server` and `fleet.toml`'s tokens. Also the e2e command, the `internal/fleetprofile` map line, and the `--no-web-resources-cdn` paragraph, which moves to the `studio-web` job. |
@@ -166,6 +193,41 @@ Plan: [plans/2026-11-20-od-2-hosts-over-ssh-plan.md](plans/2026-11-20-od-2-hosts
 | `docs/distribution/design.md` | — | Reshape | The row "Studio, pointed at any daemon" (`:97`). |
 | `docs/studio-flutter/f1-client.md` | — | Note | Decisions 3, 5, 6 and 8. |
 | `app/lib/src/client/README.md` | — | Reshape | "HTTPS to a server". |
+
+## Plan 6 — Previews of a remote host's agents (open question 1)
+
+Plan: [plans/2026-11-20-od-6-remote-previews-plan.md](plans/2026-11-20-od-6-remote-previews-plan.md).
+
+| File | Lines | Action | What |
+|---|---:|---|---|
+| `web/bridge/contract/daemon.go` | — | Add | `DaemonInfo.previewAddr`, `DaemonHost.previewPort` and `PreviewOriginHeader`. Regenerate `contract.g.dart` and the status fixture. |
+| `web/bridge/preview.go`, `hostforward.go` | — | Reshape | `SetPreviewAddr`; `issuePreview` builds the link from `X-Marshal-Preview-Origin` when the caller sends one; the forward sets it from the host's `previewPort`. |
+| `internal/tunnels` | — | Reshape | The status document's `previewAddr`, a second `-L` to a free loopback port, `DaemonHost.previewPort`, and a restart when the remote preview listener moves. |
+| `cmd/marshal/daemon.go` | — | Reshape | The host line names its preview port; the tunnels helper's `Probe` answers the preview address. |
+| `app/lib/src/client/bridge_client.dart`, `host_discovery_io.dart`, `daemon/status.dart` | — | Reshape | `BridgeClient.previewOrigin`, sent with every preview request for a remote host. |
+
+## Plan 7 — Adding and removing hosts from a browser (D15, open question 4)
+
+Plan: [plans/2026-11-20-od-7-hosts-from-a-browser-plan.md](plans/2026-11-20-od-7-hosts-from-a-browser-plan.md).
+
+| File | Lines | Action | What |
+|---|---:|---|---|
+| `internal/tunnels/ssh.go` | — | Reshape | `ForwardAgent=no`, `ForwardX11=no`, `PermitLocalCommand=no` and `RemoteCommand=none` on every tunnel command. |
+| `web/bridge/contract/daemon.go` | — | Add | `HostAdd`. |
+| `web/bridge/hostedit.go` | — | Add | `POST /api/hosts` and `DELETE /api/hosts/{name}`, running `marshal fleet add` and `remove`, one at a time. |
+| `app/lib/src/client/fleet_profiles.dart` | — | Reshape | One implementation over the home daemon's `BridgeClient`. `fleet_profiles_io.dart` and `fleet_profiles_stub.dart` are deleted. |
+| `app/lib/src/ui/settings/hosts_section.dart` | — | Reshape | A browser's add row is real, and its read-only note goes. |
+
+## Plan 8 — Previews in a browser (D11, open question 1)
+
+Plan: [plans/2026-11-20-od-8-browser-previews-plan.md](plans/2026-11-20-od-8-browser-previews-plan.md).
+
+| File | Lines | Action | What |
+|---|---:|---|---|
+| `web/bridge/preview.go` | — | Reshape | `preview_url` and the preview origin header may be a `{token}` template; the listener reads a templated host; `PreviewHandler` relays a recorded forwarded preview. |
+| `web/bridge/previewrelay.go` | — | Add | The relay table (by token and by agent and port), bounded and expiring, and the relay itself over each host's preview forward. |
+| `web/bridge/hostforward.go` | — | Reshape | The preview origin is chosen by the caller's `Host`, and a forwarded preview's link is recorded. |
+| `cmd/marshal/daemon.go` | — | Reshape | `daemon.preview_url` accepts a template. |
 
 ## Stays as it is
 

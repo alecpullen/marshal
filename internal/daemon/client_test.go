@@ -1071,3 +1071,53 @@ func TestRestartSendsNow(t *testing.T) {
 		t.Errorf("body = %q, want %q", raw, `{"now":true}`)
 	}
 }
+
+// TestPostMCPSendsTheCredential: an MCP message goes to the socket's /mcp with
+// the client's own credential as its bearer — the endpoint authenticates per
+// client, not with the daemon's identity — and the status and body are the
+// caller's, refusal included.
+func TestPostMCPSendsTheCredential(t *testing.T) {
+	const answer = `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}`
+	const body = `{"jsonrpc":"2.0","id":1,"method":"initialize"}`
+
+	requests := make(chan *http.Request, 1)
+	bodies := make(chan string, 1)
+	socket := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		requests <- r
+		bodies <- string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, answer)
+	}))
+
+	status, got, err := NewClient(socket).PostMCP(context.Background(), "cred-123", []byte(body))
+	if err != nil {
+		t.Fatalf("PostMCP(): %v", err)
+	}
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200", status)
+	}
+	if string(got) != answer {
+		t.Errorf("answer = %q, want %q", got, answer)
+	}
+
+	req := <-requests
+	if req.Method != http.MethodPost {
+		t.Errorf("method = %q, want POST", req.Method)
+	}
+	if req.URL.Path != mcpPath {
+		t.Errorf("path = %q, want %s", req.URL.Path, mcpPath)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer cred-123" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer cred-123")
+	}
+	if got := req.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+	if got := req.Header.Get("Accept"); got != "application/json, text/event-stream" {
+		t.Errorf("Accept = %q, want %q", got, "application/json, text/event-stream")
+	}
+	if raw := <-bodies; raw != body {
+		t.Errorf("body = %q, want %q", raw, body)
+	}
+}

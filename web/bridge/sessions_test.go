@@ -30,7 +30,7 @@ func TestListingLeavesTheControlChildsHooksAlone(t *testing.T) {
 	ctl := newFakeAgent()
 	child := &Child{Transport: ctl}
 	f.newControl = func() (*Child, error) { return child, nil }
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	path := "/api/sessions?cwd=" + url.QueryEscape(root)
 	if rec := doReq(t, srv, http.MethodGet, path, nil, nil); rec.Code != http.StatusOK {
@@ -94,7 +94,7 @@ func TestEveryPerSessionRouteReachesAProjectSession(t *testing.T) {
 	if fake == nil {
 		t.Fatal("no fake was built for the root")
 	}
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	// A read of the session's stack and of its access state each travel as one
 	// child request naming the session.
@@ -140,7 +140,7 @@ func TestLoadOpensAClosedSession(t *testing.T) {
 	if err := f.ws.AddProject(root); err != nil {
 		t.Fatalf("AddProject: %v", err)
 	}
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := doReq(t, srv, http.MethodPost, "/api/sessions/closed-1/load", nil, nil)
 	if rec.Code != http.StatusOK {
@@ -191,7 +191,7 @@ func TestLoadOfAnOwnedSessionIs409(t *testing.T) {
 		SessionID: "s-paused", OwnerID: DefaultOwnerID, Origin: OriginUI}); err != nil {
 		t.Fatalf("PutAgent: %v", err)
 	}
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := doReq(t, srv, http.MethodPost, "/api/sessions/s-paused/load", nil, nil)
 	if rec.Code != http.StatusConflict {
@@ -226,7 +226,7 @@ func TestLoadOfAnAgentSessionIsUnchanged(t *testing.T) {
 	if fake == nil {
 		t.Fatal("no project child was built for the root")
 	}
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := doReq(t, srv, http.MethodPost, "/api/sessions/"+a.SessionID+"/load",
 		map[string]string{"cwd": root}, nil)
@@ -265,7 +265,7 @@ func TestAnImageReachesAProjectSession(t *testing.T) {
 		t.Fatal("no fake was built for the root")
 	}
 
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 	rec := doReq(t, srv, http.MethodPost, imageURL(root, sessionID),
 		contract.ImageUpload{Data: base64.StdEncoding.EncodeToString([]byte("raw bytes"))}, nil)
 	if rec.Code != http.StatusOK {
@@ -775,7 +775,7 @@ func TestACancelledListingIsNotCached(t *testing.T) {
 	}
 	close(release)
 
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 	rec := doReq(t, srv, http.MethodGet, "/api/sessions/all", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/sessions/all = %d, want 200 (body %s)", rec.Code, rec.Body.String())
@@ -1180,7 +1180,7 @@ func TestTheIndexShowsADeadRootBesideItsSiblings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("session/new on %s's child: %v", dead, err)
 	}
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := doReq(t, srv, http.MethodGet, "/api/sessions/all", nil, nil)
 	if rec.Code != http.StatusOK {
@@ -1217,7 +1217,7 @@ func TestTheIndexIsBoundedByASlowRoot(t *testing.T) {
 			t.Fatalf("AddProject(%s): %v", root, err)
 		}
 	}
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	start := time.Now()
 	rec := doReq(t, srv, http.MethodGet, "/api/sessions/all", nil, nil)
@@ -1253,7 +1253,7 @@ func TestTheIndexNarrowsToARoot(t *testing.T) {
 			t.Fatalf("AddProject(%s): %v", root, err)
 		}
 	}
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := doReq(t, srv, http.MethodGet, "/api/sessions/all?root="+url.QueryEscape(wanted), nil, nil)
 	if rec.Code != http.StatusOK {
@@ -1286,7 +1286,7 @@ func TestTheIndexNarrowsToARoot(t *testing.T) {
 // does a project with no sessions (P7 D7).
 func TestTheIndexIsNeverNull(t *testing.T) {
 	f, _ := projectFleetWith(t, nil)
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := doReq(t, srv, http.MethodGet, "/api/sessions/all", nil, nil)
 	if rec.Code != http.StatusOK {
@@ -1301,7 +1301,7 @@ func TestTheIndexIsNeverNull(t *testing.T) {
 	if err := f2.ws.AddProject(root); err != nil {
 		t.Fatalf("AddProject: %v", err)
 	}
-	rec = doReq(t, NewServer(f2, ""), http.MethodGet, "/api/sessions/all", nil, nil)
+	rec = doReq(t, NewServer(f2), http.MethodGet, "/api/sessions/all", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/sessions/all = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -1372,7 +1372,7 @@ func TestTheIndexCarriesAParkedRequest(t *testing.T) {
 		return ok
 	})
 
-	rec := doReq(t, NewServer(f, ""), http.MethodGet, "/api/sessions/all", nil, nil)
+	rec := doReq(t, NewServer(f), http.MethodGet, "/api/sessions/all", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/sessions/all = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -1430,7 +1430,7 @@ func TestAnAnswerReachesAProjectSession(t *testing.T) {
 		return ok
 	})
 
-	rec := doReq(t, NewServer(f, ""), http.MethodPost, "/api/permissions/tc-1",
+	rec := doReq(t, NewServer(f), http.MethodPost, "/api/permissions/tc-1",
 		contract.Decision{Approved: true}, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /api/permissions/tc-1 = %d, want 200 (body %s)", rec.Code, rec.Body.String())

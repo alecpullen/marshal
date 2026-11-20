@@ -22,7 +22,7 @@ func testSecretsServer(t *testing.T) (*Server, *Fleet) {
 		t.Fatal(err)
 	}
 	f.SetSecrets(p)
-	return NewServer(f, ""), f
+	return NewServer(f), f
 }
 
 func TestSecretsHTTPRoundTripNeverReturnsValues(t *testing.T) {
@@ -86,7 +86,7 @@ func TestSecretsHTTPStatus(t *testing.T) {
 	}
 	// The default backend is env, read-only.
 	f := testFleet(t)
-	s2 := NewServer(f, "")
+	s2 := NewServer(f)
 	rec = doReq(t, s2, http.MethodGet, "/api/secrets/status", nil, nil)
 	decodeBody(t, rec, &st)
 	if st["backend"] != "env" {

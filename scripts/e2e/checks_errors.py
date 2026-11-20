@@ -1,57 +1,34 @@
 """Group H: error handling and edge cases.
 
-Authentication, malformed and oversize bodies, unknown routes, method
-mismatch, path traversal and the SSE/MCP entry points. These are the
-paths a hostile or buggy client reaches first.
+Socket-only routes, malformed and oversize bodies, unknown routes, method
+mismatch, path traversal and the SSE/MCP entry points. These are the paths
+a hostile or buggy client reaches first. The web listener serves /api with
+no bearer check, so there is no authentication to get wrong here; what it
+must refuse is the routes that belong to the daemon's own socket.
 """
 
 from __future__ import annotations
 
 import json
-import socket
-import urllib.error
-import urllib.request
 
 from e2e_client import q
-from harness import Ctx, Failure, Skip, Suite, wait_until
+from harness import Ctx, Skip, Suite
 
 
 def register(s: Suite) -> None:
     s.area("H errors")
 
-    # ---- authentication --------------------------------------------------
+    # ---- socket-only routes ---------------------------------------------
 
-    def no_token(c: Ctx) -> None:
-        r = c.client.get("/api/config", token="")
-        s.expect_status(r, 401, request="GET /api/config (no token)")
+    def socket_only_route_is_404(c: Ctx) -> None:
+        """The pin route belongs to the daemon's socket, never the listener.
 
-    def wrong_token(c: Ctx) -> None:
-        r = c.client.get("/api/config", token="definitely-not-the-token")
-        s.expect_status(r, 401, request="GET /api/config (wrong token)")
-
-    def malformed_auth_header(c: Ctx) -> None:
-        r = c.client.get("/api/config", token="", headers={"Authorization": "Basic abc"})
-        s.expect_status(r, 401, request="GET /api/config (Basic auth)")
-
-    def unauthorized_sets_challenge(c: Ctx) -> None:
-        r = c.client.get("/api/config", token="")
-        s.expect_status(r, 401, request="GET /api/config (no token)")
-        challenge = r.header("WWW-Authenticate")
-        s.expect(
-            "Bearer" in challenge,
-            f"401 has no Bearer challenge (got {challenge!r})",
-            request="GET /api/config (no token)",
-            response=r,
-        )
-
-    def token_never_echoed(c: Ctx) -> None:
-        r = c.client.get("/api/config", token="")
-        s.expect(
-            c.env.token not in r.raw,
-            "the 401 body echoes the configured token",
-            request="GET /api/config (no token)",
-            response=r,
-        )
+        A project's child is started and held only for a client that can
+        reach the daemon's own socket, so the web listener answers the pin
+        route 404 (P4 D9, one-daemon D3).
+        """
+        r = c.client.post("/api/projects/pin", {"root": c.env.project, "pinned": False})
+        s.expect_status(r, 404, request="POST /api/projects/pin (web listener)")
 
     # ---- body handling ---------------------------------------------------
 
@@ -158,55 +135,35 @@ def register(s: Suite) -> None:
 
     # ---- streams ---------------------------------------------------------
 
-    def events_requires_auth(c: Ctx) -> None:
-        r = c.client.get("/api/events", token="", timeout=5)
-        s.expect_status(r, 401, request="GET /api/events (no token)")
-
     def events_streams(c: Ctx) -> None:
-        url = f"{c.env.base}/api/events?stream=fleet"
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {c.env.token}"})
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                s.expect(
-                    resp.status == 200,
-                    f"events returned {resp.status}",
-                    request="GET /api/events",
-                )
-                ctype = resp.headers.get("Content-Type", "")
-                s.expect(
-                    "text/event-stream" in ctype,
-                    f"events content-type is {ctype!r}",
-                    request="GET /api/events",
-                )
-                resp.read(64)
-        except socket.timeout:
-            return
-        except urllib.error.HTTPError as exc:
-            raise Failure(
-                f"events returned {exc.code}",
-                request="GET /api/events",
-                response=exc.read().decode("utf-8", "replace")[:300],
-            ) from exc
+        r = c.client.stream("/api/events?stream=fleet", timeout=5)
+        s.expect_status(r, 200, request="GET /api/events")
+        ctype = r.header("Content-Type")
+        s.expect(
+            "text/event-stream" in ctype,
+            f"events content-type is {ctype!r}",
+            request="GET /api/events",
+        )
 
-    def mcp_rejects_without_its_own_auth(c: Ctx) -> None:
+    def mcp_rejects_without_its_own_credential(c: Ctx) -> None:
         r = c.client.post("/mcp", {"jsonrpc": "2.0", "id": 1, "method": "initialize"})
         s.expect(
             r.status in (401, 403),
-            f"/mcp without a client token returned {r.status}",
-            request="POST /mcp (no client token)",
+            f"/mcp without a client credential returned {r.status}",
+            request="POST /mcp (no client credential)",
             response=r,
         )
 
-    def mcp_rejects_a_bad_client_token(c: Ctx) -> None:
+    def mcp_rejects_a_bad_client_credential(c: Ctx) -> None:
         r = c.client.post(
             "/mcp",
             {"jsonrpc": "2.0", "id": 1, "method": "initialize"},
-            token="not-a-client-token",
+            headers={"Authorization": "Bearer not-a-client-credential"},
         )
         s.expect(
             r.status in (401, 403),
-            f"/mcp with a bad client token returned {r.status}",
-            request="POST /mcp (bad client token)",
+            f"/mcp with a bad client credential returned {r.status}",
+            request="POST /mcp (bad client credential)",
             response=r,
         )
 
@@ -310,11 +267,7 @@ def register(s: Suite) -> None:
         )
 
     for name, fn in [
-        ("no token is 401", no_token),
-        ("wrong token is 401", wrong_token),
-        ("malformed auth header is 401", malformed_auth_header),
-        ("401 carries a Bearer challenge", unauthorized_sets_challenge),
-        ("the token is never echoed", token_never_echoed),
+        ("a socket-only route is 404 on the web listener", socket_only_route_is_404),
         ("malformed JSON is 400", malformed_json),
         ("trailing JSON data is 400", trailing_data),
         ("oversize body is rejected", oversize_body),
@@ -328,10 +281,9 @@ def register(s: Suite) -> None:
         ("traversal in a secret ref", traversal_in_secret_ref),
         ("a very long path segment", very_long_path_segment),
         ("unicode in a path segment", unicode_in_a_path_segment),
-        ("events requires auth", events_requires_auth),
         ("events streams", events_streams),
-        ("mcp rejects without its own auth", mcp_rejects_without_its_own_auth),
-        ("mcp rejects a bad client token", mcp_rejects_a_bad_client_token),
+        ("mcp rejects without its own credential", mcp_rejects_without_its_own_credential),
+        ("mcp rejects a bad client credential", mcp_rejects_a_bad_client_credential),
         ("clients list", clients_list),
         ("client round trip", client_roundtrip),
         ("client delete", client_delete),

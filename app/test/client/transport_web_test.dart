@@ -5,74 +5,35 @@ import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:marshal_app/src/client/relayed_transport.dart';
-import 'package:marshal_app/src/client/token_store_web.dart';
 import 'package:marshal_app/src/client/transport.dart';
 import 'package:marshal_app/src/client/transport_web.dart';
 import 'package:web/web.dart' as web;
 
-/// The browser transport, run in Chrome: the bearer token comes from the
-/// browser's storage, a pasted header is normalised, and a 401 is terminal.
+/// The browser transport, run in Chrome: requests go to the origin it names,
+/// the route's own headers survive, there is no credential to send, a 401 is
+/// terminal and a proxy's redirect is a sign-out (one-daemon D13).
 ///
 /// `fetch` is replaced for the duration of each test, so a test never needs a
 /// bridge: it records the request the transport made and answers what the
 /// test scripted.
 void main() {
-  /// The host store the relayed tests sign in to, and the key it keeps.
-  const host = TokenStoreWeb.forHost('laptop');
+  /// The origin the tests name: a page of its own never served these tests.
+  final base = Uri.parse('http://127.0.0.1:7700');
 
   setUp(() {
-    const TokenStoreWeb().clear();
-    host.clear();
-    web.window.localStorage.removeItem(svelteTokenStorageKey);
     calls.clear();
     status = 200;
     body = '{}';
     installFakeFetch();
   });
 
-  tearDown(() {
-    restoreFetch();
-    const TokenStoreWeb().clear();
-    host.clear();
-    web.window.localStorage.removeItem(svelteTokenStorageKey);
-  });
+  tearDown(restoreFetch);
 
-  test('sends the stored token', () async {
-    const TokenStoreWeb().write('tok-123');
-
-    final response = await WebTransport().send(
-      const Request(path: '/api/agents'),
-    );
-
-    expect(response.status, 200);
-    expect(calls.single.url, '/api/agents');
-    expect(calls.single.authorization, 'Bearer tok-123');
-  });
-
-  test('normalises a pasted header', () async {
-    // What a user copies out of a shell: the whole header, not just the token.
-    const TokenStoreWeb().write('Authorization: Bearer tok-123');
-
-    await WebTransport().send(const Request(path: '/api/agents'));
-
-    expect(calls.single.authorization, 'Bearer tok-123');
-
-    // The shapes the web UI accepts, in either order.
-    expect(normalizeToken('  tok-123  '), 'tok-123');
-    expect(normalizeToken('Bearer tok-123'), 'tok-123');
-    expect(normalizeToken('authorization: bearer tok-123'), 'tok-123');
-    expect(normalizeToken('Bearer'), '');
-  });
-
-  test('a conditional write names If-Match beside the token', () async {
-    // The browser transport sets the route's headers after its own, so a
-    // conditional write names If-Match and the bearer token survives it. A
-    // transport that dropped the route's headers would make the write
-    // unconditional (web/bridge/projects.go).
-    const TokenStoreWeb().write('tok-123');
-
-    await WebTransport().send(
+  test('a conditional write names If-Match, and no Credential', () async {
+    // The route's headers are the transport's own: a conditional write names
+    // If-Match and nothing else, because the page holds no credential — the
+    // operator's proxy admits it (one-daemon D13).
+    await WebTransport(base: base).send(
       const Request(
         method: 'PUT',
         path: '/api/projects/settings',
@@ -84,72 +45,66 @@ void main() {
 
     final call = calls.single;
     expect(call.ifMatch, '"0123"');
-    expect(call.authorization, 'Bearer tok-123');
-    expect(call.url, '/api/projects/settings?root=%2Fhome%2Fu%2Falpha');
+    expect(
+      call.contentType,
+      'application/json',
+      reason: 'a request with a body is JSON: the daemon answers 415 otherwise',
+    );
+    expect(
+      call.body,
+      '{"workspace":"alpha"}',
+      reason: 'the body is sent encoded, as the route reads it',
+    );
+    expect(
+      call.authorization,
+      isNull,
+      reason: 'the page sends no Authorization (one-daemon D13)',
+    );
+    expect(
+      call.redirect,
+      'manual',
+      reason: 'a proxy\'s redirect is never followed to its login page',
+    );
+    expect(
+      call.url,
+      'http://127.0.0.1:7700/api/projects/settings?root=%2Fhome%2Fu%2Falpha',
+    );
   });
 
   test('401 is Unauthorized', () async {
     status = 401;
-    body = 'the bridge refused the token';
+    body = 'the proxy refused the request';
 
     await expectLater(
-      WebTransport().send(const Request(path: '/api/agents')),
+      WebTransport(base: base).send(const Request(path: '/api/agents')),
       throwsA(isA<Unauthorized>()),
     );
   });
 
-  test('a host store keeps its own key', () async {
-    // Spec D21: a relayed host's token is kept under
-    // `marshal:bridge-token@<name>`, beside the page's own and never on top of
-    // it.
-    const TokenStoreWeb().write('page-token');
-    host.write('host-token');
+  test('a redirect is a sign-out', () async {
+    // Most proxies answer an expired session with a redirect to their login
+    // page, not a 401 (one-daemon D13). A manual redirect is opaque — status
+    // 0, no readable body — so it is read off its type, and it fails the
+    // request exactly as a 401 does.
+    status = 302;
+    body = '';
 
-    expect(
-      web.window.localStorage.getItem('marshal:bridge-token@laptop'),
-      'host-token',
+    await expectLater(
+      WebTransport(base: base).send(const Request(path: '/api/agents')),
+      throwsA(
+        isA<Unauthorized>().having(
+          (failure) => failure.message,
+          'message',
+          'signed out: reload to sign in again',
+        ),
+      ),
     );
-    expect(const TokenStoreWeb().read(), 'page-token');
-    expect(host.read(), 'host-token');
-
-    await WebTransport(tokens: host).send(const Request(path: '/api/agents'));
-
-    expect(calls.single.authorization, 'Bearer host-token');
-  });
-
-  test('a host store has no svelte fallback', () {
-    // The Svelte Studio's key belongs to the bridge that served the page, and
-    // so does this Studio's own: neither may reach a host behind the relay.
-    web.window.localStorage.setItem(svelteTokenStorageKey, 'svelte-token');
-    const TokenStoreWeb().write('page-token');
-
-    expect(const TokenStoreWeb().read(), 'page-token');
-    expect(host.read(), isNull, reason: 'a host store reads its own key alone');
-
-    // Clearing and writing a host's key leaves the page's where it was.
-    host.clear();
-    expect(host.read(), isNull);
-    host.write('host-token');
-    expect(const TokenStoreWeb().read(), 'page-token');
-  });
-
-  test('a relayed host\'s request carries both tokens', () async {
-    // The page's token reaches the relay in the transport's own Authorization,
-    // and the host's rides beside it, in the header the relay reads (spec D18,
-    // D21).
-    const TokenStoreWeb().write('page-token');
-    host.write('host-token');
-
-    await relayedTransport(
-      WebTransport(),
-      host: 'laptop',
-      token: () async => host.read(),
-    ).send(const Request(path: '/api/agents'));
-
-    final call = calls.single;
-    expect(call.url, '/api/hosts/laptop/api/agents');
-    expect(call.authorization, 'Bearer page-token');
-    expect(call.hostToken, 'host-token');
+    await expectLater(
+      WebTransport(
+        base: base,
+      ).lines(const Request(path: '/api/events', query: {'stream': 'fleet'})),
+      emitsError(isA<Unauthorized>()),
+    );
   });
 }
 
@@ -159,7 +114,8 @@ class FakeCall {
     required this.url,
     required this.authorization,
     this.ifMatch,
-    this.hostToken,
+    this.contentType,
+    this.redirect,
     this.body,
   });
 
@@ -169,8 +125,11 @@ class FakeCall {
   /// The `If-Match` the route named, when it named one.
   final String? ifMatch;
 
-  /// The relayed host's own token, when a relayed transport set one.
-  final String? hostToken;
+  /// The `Content-Type` the transport set, when the request had a body.
+  final String? contentType;
+
+  /// The redirect mode the transport asked for.
+  final String? redirect;
   final String? body;
 }
 
@@ -210,14 +169,35 @@ JSPromise<JSAny> _fakeFetch(JSString input, [JSAny? init]) {
       url: input.toDart,
       authorization: headers?.get('authorization'),
       ifMatch: headers?.get('if-match'),
-      hostToken: headers?.get('x-marshal-host-token'),
+      contentType: headers?.get('content-type'),
+      redirect: request?.redirect,
       body: requestBody == null ? null : (requestBody as JSString).toDart,
     ),
   );
-  final response = web.Response(body.toJS, web.ResponseInit(status: status));
+  // A redirect answered to `redirect: 'manual'` is an opaque redirect in the
+  // browser: status 0, type `opaqueredirect`, and no body to read. The fake
+  // answers exactly that for every 3xx, so the transport is tested against
+  // what a proxy's redirect really looks like.
+  final answer = status >= 300 && status < 400
+      ? _opaqueRedirect()
+      : web.Response(body.toJS, web.ResponseInit(status: status));
   final promise = (_globalThis['Promise'] as JSObject).callMethod<JSObject>(
     'resolve'.toJS,
-    response,
+    answer,
   );
   return promise as JSPromise<JSAny>;
+}
+
+/// The response a browser hands to a `redirect: 'manual'` fetch.
+JSObject _opaqueRedirect() {
+  final response = JSObject();
+  response.setProperty('type'.toJS, 'opaqueredirect'.toJS);
+  response.setProperty('ok'.toJS, false.toJS);
+  response.setProperty('status'.toJS, 0.toJS);
+  response.setProperty('statusText'.toJS, ''.toJS);
+  response.setProperty('url'.toJS, ''.toJS);
+  response.setProperty('redirected'.toJS, false.toJS);
+  response.setProperty('body'.toJS, null);
+  response.setProperty('headers'.toJS, web.Headers());
+  return response;
 }

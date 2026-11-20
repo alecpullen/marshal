@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -412,20 +413,53 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Daemon.IdleSessionTimeout = d
 		}
 		set(&cfg.Daemon.Egress, file.Daemon.Egress)
-		if file.Daemon.StudioAddr != nil && *file.Daemon.StudioAddr != "" {
-			cfg.Daemon.StudioAddr = *file.Daemon.StudioAddr
+		// The web and preview settings (one-daemon D10/D11). Each merges by
+		// taking a set, non-empty value.
+		if file.Daemon.WebListen != nil && *file.Daemon.WebListen != "" {
+			cfg.Daemon.WebListen = *file.Daemon.WebListen
 		}
-		// The relay the daemon joins (P8 D12). All three are user-global, as
-		// studio_addr is, and an empty value never overwrites one already
-		// set, so a project file cannot unset the user's join.
-		if file.Daemon.JoinURL != nil && *file.Daemon.JoinURL != "" {
-			cfg.Daemon.JoinURL = *file.Daemon.JoinURL
+		if file.Daemon.WebGroup != nil && *file.Daemon.WebGroup != "" {
+			cfg.Daemon.WebGroup = *file.Daemon.WebGroup
 		}
-		if file.Daemon.JoinName != nil && *file.Daemon.JoinName != "" {
-			cfg.Daemon.JoinName = *file.Daemon.JoinName
+		if file.Daemon.WebURL != nil && *file.Daemon.WebURL != "" {
+			cfg.Daemon.WebURL = *file.Daemon.WebURL
 		}
-		if file.Daemon.JoinCAFile != nil && *file.Daemon.JoinCAFile != "" {
-			cfg.Daemon.JoinCAFile = *file.Daemon.JoinCAFile
+		if file.Daemon.PreviewListen != nil && *file.Daemon.PreviewListen != "" {
+			cfg.Daemon.PreviewListen = *file.Daemon.PreviewListen
+		}
+		if file.Daemon.PreviewURL != nil && *file.Daemon.PreviewURL != "" {
+			cfg.Daemon.PreviewURL = *file.Daemon.PreviewURL
+		}
+		// The four retired keys (one-daemon D10, D6) are no longer read:
+		// studio_addr, join_url, join_name and join_ca_file only name
+		// themselves in Retired, so the user can be told to drop them. Every
+		// layer merges, so a key set in both a user and a project file is
+		// named once.
+		for _, retired := range []struct {
+			key string
+			set *string
+		}{
+			{key: "studio_addr", set: file.Daemon.StudioAddr},
+			{key: "join_url", set: file.Daemon.JoinURL},
+			{key: "join_name", set: file.Daemon.JoinName},
+			{key: "join_ca_file", set: file.Daemon.JoinCAFile},
+		} {
+			if retired.set == nil {
+				continue
+			}
+			named := false
+			for _, existing := range cfg.Daemon.Retired {
+				if existing == retired.key {
+					named = true
+					break
+				}
+			}
+			if !named {
+				cfg.Daemon.Retired = append(cfg.Daemon.Retired, retired.key)
+			}
+		}
+		if len(cfg.Daemon.Retired) > 1 {
+			sort.Strings(cfg.Daemon.Retired)
 		}
 	}
 	if file.Web != nil {

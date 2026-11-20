@@ -43,14 +43,13 @@ type rpcResponse struct {
 // authenticateMCP resolves the presented bearer token to a registered
 // client.
 //
-// This endpoint MUST authenticate itself. bearerAuth guards only paths
-// under /api/ and passes everything else through so the SPA can be
-// served, so a /mcp handler that trusted the middleware would be open to
-// anyone who can reach the port.
+// This endpoint MUST authenticate itself. It sits outside /api/, so nothing
+// in front of the mux authenticates it: a handler that trusted a wrapper
+// would be open to anyone who can reach the port.
 //
-// The shared API token is deliberately not accepted: it carries no
-// client identity, and without identity there is no per-client autonomy,
-// no caps, and no repo allowlist.
+// Only a registered client's own token is accepted: it carries the client
+// identity, and without identity there is no per-client autonomy, no caps,
+// and no repo allowlist.
 func (s *Server) authenticateMCP(r *http.Request) (MCPClient, bool) {
 	principal, ok := s.authenticateMCPPrincipal(r)
 	return principal.Client, ok
@@ -98,6 +97,13 @@ func (s *Server) authenticateMCPPrincipal(r *http.Request) (mcpPrincipal, bool) 
 	return mcpPrincipal{Client: client, Binding: binding, Builtin: true}, true
 }
 
+// unauthorized rejects the request without revealing why beyond the
+// RFC 6750 challenge.
+func unauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="webbridge"`)
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+}
+
 // mcpHandler serves MCP over the Streamable HTTP transport: JSON-RPC 2.0
 // requests over POST, notifications accepted without a response body, and no
 // server-initiated stream, so a GET (or a session DELETE) is answered 405 by
@@ -105,8 +111,8 @@ func (s *Server) authenticateMCPPrincipal(r *http.Request) (mcpPrincipal, bool) 
 // no push channel.
 //
 // Every operation authenticates here, before any handler sees the request:
-// there is no unauthenticated path to a tool, and no tool trusts the shared
-// bearer.
+// there is no unauthenticated path to a tool, and no tool trusts what a
+// caller says about who it is.
 func (s *Server) mcpHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(mcpProtocolVersionHeader, mcpProtocolVersion)
 	if !s.mcpOriginAllowed(r) {
@@ -193,7 +199,7 @@ func (s *Server) mcpHandler(w http.ResponseWriter, r *http.Request) {
 // mcpOriginAllowed validates the Origin header for the loopback bridge: a
 // browser on this server's own origin may call the endpoint, and any other
 // origin is refused. A missing Origin is a non-browser client, which the
-// bearer token already covers.
+// endpoint's own authentication already covers.
 func (s *Server) mcpOriginAllowed(r *http.Request) bool {
 	origin := strings.TrimRight(strings.TrimSpace(r.Header.Get("Origin")), "/")
 	if origin == "" {

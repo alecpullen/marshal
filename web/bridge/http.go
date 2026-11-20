@@ -32,17 +32,14 @@ const maxBodyBytes = 2 << 20
 const maxAuditTail = 200
 
 // Server exposes the Registry and EventLog over HTTP: a JSON REST API
-// under /api plus the SSE event stream. When a token is configured,
-// every /api route requires bearer auth.
+// under /api plus the SSE event stream. It holds no token: the listener it
+// serves on is reached by the user who started it, and what arrives there
+// was authenticated by the operator's proxy (webguard.go).
 type Server struct {
 	fleet *Fleet
 	mux   *http.ServeMux
-	http  http.Handler
-	// networkAttach is the agent attach behind the bearer check; nil without
-	// a token, and then the network listener answers the attach 404 (D7).
-	networkAttach http.Handler
-	reg           *Registry
-	log           *EventLog
+	reg   *Registry
+	log   *EventLog
 	// publicURLBase is the externally reachable base URL, used to build
 	// absolute links (e.g. the operator-approval URL an MCP spawn
 	// returns). Empty falls back to the listen address.
@@ -50,6 +47,10 @@ type Server struct {
 	// previewPort is the port of the separate preview listener, 0 until
 	// the host has started one (see SetPreviewPort).
 	previewPort atomic.Int32
+	// previewURL, when set, is the public origin issued preview links
+	// name in place of the request's host and the preview port (see
+	// SetPreviewURL).
+	previewURL string
 	// daemonInfo, when set, is what GET /api/daemon answers. Nil on a
 	// server that is not a daemon, which answers 404 (decision 8).
 	daemonInfo *DaemonInfo
@@ -62,14 +63,10 @@ type Server struct {
 	// hosts is the tunnel helper's last report, sorted by name and never
 	// nil once reported: GET /api/daemon answers it.
 	hosts []DaemonHost
-	// relay, when set, is the table of the hosts that may join this bridge:
-	// the network listener then answers the join route, and the forward and
-	// hosts routes sit behind the bearer check (hostrelay.go).
-	relay *HostRelay
-	// join, when set, is the relay this bridge joins, reported per request
-	// by GET /api/daemon (see SetJoiner). Like refresh it is set once, at
-	// start, before the listeners serve.
-	join *Joiner
+	// hostTransports is one HTTP transport per host socket path: a forward to
+	// a host dials its tunnel socket through the transport built for it, and
+	// keeps it, so a stream keeps its connection (hostforward.go).
+	hostTransports sync.Map
 	// factoryAuth is the one factory policy lock: grant management, client
 	// deletion, project removal, delegation settings and the authorization
 	// guarding a durable factory mutation all take it. It is created with the
@@ -85,30 +82,21 @@ type Server struct {
 	// enrolled session, in memory only, so a restart ends every one of them
 	// (marshal_enrollment.go).
 	marshalEnroll *marshalEnrollments
-
-	// token is the bearer token this server checks, and the value a Studio
-	// page receives in exchange for a single-use code. Empty when this server
-	// has no token-checked listener, and the sign-in handover is then absent
-	// (studio_access.go).
-	token string
-	// codes are the live single-use sign-in codes `marshal studio` mints over
-	// the socket (studio_access.go).
-	codes *studioCodes
 }
 
+// NewServer builds a server over a *Fleet or a *Registry. For a fleet, the
+// first string after it is the public URL. For a registry, the *EventLog
+// comes first and the public URL second. A FactoryAPI anywhere in args is
+// the factory.
 func NewServer(target any, args ...any) *Server {
 	var fleet *Fleet
-	var token string
 	var reg *Registry
 	var log *EventLog
 	var publicURLBase string
 	if f, ok := target.(*Fleet); ok {
 		fleet = f
 		if len(args) > 0 {
-			token, _ = args[0].(string)
-		}
-		if len(args) > 1 {
-			publicURLBase, _ = args[1].(string)
+			publicURLBase, _ = args[0].(string)
 		}
 	} else if r, ok := target.(*Registry); ok {
 		reg = r
@@ -116,10 +104,7 @@ func NewServer(target any, args ...any) *Server {
 			log, _ = args[0].(*EventLog)
 		}
 		if len(args) > 1 {
-			token, _ = args[1].(string)
-		}
-		if len(args) > 2 {
-			publicURLBase, _ = args[2].(string)
+			publicURLBase, _ = args[1].(string)
 		}
 	}
 	if fleet != nil && publicURLBase != "" {
@@ -131,8 +116,7 @@ func NewServer(target any, args ...any) *Server {
 	}
 	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux(),
 		factoryAuth:   newFactoryMCPAuthorizer(ws),
-		marshalEnroll: newMarshalEnrollments(),
-		codes:         newStudioCodes()}
+		marshalEnroll: newMarshalEnrollments()}
 	s.routes()
 	// The planner API owns live backend sessions, so it exists only when this
 	// server has a fleet to hold them.
@@ -149,14 +133,6 @@ func NewServer(target any, args ...any) *Server {
 			s.workingDraftSetup(factory)
 		}
 	}
-	s.http = s.mux
-	if token != "" {
-		s.token = token
-		s.http = bearerAuth(token, s.mux)
-		// The network listener also serves the agent attach, behind the same
-		// bearer check and, past it, the transport rule (decision 7).
-		s.networkAttach = s.networkAgentAttach(token)
-	}
 	return s
 }
 
@@ -170,45 +146,45 @@ func (s *Server) publicURL(path string) string {
 	return strings.TrimRight(base, "/") + path
 }
 
-// ServeHTTP implements http.Handler. Non-API paths are served by the
-// embedded SPA (index.html fallback for client-side routing); /api paths
-// go through the mux (with optional bearer auth) so method mismatches
-// still produce 405. The agent attach is on the mux's side of the bearer
-// check only: it goes to networkAttach, which owns the bearer check and
-// the transport rule, and is absent without a token (decision 7). A
-// bridge that is a relay answers the join route here too, before the
-// bearer check (hostrelay.go).
+// ServeHTTP implements http.Handler: it is the web listener's handler.
+// Non-API paths are served by the embedded SPA (index.html fallback for
+// client-side routing); /api paths go through the mux so method mismatches
+// still produce 405. It has no bearer check — what arrives here came through
+// the operator's proxy, which authenticated the caller (webguard.go) — and
+// the socket-only routes are absent because they are not on the mux (D10,
+// D13).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if s.networkAttach != nil {
-		if _, ok := agentAttachID(r.URL.Path); ok {
-			s.networkAttach.ServeHTTP(w, r)
-			return
-		}
-	}
-	if s.relay != nil && r.URL.Path == relayJoinPath {
-		// A join is a host's half of a handover, as the sign-in exchange is a
-		// page's, so it answers before the bearer check — and only here: over
-		// the owner's own socket a join means nothing (P8 decision 8).
-		s.relayJoin(w, r)
+	// What arrives here came through the operator's proxy, which authenticated
+	// the browser but says nothing about who asked: a request addressed to
+	// another host, one another site's page made, and an /api/ body that is
+	// not JSON are refused before any route sees them (webguard.go, D13).
+	if status, reason, ok := s.webGuard(r); !ok {
+		writeJSON(w, status, map[string]string{"error": reason})
 		return
 	}
-	// The sign-in exchange and the identity probe answer before the bearer
-	// check: a page with no token yet is the caller they exist for. Minting a
-	// code is not among them — the network listener answers it 404.
-	if s.studioRoute(w, r, false) {
-		return
+	s.route(s.mux, w, r)
+}
+
+// socketOnly reports whether path is a route only the socket serves: the
+// project attach, the agent attach, pin, restart, the hosts report and
+// enrollment. A request a host forwards from the network crosses to a tunnel
+// socket, and these stay the owner's own operations there too (D10).
+func socketOnly(path string) bool {
+	switch path {
+	case attachPath, pinPath, daemonRestartPath, daemonHostsPath, marshalEnrollPath:
+		return true
 	}
-	s.route(s.http, w, r)
+	_, ok := agentAttachID(path)
+	return ok
 }
 
 // SocketHandler is the server's handler for the local socket: ServeHTTP's
-// routing without the bearer check (decision 7). /mcp keeps its own
-// per-client auth, so it is on the bare mux here either way.
+// routing plus the routes only the socket serves. /mcp keeps its own
+// per-client auth, so it reaches the bare mux either way.
 //
 // The project attach and the pin route exist only here: the network
 // listener never opens a project's child and never changes what the daemon
-// keeps running, so ServeHTTP answers both 404 (P4 D3, D9). The agent
-// attach is the one route ServeHTTP shares, through networkAttach.
+// keeps running, because they are not on the mux (P4 D3, D9).
 func (s *Server) SocketHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == attachPath {
@@ -243,26 +219,20 @@ func (s *Server) SocketHandler() http.Handler {
 			s.enrollMarshal(w, r)
 			return
 		}
-		// Minting a Studio sign-in code is the socket's half of the handover:
-		// the token it leads to never crosses this listener
-		// (studio_access.go).
-		if s.studioRoute(w, r, true) {
-			return
-		}
 		s.route(s.mux, w, r)
 	})
 }
 
-// route is ServeHTTP's routing with api in place of the wrapped mux: the
-// token-checked handler for the network listener, the bare mux for the
-// local socket.
+// route is ServeHTTP's routing with api in place of the mux: the web
+// listener passes the bare mux, and the local socket passes it too, after
+// the routes only a socket serves.
 func (s *Server) route(api http.Handler, w http.ResponseWriter, r *http.Request) {
 	// /mcp joins /api/ on the mux side. It is not under /api/ because it
-	// authenticates per client rather than with the shared bearer token,
-	// but it must still reach the mux rather than the SPA fallback.
+	// authenticates per client rather than as the listener, but it must
+	// still reach the mux rather than the SPA fallback.
 	// Previews are served from their own origin (PreviewHandler), never
 	// from this one: an app the agent runs must not share storage with the
-	// UI that holds the bearer token.
+	// UI.
 	if strings.HasPrefix(r.URL.Path, statusPrefix) {
 		s.statusPublic(w, r)
 		return
@@ -292,6 +262,11 @@ func (s *Server) route(api http.Handler, w http.ResponseWriter, r *http.Request)
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/daemon", s.daemon)
+	// The hosts this daemon keeps a tunnel to (one-daemon D10): the list the
+	// tunnel helper last reported, and the forward to each host's socket. Both
+	// are /api/ routes, so both listeners serve them.
+	s.mux.HandleFunc("GET "+hostsPath, s.listHosts)
+	s.mux.Handle(hostForwardPrefix, http.HandlerFunc(s.hostForward))
 	s.mux.HandleFunc("GET /api/config", s.config)
 	s.mux.HandleFunc("GET /api/projects", s.listProjects)
 	// A project's image upload: the ref it answers is what a prompt attaches.
@@ -409,11 +384,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/secrets/{ref...}", s.deleteSecret)
 	s.discoveryRoutes()
 	s.previewRoutes()
-	// NOTE: with a token configured this stream requires an
-	// Authorization header, which the browser-native EventSource API
-	// cannot send. The SPA must consume SSE over fetch (Task 7 does);
-	// a query-param token fallback is deliberately not offered — the
-	// token must never appear in URLs.
 	if s.fleet != nil {
 		s.mux.HandleFunc("GET /api/events", s.serveEvents)
 	} else {
@@ -421,8 +391,8 @@ func (s *Server) routes() {
 	}
 
 	// Deliberately NOT under /api/: this endpoint authenticates per
-	// client rather than with the shared bearer token. See
-	// authenticateMCP — it must reject on its own.
+	// client rather than as the listener. See authenticateMCP — it must
+	// reject on its own.
 	s.mux.HandleFunc("POST /mcp", s.mcpHandler)
 }
 

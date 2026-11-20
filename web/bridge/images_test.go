@@ -89,7 +89,7 @@ func TestUploadImageReturnsRef(t *testing.T) {
 		t.Fatal("no fake was built for the root")
 	}
 
-	srv := NewServer(f, uploadToken)
+	srv := NewServer(f)
 	raw := []byte("png bytes, not a real png")
 	rec := doReq(t, srv, http.MethodPost, imageURL(root, sessionID),
 		contract.ImageUpload{Data: base64.StdEncoding.EncodeToString(raw), Label: "shot of the ui"},
@@ -130,32 +130,14 @@ func TestUploadImageReturnsRef(t *testing.T) {
 	}
 }
 
-// TestUploadImageRequiresToken: the route is under /api/, so the bearer
-// middleware refuses a request without the token before the handler runs.
-func TestUploadImageRequiresToken(t *testing.T) {
-	f, fakeFor := projectFleetWith(t, storeImages)
-	root := t.TempDir()
-	sessionID := uploadSession(t, f, root)
-
-	srv := NewServer(f, uploadToken)
-	body := contract.ImageUpload{Data: base64.StdEncoding.EncodeToString([]byte("raw"))}
-	rec := doReq(t, srv, http.MethodPost, imageURL(root, sessionID), body, nil)
-	if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 401 or 403; body = %s", rec.Code, rec.Body.String())
-	}
-	if calls := fakeFor(root).calls(imageMethod); len(calls) != 0 {
-		t.Fatalf("an unauthenticated upload reached the child: %v", calls)
-	}
-}
-
 // TestUploadImageRejectsOversizeBody: a body over the cap is refused, before
 // anything is decoded, and the child is never opened.
 func TestUploadImageRejectsOversizeBody(t *testing.T) {
 	f, fakeFor := projectFleetWith(t, storeImages)
 	root := t.TempDir()
 
-	srv := NewServer(f, uploadToken)
-	req := httptest.NewRequest(http.MethodPost, imageURL(root, "s-1"), nil)
+	srv := NewServer(f)
+	req := testJSONRequest(http.MethodPost, imageURL(root, "s-1"), "")
 	req.Header.Set("Authorization", "Bearer "+uploadToken)
 	req.ContentLength = maxImageBodyBytes + 1
 	rec := httptest.NewRecorder()
@@ -186,7 +168,7 @@ func TestUploadImageChildErrorSurfaces(t *testing.T) {
 	root := t.TempDir()
 	sessionID := uploadSession(t, f, root)
 
-	srv := NewServer(f, uploadToken)
+	srv := NewServer(f)
 	rec := doReq(t, srv, http.MethodPost, imageURL(root, sessionID),
 		contract.ImageUpload{Data: base64.StdEncoding.EncodeToString([]byte("raw"))},
 		map[string]string{"Authorization": "Bearer " + uploadToken})
@@ -212,7 +194,7 @@ func TestUploadImageRequiresQueryParams(t *testing.T) {
 	f, _ := projectFleetWith(t, storeImages)
 	root := t.TempDir()
 	sessionID := uploadSession(t, f, root)
-	srv := NewServer(f, uploadToken)
+	srv := NewServer(f)
 	auth := map[string]string{"Authorization": "Bearer " + uploadToken}
 	body := contract.ImageUpload{Data: base64.StdEncoding.EncodeToString([]byte("raw"))}
 

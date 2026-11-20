@@ -24,6 +24,7 @@ var fixtureFiles = []string{
 	"factory.json",
 	"files.json",
 	"finish.json",
+	"hostlist.json",
 	"inbox.json",
 	"inspect.json",
 	"intake.json",
@@ -36,7 +37,6 @@ var fixtureFiles = []string{
 	"projectsettings.json",
 	"projects.json",
 	"recipes.json",
-	"relay.json",
 	"review.json",
 	"runs.json",
 	"schedules.json",
@@ -59,6 +59,8 @@ var fixtureFiles = []string{
 // neither this map nor a fixture goes unnoticed; see the implementation
 // record in docs/studio-flutter/f1-client.md.
 var fixtureTypes = map[string]reflect.Type{
+	// hostlist.json — the hosts this daemon keeps a tunnel to (one-daemon D10).
+	"HostList": reflect.TypeOf(HostList{}),
 	// files.go — the read-only file browser.
 	"FileContent": reflect.TypeOf(FileContent{}),
 	"FileEntry":   reflect.TypeOf(FileEntry{}),
@@ -378,9 +380,6 @@ var fixtureTypes = map[string]reflect.Type{
 	"DiscoveryGap":             reflect.TypeOf(DiscoveryGap{}),
 	"DiscoveryWorktree":        reflect.TypeOf(DiscoveryWorktree{}),
 	"DiscoveryReport":          reflect.TypeOf(DiscoveryReport{}),
-	// relay.go — a relay's hosts and the join a bridge makes into one.
-	"RelayHosts": reflect.TypeOf(RelayHosts{}),
-	"RelayHost":  reflect.TypeOf(RelayHost{}),
 }
 
 // TestContractFixturesRoundTrip holds the contract types to the shared

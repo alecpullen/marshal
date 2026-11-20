@@ -52,8 +52,8 @@ class HostsSection extends StatelessWidget {
             RowItem.planned(
               name: 'Add a host',
               description:
-                  'A browser reaches the hosts the bridge that served it '
-                  'relays: join a daemon to it with `webbridge --join`.',
+                  'Add hosts with `marshal fleet add` on the machine this '
+                  'daemon runs on.',
             ),
         ]),
       ],
@@ -78,14 +78,18 @@ class HostsSection extends StatelessWidget {
   }
 
   /// What the host is, in one line: a local daemon, a host reached over SSH,
-  /// or a page's own host — and a relayed one says where it is reached
-  /// (spec D23).
+  /// or a page's own host — and a forwarded one says where it is reached
+  /// through, and where to (spec D23).
   static String _kind(HostView host) {
     if (host.kind.name == 'local') return 'A local daemon, on this machine';
     final destination = host.destination;
-    if (destination != null) return 'Over SSH to $destination';
     final via = host.via;
-    if (via != null) return 'A server profile, through $via';
+    if (via != null) {
+      return destination == null
+          ? 'Through $via'
+          : 'Through $via, over SSH to $destination';
+    }
+    if (destination != null) return 'Over SSH to $destination';
     return 'The daemon that served this page';
   }
 }
@@ -194,9 +198,9 @@ class _HostFormState extends State<HostForm> {
 }
 
 /// What a host is, and what a person can do about it: a server profile is
-/// removed, and one whose token the bridge refused is signed in to again. The
-/// local daemon is neither — it is this machine's, and its profile is not the
-/// Studio's to write.
+/// removed. The local daemon is never — it is this machine's, and its profile
+/// is not the Studio's to write. Nothing here signs in: the operator's proxy
+/// admits the page, and a refusal is cleared by reloading it (one-daemon D13).
 class HostDetail extends StatefulWidget {
   const HostDetail({
     super.key,
@@ -214,44 +218,12 @@ class HostDetail extends StatefulWidget {
 }
 
 class _HostDetailState extends State<HostDetail> {
-  final _token = TextEditingController();
-
-  /// A sign-in's words, shown under the token field.
-  String? _failure;
-
   /// A removal's words, shown under the button that asked for it: a host
   /// that answered every request can still be refused a removal (an inline
-  /// definition, a file whose mode went loose), and that refusal is not a
-  /// sign-in failure.
+  /// definition, a file whose mode went loose), and that refusal is the
+  /// Studio's own, not the proxy's.
   String? _removeFailure;
-  bool _signingIn = false;
-  bool _signingOut = false;
 
-  @override
-  void dispose() {
-    _token.dispose();
-    super.dispose();
-  }
-
-  /// Whether the relay this host is reached through is one the bridge refused.
-  /// While it is, signing in here cannot help: the relay's own token is what is
-  /// refused, so the detail says so and offers no Sign in of its own (D23).
-  ///
-  /// A `via` the section does not list is read as not refused: both real
-  /// compositions always list the relay's own row (the page's host first in a
-  /// browser, the hub's row in a native build), so this only answers a
-  /// fixture that withholds it.
-  bool get _relayRefused {
-    final via = widget.host.via;
-    if (via == null) return false;
-    for (final other in widget.model.items) {
-      if (other.name == via) return other.refused;
-    }
-    return false;
-  }
-
-  /// A refused token is not a silence: a host that refused one is signed in
-  /// to again, where this build keeps a token to sign in with (decision 6).
   @override
   Widget build(BuildContext context) {
     final e = Ember.of(context);
@@ -260,8 +232,6 @@ class _HostDetailState extends State<HostDetail> {
     final server = host.kind.name != 'local';
     final destination = host.destination;
     final tunnel = host.tunnel;
-    final relayRefused = _relayRefused;
-    final failure = _failure;
     final removeFailure = _removeFailure;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -288,86 +258,19 @@ class _HostDetailState extends State<HostDetail> {
                     'heard from.',
           style: e.small.tint(e.muted),
         ),
-        if (relayRefused) ...[
-          const SizedBox(height: Space.s12),
-          Text('Sign in to the relay first.', style: e.small.tint(e.err)),
-        ],
         // A browser cannot remove a host any more than it can add one, so the
         // affordance follows the runner rather than the host's kind. Only a
         // host reached over SSH has a table of its own to delete.
-        if (server && widget.model.canAdd) ...[
+        if (server && widget.model.canAdd && destination != null) ...[
           const SizedBox(height: Space.s16),
-          Row(
-            children: [
-              if (destination != null)
-                Btn('Remove…', onTap: () => _remove(context)),
-              // Signing out is the browser's alone: it is what holds the token
-              // that reached a relayed host (decision 6, spec D22).
-              if (widget.model.canSignOut(host)) ...[
-                if (destination != null) const SizedBox(width: Space.s12),
-                Btn('Sign out', onTap: _signingOut ? null : _signOut),
-              ],
-            ],
-          ),
+          Row(children: [Btn('Remove…', onTap: () => _remove(context))]),
           if (removeFailure != null) ...[
             const SizedBox(height: Space.s12),
             Text(removeFailure, style: e.small.tint(e.err)),
           ],
         ],
-        if (server &&
-            !relayRefused &&
-            host.refused &&
-            widget.model.canSignIn) ...[
-          const SizedBox(height: Space.s20),
-          Field(
-            label: 'Token',
-            hint: 'The token is written and never shown again',
-            controller: _token,
-            enabled: !_signingIn,
-            onChanged: (_) {
-              if (failure != null) setState(() => _failure = null);
-            },
-            onSubmitted: (_) => _signIn(),
-          ),
-          if (failure != null) ...[
-            const SizedBox(height: Space.s12),
-            Text(failure, style: e.small.tint(e.err)),
-          ],
-          const SizedBox(height: Space.s16),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Btn.primary(
-              _signingIn ? 'Signing in' : 'Sign in',
-              onTap: _signingIn ? null : _signIn,
-            ),
-          ),
-        ],
       ],
     );
-  }
-
-  Future<void> _signIn() async {
-    final token = _token.text.trim();
-    if (token.isEmpty) {
-      setState(() => _failure = 'A token is needed');
-      return;
-    }
-    setState(() {
-      _signingIn = true;
-      _failure = null;
-    });
-    try {
-      await widget.model.signIn(widget.host.name, token);
-      if (!mounted) return;
-      _token.clear();
-      setState(() => _signingIn = false);
-    } catch (failure) {
-      if (!mounted) return;
-      setState(() {
-        _signingIn = false;
-        _failure = describeFailure(failure);
-      });
-    }
   }
 
   /// The tunnel's state in words, with how long it has been in it when the
@@ -379,21 +282,8 @@ class _HostDetailState extends State<HostDetail> {
         '${relativeAge(since, widget.now)} ago';
   }
 
-  /// Forgets the token this browser kept for the host, then asks it to try
-  /// again: it reads "token refused" until it is signed in to with a new one
-  /// (decision 6, spec D22).
-  Future<void> _signOut() async {
-    setState(() {
-      _signingOut = true;
-      _failure = null;
-    });
-    await widget.model.signOut(widget.host.name);
-    if (!mounted) return;
-    setState(() => _signingOut = false);
-  }
-
-  /// Removes the profile and its stored token, after the confirmation Access
-  /// asks before a revoke: it names what is lost, and what keeps running.
+  /// Removes the profile, after the confirmation Access asks before a revoke:
+  /// it names what is lost, and what keeps running.
   Future<void> _remove(BuildContext context) async {
     final host = widget.host;
     if (_removeFailure != null) setState(() => _removeFailure = null);

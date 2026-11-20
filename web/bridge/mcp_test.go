@@ -11,13 +11,7 @@ import (
 func testServer(t *testing.T) *Server {
 	t.Helper()
 	f := testFleet(t)
-	return NewServer(f, "")
-}
-
-func testServerWithToken(t *testing.T, token string) *Server {
-	t.Helper()
-	f := testFleet(t)
-	return NewServer(f, token)
+	return NewServer(f)
 }
 
 func testServerWithClient(t *testing.T, c MCPClient) (*Server, string) {
@@ -35,7 +29,7 @@ func testServerWithClient(t *testing.T, c MCPClient) (*Server, string) {
 	if err := f.ws.PutClient(c); err != nil {
 		t.Fatal(err)
 	}
-	return NewServer(f, ""), plain
+	return NewServer(f), plain
 }
 
 func TestMCPRejectsUnauthenticatedRequests(t *testing.T) {
@@ -46,8 +40,9 @@ func TestMCPRejectsUnauthenticatedRequests(t *testing.T) {
 
 	s.ServeHTTP(rec, req)
 
-	// bearerAuth only guards /api/, so this endpoint MUST reject on its
-	// own. A 200 here means agent-spawning is open to the network.
+	// /mcp sits outside /api/, so nothing in front of the mux guards it: this
+	// endpoint MUST reject on its own. A 200 here means agent-spawning is open
+	// to the network.
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status %d for an unauthenticated /mcp request, want 401", rec.Code)
 	}
@@ -86,18 +81,18 @@ func TestMCPRejectsAnUnknownToken(t *testing.T) {
 	}
 }
 
-func TestMCPRejectsTheSharedAPIToken(t *testing.T) {
-	s := testServerWithToken(t, "shared-api-token")
+func TestMCPRejectsATokenThatNamesNoClient(t *testing.T) {
+	s := testServer(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/mcp",
 		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	req.Header.Set("Authorization", "Bearer shared-api-token")
 
 	s.ServeHTTP(rec, req)
-	// The shared bearer is not a client identity; accepting it would
-	// defeat per-client autonomy and caps.
+	// Only a registered client's token is a client identity; accepting any
+	// other would defeat per-client autonomy and caps.
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status %d for the shared API token, want 401", rec.Code)
+		t.Fatalf("status %d for a token that names no client, want 401", rec.Code)
 	}
 }
 

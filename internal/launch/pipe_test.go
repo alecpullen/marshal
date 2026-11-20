@@ -171,11 +171,16 @@ func TestRunEndsWhenTheAgentsConnectionCloses(t *testing.T) {
 			if err := c.Close(); err != nil {
 				return ProgramResult{Err: fmt.Errorf("close the agent's end: %w", err)}
 			}
-			select {
-			case <-ctx.Done():
-				close(ctxEnded)
-			case <-time.After(2 * time.Second):
-			}
+			// Wait for the context, without a budget of its own. Once
+			// this function returns nothing can close ctxEnded any more,
+			// so giving up after a fixed delay turns a merely slow Run
+			// into "the context did not end" however long the test then
+			// waits for it (flake seen on main, run 44265693406, and
+			// again on this branch's CI, where the 2s budget expired
+			// before the pass had noticed the closed connection). The
+			// select below is the only bound.
+			<-ctx.Done()
+			close(ctxEnded)
 			return ProgramResult{}
 		}),
 	)

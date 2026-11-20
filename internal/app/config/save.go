@@ -331,14 +331,26 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			LoadGateThresholdTokens: strutil.Ptr(cfg.Skills.LoadGateThresholdTokens),
 		}
 	}
-	if cfg.Daemon != def.Daemon {
+	// Retired is *derived* by the merge — it names the retired keys a file
+	// still sets — while the default's is nil, so comparing the structs as
+	// they are makes the list alone fire the predicate: a user config that
+	// sets only studio_addr/join_url/join_name/join_ca_file, with every real
+	// daemon value at its default, would write a default-valued [daemon]
+	// table into the project config and pin today's defaults there. A save
+	// never writes a retired key (fileDaemon carries none of them), so the
+	// list has no say in whether the section is written. DeepEqual, not ==,
+	// because the struct carries a slice.
+	daemon, defDaemon := cfg.Daemon, def.Daemon
+	daemon.Retired, defDaemon.Retired = nil, nil
+	if !reflect.DeepEqual(daemon, defDaemon) {
 		file.Daemon = &fileDaemon{
 			IdleSessionTimeout: strutil.Ptr(cfg.Daemon.IdleSessionTimeout.String()),
 			Egress:             strutil.Ptr(cfg.Daemon.Egress),
-			StudioAddr:         strutil.Ptr(cfg.Daemon.StudioAddr),
-			JoinURL:            strutil.Ptr(cfg.Daemon.JoinURL),
-			JoinName:           strutil.Ptr(cfg.Daemon.JoinName),
-			JoinCAFile:         strutil.Ptr(cfg.Daemon.JoinCAFile),
+			WebListen:          strutil.Ptr(cfg.Daemon.WebListen),
+			WebGroup:           strutil.Ptr(cfg.Daemon.WebGroup),
+			WebURL:             strutil.Ptr(cfg.Daemon.WebURL),
+			PreviewListen:      strutil.Ptr(cfg.Daemon.PreviewListen),
+			PreviewURL:         strutil.Ptr(cfg.Daemon.PreviewURL),
 		}
 	}
 	if cfg.Web != def.Web {

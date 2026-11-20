@@ -56,6 +56,23 @@ func ListenLocal(path string) (net.Listener, error) {
 		return nil, err
 	}
 
+	unix, err := openUnixSocket(path)
+	if err != nil {
+		return nil, err
+	}
+	// Only the owner may drive the daemon.
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = unix.Close()
+		return nil, fmt.Errorf("bridge: restrict socket %s: %w", path, err)
+	}
+	return unix, nil
+}
+
+// openUnixSocket binds the unix socket at path, clearing the path first: a
+// socket a daemon still answers on is refused, a socket file left behind is
+// removed. It leaves the socket's mode to its caller, and Closing the
+// returned listener removes the path.
+func openUnixSocket(path string) (*net.UnixListener, error) {
 	// A daemon that still answers owns the path. Refuse and touch
 	// nothing: taking over a live daemon would strand its sessions.
 	if conn, err := net.DialTimeout("unix", path, localDialTimeout); err == nil {
@@ -93,11 +110,6 @@ func ListenLocal(path string) (net.Listener, error) {
 		// A path over the platform's limit fails here with the system's
 		// own error; the path is named, the reason is not rewritten.
 		return nil, fmt.Errorf("bridge: listen on %s: %w", path, err)
-	}
-	// Only the owner may drive the daemon.
-	if err := os.Chmod(path, 0o600); err != nil {
-		_ = ln.Close()
-		return nil, fmt.Errorf("bridge: restrict socket %s: %w", path, err)
 	}
 	unix, ok := ln.(*net.UnixListener)
 	if !ok {

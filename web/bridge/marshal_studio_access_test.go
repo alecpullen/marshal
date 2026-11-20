@@ -25,7 +25,7 @@ type studioAccessFixture struct {
 
 func newStudioAccessFixture(t *testing.T) *studioAccessFixture {
 	t.Helper()
-	fx := &studioAccessFixture{t: t, s: NewServer(testFleet(t), "")}
+	fx := &studioAccessFixture{t: t, s: NewServer(testFleet(t))}
 	fx.s.SetDaemonInfo(DaemonInfo{
 		Version:   "v1.2.3",
 		Profile:   "local",

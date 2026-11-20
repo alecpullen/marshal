@@ -2,23 +2,13 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"io"
-	"math/big"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"testing"
-	"time"
 
 	"marshal/internal/buildinfo"
 	"marshal/web/bridge"
@@ -39,9 +29,7 @@ func TestMain(m *testing.M) {
 
 func TestParseConfigDefaults(t *testing.T) {
 	// Ensure env vars do not leak host state into the defaults test.
-	for _, k := range []string{"WEBBRIDGE_ADDR", "WEBBRIDGE_TOKEN", "WEBBRIDGE_MARSHAL_BIN", "WEBBRIDGE_CWD_ROOT", "WEBBRIDGE_PROFILE", "WEBBRIDGE_SOCKET", "WEBBRIDGE_STATE_DIR", "WEBBRIDGE_WORKSPACE", "WEBBRIDGE_EGRESS", "WEBBRIDGE_STATE_VOLUME"} {
-		t.Setenv(k, "")
-	}
+	isolateWebbridgeEnv(t)
 	data := t.TempDir()
 	t.Setenv("MARSHAL_DATA_DIR", data)
 
@@ -68,11 +56,11 @@ func TestParseConfigDefaults(t *testing.T) {
 	if cfg.cwdRoot != "" {
 		t.Errorf("cwdRoot = %q, want empty: the daemon registers no working-directory project", cfg.cwdRoot)
 	}
-	if cfg.addr != "127.0.0.1:7700" {
-		t.Errorf("addr = %q, want 127.0.0.1:7700", cfg.addr)
+	if cfg.webListen != "" {
+		t.Errorf("webListen = %q, want empty: no web listener by default", cfg.webListen)
 	}
-	if cfg.token != "" {
-		t.Errorf("token = %q, want empty (generated later)", cfg.token)
+	if cfg.webGroup != "" {
+		t.Errorf("webGroup = %q, want empty", cfg.webGroup)
 	}
 	if cfg.marshalBin != "marshal" {
 		t.Errorf("marshalBin = %q, want marshal", cfg.marshalBin)
@@ -80,8 +68,8 @@ func TestParseConfigDefaults(t *testing.T) {
 }
 
 func TestParseConfigEnvAndFlags(t *testing.T) {
-	t.Setenv("WEBBRIDGE_ADDR", "127.0.0.1:9999")
-	t.Setenv("WEBBRIDGE_TOKEN", "env-token")
+	isolateWebbridgeEnv(t)
+	t.Setenv("WEBBRIDGE_WEB_LISTEN", "127.0.0.1:9999")
 	t.Setenv("WEBBRIDGE_CWD_ROOT", "/env/root")
 
 	// Env applies when flags are absent.
@@ -89,22 +77,137 @@ func TestParseConfigEnvAndFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
 	}
-	if cfg.addr != "127.0.0.1:9999" || cfg.token != "env-token" || cfg.cwdRoot != "/env/root" {
+	if cfg.webListen != "127.0.0.1:9999" || cfg.cwdRoot != "/env/root" {
 		t.Errorf("env not applied: %+v", cfg)
 	}
 
 	// Flags win over env.
 	cfg, err = parseConfig([]string{
-		"--addr", "127.0.0.1:1234",
-		"--token", "flag-token",
+		"--web-listen", "127.0.0.1:1234",
 		"--marshal-bin", "/bin/custom",
 		"--cwd-root", "/flag/root",
 	}, io.Discard)
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
 	}
-	if cfg.addr != "127.0.0.1:1234" || cfg.token != "flag-token" || cfg.marshalBin != "/bin/custom" || cfg.cwdRoot != "/flag/root" {
+	if cfg.webListen != "127.0.0.1:1234" || cfg.marshalBin != "/bin/custom" || cfg.cwdRoot != "/flag/root" {
 		t.Errorf("cfg = %+v", cfg)
+	}
+}
+
+// TestParseConfigReadsTheWebListener: --web-listen, --web-group and
+// --preview-url reach the config, by flag and by variable; the listener's own
+// syntax is the bridge's to check (D3).
+func TestParseConfigReadsTheWebListener(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+
+	cfg, err := parseConfig([]string{
+		"--web-listen", "unix",
+		"--preview-url", "https://previews.example",
+	}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if cfg.webListen != "unix" {
+		t.Errorf("webListen = %q, want unix", cfg.webListen)
+	}
+	if cfg.previewURL != "https://previews.example" {
+		t.Errorf("previewURL = %q, want https://previews.example", cfg.previewURL)
+	}
+
+	cfg, err = parseConfig([]string{"--web-listen", "/tmp/web.sock", "--web-group", "wheel"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig with a socket path and a group: %v", err)
+	}
+	if cfg.webListen != "/tmp/web.sock" || cfg.webGroup != "wheel" {
+		t.Errorf("got webListen %q, webGroup %q", cfg.webListen, cfg.webGroup)
+	}
+
+	t.Setenv("WEBBRIDGE_WEB_LISTEN", "127.0.0.1:7800")
+	t.Setenv("WEBBRIDGE_PREVIEW_URL", "http://previews.example:8080")
+	cfg, err = parseConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig from the variables: %v", err)
+	}
+	if cfg.webListen != "127.0.0.1:7800" || cfg.previewURL != "http://previews.example:8080" {
+		t.Errorf("variables not applied: %+v", cfg)
+	}
+}
+
+// TestTheTokenAndTLSFlagsAreRefused: the token and TLS flags retired with the
+// TCP listener are refused, whether the command line or the variable carried
+// them, naming --web-listen and the proxy that goes in front of it (D2, D3).
+func TestTheTokenAndTLSFlagsAreRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		env  map[string]string
+	}{
+		{"token flag", []string{"--token", "s3cret"}, nil},
+		{"token variable", nil, map[string]string{"WEBBRIDGE_TOKEN": "s3cret"}},
+		{"tls cert flag", []string{"--tls-cert", "/c.pem"}, nil},
+		{"tls cert variable", nil, map[string]string{"WEBBRIDGE_TLS_CERT": "/c.pem"}},
+		{"tls key flag", []string{"--tls-key", "/k.pem"}, nil},
+		{"tls key variable", nil, map[string]string{"WEBBRIDGE_TLS_KEY": "/k.pem"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateWebbridgeEnv(t)
+			t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			_, err := parseConfig(tc.args, io.Discard)
+			if err == nil {
+				t.Fatalf("parseConfig(%v) accepted a retired flag", tc.args)
+			}
+			if !strings.Contains(err.Error(), "is retired") || !strings.Contains(err.Error(), "--web-listen") {
+				t.Errorf("error %q does not retire the flag for --web-listen", err)
+			}
+		})
+	}
+}
+
+// TestAPreviewAddrMustBeLoopback: previews are a loopback origin of their
+// own, so an address that binds every interface is refused, and a loopback
+// one (or "off") is not.
+func TestAPreviewAddrMustBeLoopback(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:3000", ":3000", "192.168.1.5:3000"} {
+		t.Run(addr, func(t *testing.T) {
+			isolateWebbridgeEnv(t)
+			t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+			_, err := parseConfig([]string{"--preview-addr", addr}, io.Discard)
+			if err == nil {
+				t.Fatalf("--preview-addr %s accepted; want a loopback refusal", addr)
+			}
+			if !strings.Contains(err.Error(), "--preview-addr") {
+				t.Errorf("error %q does not name --preview-addr", err)
+			}
+		})
+	}
+	for _, addr := range []string{"127.0.0.1:3000", "localhost:3000", "[::1]:3000", "off"} {
+		t.Run(addr, func(t *testing.T) {
+			isolateWebbridgeEnv(t)
+			t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+			if _, err := parseConfig([]string{"--preview-addr", addr}, io.Discard); err != nil {
+				t.Errorf("--preview-addr %s refused: %v", addr, err)
+			}
+		})
+	}
+}
+
+// TestWebGroupNeedsAWebListener: a group without a listener to share has
+// nothing to apply to.
+func TestWebGroupNeedsAWebListener(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	_, err := parseConfig([]string{"--web-group", "wheel"}, io.Discard)
+	if err == nil {
+		t.Fatal("--web-group without --web-listen was accepted")
+	}
+	if !strings.Contains(err.Error(), "--web-group") {
+		t.Errorf("error %q does not name --web-group", err)
 	}
 }
 
@@ -203,166 +306,6 @@ func TestAskpassModeShortCircuitsRun(t *testing.T) {
 	if strings.TrimSpace(out.String()) != "sk-secret" {
 		t.Fatalf("askpass printed %q, want the secret", out.String())
 	}
-}
-
-func TestGenToken(t *testing.T) {
-	tok, err := genToken()
-	if err != nil {
-		t.Fatalf("genToken: %v", err)
-	}
-	if len(tok) != 32 { // 16 bytes hex-encoded
-		t.Errorf("token length = %d, want 32", len(tok))
-	}
-	tok2, err := genToken()
-	if err != nil {
-		t.Fatalf("genToken: %v", err)
-	}
-	if tok == tok2 {
-		t.Error("two generated tokens are identical")
-	}
-}
-
-// --- TLS ---
-
-func TestParseConfigTLSAcceptsBothOrNeither(t *testing.T) {
-	cfg, err := parseConfig(nil, io.Discard)
-	if err != nil {
-		t.Fatalf("parseConfig(no tls): %v", err)
-	}
-	if cfg.tlsCert != "" || cfg.tlsKey != "" {
-		t.Fatalf("expected no TLS by default, got %q/%q", cfg.tlsCert, cfg.tlsKey)
-	}
-
-	cfg, err = parseConfig([]string{"--tls-cert", "/c.pem", "--tls-key", "/k.pem"}, io.Discard)
-	if err != nil {
-		t.Fatalf("parseConfig(both): %v", err)
-	}
-	if cfg.tlsCert != "/c.pem" || cfg.tlsKey != "/k.pem" {
-		t.Fatalf("got %q/%q", cfg.tlsCert, cfg.tlsKey)
-	}
-}
-
-// TestParseConfigTLSRejectsOnlyOne guards the failure mode worth
-// designing out: a mistyped flag name silently serving plaintext.
-func TestParseConfigTLSRejectsOnlyOne(t *testing.T) {
-	for _, args := range [][]string{
-		{"--tls-cert", "/c.pem"},
-		{"--tls-key", "/k.pem"},
-	} {
-		if _, err := parseConfig(args, io.Discard); err == nil {
-			t.Errorf("parseConfig(%v) succeeded; half-configured TLS must fail loudly", args)
-		}
-	}
-}
-
-// selfSignedCert writes a throwaway cert/key for 127.0.0.1 and returns
-// their paths plus a pool that trusts them. Generated in-test so there
-// is no fixture on disk to expire.
-func selfSignedCert(t *testing.T) (certPath, keyPath string, pool *x509.CertPool) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "webbridge-test"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	dir := t.TempDir()
-	certPath = filepath.Join(dir, "cert.pem")
-	keyPath = filepath.Join(dir, "key.pem")
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	pool = x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(certPEM) {
-		t.Fatal("could not trust the generated certificate")
-	}
-	return certPath, keyPath, pool
-}
-
-func TestServeHTTPUsesTLSWhenCertificatesAreSupplied(t *testing.T) {
-	certPath, keyPath, pool := selfSignedCert(t)
-
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("ok"))
-	})}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() { _ = serveHTTP(srv, ln, certPath, keyPath) }()
-	t.Cleanup(func() { _ = srv.Close() })
-
-	client := &http.Client{Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: pool},
-	}}
-	resp, err := client.Get("https://" + ln.Addr().String() + "/")
-	if err != nil {
-		t.Fatalf("HTTPS request failed; ServeTLS was not wired: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status %d", resp.StatusCode)
-	}
-
-	// A plaintext request must not reach the handler. Go's TLS server
-	// answers it with a valid HTTP 400 ("Client sent an HTTP request to
-	// an HTTPS server"), so the transport error is nil — the assertion
-	// has to be that the request was rejected, not that it failed.
-	plain, err := http.Get("http://" + ln.Addr().String() + "/")
-	if err != nil {
-		return // connection refused is also an acceptable rejection
-	}
-	defer plain.Body.Close()
-	if plain.StatusCode == http.StatusOK {
-		t.Fatal("plain HTTP reached the handler on a TLS listener")
-	}
-	body, _ := io.ReadAll(plain.Body)
-	if string(body) == "ok" {
-		t.Fatal("the handler served a plaintext request on a TLS listener")
-	}
-}
-
-func TestServeHTTPStaysPlaintextWithoutCertificates(t *testing.T) {
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("ok"))
-	})}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() { _ = serveHTTP(srv, ln, "", "") }()
-	t.Cleanup(func() { _ = srv.Close() })
-
-	resp, err := http.Get("http://" + ln.Addr().String() + "/")
-	if err != nil {
-		t.Fatalf("plain HTTP failed: %v", err)
-	}
-	defer resp.Body.Close()
 }
 
 func TestParseConfigStateVolume(t *testing.T) {
@@ -525,18 +468,15 @@ func TestBuildSecretProvider(t *testing.T) {
 	}
 }
 
-func TestListenPreviewNeedsADifferentOriginFromTheAPI(t *testing.T) {
-	ln, err := listenPreview("127.0.0.1:7700", "")
+func TestListenPreviewDefaultsToALoopbackPort(t *testing.T) {
+	ln, err := listenPreview("")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	if port := ln.Addr().(*net.TCPAddr).Port; port == 0 || port == 7700 {
-		t.Fatalf("preview port = %d", port)
-	}
-	if ln, err := listenPreview("127.0.0.1:7700", "127.0.0.1:7700"); err == nil {
-		ln.Close()
-		t.Fatal("preview shared the API's port")
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok || addr.Port == 0 || !addr.IP.IsLoopback() {
+		t.Fatalf("preview address = %v, want a bound loopback port", ln.Addr())
 	}
 }
 

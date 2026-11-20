@@ -3,7 +3,6 @@ package bridge
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -679,9 +678,9 @@ func TestAFailedDialClosesTheNewSession(t *testing.T) {
 
 func TestTheTCPHandlerHasNoAttach(t *testing.T) {
 	f := testFleet(t)
-	srv := NewServer(f, "secret")
+	srv := NewServer(f)
 	body := fmt.Sprintf(`{"root":%s}`, strconv.Quote(t.TempDir()))
-	req := httptest.NewRequest(http.MethodPost, attachPath, strings.NewReader(body))
+	req := testJSONRequest(http.MethodPost, attachPath, body)
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", attachProtocol)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -690,161 +689,6 @@ func TestTheTCPHandlerHasNoAttach(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("attach on the network listener = %d, want 404", rec.Code)
-	}
-}
-
-// networkAttachRequest builds one agent attach request for the network
-// listener with the transport facts the test needs: the bearer token, TLS
-// state, and the connection's local address, which httptest's recorder never
-// sets by itself.
-func networkAttachRequest(t *testing.T, id, token string, tlsState bool, localAddr string) *http.Request {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/api/agents/"+id+"/attach", nil)
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", attachProtocol)
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	if tlsState {
-		req.TLS = &tls.ConnectionState{}
-	}
-	if localAddr != "" {
-		req = req.WithContext(context.WithValue(req.Context(),
-			http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP(localAddr)}))
-	}
-	return req
-}
-
-// decodeError is a refusal's {"error": …} sentence.
-func decodeError(t *testing.T, body []byte) string {
-	t.Helper()
-	var out struct {
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		t.Fatalf("decode refusal body %q: %v", body, err)
-	}
-	return out.Error
-}
-
-// TestTheNetworkAttachNeedsTheToken: the agent attach shares the bearer check
-// every /api route takes, so a missing or wrong token is 401 before anything
-// else (decision 7).
-func TestTheNetworkAttachNeedsTheToken(t *testing.T) {
-	srv := NewServer(testFleet(t), "secret")
-	for _, token := range []string{"", "wrong"} {
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, networkAttachRequest(t, "agent-a", token, false, "127.0.0.1"))
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("attach with token %q = %d, want 401", token, rec.Code)
-		}
-	}
-}
-
-// TestTheNetworkAttachNeedsTLSOffLoopback: past the token, a request that
-// arrived neither over TLS nor on a loopback connection is refused with 403
-// and the transport rule's sentence, and the agent's session is untouched
-// (decision 7).
-func TestTheNetworkAttachNeedsTLSOffLoopback(t *testing.T) {
-	f := testFleet(t)
-	root := t.TempDir()
-	if err := f.ws.PutAgent(Agent{
-		ID: "agent-a", Project: root, Name: "reviewer", SessionID: "agent-a-session",
-		OwnerID: "owner-1", Origin: OriginUI,
-	}); err != nil {
-		t.Fatalf("record agent: %v", err)
-	}
-	srv := NewServer(f, "secret")
-
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, networkAttachRequest(t, "agent-a", "secret", false, "192.0.2.1"))
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("attach off loopback without TLS = %d, want 403", rec.Code)
-	}
-	if got := decodeError(t, rec.Body.Bytes()); got != attachNeedsTLS {
-		t.Fatalf("403 said %q, want %q", got, attachNeedsTLS)
-	}
-	// Nothing about the agent moved: the refusal happens before attachAgent.
-	a, ok := f.ws.Agent("agent-a")
-	if !ok || a.SessionID != "agent-a-session" {
-		t.Fatalf("the refused attach changed the agent record: %+v (present %v)", a, ok)
-	}
-	var runtimes int
-	f.mu.Lock()
-	runtimes = len(f.runtimes)
-	f.mu.Unlock()
-	if runtimes != 0 {
-		t.Fatalf("the refused attach started %d runtimes, want 0", runtimes)
-	}
-}
-
-// TestTheNetworkAttachServesLoopbackHTTP: a plain request the listener took on
-// a loopback connection reaches attachAgent, whose own refusal for an unknown
-// agent answers it (decision 7).
-func TestTheNetworkAttachServesLoopbackHTTP(t *testing.T) {
-	srv := NewServer(testFleet(t), "secret")
-	hs := httptest.NewServer(srv)
-	t.Cleanup(hs.Close)
-
-	// A real listener, hand-written on the wire: the upgrade headers have to
-	// arrive exactly as written for attachAgent to consider the handshake.
-	conn, err := net.Dial("tcp", hs.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("dial the network listener: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-	req := "POST /api/agents/agent-a/attach HTTP/1.1\r\n" +
-		"Host: bridge\r\n" +
-		"Connection: Upgrade\r\nUpgrade: " + attachProtocol + "\r\n" +
-		"Authorization: Bearer secret\r\n\r\n"
-	if _, err := io.WriteString(conn, req); err != nil {
-		t.Fatalf("write handshake: %v", err)
-	}
-	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
-	if err != nil {
-		t.Fatalf("read response: %v", err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusNotFound {
-		t.Fatalf("attach on loopback = %d, want attachAgent's 404", res.StatusCode)
-	}
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatalf("read refusal body: %v", err)
-	}
-	if got := decodeError(t, body); got != "unknown agent agent-a" {
-		t.Fatalf("loopback attach answered %q, want attachAgent's unknown-agent refusal", got)
-	}
-}
-
-// TestTheNetworkAttachServesTLS: TLS state is enough on its own, whatever the
-// connection's local address is, so the request reaches attachAgent (decision
-// 7).
-func TestTheNetworkAttachServesTLS(t *testing.T) {
-	srv := NewServer(testFleet(t), "secret")
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, networkAttachRequest(t, "agent-a", "secret", true, "192.0.2.1"))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("TLS attach off loopback = %d, want attachAgent's 404", rec.Code)
-	}
-	if got := decodeError(t, rec.Body.Bytes()); got != "unknown agent agent-a" {
-		t.Fatalf("TLS attach answered %q, want attachAgent's unknown-agent refusal", got)
-	}
-}
-
-// TestANetworkWithoutATokenHasNoAttach: an attach without a token check never
-// ships, so a server built with no token answers the network listener's agent
-// attach 404 (decision 7).
-func TestANetworkWithoutATokenHasNoAttach(t *testing.T) {
-	srv := NewServer(testFleet(t))
-	if srv.networkAttach != nil {
-		t.Fatal("a server without a token built a network attach")
-	}
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, networkAttachRequest(t, "agent-a", "", false, "127.0.0.1"))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("agent attach with no token configured = %d, want 404", rec.Code)
 	}
 }
 

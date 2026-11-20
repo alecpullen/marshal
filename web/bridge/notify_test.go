@@ -292,7 +292,7 @@ func TestNotifyRoutes(t *testing.T) {
 	f := testFleet(t)
 	fastBackoff(f)
 	f.audit = NewAuditLog(t.TempDir())
-	s := NewServer(f, "", "https://studio.example")
+	s := NewServer(f, "https://studio.example")
 
 	put := func(body any) int { return doReq(t, s, http.MethodPut, "/api/notifications", body, nil).Code }
 	good := map[string]any{"webhooks": []map[string]any{{"id": "w1", "url": rc.srv.URL, "events": []string{NotifyBudget}}}}
@@ -332,7 +332,7 @@ func TestNotifyRoutes(t *testing.T) {
 
 func TestNotifyEmptyConfigIsAnEmptyList(t *testing.T) {
 	f := testFleet(t)
-	rec := doReq(t, NewServer(f, ""), http.MethodGet, "/api/notifications", nil, nil)
+	rec := doReq(t, NewServer(f), http.MethodGet, "/api/notifications", nil, nil)
 	if strings.TrimSpace(rec.Body.String()) != `{"webhooks":[]}` {
 		t.Errorf("body = %s", rec.Body.String())
 	}

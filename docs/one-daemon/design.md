@@ -11,7 +11,7 @@ decisions 3, 5 and 6 (tokens) and 8 (discovery); the Studio's sign-in handover
 (`compose.yaml`, `build/Dockerfile.bridge`).
 Keeps: P7's rule that the client is the only place hosts are merged.
 Inventory of what changes: [`inventory.md`](inventory.md).
-Status: proposed 2026-11-20. Plan 1 approved 2026-11-20.
+Status: proposed 2026-11-20. Plans 1–8 approved 2026-11-20.
 
 Anchors are relative to `main` at `bbdc4486`.
 
@@ -141,6 +141,12 @@ the `--state-volume` and `--project-mount` flags.
 - The agent image and its Dockerfiles stay.
 - Container agents started by a daemon on the host mount its state directory
   by path. Assumption A5 names what must be checked first.
+- Planning plan 5 settled the rest. Named-volume state and project mounts are
+  deleted, and `NewFleet` loses both parameters. The `marshal-` volume prefix
+  stays reserved for workspaces. `--state-volume` and `--project-mount` are
+  refused, while `--profile` and plan 3's retired listener flags stay accepted,
+  because installed units carry them. `docs/DEPLOYMENT.md` becomes "Running
+  Marshal on a server".
 
 ### Hosts
 
@@ -214,7 +220,11 @@ included.
 - a loopback address, for a proxy that cannot dial a unix socket.
 
 `[daemon] web_group` makes the socket `0660` in that group, for a proxy that
-runs as another user.
+runs as another user. It needs `web_listen` to be an absolute socket path: the
+daemon directory is `0700`, so the group could not reach `web.sock` there.
+`[daemon] web_url`, the proxy's public address, is also the daemon's public
+URL (`--public-url`), so notification links, approval links and the MCP
+origin check name it.
 
 What the web listener serves:
 - the Studio's files (D12);
@@ -238,7 +248,16 @@ The forward:
 opens on a free loopback port whenever the daemon runs workspace agents. It no
 longer depends on another listener being open (today it follows `--addr`,
 `main.go:1029`). It keeps its own origin and per-preview tokens. A proxy that
-publishes the web listener publishes previews on a second hostname.
+publishes the web listener publishes previews on a second hostname. For that,
+`[daemon] preview_listen` fixes the listener's loopback port, and `[daemon]
+preview_url` is the public origin preview links name. Plan 8 extends this:
+- `preview_url` may be a template, `https://p{token}.preview.example.com`.
+  With a proxy that serves wildcard hostnames, each preview gets an origin of
+  its own. A plain `preview_url` keeps one shared preview origin, which is
+  never the Studio's.
+- The preview listener relays a forwarded host's previews for a browser behind
+  the proxy, over that host's tunnel (plan 6's preview forward). So a proxied
+  browser opens every host's previews.
 
 **D12. The daemon embeds no Studio.** `//go:embed static` goes
 (`assets.go:28`).
@@ -251,6 +270,12 @@ publishes the web listener publishes previews on a second hostname.
   `dev-studio.sh`'s second one.
 - The web build, and the check that it fetches nothing from a CDN, move to
   that artifact's own CI job.
+- Planning plan 4 settled where the directory is. It is `share/marshal/studio`
+  beside the binaries (the release archive, a checkout) or above them
+  (`<prefix>/bin` with `<prefix>/share`: Homebrew, `install.sh`, both app
+  bundles). `webbridge` finds it from its own executable, and
+  `--studio-dir` overrides that. A daemon with no files serves a 503 page that
+  names where it looked, and runs on.
 
 **D13. Marshal authenticates no browser.** The operator's proxy does it:
 Tailscale Serve, Cloudflare Access, Caddy with an auth module, oauth2-proxy,
@@ -261,7 +286,20 @@ or similar.
   machine. `marshal daemon status` says so beside the address.
 - The Studio never receives a 401 from Marshal. Its `unauthorized` state
   (`HostReach.unauthorized`, `StateMessage.unauthorized`) now means the proxy
-  refused the request, and reads "signed out: reload to sign in again".
+  refused the request, and reads "signed out: reload to sign in again". A
+  proxy's redirect to its login page reads the same way.
+- Marshal checks no browser's identity, but its web listener refuses what a
+  browser sends on another site's behalf. The bearer token used to stop that,
+  so plan 3 adds a guard before the token goes. It refuses:
+  - a `Host` other than the loopback names and `web_url`'s host (DNS
+    rebinding);
+  - a state-changing request whose `Sec-Fetch-Site` or `Origin` is another
+    site's (CSRF);
+  - an `/api/` body that is not JSON.
+
+  `/hooks/`, `/status/` and `/mcp` carry their own credentials and are
+  exempt. The socket is unchanged. Added on 2026-11-20, after plan 3's
+  approval, when planning the browser client found the gap.
 
 **D14. `marshal studio` opens the app.**
 - It opens the native Studio when one is installed.
@@ -277,7 +315,10 @@ or similar.
 - A host's detail shows its state, its last error and **Remove**.
 - There is no Sign in, no Sign out, no CA file and no token field.
 - In a browser the section is read-only, with the note "add hosts with
-  `marshal fleet add` on the machine this daemon runs on".
+  `marshal fleet add` on the machine this daemon runs on". Plan 7 reverses
+  this (open question 4). There, both builds add and remove hosts through
+  their home daemon's API: `POST /api/hosts` and `DELETE /api/hosts/<name>`
+  run `marshal fleet add` and `remove` on the daemon's machine.
 
 ## Assumptions
 
@@ -321,14 +362,24 @@ or similar.
 1. **Previews of a remote host's agents.** Either D7 forwards the remote
    preview port over the same SSH connection, or previews go through D10's
    forward. Recommendation: a second forward in the same `ssh` process, so a
-   preview keeps an origin of its own. Deferred to plan 3, which settles D11's
-   preview listener.
+   preview keeps an origin of its own. Plan 3 left it out, and plan 6 takes
+   the recommendation:
+   - the tunnel helper forwards the remote's preview listener to a free
+     loopback port and reports it as `DaemonHost.previewPort`;
+   - a preview request names the caller's way in with
+     `X-Marshal-Preview-Origin`, set by the native Studio for a tunnel it
+     dials and by the forward for a host it forwards to;
+   - a browser that reaches the daemon from another machine still cannot open
+     a forwarded host's preview. Plan 8 closes that: the forward names this
+     daemon's own `preview_url` for a proxied caller, and the preview listener
+     relays the link it issued over the host's tunnel.
 2. **Local MCP clients without the loopback listener.** Today a client on the
    laptop reaches `/mcp` over `127.0.0.1:7788`. Recommendation: add a stdio
    command, `marshal mcp --credential-file PATH`, that relays JSON-RPC to
    `/mcp` over the socket with the client's own credential. That keeps D2's
    per-client grants and avoids a listener. The alternative is to tell those
-   clients to set `web_listen` to a loopback address.
+   clients to set `web_listen` to a loopback address. Accepted on 2026-11-20:
+   plan 3 adds `marshal mcp`.
 3. **SSH agent reachability for a systemd user service.** If `SSH_AUTH_SOCK`
    is not in the user manager's environment, either `marshal daemon install`
    imports it or the documentation says to. Resolved while planning plan 2:
@@ -337,7 +388,13 @@ or similar.
    authenticate is `down` with ssh's own message.
 4. **Adding a host from a browser.** It would need a route on the web listener
    that edits `fleet.toml` on the daemon's machine. Recommendation: no;
-   D15 keeps the browser read-only.
+   D15 keeps the browser read-only. Reversed on 2026-11-20 at the user's
+   request, in plan 7:
+   - the daemon runs `marshal fleet add` and `remove` for the routes;
+   - the native app uses the same routes, and runs no `marshal fleet`;
+   - the tunnel's `ssh` refuses agent and X11 forwarding, local commands and
+     a configured remote command, so a host added this way gets nothing but
+     a tunnel.
 
 ## Plans
 
@@ -355,10 +412,35 @@ same change: [`inventory.md`](inventory.md) lists the files.
    discovery and Settings › Hosts. Delete the HTTPS transports, `fleet
    login`/`token`/`servers`, and `fleetprofile`'s token and TLS code. The
    browser keeps its relayed hosts until plan 3.
-3. **The web listener** (D2, D3, D10–D14). Add the opt-in listener and the
-   forward. Delete the TCP listener, `bearerAuth`, the sign-in handover, the
-   join, the browser's token stores and the embed. Move the e2e suite onto the
-   web listener. It does not depend on plan 2.
-4. **Retire the containerized daemon** (D5) and sweep the docs: `AGENTS.md`,
+3. **The web listener** (D2, D3, D10, D11, D13, D14):
+   [plans/2026-11-20-od-3-web-listener-plan.md](plans/2026-11-20-od-3-web-listener-plan.md).
+   Add the opt-in listener, the forward and `marshal mcp`. Delete the TCP
+   listener, `bearerAuth`, the sign-in handover, the relay, the join, the
+   browser's token stores and the fleet client's rejected state. Move the e2e
+   suite onto the web listener. It depends on plan 2, because the forward
+   dials plan 2's tunnel sockets.
+4. **The Studio as files** (D12), split out of plan 3 while planning it:
+   [plans/2026-11-20-od-4-studio-as-files-plan.md](plans/2026-11-20-od-4-studio-as-files-plan.md).
+   Delete the embed, serve the Studio from a directory beside the binaries,
+   ship that directory in the release archive, Homebrew, `install.sh` and both
+   app bundles, give its web build and CDN check a CI job of their own, and
+   delete `scripts/dev-studio.sh`.
+5. **Retire the containerized daemon** (D5) and sweep the docs:
+   [plans/2026-11-20-od-5-retire-the-container-daemon-plan.md](plans/2026-11-20-od-5-retire-the-container-daemon-plan.md).
+   The sweep covers `AGENTS.md`,
    `cmd/webbridge/README.md`, `scripts/e2e/README.md`, P4, P5, P8,
    distribution and F1.
+6. **Previews of a remote host's agents** (open question 1):
+   [plans/2026-11-20-od-6-remote-previews-plan.md](plans/2026-11-20-od-6-remote-previews-plan.md).
+   Forward the remote preview listener over the tunnel, and let the caller
+   name its way in. It needs plans 2 and 3, and not 4 or 5.
+7. **Adding and removing hosts from a browser** (D15, open question 4):
+   [plans/2026-11-20-od-7-hosts-from-a-browser-plan.md](plans/2026-11-20-od-7-hosts-from-a-browser-plan.md).
+   `POST /api/hosts` and `DELETE /api/hosts/<name>` run `marshal fleet` on
+   the daemon's machine, both builds use them, and the tunnel's `ssh` is
+   hardened. It needs plans 2 and 3 (with plan 3's guard).
+8. **Previews in a browser** (D11, open question 1):
+   [plans/2026-11-20-od-8-browser-previews-plan.md](plans/2026-11-20-od-8-browser-previews-plan.md).
+   `preview_url` takes a `{token}` template, the forward picks the preview
+   origin by who is asking, and the preview listener relays a forwarded
+   host's previews. It needs plans 3 and 6, and both ends need it.

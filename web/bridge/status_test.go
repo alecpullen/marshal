@@ -39,7 +39,7 @@ func statusFixture(t *testing.T) (*Server, *Fleet, string) {
 		t.Fatal(err)
 	}
 	_ = agentOf
-	return NewServer(f, "secret-token"), f, id
+	return NewServer(f), f, id
 }
 
 func createLink(t *testing.T, s *Server, agentID string, ttl int) (id, path string) {
@@ -133,10 +133,6 @@ func TestStatusLinkCreateValidation(t *testing.T) {
 	}
 	if rec := doReq(t, s, http.MethodPost, "/api/status-links", map[string]any{"agentId": id, "ttlHours": 720}, auth); rec.Code != http.StatusCreated {
 		t.Errorf("max ttl = %d", rec.Code)
-	}
-	// Managing links needs the bearer token; the public page does not.
-	if rec := doReq(t, s, http.MethodPost, "/api/status-links", map[string]any{"agentId": id}, nil); rec.Code != http.StatusUnauthorized {
-		t.Errorf("create without auth = %d", rec.Code)
 	}
 }
 
@@ -331,7 +327,7 @@ func TestStatusDataPrefersThePlanRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(f, "")
+	s := NewServer(f)
 	_, path := createLink(t, s, id, 1)
 	rec := getPublic(t, s, path+"/data", "10.0.0.6")
 	var data statusData

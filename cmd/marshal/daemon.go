@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -17,8 +15,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/charmbracelet/x/term"
 
 	"marshal/internal/app"
 	"marshal/internal/app/config"
@@ -28,6 +24,7 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/repo"
 	"marshal/internal/tunnels"
+	"marshal/web/bridge"
 	"marshal/web/bridge/contract"
 )
 
@@ -83,7 +80,7 @@ var daemonStartTimeout = 5 * time.Second
 // stderr) so main.go's dispatch is uniform and tests can substitute streams.
 func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("marshal daemon: a subcommand is required (install|start|stop|status|restart|join-token|token|pin|unpin|spawn|uninstall)")
+		return errors.New("marshal daemon: a subcommand is required (install|start|stop|status|restart|pin|unpin|spawn|uninstall)")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -95,10 +92,6 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return runDaemonStatus(ctx, rest, stdout, stderr)
 	case "restart":
 		return runDaemonRestart(ctx, rest, stdout, stderr)
-	case "join-token":
-		return runDaemonJoinToken(ctx, rest, stdin, stdout, stderr)
-	case "token":
-		return runDaemonToken(rest, stdout)
 	case "pin":
 		return runDaemonPin(ctx, rest, true, stdout, stderr)
 	case "unpin":
@@ -110,7 +103,7 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	case "tunnels":
 		return runDaemonTunnels(ctx, rest, stderr)
 	default:
-		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|restart|join-token|token|pin|unpin|spawn|uninstall)", sub)
+		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|restart|pin|unpin|spawn|uninstall)", sub)
 	}
 }
 
@@ -229,15 +222,24 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 	if err != nil {
 		return err
 	}
-	spec, err := daemonUnitSpec(*webbridge, home)
+	spec, retired, err := daemonUnitSpec(*webbridge, home)
 	if err != nil {
 		return err
+	}
+	// A retired key is read by nothing any more (D10, D6), so naming it is
+	// the only way its author learns to drop it.
+	for _, key := range retired {
+		fmt.Fprintf(stderr, "marshal daemon install: daemon.%s is retired and ignored; %s\n", key, daemonRetiredHint(key))
 	}
 	if err := m.Install(ctx, spec); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "unit: %s\n", m.UnitPath())
 	fmt.Fprintf(stdout, "socket: %s\n", spec.Paths.Socket)
+	// The secrets the retired listeners read are gone with them: a stale
+	// 0600 credential under the daemon directory outlives the feature that
+	// used it, so the install that replaced the listener removes it.
+	daemonRemoveOldTokenFiles(daemon.PathsFor(home).Dir, stderr)
 	daemonEnsureLinger(ctx, m, *noLinger, stdout)
 	daemonReadyNote(ctx, spec.Paths, stdout)
 	return nil
@@ -302,122 +304,157 @@ func daemonLingerLine(ctx context.Context, m *daemon.Manager) (string, bool) {
 }
 
 // daemonUnitSpec is decision 10's unit: the webbridge, the resolved marshal,
-// the paths internal/daemon resolves, the location environment, the idle
-// session timeout the user config gives, and the loopback address the Studio
-// is served on.
-func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
+// the paths internal/daemon resolves, the location environment, the web
+// listener and the origins it advertises, and the idle session timeout the
+// user config gives. The retired [daemon] keys are answered alongside it, so
+// the install can name them.
+func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, []string, error) {
 	webbridge, err := daemon.FindWebbridge(webbridgeOverride)
 	if err != nil {
-		return daemon.UnitSpec{}, err
+		return daemon.UnitSpec{}, nil, err
 	}
 	marshal, err := resolvedExecutable()
 	if err != nil {
-		return daemon.UnitSpec{}, err
+		return daemon.UnitSpec{}, nil, err
 	}
-	// Decision 9: the timeout is read from the user config alone, so a
-	// project cannot change the daemon's behaviour, and a change takes
-	// effect at the next install.
+	// Decision 9: these are read from the user config alone, so a project
+	// cannot change the daemon's behaviour, and a change takes effect at the
+	// next install.
 	cfg, err := config.Load(config.LoadOptions{HomeDir: home, SkipProjectConfig: true})
 	if err != nil {
-		return daemon.UnitSpec{}, fmt.Errorf("read the user config: %w", err)
+		return daemon.UnitSpec{}, nil, fmt.Errorf("read the user config: %w", err)
 	}
-	studioAddr, err := daemonStudioAddr(cfg.Daemon.StudioAddr)
+	webListen, err := daemonWebListen(cfg.Daemon.WebListen, cfg.Daemon.WebGroup)
 	if err != nil {
-		return daemon.UnitSpec{}, err
+		return daemon.UnitSpec{}, nil, err
 	}
-	// The join is read from the same user config, for the same reason: a
-	// project must not point this machine's daemon at a relay.
-	join, err := daemonJoin(cfg.Daemon)
+	publicURL, err := daemonPublicURL("daemon.web_url", cfg.Daemon.WebURL)
 	if err != nil {
-		return daemon.UnitSpec{}, err
+		return daemon.UnitSpec{}, nil, err
 	}
-	paths := daemon.PathsFor(home)
-	// A join with no stored secret would install a unit that dies at start, so
-	// refuse here, where the user can act on it (D12: `marshal daemon
-	// join-token` is what stores it).
-	if join != nil {
-		if _, err := os.Stat(paths.JoinToken); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return daemon.UnitSpec{}, fmt.Errorf("daemon.join_url is set but %s is missing: run marshal daemon join-token first", paths.JoinToken)
-			}
-			return daemon.UnitSpec{}, fmt.Errorf("read the join secret: %w", err)
+	// D11: "off" is a value of its own and is written as it stands; anything
+	// else is the loopback address the previews are served on.
+	previewListen := strings.TrimSpace(cfg.Daemon.PreviewListen)
+	if previewListen != "" && previewListen != "off" {
+		if previewListen, err = daemonLoopbackAddr("daemon.preview_listen", previewListen); err != nil {
+			return daemon.UnitSpec{}, nil, err
 		}
+	}
+	previewURL, err := daemonPublicURL("daemon.preview_url", cfg.Daemon.PreviewURL)
+	if err != nil {
+		return daemon.UnitSpec{}, nil, err
 	}
 	return daemon.UnitSpec{
 		Webbridge:          webbridge,
 		Marshal:            marshal,
-		Paths:              paths,
+		Paths:              daemon.PathsFor(home),
 		Env:                daemonEnv(),
 		IdleSessionTimeout: cfg.Daemon.IdleSessionTimeout,
 		Egress:             cfg.Daemon.Egress,
-		StudioAddr:         studioAddr,
-		Join:               join,
-	}, nil
+		WebListen:          webListen,
+		WebGroup:           strings.TrimSpace(cfg.Daemon.WebGroup),
+		PublicURL:          publicURL,
+		PreviewListen:      previewListen,
+		PreviewURL:         previewURL,
+	}, cfg.Daemon.Retired, nil
 }
 
-// daemonJoin translates daemon.join_url, join_name and join_ca_file into the
-// relay the unit joins, or nil when the config names none (P8 D12).
-//
-// A join without a name is refused here rather than at the relay: the name is
-// what the fleet's reader uses to tell this daemon from the relay's own
-// agents, so an unnamed join would join and be unreadable.
-func daemonJoin(cfg config.DaemonConfig) (*daemon.Join, error) {
-	url := strings.TrimSpace(cfg.JoinURL)
-	if url == "" {
-		return nil, nil
+// daemonRetiredHint is what a retired [daemon] key is to be replaced with
+// (D10, D6): a warning that names a key without saying what takes its place
+// leaves the reader with nothing to do.
+func daemonRetiredHint(key string) string {
+	switch key {
+	case "studio_addr":
+		return "set daemon.web_listen (docs/one-daemon/design.md D10)"
+	case "join_url", "join_name", "join_ca_file":
+		return "a remote daemon is a host: marshal fleet add"
 	}
-	name := strings.TrimSpace(cfg.JoinName)
-	if name == "" {
-		return nil, fmt.Errorf("daemon.join_url is set but daemon.join_name is empty: name the daemon that joins %s", url)
-	}
-	return &daemon.Join{
-		URL:    url,
-		Name:   name,
-		CAFile: strings.TrimSpace(cfg.JoinCAFile),
-	}, nil
+	return "remove it"
 }
 
-// daemonStudioAddr validates daemon.studio_addr and returns the address to
-// serve on, or "" for none.
+// daemonRemoveOldTokenFiles deletes the credentials the retired listeners
+// read, from the daemon directory the install just wrote its unit beside.
 //
-// The Studio is the daemon's own HTTP face, so it is loopback-only: this
-// daemon runs host processes with the user's full authority and has no
-// authentication but a bearer token in a 0600 file. Binding it to a routable
-// address would publish that authority, so an address that is not loopback is
-// refused here rather than written into the unit and discovered later.
-func daemonStudioAddr(setting string) (string, error) {
+// A file that is already gone is not news, and one that cannot be removed is a
+// line rather than a failed install: the unit is written and loaded by the
+// time this runs, so the credential is all that is at stake.
+func daemonRemoveOldTokenFiles(dir string, stderr io.Writer) {
+	for _, name := range []string{"studio.token", "join.token"} {
+		path := filepath.Join(dir, name)
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(stderr, "marshal daemon install: could not remove %s (%v)\n", path, err)
+		}
+	}
+}
+
+// daemonWebListen validates daemon.web_listen against daemon.web_group and
+// answers the --web-listen value the unit carries (D3): "unix", an absolute
+// socket path, or a loopback host:port, and "" for no listener.
+//
+// A group needs a socket path of its own to share: the daemon directory is
+// private, so a group could not reach web.sock there, and a loopback address
+// has no group at all.
+func daemonWebListen(listen, group string) (string, error) {
+	value := strings.TrimSpace(listen)
+	shared := strings.TrimSpace(group) != ""
+	switch {
+	case value == "":
+		return "", nil
+	case value == "unix":
+		if shared {
+			return "", fmt.Errorf("daemon.web_group %q needs daemon.web_listen to be an absolute socket path: the daemon directory is private, so the group could not reach web.sock there (docs/one-daemon/design.md D3)", strings.TrimSpace(group))
+		}
+		return "unix", nil
+	case strings.HasPrefix(value, "/"):
+		return value, nil
+	}
+	if _, err := daemonLoopbackAddr("daemon.web_listen", value); err != nil {
+		return "", err
+	}
+	if shared {
+		return "", fmt.Errorf("daemon.web_group %q needs daemon.web_listen to be a unix socket path: %s is a loopback address (docs/one-daemon/design.md D3)", strings.TrimSpace(group), value)
+	}
+	return value, nil
+}
+
+// daemonLoopbackAddr is the check one of key's listener addresses passes, and
+// the address to serve on: "" answers "", as it does for a setting that is
+// unset.
+//
+// The daemon runs host processes with the user's full authority and has no
+// authentication but a bearer token in a 0600 file, so it listens on a unix
+// socket or a loopback address only; binding it anywhere else would publish
+// that authority (D3). A host name is not resolved here: only localhost and a
+// loopback address literal are provably local without asking a resolver.
+func daemonLoopbackAddr(key, setting string) (string, error) {
 	addr := strings.TrimSpace(setting)
-	switch addr {
-	case "", "off", "none":
+	if addr == "" {
 		return "", nil
 	}
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return "", fmt.Errorf("daemon.studio_addr %q: %w", setting, err)
-	}
-	if port == "" {
-		return "", fmt.Errorf("daemon.studio_addr %q: a port is required", setting)
-	}
-	if host == "" {
-		return "", fmt.Errorf("daemon.studio_addr %q: the Studio is loopback-only; give an address like 127.0.0.1:7788", setting)
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		resolved, err := net.LookupIP(host)
-		if err != nil {
-			return "", fmt.Errorf("daemon.studio_addr %q: %w", setting, err)
-		}
-		for _, candidate := range resolved {
-			if !candidate.IsLoopback() {
-				return "", fmt.Errorf("daemon.studio_addr %q: the Studio is loopback-only; %s resolves to %s", setting, host, candidate)
-			}
-		}
-		return addr, nil
-	}
-	if !ip.IsLoopback() {
-		return "", fmt.Errorf("daemon.studio_addr %q: the Studio is loopback-only", setting)
+	if err := bridge.CheckLoopback(key, addr); err != nil {
+		return "", err
 	}
 	return addr, nil
+}
+
+// daemonPublicURL validates an http or https origin set under key (D10): the
+// address a proxy publishes the Studio, or a preview, on.
+func daemonPublicURL(key, setting string) (string, error) {
+	base := strings.TrimSpace(setting)
+	if base == "" {
+		return "", nil
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("%s %q: %w", key, setting, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("%s %q: scheme is not http or https", key, setting)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("%s %q: no host", key, setting)
+	}
+	return base, nil
 }
 
 // resolvedExecutable is the running marshal with symlinks resolved and made
@@ -549,126 +586,6 @@ func daemonAnswers(ctx context.Context, socket string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// join-token, token
-// ---------------------------------------------------------------------------
-
-// runDaemonJoinToken implements `marshal daemon join-token`: it reads the
-// secret this daemon joins its relay with and stores it 0600 under the daemon
-// directory, where the unit's --join-token-file points (P8 D12).
-//
-// The secret lives in a file of its own rather than in the config: the config
-// is a document a user shares and edits, and this is a credential the daemon
-// reads at start, exactly where the Studio's token lives.
-func runDaemonJoinToken(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	if len(args) != 0 {
-		return fmt.Errorf("marshal daemon join-token: unexpected argument %q", args[0])
-	}
-	home, err := daemonHome()
-	if err != nil {
-		return err
-	}
-	secret, err := readDaemonJoinSecret(stdin, stderr)
-	if err != nil {
-		return err
-	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	paths := daemon.PathsFor(home)
-	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
-		return fmt.Errorf("marshal daemon join-token: create %s: %w", paths.Dir, err)
-	}
-	if err := daemonWritePrivate(paths.JoinToken, secret); err != nil {
-		return fmt.Errorf("marshal daemon join-token: %w", err)
-	}
-	fmt.Fprintln(stdout, "Stored the join secret. Run marshal daemon install to apply it.")
-	return nil
-}
-
-// runDaemonToken implements `marshal daemon token`: it writes the credential
-// the daemon's listener answers on — the Studio's token when one is served,
-// the join's secret otherwise — and a newline to stdout, for a program to
-// read. It refuses a terminal, as `marshal fleet token` does, so a credential
-// never reaches scrollback.
-func runDaemonToken(args []string, stdout io.Writer) error {
-	if len(args) != 0 {
-		return fmt.Errorf("marshal daemon token: unexpected argument %q", args[0])
-	}
-	if fleetStdoutIsTerminal(stdout) {
-		return errors.New("marshal daemon token: a token is not printed to a terminal; pipe it, as in marshal daemon token | pbcopy")
-	}
-	home, err := daemonHome()
-	if err != nil {
-		return err
-	}
-	path := daemon.PathsFor(home).Token
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return errors.New("marshal daemon token: the daemon has no token yet: set daemon.studio_addr or daemon.join_url and run marshal daemon install")
-	}
-	if err != nil {
-		return fmt.Errorf("marshal daemon token: read %s: %w", path, err)
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return fmt.Errorf("marshal daemon token: %s is empty: run marshal daemon install", path)
-	}
-	if _, err := fmt.Fprintln(stdout, token); err != nil {
-		return fmt.Errorf("marshal daemon token: %w", err)
-	}
-	return nil
-}
-
-// readDaemonJoinSecret reads the join secret without echo and behind a prompt
-// on a terminal, else one line from stdin, so a password manager can pipe it
-// in — the care `marshal daemon token` takes with the daemon's own token file,
-// which is never printed to a terminal either.
-func readDaemonJoinSecret(stdin io.Reader, stderr io.Writer) (string, error) {
-	var raw []byte
-	if f, ok := stdin.(*os.File); ok && term.IsTerminal(f.Fd()) {
-		fmt.Fprint(stderr, "Join secret: ")
-		b, err := term.ReadPassword(f.Fd())
-		fmt.Fprintln(stderr)
-		if err != nil {
-			return "", fmt.Errorf("marshal daemon join-token: read the secret: %w", err)
-		}
-		raw = b
-	} else {
-		line, err := bufio.NewReader(stdin).ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return "", fmt.Errorf("marshal daemon join-token: read the secret: %w", err)
-		}
-		raw = []byte(line)
-	}
-	secret := strings.TrimSpace(string(raw))
-	if secret == "" {
-		return "", errors.New("marshal daemon join-token: the secret is empty")
-	}
-	return secret, nil
-}
-
-// daemonWritePrivate writes body to path with a newline, at 0600, replacing
-// any file there — including one whose mode was loosened since — so a secret
-// is never left readable by anyone but its owner.
-func daemonWritePrivate(path, body string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if _, err := f.WriteString(body + "\n"); err != nil {
-		f.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return nil
-}
-
-// ---------------------------------------------------------------------------
 // status
 // ---------------------------------------------------------------------------
 
@@ -677,8 +594,8 @@ func daemonWritePrivate(path, body string) error {
 //
 // Text mode prints the service state, the linger line where the platform has
 // one, the socket and whether it answered, and — for an answering daemon —
-// its version against this marshal's, its start time, its refresh helper, the
-// relay it joins when it joins one, its projects and each project child. It
+// its version against this marshal's, its start time, its refresh helper, its
+// web listener, its projects and each project child. It
 // exits non-zero when the socket does not answer, but only after printing what
 // it found: a service that is loaded and silent is exactly the case the user
 // is running `status` for.
@@ -748,9 +665,7 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stdout, line)
 	}
 	fmt.Fprintln(stdout, daemonRefreshLine(info))
-	if line, ok := daemonJoinLine(info); ok {
-		fmt.Fprintln(stdout, line)
-	}
+	fmt.Fprintln(stdout, daemonWebLine(info))
 	for _, host := range info.Hosts {
 		fmt.Fprintln(stdout, daemonHostLine(host))
 	}
@@ -999,30 +914,30 @@ func daemonRefreshLine(info daemon.Info) string {
 	return line
 }
 
-// daemonJoinLine renders the relay the daemon joins (P8 D12): where it joined
-// and under what name, and — when it is not connected — its last error, which
-// is why the reader consulted this line.
+// daemonWebLine renders the web listener for `marshal daemon status` (D10):
+// where the daemon serves the page and its API, why it serves none, or that it
+// serves none at all.
 //
-// A daemon that joins no relay reports no line at all: there is nothing to say
-// about a join that does not exist, and the absence is the answer.
-func daemonJoinLine(info daemon.Info) (string, bool) {
-	if info.Join == nil {
-		return "", false
+// An address rather than a socket is worth naming as what it is: every account
+// on the machine can reach a loopback port, so a listener there is not private
+// to the user who installed it (D13).
+func daemonWebLine(info daemon.Info) string {
+	if info.WebError != "" {
+		return fmt.Sprintf("web: not listening (%s)", info.WebError)
 	}
-	if info.Join.Connected {
-		return fmt.Sprintf("relay: joined %s as %s", info.Join.URL, info.Join.Name), true
+	if info.WebListen == "" {
+		return "web: off"
 	}
-	line := fmt.Sprintf("relay: %s as %s, not connected", info.Join.URL, info.Join.Name)
-	if lastErr := strings.TrimSpace(info.Join.LastError); lastErr != "" {
-		line += " (" + lastErr + ")"
+	if strings.HasPrefix(info.WebListen, "unix:") {
+		return "web: " + info.WebListen
 	}
-	return line, true
+	return fmt.Sprintf("web: %s (loopback: every account on this machine can reach it)", info.WebListen)
 }
 
 // daemonHostLine renders one host's tunnel for `marshal daemon status`
 // (one-daemon D7): where the tunnel goes, its state, and — when it is down —
-// its last error, which is why the reader consulted this line, as
-// daemonJoinLine does for the relay.
+// its last error, which is why the reader consulted this line, as the web line
+// does for a listener that bound nothing.
 func daemonHostLine(h daemon.HostInfo) string {
 	line := fmt.Sprintf("host %s (%s): %s", h.Name, h.SSH, h.State)
 	if h.State == contract.HostDown {

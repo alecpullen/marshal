@@ -364,7 +364,7 @@ func TestListSessionsSendsTheAgentsViewOfCwd(t *testing.T) {
 	root := t.TempDir()
 	f, tr := testFleetWithContainerizedAgent(t)
 	startContainerizedAgent(t, f, root)
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := doReq(t, srv, http.MethodGet, "/api/sessions?cwd="+url.QueryEscape(root), nil, nil)
 	if rec.Code != http.StatusOK {
@@ -384,7 +384,7 @@ func TestLoadSessionSendsTheAgentsViewOfCwd(t *testing.T) {
 	if _, err := f.Spawn(context.Background(), root, SpawnOptions{Workspace: "w"}); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := doReq(t, srv, http.MethodPost, "/api/sessions/s-1/load",
 		map[string]string{"cwd": root}, nil)
@@ -407,7 +407,7 @@ func TestListSessionsWorksForAProjectWithNoLiveAgent(t *testing.T) {
 	// No project agent is started for root; the control agent answers.
 	ctl := newFakeAgent()
 	f.newControl = func() (*Child, error) { return &Child{Transport: ctl}, nil }
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := doReq(t, srv, http.MethodGet, "/api/sessions?cwd="+url.QueryEscape(root), nil, nil)
 	if rec.Code != http.StatusOK {
@@ -423,7 +423,7 @@ func TestListSessionsRejectsAPathOutsideTheWorkspace(t *testing.T) {
 	root := t.TempDir()
 	f, _ := testFleetWithContainerizedAgent(t)
 	startContainerizedAgent(t, f, root)
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	// runtimeForRoot resolves by prefix, so ask for a path under the
 	// project root that the runtime is not rooted at.

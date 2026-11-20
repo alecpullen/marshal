@@ -442,24 +442,28 @@ type DaemonConfig struct {
 	// Egress runs the egress proxy sidecar for container agents; needs a
 	// container runtime. Default false.
 	Egress bool `toml:"egress"`
-	// StudioAddr is the loopback address the daemon serves the web Studio
-	// on, so the browser drives this daemon's own agents instead of a
-	// separate container fleet. Empty or "off" serves none. Default
-	// 127.0.0.1:7788.
-	StudioAddr string `toml:"studio_addr"`
-	// JoinURL is the bridge this daemon joins as a relay (P8 D12): its
-	// agents show up on that bridge's fleet screen, and its requests come
-	// back here. Empty joins none. The secret it joins with is stored by
-	// `marshal daemon join-token`, never here.
-	JoinURL string `toml:"join_url"`
-	// JoinName is the name this daemon joins the relay under, so the
-	// fleet's reader can tell it from the relay's own agents. A join_url
-	// needs one.
-	JoinName string `toml:"join_name"`
-	// JoinCAFile is a PEM bundle the daemon trusts the relay's certificate
-	// from, for a relay this machine's store does not know. Empty uses the
-	// system's store.
-	JoinCAFile string `toml:"join_ca_file"`
+	// WebListen is the web listener: "unix" (web.sock beside the daemon's
+	// socket), an absolute socket path, or a loopback host:port. Empty serves
+	// none (one-daemon D10).
+	WebListen string `toml:"web_listen"`
+	// WebGroup shares a web socket with a group, at 0660. It needs WebListen
+	// to be an absolute socket path.
+	WebGroup string `toml:"web_group"`
+	// WebURL is the proxy's public address for the web Studio. marshal studio
+	// opens it, and the unit passes it as --public-url.
+	WebURL string `toml:"web_url"`
+	// PreviewListen is the preview listener's loopback host:port. Empty is a
+	// free loopback port, and "off" opens none (D11).
+	PreviewListen string `toml:"preview_listen"`
+	// PreviewURL is the proxy's public origin for previews, when it publishes
+	// them on a hostname of their own.
+	PreviewURL string `toml:"preview_url"`
+	// Retired lists the retired [daemon] keys a file still sets, sorted:
+	// studio_addr, join_url, join_name, join_ca_file. No code reads their
+	// values any more (one-daemon D10, D6); the list is what lets Diagnose
+	// name them, and a save never writes them. It is derived by the merger
+	// and never parsed from a file.
+	Retired []string `toml:"-"`
 }
 
 type DesktopConfig struct {

@@ -338,8 +338,8 @@ test covers each:
   data as current, and never infer failure from a lost connection.
 - **Error** — what failed, in plain words, and one action to retry.
 - **Unavailable** — the host is unreachable; say when it was last seen.
-- **Unauthorized** — the bridge refused this page's token, which no retry
-  clears: name the host that refused it and say how to sign in again. Never
+- **Unauthorized** — the operator's proxy refused the request, which no retry
+  clears. Name the host, and say to reload the page to sign in again. Never
   drawn as unreachability — that sends the reader to look at the network when
   the fix is a sign-in.
 - **Planned** — a capability that does not exist yet is a disabled row where

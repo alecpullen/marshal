@@ -914,6 +914,7 @@ class _GalleryState extends State<Gallery> {
       lastSeen: '4m',
       action: StateAction('Try again', onTap: () {}),
     ),
+    const StateMessage.unauthorized(host: 'studio-box'),
     const Box.flush(
       child: StateMessage.planned(
         name: 'Voice planning',

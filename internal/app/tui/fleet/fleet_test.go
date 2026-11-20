@@ -353,16 +353,11 @@ func TestConnectionChangesAddEvents(t *testing.T) {
 	// The same down state with the same reason is not.
 	m = f.change(t, m, downAgain)
 
-	rejected := down
-	rejected.Conn = acpclient.FleetRejected
-	m = f.change(t, m, rejected)
-
 	wantOnly(t, m, []string{
 		"15:04 connected to local",
 		"15:04 reconnecting to local",
 		"15:04 local is down: dial tcp 127.0.0.1:7700: connect: connection refused",
 		"15:04 local is down: timeout after 30s",
-		"15:04 token rejected for local",
 	})
 
 	// A reconnect is a new epoch: the screen says it is connected again, and
@@ -374,8 +369,8 @@ func TestConnectionChangesAddEvents(t *testing.T) {
 	if got := lastEvent(m); got != "15:04 connected to local" {
 		t.Fatalf("last event = %q, want the reconnect's connected line", got)
 	}
-	if got := len(m.events); got != 6 {
-		t.Fatalf("events = %d after the reconnect, want 6: %v", got, m.events)
+	if got := len(m.events); got != 5 {
+		t.Fatalf("events = %d after the reconnect, want 5: %v", got, m.events)
 	}
 }
 

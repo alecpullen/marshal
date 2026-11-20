@@ -75,7 +75,7 @@ func newFactoryDefaultsFixture(t *testing.T) *factoryDefaultsFixture {
 	}
 	t.Cleanup(func() { store.Close() })
 	api := NewFactoryAPI(store, NewFactoryController(store, nil, nil), fleet)
-	srv := NewServer(fleet, "secret", "", api)
+	srv := NewServer(fleet, "", api)
 	return &factoryDefaultsFixture{fleet: fleet, store: store, api: api, srv: srv, agent: agent, root: root}
 }
 
@@ -1426,11 +1426,6 @@ func TestFactorySettingsVersionRoute(t *testing.T) {
 		if rec := f.readSettingsVersion(t, root); rec.Code != http.StatusBadRequest {
 			t.Fatalf("projectRoot %q: status %d, want 400: %s", root, rec.Code, rec.Body.String())
 		}
-	}
-
-	// The route is behind the same bearer check as every other factory route.
-	if rec := doReq(t, f.srv, http.MethodGet, "/api/factory/settings-version?projectRoot="+url.QueryEscape(f.root), nil, nil); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated read: status %d, want 401", rec.Code)
 	}
 }
 

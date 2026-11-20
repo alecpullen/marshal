@@ -162,7 +162,7 @@ func TestAPromptDuringATerminalTurnIs409(t *testing.T) {
 		return sessionBusy(pc.reg, sessionID)
 	})
 
-	srv := NewServer(h.fleet, "")
+	srv := NewServer(h.fleet)
 	prompt := "/api/sessions/" + sessionID + "/prompt"
 	body := map[string]string{"text": "hello from the studio"}
 	if rec := doReq(t, srv, http.MethodPost, prompt, body, nil); rec.Code != http.StatusConflict {

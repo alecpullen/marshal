@@ -47,7 +47,7 @@ func TestGetDiskSumsSeededTrees(t *testing.T) {
 	f.limits = Limits{MaxDiskMB: 8}
 	writeSized(t, filepath.Join(f.stateDir, "repos", "aaa", "pack"), 4096)
 	writeSized(t, filepath.Join(f.stateDir, "work", "agent1", "file"), 2048)
-	s := NewServer(f, "")
+	s := NewServer(f)
 
 	body := getDisk(t, s)
 	repos := jsonInt64(t, body["repos"])
@@ -77,7 +77,7 @@ func TestGetDiskSumsSeededTrees(t *testing.T) {
 // omitting the key.
 func TestGetDiskEmitsZeroBudgetWhenUnlimited(t *testing.T) {
 	f := testFleetWithState(t) // Limits{}: MaxDiskMB 0
-	s := NewServer(f, "")
+	s := NewServer(f)
 
 	body := getDisk(t, s)
 	if _, ok := body["budgetMB"]; !ok {
@@ -99,7 +99,7 @@ func TestPostPruneReclaimsOrphans(t *testing.T) {
 	orphanWork := workspaceDirFor(f.stateDir, "agent-that-no-longer-exists")
 	writeSized(t, filepath.Join(orphanMirror, "pack"), 4096)
 	writeSized(t, filepath.Join(orphanWork, "file"), 2048)
-	s := NewServer(f, "")
+	s := NewServer(f)
 
 	before := getDisk(t, s)
 	beforeTotal := jsonInt64(t, before["total"])
@@ -151,7 +151,7 @@ func TestPostPruneReclaimsOrphans(t *testing.T) {
 // directory prunes nothing and reports reclaimed 0.
 func TestPostPruneWithNothingPrunable(t *testing.T) {
 	f := testFleetWithState(t)
-	s := NewServer(f, "")
+	s := NewServer(f)
 
 	// Warm the cache so the test would catch a missing re-measure.
 	getDisk(t, s)
@@ -176,7 +176,7 @@ func TestPostPruneWithNothingPrunable(t *testing.T) {
 // handlers document: a registry-mode server has no state directory, so
 // the endpoints return 503 rather than panicking or reporting zero.
 func TestDiskEndpointsRequireFleetMode(t *testing.T) {
-	s, _, _, _ := newTestServer(t, "")
+	s, _, _, _ := newTestServer(t)
 
 	for method, path := range map[string]string{
 		http.MethodGet:  "/api/disk",
@@ -210,7 +210,7 @@ func TestPostPruneReportsPartialFailure(t *testing.T) {
 	blocked := workspaceDirFor(f.stateDir, "zzz")
 	writeSized(t, filepath.Join(reclaimable, "file"), 4096)
 	writeSized(t, filepath.Join(blocked, "file"), 2048)
-	s := NewServer(f, "")
+	s := NewServer(f)
 
 	// Warm the cache while both orphans are readable; the follow-up
 	// GET proves the error path dropped it.
@@ -292,7 +292,7 @@ func TestPostPruneReturns502WhenNothingIsReclaimed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
-	s := NewServer(f, "")
+	s := NewServer(f)
 
 	rec := doReq(t, s, http.MethodPost, "/api/prune", nil, nil)
 	if rec.Code != http.StatusBadGateway {
@@ -333,7 +333,7 @@ func TestPostPruneSerializesConcurrentRequests(t *testing.T) {
 	f := testFleetWithAuditAndState(t)
 	writeSized(t, filepath.Join(f.stateDir, "repos", "deadbeef0001", "pack"), 4096)
 	writeSized(t, filepath.Join(f.stateDir, "repos", "deadbeef0002", "pack"), 2048)
-	s := NewServer(f, "")
+	s := NewServer(f)
 	const seeded = 4096 + 2048
 
 	// Each goroutine drives the handler end to end and decodes its own

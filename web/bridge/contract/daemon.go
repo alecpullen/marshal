@@ -7,20 +7,16 @@ type DaemonInfo struct {
 	PID       int    `json:"pid"`
 	StartedAt int64  `json:"startedAt"` // Unix milliseconds
 	Socket    string `json:"socket"`
-	// StudioAddr is the address the Studio listener actually bound, and
-	// StudioError is why it bound nothing when it could not. `marshal
-	// studio` reads both over the socket: the address is the truth (a
-	// configured port 0 names its own once bound), and the error is what
-	// makes a busy port a named failure instead of "nothing is serving".
-	StudioAddr  string         `json:"studioAddr,omitempty"`
-	StudioError string         `json:"studioError,omitempty"`
-	Projects    []string       `json:"projects"`          // filled per request
-	Pinned      []string       `json:"pinned"`            // filled per request
-	Children    []DaemonChild  `json:"children"`          // filled per request
-	Refresh     *DaemonRefresh `json:"refresh,omitempty"` // filled per request
-	Join        *DaemonJoin    `json:"join,omitempty"`    // filled per request
-	Hosts       []DaemonHost   `json:"hosts"`             // filled per request: the tunnel helper's last report
-	Restart     *DaemonRestart `json:"restart,omitempty"` // the daemon's own; filled per request
+	// WebListen is the web listener's bound address ("unix:<path>" or
+	// host:port), and WebError is why it bound nothing (D10).
+	WebListen string         `json:"webListen,omitempty"`
+	WebError  string         `json:"webError,omitempty"`
+	Projects  []string       `json:"projects"`          // filled per request
+	Pinned    []string       `json:"pinned"`            // filled per request
+	Children  []DaemonChild  `json:"children"`          // filled per request
+	Refresh   *DaemonRefresh `json:"refresh,omitempty"` // filled per request
+	Hosts     []DaemonHost   `json:"hosts"`             // filled per request: the tunnel helper's last report
+	Restart   *DaemonRestart `json:"restart,omitempty"` // the daemon's own; filled per request
 }
 
 // DaemonRestartRequest is POST /api/daemon/restart's body (P6 B5).
@@ -66,6 +62,12 @@ type DaemonHost struct {
 // DaemonHostsReport is PUT /api/daemon/hosts's body: every host the tunnel
 // helper keeps, replacing its last report.
 type DaemonHostsReport struct {
+	Hosts []DaemonHost `json:"hosts"`
+}
+
+// HostList is GET /api/hosts's answer: the hosts this daemon keeps a tunnel
+// to, as its tunnel helper last reported them (one-daemon D10).
+type HostList struct {
 	Hosts []DaemonHost `json:"hosts"`
 }
 

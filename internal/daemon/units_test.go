@@ -148,7 +148,6 @@ func TestTheSystemdUnitNamesEverything(t *testing.T) {
 		` "--socket" "/data/a & b/daemon/marshal.sock"` +
 		` "--state-dir" "/data/a & b/daemon/state 50%%"` +
 		` "--workspace" "/data/a & b/daemon/fleet.json"` +
-		` "--addr" "off"` +
 		` "--marshal-bin" "/opt/ma%%rshal's \"marshal\" & co/bin/marshal"` +
 		` "--idle-session-timeout" "45m0s"` +
 		` "--egress" "off"` +

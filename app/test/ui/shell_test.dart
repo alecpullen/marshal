@@ -1085,13 +1085,13 @@ void main() {
           hosts: hosts,
         );
 
-    test('a refused token is unauthorized, never unreachable', () {
+    test('a proxy refusal is unauthorized, never unreachable', () {
       expect(
         kindFor([host('local', HostReach.unauthorized)]),
         StateKind.unauthorized,
         reason:
-            'a page whose token the bridge refused must say so: reporting it '
-            'as unreachability sends the reader to look at the wrong thing',
+            'a page the proxy refused must say so: reporting it as '
+            'unreachability sends the reader to look at the wrong thing',
       );
     });
 

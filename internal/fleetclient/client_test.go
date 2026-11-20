@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -179,11 +180,8 @@ type fakeBridge struct {
 	// stream; refuseStatus is that answer's status.
 	refuse       bool
 	refuseStatus int
-	// unauthorized makes every request answer 401, as the bridge does when a
-	// token is rejected.
-	unauthorized bool
-	// rejectPaths makes only those paths answer 401, so a single read can meet
-	// the rejection while the stream stays up.
+	// rejectPaths makes only those paths answer 401, so the client meets a
+	// rejected token and can recover when the path answers again.
 	rejectPaths map[string]bool
 	// streams is every stream request's Last-Event-ID, in order, and at is
 	// when each arrived.
@@ -228,7 +226,7 @@ func newFakeBridge(t *testing.T) *fakeBridge {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.record(r)
 		b.mu.Lock()
-		rejected := b.unauthorized || b.rejectPaths[r.URL.Path]
+		rejected := b.rejectPaths[r.URL.Path]
 		b.mu.Unlock()
 		if rejected {
 			http.Error(w, `{"error":"token rejected"}`, http.StatusUnauthorized)
@@ -383,20 +381,19 @@ func (b *fakeBridge) refuseStream(refuse bool, status int) {
 	b.refuse, b.refuseStatus = refuse, status
 }
 
-// rejectToken makes every request answer 401, as the bridge does when a token
-// is rejected.
-func (b *fakeBridge) rejectToken() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.unauthorized = true
-}
-
-// rejectPath makes one path answer 401, so a single read can meet the rejection
-// while the stream and the other reads carry on.
+// rejectPath makes one path answer 401, so a single read can meet a rejected
+// token while the stream and the other reads carry on.
 func (b *fakeBridge) rejectPath(path string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.rejectPaths[path] = true
+}
+
+// allowPath lets that path answer normally again, so a rejection can end.
+func (b *fakeBridge) allowPath(path string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.rejectPaths, path)
 }
 
 // streamRequests is every stream request's Last-Event-ID, in order, and when
@@ -1239,146 +1236,24 @@ func TestTheStateGoesDownAfterAMinuteOfFailures(t *testing.T) {
 	})
 }
 
-// TestA401StopsEverything checks a rejected token ends the stream, the retries
-// and the timers, and that nothing is asked of the bridge again.
-func TestA401StopsEverything(t *testing.T) {
-	// assertSettled checks the client asks the bridge nothing more.
-	assertSettled := func(t *testing.T, b *fakeBridge, c *Client) {
-		t.Helper()
-		select {
-		case <-c.done:
-		case <-time.After(10 * time.Second):
-			t.Fatal("the client's goroutine did not return after the 401")
-		}
-		settled := b.requestCount()
-		// Several daemon intervals: a surviving timer would have asked by now.
-		time.Sleep(50 * time.Millisecond)
-		if got := b.requestCount(); got != settled {
-			t.Errorf("%d requests after the 401, want none", got-settled)
-		}
-		if got, want := c.State().ConnErr, "token rejected for test"; got != want {
-			t.Errorf("ConnErr = %q, want %q", got, want)
-		}
-		if got := c.State().Conn; got != acpclient.FleetRejected {
-			t.Errorf("Conn = %v, want FleetRejected", got)
-		}
+// TestA401IsAnOrdinaryFailure checks a 401 is a failure like any other: the
+// client reconnects, and it connects once the bridge answers again.
+func TestA401IsAnOrdinaryFailure(t *testing.T) {
+	b := newFakeBridge(t)
+	// The connect's first read is refused, so every attempt fails.
+	b.rejectPath("/api/agents")
+	c := b.startClient(t, false, WithBackoff(2*time.Millisecond, 8*time.Millisecond))
+
+	waitFor(t, "the reconnect", func() bool {
+		return c.State().Conn == acpclient.FleetReconnecting
+	})
+	if got := c.State().ConnErr; !strings.Contains(got, "401") {
+		t.Errorf("ConnErr = %q, want the 401's message", got)
 	}
 
-	t.Run("the stream", func(t *testing.T) {
-		b := newFakeBridge(t)
-		// No daemon to reread, so the 401 can only come from the stream.
-		c := b.startNamedClient(t, "test", false,
-			WithBackoff(2*time.Millisecond, 8*time.Millisecond))
-		waitConnected(t, c)
-
-		b.rejectToken()
-		b.dropStream()
-		waitFor(t, "the rejection", func() bool {
-			return c.State().Conn == acpclient.FleetRejected
-		})
-		assertSettled(t, b, c)
-	})
-
-	t.Run("a read", func(t *testing.T) {
-		b := newFakeBridge(t)
-		// The stream stays up; the local daemon's reread meets the 401.
-		c := b.startNamedClient(t, "test", true,
-			WithBackoff(2*time.Millisecond, 8*time.Millisecond),
-			WithDaemonEvery(10*time.Millisecond))
-		waitConnected(t, c)
-
-		b.rejectToken()
-		waitFor(t, "the rejection", func() bool {
-			return c.State().Conn == acpclient.FleetRejected
-		})
-		assertSettled(t, b, c)
-	})
-}
-
-// TestA401OnARefetchStopsTheClient checks a delta-triggered refetch that meets a
-// rejected token stops the client, exactly as the connect's reads and the
-// daemon's reread do.
-func TestA401OnARefetchStopsTheClient(t *testing.T) {
-	// assertSettled is TestA401StopsEverything's shape: the client's goroutine
-	// returns, the bridge is asked nothing more, and the state names the
-	// rejection.
-	assertSettled := func(t *testing.T, b *fakeBridge, c *Client) {
-		t.Helper()
-		select {
-		case <-c.done:
-		case <-time.After(10 * time.Second):
-			t.Fatal("the client's goroutine did not return after the 401")
-		}
-		settled := b.requestCount()
-		time.Sleep(50 * time.Millisecond)
-		if got := b.requestCount(); got != settled {
-			t.Errorf("%d requests after the 401, want none", got-settled)
-		}
-		if got, want := c.State().ConnErr, "token rejected for test"; got != want {
-			t.Errorf("ConnErr = %q, want %q", got, want)
-		}
-		if got := c.State().Conn; got != acpclient.FleetRejected {
-			t.Errorf("Conn = %v, want FleetRejected", got)
-		}
-	}
-
-	t.Run("the agents refetch", func(t *testing.T) {
-		b := newFakeBridge(t)
-		// No daemon to reread: the only read after the connect is the refetch.
-		c := b.startNamedClient(t, "test", false,
-			WithBackoff(2*time.Millisecond, 8*time.Millisecond))
-		waitConnected(t, c)
-
-		// Only the refetch's read meets the rejection; the stream stays up.
-		b.rejectPath("/api/agents")
-		b.delta(`{"kind":"pending","sessionId":"a1","pendingKind":"approval"}`)
-
-		waitFor(t, "the rejection", func() bool {
-			return c.State().Conn == acpclient.FleetRejected
-		})
-		assertSettled(t, b, c)
-	})
-
-	t.Run("the budgets refetch", func(t *testing.T) {
-		b := newFakeBridge(t)
-		c := b.startNamedClient(t, "test", false,
-			WithBackoff(2*time.Millisecond, 8*time.Millisecond))
-		waitConnected(t, c)
-
-		b.rejectPath("/api/budgets")
-		b.delta(`{"kind":"budget","scope":"daily","spentUsd":9.5,"capUsd":20,"action":"warn"}`)
-
-		waitFor(t, "the rejection", func() bool {
-			return c.State().Conn == acpclient.FleetRejected
-		})
-		assertSettled(t, b, c)
-	})
-
-	t.Run("the overflow's reread", func(t *testing.T) {
-		b := newFakeBridge(t)
-		// The daemon's reread is parked out of the way, so the only reads after
-		// the connect are the overflow's.
-		c := b.startNamedClient(t, "test", true,
-			WithBackoff(2*time.Millisecond, 8*time.Millisecond),
-			WithDaemonEvery(time.Hour))
-		waitConnected(t, c)
-		if got := c.State().Epoch; got != 1 {
-			t.Fatalf("Epoch = %d, want 1 after the connect", got)
-		}
-
-		// One of the overflow's five reads is refused.
-		b.rejectPath("/api/inbox")
-		b.delta(`{"type":"replay_overflow"}`)
-
-		waitFor(t, "the rejection", func() bool {
-			return c.State().Conn == acpclient.FleetRejected
-		})
-		// A rejected overflow installs nothing, so the epoch does not move.
-		if got := c.State().Epoch; got != 1 {
-			t.Errorf("Epoch = %d, want 1: a rejected overflow installs nothing", got)
-		}
-		assertSettled(t, b, c)
-	})
+	// The bridge answers again: the next attempt connects.
+	b.allowPath("/api/agents")
+	waitConnected(t, c)
 }
 
 // TestTheDaemonsSessionsAreReread checks the local daemon's info stays current
@@ -1446,55 +1321,6 @@ func TestCloseStopsTheClient(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if got := b.requestCount(); got != count {
 		t.Fatalf("%d requests after Start on a closed client, want none", got-count)
-	}
-}
-
-// TestARejectionStands is the regression for a rejection that the connected
-// state overwrote: a 401 that lands while the connect's buffered deltas are
-// applied stops the client, and the connected state that follows must not
-// present the connection as live.
-func TestARejectionStands(t *testing.T) {
-	c := New(Transport{Server: "fake"})
-
-	// A 401 lands before the read that would have marked the client
-	// connected.
-	c.reject()
-	c.connected()
-
-	s := c.State()
-	if s.Conn != acpclient.FleetRejected {
-		t.Errorf("Conn = %v, want FleetRejected", s.Conn)
-	}
-	if s.ConnErr != "token rejected for fake" {
-		t.Errorf("ConnErr = %q, want %q", s.ConnErr, "token rejected for fake")
-	}
-}
-
-// TestA401DuringTheConnectKeepsTheRejection is the end-to-end shape of the
-// same defect: the 401 meets the refetch a buffered delta asks for, in the
-// window between the connect's read and the connected state.
-func TestA401DuringTheConnectKeepsTheRejection(t *testing.T) {
-	b := newFakeBridge(t)
-	gate := b.holdAgents()
-	c := b.startClient(t, false)
-
-	// The delta arrives while the connect's read is held open, so it is
-	// buffered and applied after the read — in the window before the client
-	// says it is connected.
-	b.delta(`{"kind":"pending","sessionId":"a1","pendingKind":"approval"}`)
-	// Let the client's reader take the frame off the wire before the read
-	// completes, so the frame is in the buffered set when the read returns.
-	time.Sleep(50 * time.Millisecond)
-	// The refetch the delta asks for meets the rejection.
-	b.rejectPath("/api/agents")
-	close(gate)
-
-	waitFor(t, "the rejection", func() bool {
-		return c.State().Conn == acpclient.FleetRejected
-	})
-	s := c.State()
-	if s.ConnErr != "token rejected for fake" {
-		t.Errorf("ConnErr = %q, want %q", s.ConnErr, "token rejected for fake")
 	}
 }
 

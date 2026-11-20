@@ -8,8 +8,8 @@ enum HostKind { local, server }
 
 /// What the app can reach of one host. `stale` is a host that is talking less
 /// often than it should; `unreachable` is one nothing answers on; and
-/// `unauthorized` is one whose token the bridge refused, which is terminal
-/// (decision 6) rather than a state to retry out of.
+/// `unauthorized` is one the operator's proxy refused — a signed-out page,
+/// which is terminal (one-daemon D13) rather than a state to retry out of.
 enum HostReach { connecting, live, stale, unreachable, unauthorized }
 
 /// Builds the fleet stream a host follows. It is a parameter so a test can
@@ -31,7 +31,7 @@ class HostSpec {
   final HostKind kind;
   final BridgeClient client;
 
-  /// The relay's host name this host is reached through, or null.
+  /// The daemon this host is reached through, or null.
   final String? via;
 
   /// The SSH destination this host is reached over, or null.
@@ -45,9 +45,9 @@ typedef HostDiscovery = Future<List<HostSpec>> Function();
 /// reach of it right now.
 ///
 /// Its reach follows its fleet stream: a live stream is a live host, silence
-/// is `stale`, a refused token is `unauthorized`, and a stream that is
-/// reconnecting to a host that has answered before is `unreachable` — with the
-/// time of its last contact kept, so a screen can say when it was last seen
+/// is `stale`, a request the proxy refused is `unauthorized`, and a stream that
+/// is reconnecting to a host that has answered before is `unreachable` — with
+/// the time of its last contact kept, so a screen can say when it was last seen
 /// (design-system.md §7).
 class Host extends ChangeNotifier {
   Host({
@@ -63,7 +63,7 @@ class Host extends ChangeNotifier {
   final HostKind kind;
   final BridgeClient client;
 
-  /// The relay's host name this host is reached through, or null.
+  /// The daemon this host is reached through, or null.
   final String? via;
 
   /// The SSH destination this host is reached over, or null.
@@ -177,21 +177,6 @@ class HostRegistry extends ChangeNotifier {
     final host = _hosts.removeAt(at);
     host.dispose();
     notifyListeners();
-  }
-
-  /// Stops [name]'s stream and starts it again, after its token changed.
-  ///
-  /// A refused token is terminal (decision 6): the stream is stopped rather
-  /// than retried, so a host that has just been signed in to is asked to try
-  /// once more instead of waited on. A name this fleet does not list does
-  /// nothing.
-  void retry(String name) {
-    for (final host in _hosts) {
-      if (host.name != name) continue;
-      host.stop();
-      host.start();
-      return;
-    }
   }
 
   @override

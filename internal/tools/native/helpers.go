@@ -1,6 +1,7 @@
 package native
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"marshal/internal/pathutil"
 	"marshal/internal/tools/registry"
 )
 
@@ -69,211 +71,146 @@ func resolveWorkspacePath(root string, rel string) (string, error) {
 	return SafeResolve(root, rel)
 }
 
-// resolveWorkspacePathMulti resolves a relative path against the primary
-// root and any additional roots. Write semantics: absolute paths are
-// always rejected. See resolveWorkspacePathMultiMode for the read-tool
-// variant that accepts absolute paths contained in a root.
+// resolveWorkspacePathMulti resolves one target against the primary root and
+// any additional roots, following symlinks and judging the resolved target
+// against the roots that operation may touch. Additional roots are read/write
+// grants; resolveWorkspacePathMultiRead is the read-only caller shape.
 func resolveWorkspacePathMulti(root string, additionalRoots []string, rel string) (string, error) {
-	return resolveWorkspacePathMultiMode(root, additionalRoots, rel, false)
+	return resolveGrants(root, legacyGrants(nil, additionalRoots), rel, true)
 }
 
 // resolveWorkspacePathMultiRead is the read-tool variant of
-// resolveWorkspacePathMulti: an absolute path is accepted when it
-// resolves — symlinks included — inside the primary root or any
-// additional root. An absolute path contained in no root is rejected
-// with an error naming the allowed roots.
+// resolveWorkspacePathMulti: an absolute path is accepted when it resolves —
+// symlinks included — inside the primary root or any additional root. An
+// absolute path contained in no root is rejected with an error naming the
+// allowed roots.
 func resolveWorkspacePathMultiRead(root string, additionalRoots []string, rel string) (string, error) {
-	return resolveWorkspacePathMultiMode(root, additionalRoots, rel, true)
+	return resolveGrants(root, legacyGrants(nil, additionalRoots), rel, false)
 }
 
-func resolveWorkspacePathMultiMode(root string, additionalRoots []string, rel string, allowAbsolute bool) (string, error) {
-	cleaned := filepath.Clean(rel)
-
-	// Collect all roots: primary first, then additional.
-	roots := make([]string, 1+len(additionalRoots))
-	roots[0] = root
-	copy(roots[1:], additionalRoots)
-
-	if allowAbsolute && filepath.IsAbs(rel) {
-		// Absolute path: accept only if it is contained within one of
-		// the roots. resolveAbsolute (saferesolve.go) is the single
-		// source of truth for symlink containment; per-root failures
-		// (missing root, symlink escape) are collapsed into one error
-		// that names the allowed roots so the model can retry.
-		for _, r := range roots {
-			absRoot, err := filepath.Abs(r)
-			if err != nil {
-				continue
-			}
-			resolvedRoot, err := filepath.EvalSymlinks(absRoot)
-			if err != nil {
-				continue
-			}
-			if resolved, err := resolveAbsolute(resolvedRoot, cleaned); err == nil {
-				return resolved, nil
-			}
-		}
-		return "", fmt.Errorf("%w: absolute path %q resolves outside all allowed roots [%s]",
-			ErrPathEscapes, rel, strings.Join(roots, ", "))
+// resolveGrants is the one adapter from the shared resolver to this package:
+// every legacy entry point funnels through it so they all report an escape as
+// ErrPathEscapes with the roots that were consulted.
+func resolveGrants(primary string, grants []pathutil.RootGrant, rel string, write bool) (string, error) {
+	if primary == "" {
+		return "", fmt.Errorf("%w: no workspace root is bound", ErrPathEscapes)
 	}
-
-	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path %q must be relative", rel)
+	// A missing primary root must fail loudly. The shared resolver completes a
+	// non-existing tail through its nearest existing ancestor — the right
+	// answer for a new file in a live root, but the wrong one for a root that
+	// has been removed underneath the session (a dispatch worktree torn down
+	// while its tools were still bound to it), which would otherwise let the
+	// write land in whatever directory now contains that path.
+	if _, err := os.Stat(primary); err != nil {
+		return "", fmt.Errorf("%w: workspace root %q is unavailable: %w", ErrPathEscapes, primary, err)
 	}
-	if cleaned == "." {
-		return root, nil
-	}
-
-	// The request is ONE path, so exactly one root claims it: the first root
-	// under which it is lexically contained. This intentionally allows `..`
-	// at the start of rel — a path like `../siblingroot/file` is valid when
-	// `siblingroot` is in additionalRoots.
-	var lastLexical error
-	var chosenRoot string
-	for _, r := range roots {
-		full := filepath.Join(r, cleaned)
-		relToRoot, err := filepath.Rel(r, full)
-		if err != nil {
-			lastLexical = err
-			continue
-		}
-		if relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) {
-			lastLexical = fmt.Errorf("path %q escapes root %q", rel, r)
-			continue
-		}
-		chosenRoot = r
-		break
-	}
-	if chosenRoot == "" {
-		if lastLexical != nil {
-			return "", lastLexical
-		}
-		return "", fmt.Errorf("path %q escapes workspace", rel)
-	}
-
-	absRoot, err := filepath.Abs(chosenRoot)
+	resolved, err := pathutil.ResolveGrantedPath(primary, grants, rel, write)
 	if err != nil {
+		if errors.Is(err, pathutil.ErrOutsideRoots) {
+			return "", fmt.Errorf("%w: %w", ErrPathEscapes, err)
+		}
 		return "", err
-	}
-	resolvedRoot, err := filepath.EvalSymlinks(absRoot)
-	if err != nil {
-		return "", fmt.Errorf("resolve root %q: %w", absRoot, err)
-	}
-
-	// Resolve the target ONCE, then decide containment.
-	resolved, err := resolveTarget(filepath.Join(chosenRoot, cleaned))
-	if err != nil {
-		return "", err
-	}
-	if containsPath(resolvedRoot, resolved) {
-		return resolved, nil
-	}
-
-	// A symlink took the target outside the root that owns this path. A
-	// different root may still contain that SAME target — a worktree's
-	// seeded .docs-archive is lexically inside the worktree but resolves
-	// into the project root — so weigh the resolved target against the
-	// remaining roots.
-	//
-	// It must be the resolved target that is weighed, never a re-join of
-	// the request to another root: re-joining fabricates a different file
-	// that merely shares the name, so a worktree link to an external file
-	// would silently answer from a same-named path in the project root (and
-	// write there too, inside what should be an isolated checkout).
-	for _, r := range roots {
-		if r == chosenRoot {
-			continue
-		}
-		rootAbs, aerr := filepath.Abs(r)
-		if aerr != nil {
-			continue
-		}
-		rootResolved, rerr := filepath.EvalSymlinks(rootAbs)
-		if rerr != nil {
-			continue
-		}
-		if containsPath(rootResolved, resolved) {
-			return resolved, nil
-		}
-	}
-	return "", fmt.Errorf("%w: path %q resolves outside root", ErrPathEscapes, resolved)
-}
-
-// resolveSystemPath resolves an absolute path for a system-access session.
-// It is the system-mode counterpart to resolveAbsolute: containment is
-// deliberately not checked, but the path is still symlink-resolved so
-// callers get a canonical absolute path. A path that does not exist yet
-// resolves through its nearest existing ancestor, matching SafeResolve's
-// new-file behavior.
-func resolveSystemPath(abs string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return "", fmt.Errorf("resolve %q: %w", abs, err)
-		}
-		resolved, err = resolveUpThenDown(abs)
-		if err != nil {
-			return "", fmt.Errorf("resolve %q: %w", abs, err)
-		}
 	}
 	return resolved, nil
 }
 
+// legacyGrants turns the explicit legacy roots into grants. An additional root
+// and a named alias are read/write; a registration that wants a narrower
+// permit supplies it through Options.PathGrants, which appendGrant(narrow)ed
+// over these.
+func legacyGrants(namedRoots map[string]string, additionalRoots []string) []pathutil.RootGrant {
+	grants := make([]pathutil.RootGrant, 0, len(additionalRoots)+len(namedRoots))
+	for _, root := range additionalRoots {
+		grants = appendGrant(grants, pathutil.RootGrant{Path: root, Read: true, Write: true}, false)
+	}
+	aliases := sortedAliases(namedRoots)
+	for _, alias := range aliases {
+		grants = appendGrant(grants, pathutil.RootGrant{Path: namedRoots[alias], Alias: alias, Read: true, Write: true}, false)
+	}
+	return grants
+}
+
+// sortedAliases returns the alias prefixes longest first, so a more specific
+// alias ("@run/notes") wins over its prefix ("@run") regardless of map order.
+func sortedAliases(namedRoots map[string]string) []string {
+	aliases := make([]string, 0, len(namedRoots))
+	for alias := range namedRoots {
+		aliases = append(aliases, alias)
+	}
+	sort.Slice(aliases, func(i, j int) bool {
+		if len(aliases[i]) != len(aliases[j]) {
+			return len(aliases[i]) > len(aliases[j])
+		}
+		return aliases[i] < aliases[j]
+	})
+	return aliases
+}
+
+// appendGrant adds g unless an equivalent root or alias is already granted. A
+// narrowing g replaces that existing grant instead, which is how a caller's
+// operation-specific permit overrides the legacy read/write default.
+func appendGrant(grants []pathutil.RootGrant, g pathutil.RootGrant, narrow bool) []pathutil.RootGrant {
+	for i, existing := range grants {
+		sameAlias := g.Alias != "" && existing.Alias == g.Alias
+		samePath := g.Alias == "" && existing.Alias == "" && sameGrantPath(existing.Path, g.Path)
+		if !sameAlias && !samePath {
+			continue
+		}
+		if narrow {
+			grants[i] = g
+		}
+		return grants
+	}
+	return append(grants, g)
+}
+
+// sameGrantPath compares two roots, preferring the literal spelling and
+// falling back to the resolved one so a symlinked root is recognised as itself.
+func sameGrantPath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	resolvedA, errA := filepath.EvalSymlinks(a)
+	resolvedB, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && resolvedA == resolvedB
+}
+
+// resolveSystemPath resolves an absolute path for a system-access session.
+// It is the system-mode counterpart to the granted resolver: containment is
+// deliberately not checked, but the path is still symlink-resolved so callers
+// get a canonical absolute path. A path that does not exist yet resolves
+// through its nearest existing ancestor, matching the new-file case.
+func resolveSystemPath(abs string) (string, error) {
+	return pathutil.ResolveAbsolute(abs)
+}
+
 // resolveReadToolPath resolves a path for a read-side tool other than the
-// file tools (today: repo.search's path filter). With system access on it
-// accepts absolute paths anywhere on the filesystem, matching the file tools
-// and the system-access prompt directive. Without the flag the prior
-// containment behavior is preserved exactly.
+// file tools (today: repo.search's path filter). It shares the file tools'
+// rules exactly — ~ expansion, the doubled-prefix diagnostic and the granted
+// roots — so an agent that reads a path with file.read and then filters with
+// repo.search gets the same answer from both. An absolute spelling alone does
+// not require System access; it still has to land inside a readable root.
 func (t *toolSet) resolveReadToolPath(rel string) (string, error) {
-	if t.systemAccess() {
-		return t.resolveToolPath(rel, true)
-	}
-	// These tools take a path FILTER, not a workspace path, so they keep the
-	// write-side containment rules (absolute paths rejected). They do share
-	// the file tools' ~ expansion and doubled-prefix diagnostic, so an agent
-	// that reads a path with file.read and then filters with repo.search gets
-	// the same answer from both instead of a colder not-found.
-	expanded, err := expandHomeDir(rel)
-	if err != nil {
-		return "", err
-	}
-	rel = expanded
-	if derr := t.doubledWorktreeError(rel); derr != nil {
-		return "", derr
-	}
-	return resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
+	return t.resolveToolPath(rel, true)
 }
 
 // doubledWorktreeError returns the diagnostic for a mistaken repeated
-// .marshal/worktrees/<branch>/ prefix, or nil when the path is not doubled or
-// the literal path really exists. Shared by every path entry point so the file
-// tools and the other read tools answer alike.
+// .marshal/worktrees/<branch>/ segment, or nil when the joined target is not
+// doubled or the literal entry really exists.
 func (t *toolSet) doubledWorktreeError(rel string) error {
-	suggestion, ok := detectDoubledWorktree(rel)
-	if !ok {
-		return nil
-	}
-	// The suggestion only fires when the literal path is not real, so a
-	// workspace that genuinely nests that layout (a doc tree describing the
-	// on-disk structure, say) stays readable instead of being rejected.
-	probe := rel
-	if !filepath.IsAbs(probe) {
-		probe = filepath.Join(t.activeRoot(), rel)
-	}
-	// Lstat, not Stat: a dangling symlink is still a real entry at the
-	// literal path, so it must not be second-guessed as a typo.
-	if _, err := os.Lstat(probe); err == nil {
-		return nil
-	}
-	return fmt.Errorf("%w: path %q contains a duplicated worktree segment; relative paths resolve from the current worktree root — did you mean %q?", ErrPathEscapes, rel, suggestion)
+	return doubledWorktreeError(t.activeRoot(), rel)
 }
 
 // resolveToolPath is the single entry point for file-tool path resolution.
-// With system access on, an absolute path resolves anywhere on the
-// filesystem; otherwise the existing containment rules apply unchanged.
-// Relative paths behave identically in both modes. read selects the
-// read-tool variant, which additionally accepts absolute paths contained in
-// an allowed root even without system access.
+// With system access on, an absolute path resolves anywhere on the filesystem;
+// otherwise one target is resolved — from the alias root that names it, else
+// from the active workspace root — and judged against the roots this
+// operation is granted. read selects the read side, which also accepts
+// absolute paths contained in a permitted root and the Marshal-owned
+// directories under $HOME.
 func (t *toolSet) resolveToolPath(rel string, read bool) (string, error) {
 	// Propagate rather than swallow: a failure here means ~ could not be
 	// expanded, and silently treating "~/x" as a relative path named "~"
@@ -286,21 +223,10 @@ func (t *toolSet) resolveToolPath(rel string, read bool) (string, error) {
 	if t.systemAccess() && filepath.IsAbs(rel) {
 		return resolveSystemPath(filepath.Clean(rel))
 	}
-	// A repeated .marshal/worktrees/<branch>/ segment is a mistaken prefix,
-	// not a real path. This diagnostic previously lived only in SafeResolve,
-	// which file.* does not route through — they go via the named-root and
-	// multi-root resolvers below — so they answered with a bare not-found
-	// and the model had no way to learn it had prefixed the root itself.
-	//
 	if derr := t.doubledWorktreeError(rel); derr != nil {
 		return "", derr
 	}
-	var resolved string
-	if read {
-		resolved, err = resolveNamedRootRead(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
-	} else {
-		resolved, err = resolveNamedRoot(t.namedRoots, t.activeRoot(), t.effectiveAdditionalRoots(), rel)
-	}
+	resolved, err := resolveGrants(t.activeRoot(), t.grantedRoots(), rel, !read)
 	if err != nil {
 		if errors.Is(err, ErrPathEscapes) {
 			// Read-side only: Marshal-owned paths under $HOME are readable
@@ -323,6 +249,19 @@ func (t *toolSet) resolveToolPath(rel string, read bool) (string, error) {
 	return resolved, nil
 }
 
+// resolvePathFunc is the registry.Tool.ResolvePath hook for this toolset. It
+// is the same resolution the handlers use, so policy target preparation, patch
+// previews and retry hints judge exactly the file the tool would touch.
+func (t *toolSet) resolvePathFunc(_ context.Context, path string, write bool) (string, error) {
+	return t.resolveToolPath(path, !write)
+}
+
+// resolveReadOnlyPathFunc is the hook for a tool that only ever reads: the
+// caller's operation flag cannot widen a read-only surface into a write one.
+func (t *toolSet) resolveReadOnlyPathFunc(_ context.Context, path string, _ bool) (string, error) {
+	return t.resolveToolPath(path, true)
+}
+
 func workspaceRel(root string, abs string) (string, error) {
 	// Resolve symlinks in root so the rel computation matches the path
 	// returned by resolveWorkspacePath (which is also symlink-resolved).
@@ -340,63 +279,42 @@ func workspaceRel(root string, abs string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
-// effectiveAdditionalRoots returns the configured additional roots, plus the
-// project root when a worktree is active (i.e. the active root differs from
-// the project root). This keeps the project root reachable from inside a
-// worktree: an agent isolated in /project/.marshal/worktrees/feat-x can still
-// read ../docs/architecture.md because the project root is an allowed root.
-// additionalRoots is set once at construction and never updated, so the
-// project root must be injected dynamically at resolution time.
-func (t *toolSet) effectiveAdditionalRoots() []string {
-	roots := t.additionalRoots
+// grantedRoots returns the roots this toolset resolves against. The primary
+// root is implicit (it is passed separately and stays readable and writable);
+// here the explicit additional roots and named aliases are read/write grants,
+// the project root of an active worktree is a read-only reference, and the
+// registration's own PathGrants narrow any of those for the same root or
+// alias.
+//
+// additionalRoots and namedRoots are set once at construction and never
+// updated, so the worktree's project root is injected dynamically at
+// resolution time.
+func (t *toolSet) grantedRoots() []pathutil.RootGrant {
+	grants := legacyGrants(t.namedRoots, t.additionalRoots)
 	if ws := t.wsState(); ws != nil {
 		w := ws.Workspace()
 		if w.ActiveRoot != "" && w.ProjectRoot != "" && w.ActiveRoot != w.ProjectRoot {
-			roots = append(roots, w.ProjectRoot)
+			// A project checkout a worktree session may consult is a
+			// reference: readable, never an implicit write target.
+			grants = appendGrant(grants, pathutil.RootGrant{Path: w.ProjectRoot, Read: true}, false)
 		}
 	}
-	return roots
+	for _, g := range t.pathGrants {
+		grants = appendGrant(grants, g, true)
+	}
+	return grants
 }
 
 // resolveNamedRoot resolves paths that may use a named alias prefix (e.g.
-// "@run/task-1-brief.md") with write semantics: absolute paths are
-// rejected. See resolveWorkspacePathMultiMode.
+// "@run/task-1-brief.md"). Kept as an adapter over the shared resolver so the
+// legacy callers and the tools migrate together.
 func resolveNamedRoot(namedRoots map[string]string, root string, additionalRoots []string, rel string) (string, error) {
-	return resolveNamedRootMode(namedRoots, root, additionalRoots, rel, false)
+	return resolveGrants(root, legacyGrants(namedRoots, additionalRoots), rel, true)
 }
 
-// resolveNamedRootRead is the read-tool variant: the alias path gets the
-// same absolute-path leniency as ordinary reads, because the alias root
-// is itself an allowed root.
+// resolveNamedRootRead is the read-tool variant of resolveNamedRoot.
 func resolveNamedRootRead(namedRoots map[string]string, root string, additionalRoots []string, rel string) (string, error) {
-	return resolveNamedRootMode(namedRoots, root, additionalRoots, rel, true)
-}
-
-func resolveNamedRootMode(namedRoots map[string]string, root string, additionalRoots []string, rel string, allowAbsolute bool) (string, error) {
-	for alias, aliasRoot := range namedRoots {
-		prefix := alias + "/"
-		if rel == alias {
-			return aliasRoot, nil
-		}
-		if strings.HasPrefix(rel, prefix) {
-			sub := rel[len(prefix):]
-			return resolveWorkspacePathMultiMode(aliasRoot, nil, sub, allowAbsolute)
-		}
-	}
-	if strings.HasPrefix(rel, "@") {
-		return "", fmt.Errorf("unknown named alias in path %q", rel)
-	}
-	if allowAbsolute && filepath.IsAbs(rel) {
-		// An absolute path in read mode may also live under an alias root,
-		// which is itself an allowed root. Try each alias root before
-		// falling through to the ordinary multi-root check.
-		for _, aliasRoot := range namedRoots {
-			if resolved, err := resolveWorkspacePathMultiMode(aliasRoot, nil, rel, true); err == nil {
-				return resolved, nil
-			}
-		}
-	}
-	return resolveWorkspacePathMultiMode(root, additionalRoots, rel, allowAbsolute)
+	return resolveGrants(root, legacyGrants(namedRoots, additionalRoots), rel, false)
 }
 
 func limitOutput(s string, maxBytes int) string {

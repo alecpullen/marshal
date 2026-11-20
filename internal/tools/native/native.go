@@ -23,6 +23,7 @@ import (
 	"marshal/internal/index"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/routing"
+	"marshal/internal/pathutil"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -118,6 +119,18 @@ type Options struct {
 	// dispatches to give workers access to briefs and reports outside the
 	// worktree without exposing absolute paths.
 	NamedRoots map[string]string
+
+	// PathGrants are operation-specific root grants supplied by this
+	// registration. Each one names a root (and optionally the alias prefix
+	// that addresses it) and says whether it may be read, written or both.
+	//
+	// They narrow, never widen, the legacy roots: an AdditionalRoots entry
+	// or a NamedRoots alias is a read/write grant unless a grant here names
+	// that same root or alias, in which case only the caller's narrower
+	// grant applies. A dynamically added project reference (an active
+	// worktree's project root, a pipeline dispatch's repository) is
+	// read-only and never an implicit write target.
+	PathGrants []pathutil.RootGrant
 
 	// CommandAdmission admits one managed-command attempt. Required on the
 	// final execution path; a nil callback fails closed.
@@ -215,11 +228,15 @@ type toolSet struct {
 	root            string
 	additionalRoots []string
 	namedRoots      map[string]string
-	runner          CommandRunner
-	testCommand     string
-	maxOutputBytes  int
-	sessionState    *session.State
-	workspaceState  *session.State
+	// pathGrants are the registration's own root grants. They narrow
+	// additionalRoots/namedRoots for the same root or alias; the primary root
+	// stays readable and writable.
+	pathGrants     []pathutil.RootGrant
+	runner         CommandRunner
+	testCommand    string
+	maxOutputBytes int
+	sessionState   *session.State
+	workspaceState *session.State
 	// accessRequests reports whether the caller promised an attached access
 	// resolver/transport. Defaults false: a standalone registration (tests,
 	// embedded registries) has nobody to answer a capability request, so
@@ -507,6 +524,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		root:            root,
 		additionalRoots: additionalRoots,
 		namedRoots:      opts.NamedRoots,
+		pathGrants:      opts.PathGrants,
 		runner:          runner,
 		testCommand:     testCommand,
 		maxOutputBytes:  maxOutputBytes,

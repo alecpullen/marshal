@@ -59,6 +59,14 @@ type Tool struct {
 	Internal bool
 	Handler  ToolHandler
 
+	// ResolvePath resolves one path argument with this toolset's own rules —
+	// its roots, its aliases and symlink resolution — for the operation write
+	// selects. Policy target preparation, patch previews and retry hints use
+	// it so they judge the file the tool would really touch rather than
+	// whichever spelling the caller happened to use. Nil for a tool that takes
+	// no path.
+	ResolvePath func(context.Context, string, bool) (string, error)
+
 	// validator is the compiled form of Schema, built once by Register.
 	// Shared by pointer through cloneTool: jsonschema.Schema is immutable
 	// after compilation and safe for concurrent use.

@@ -52,6 +52,7 @@ func (t *toolSet) imageViewTool() registry.Tool {
 			`},"oneOf":[{"required":["path"]},{"required":["ref"]}],"additionalProperties":false}`),
 		Risk: registry.RiskReadOnly,
 	}
+	tool.ResolvePath = t.resolveReadOnlyPathFunc
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[imageViewArgs](tool, call.Args)
 		if err != nil {

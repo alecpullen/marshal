@@ -2317,55 +2317,60 @@ func TestFileWriteRejectsPathEscapingRoot(t *testing.T) {
 	}
 }
 
-func TestFileWriteRejectsAbsolutePathInsideRoot(t *testing.T) {
+// An absolute spelling of a contained path is a first-class target: it names
+// the same canonical file the relative spelling would, and it is writable
+// without System access. An absolute path OUTSIDE every root stays refused.
+func TestFileWriteAcceptsContainedAbsolutePath(t *testing.T) {
 	root := t.TempDir()
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	absPath := filepath.Join(root, "w.txt")
+	absPath := filepath.Join(resolvedRoot, "w.txt")
 	args, err := json.Marshal(map[string]string{"path": absPath, "content": "x"})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	_, err = invokeTool(t, reg, "file.write", string(args))
-	if err == nil {
-		t.Fatal("file.write absolute path inside root returned nil error")
+	if _, err := invokeTool(t, reg, "file.write", string(args)); err != nil {
+		t.Fatalf("file.write absolute path inside root: %v", err)
 	}
-	if !strings.Contains(err.Error(), "must be relative") {
-		t.Fatalf("error should mention 'must be relative', got: %v", err)
-	}
-	// The file must NOT have been written.
-	if _, statErr := os.Stat(absPath); !os.IsNotExist(statErr) {
-		t.Fatalf("file.write absolute path should not create the file, stat err = %v", statErr)
+	if _, statErr := os.Stat(absPath); statErr != nil {
+		t.Fatalf("file.write absolute path inside root did not create the file: %v", statErr)
 	}
 }
 
-func TestFileWritePatchRejectsAbsolutePathInsideRoot(t *testing.T) {
+func TestFileWritePatchAcceptsContainedAbsolutePath(t *testing.T) {
 	root := t.TempDir()
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	absPath := filepath.Join(root, "w.txt")
+	absPath := filepath.Join(resolvedRoot, "w.txt")
 	args, err := json.Marshal(map[string]string{
 		"patch": "File: " + absPath + "\n<<<<<<< SEARCH\n=======\nnew\n>>>>>>> REPLACE\n",
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	_, err = invokeTool(t, reg, "file.write_patch", string(args))
-	if err == nil {
-		t.Fatal("file.write_patch absolute path inside root returned nil error")
+	if _, err := invokeTool(t, reg, "file.write_patch", string(args)); err != nil {
+		t.Fatalf("file.write_patch absolute path inside root: %v", err)
 	}
-	if !strings.Contains(err.Error(), "must be relative") {
-		t.Fatalf("error should mention 'must be relative', got: %v", err)
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		t.Fatalf("file.write_patch absolute path inside root did not create the file: %v", err)
 	}
-	// No file should have been created at the absolute path.
-	if _, statErr := os.Stat(absPath); !os.IsNotExist(statErr) {
-		t.Fatalf("file.write_patch absolute path should not create the file, stat err = %v", statErr)
+	if !strings.Contains(string(data), "new") {
+		t.Fatalf("content = %q, want the patch body", string(data))
 	}
 }
 
@@ -2386,8 +2391,14 @@ func TestFileWriteRejectsAbsolutePathOutsideRoot(t *testing.T) {
 	if err == nil {
 		t.Fatal("file.write absolute path outside root returned nil error")
 	}
-	if !strings.Contains(err.Error(), "must be relative") {
-		t.Fatalf("error should mention 'must be relative', got: %v", err)
+	if !errors.Is(err, ErrPathEscapes) {
+		t.Fatalf("err = %v, want ErrPathEscapes", err)
+	}
+	if !strings.Contains(err.Error(), "outside all allowed roots") {
+		t.Fatalf("error should name the allowed roots, got: %v", err)
+	}
+	if _, statErr := os.Stat(absPath); !os.IsNotExist(statErr) {
+		t.Fatalf("out-of-root absolute write created the file: %v", statErr)
 	}
 }
 

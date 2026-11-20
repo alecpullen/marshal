@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"marshal/internal/tools/patch"
@@ -117,10 +118,10 @@ func FallbackWriterView(src *Registry, allowed []string) *Registry {
 		case tool.Deferred:
 			// Deferred tools are never exposed to the fallback child.
 		case tool.Name == "file.write_patch":
-			_ = view.Register(fallbackWriterPatchTool(tool, allowedSet))
+			_ = view.Register(fallbackWriterPatchTool(tool, allowed, allowedSet))
 		case tool.Name == "file.write" || tool.Name == "file.edit":
-			_ = view.Register(pathScopedTool(tool, func(cleaned, raw string) error {
-				if !pathInAllowlist(cleaned, allowedSet) {
+			_ = view.Register(pathScopedTool(tool, func(ctx context.Context, cleaned, raw string) error {
+				if scopedTargetOutside(ctx, tool, raw, allowed, false, pathInAllowlist(cleaned, allowedSet)) {
 					return fmt.Errorf("%s in fallback scope may only write under the declared scope (path %q is outside)", tool.Name, raw)
 				}
 				return nil
@@ -142,7 +143,7 @@ func FallbackWriterView(src *Registry, allowed []string) *Registry {
 // to paths check accepts. check receives the cleaned path and returns a
 // non-nil error to reject it. Without this the whole-file write tools would
 // bypass a scoped view's path guard entirely.
-func pathScopedTool(tool Tool, check func(cleaned, raw string) error) Tool {
+func pathScopedTool(tool Tool, check func(ctx context.Context, cleaned, raw string) error) Tool {
 	original := tool.Handler
 	filtered := tool
 	filtered.Handler = func(ctx context.Context, call ToolCall) (ToolResult, error) {
@@ -152,7 +153,7 @@ func pathScopedTool(tool Tool, check func(cleaned, raw string) error) Tool {
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return ToolResult{}, fmt.Errorf("%s could not parse arguments: %w", tool.Name, err)
 		}
-		if err := check(cleanScopePath(args.Path), args.Path); err != nil {
+		if err := check(ctx, cleanScopePath(args.Path), args.Path); err != nil {
 			return ToolResult{}, err
 		}
 		return original(ctx, call)
@@ -160,7 +161,74 @@ func pathScopedTool(tool Tool, check func(cleaned, raw string) error) Tool {
 	return filtered
 }
 
-func fallbackWriterPatchTool(tool Tool, allowed map[string]bool) Tool {
+// scopedTargetEscapes reports whether raw, resolved through the tool's OWN
+// resolver, lands outside every declared scope entry. A scope entry is a
+// declared alias ("@run") or a declared path; both are resolved by the tool so
+// the comparison is between canonical targets, not between spellings.
+//
+// It returns judged=false when the tool carries no resolver or when no
+// declared entry resolves under it. The caller then keeps its lexical rule,
+// which is all a scope over a hand-built Tool can do. When the tool refuses
+// the path itself, the tool's own handler reports it and the view adds
+// nothing.
+func scopedTargetEscapes(ctx context.Context, tool Tool, raw string, entries []string, exact bool) (escapes bool, judged bool) {
+	if tool.ResolvePath == nil || raw == "" {
+		return false, false
+	}
+	target, err := tool.ResolvePath(ctx, raw, true)
+	if err != nil {
+		return false, false
+	}
+	roots := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry == "" {
+			continue
+		}
+		resolved, rerr := tool.ResolvePath(ctx, entry, true)
+		if rerr != nil {
+			continue
+		}
+		roots = append(roots, resolved)
+	}
+	if len(roots) == 0 {
+		return false, false
+	}
+	for _, root := range roots {
+		if target == root {
+			return false, true
+		}
+		if !exact && pathIsWithin(root, target) {
+			return false, true
+		}
+	}
+	return true, true
+}
+
+// pathIsWithin reports whether the already canonical target lies inside the
+// already canonical root.
+func pathIsWithin(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// scopedTargetOutside reports whether a scoped view must reject raw. When the
+// tool carries its own resolver, the resolver decides: the request and every
+// declared scope entry are canonicalized through it, so an absolute spelling
+// of an in-scope target is accepted while a symlink pivot, an alias traversal
+// ("@alias/../app.go") or a traversal out of an allowlist that the tool would
+// otherwise permit is refused. A hand-built Tool without a resolver — every
+// scope over a tool no native registration produced — keeps the lexical rule.
+func scopedTargetOutside(ctx context.Context, tool Tool, raw string, entries []string, exact bool, lexical bool) bool {
+	if escapes, judged := scopedTargetEscapes(ctx, tool, raw, entries, exact); judged {
+		return escapes
+	}
+	return !lexical
+}
+
+func fallbackWriterPatchTool(tool Tool, allowed []string, allowedSet map[string]bool) Tool {
 	original := tool.Handler
 	filtered := tool
 	filtered.Handler = func(ctx context.Context, call ToolCall) (ToolResult, error) {
@@ -176,13 +244,24 @@ func fallbackWriterPatchTool(tool Tool, allowed map[string]bool) Tool {
 		}
 		for _, fp := range res.Patches {
 			cleaned := cleanScopePath(fp.Path)
-			if !pathInAllowlist(cleaned, allowed) {
+			if scopedTargetOutside(ctx, tool, fp.Path, allowed, false, pathInAllowlist(cleaned, allowedSet)) {
 				return ToolResult{}, fmt.Errorf("file.write_patch in fallback scope may only write under the declared scope (path %q is outside)", fp.Path)
 			}
 		}
 		return original(ctx, call)
 	}
 	return filtered
+}
+
+// allowedEntries lists an exact-match allowlist's entries, so the tool's own
+// resolver can canonicalize each one for the scope comparison.
+func allowedEntries(allowed map[string]bool) []string {
+	entries := make([]string, 0, len(allowed))
+	for entry := range allowed {
+		entries = append(entries, entry)
+	}
+	sort.Strings(entries)
+	return entries
 }
 
 // pathInAllowlist reports whether path equals one of the allowed entries
@@ -237,8 +316,9 @@ func ArtifactWriterView(src *Registry, artifactAlias string) *Registry {
 		case tool.Name == "file.write_patch":
 			_ = view.Register(artifactWriterPatchTool(tool, artifactAlias))
 		case tool.Name == "file.write" || tool.Name == "file.edit":
-			_ = view.Register(pathScopedTool(tool, func(cleaned, raw string) error {
-				if !strings.HasPrefix(cleaned, artifactAlias+"/") {
+			_ = view.Register(pathScopedTool(tool, func(ctx context.Context, cleaned, raw string) error {
+				lexical := strings.HasPrefix(cleaned, artifactAlias+"/")
+				if scopedTargetOutside(ctx, tool, raw, []string{artifactAlias}, false, lexical) {
 					return fmt.Errorf("%s in artifact-writer scope may only write under %s/ (path %q is outside)", tool.Name, artifactAlias, raw)
 				}
 				return nil
@@ -267,7 +347,8 @@ func artifactWriterPatchTool(tool Tool, alias string) Tool {
 		}
 		for _, fp := range res.Patches {
 			cleaned := cleanScopePath(fp.Path)
-			if !strings.HasPrefix(cleaned, alias+"/") {
+			lexical := strings.HasPrefix(cleaned, alias+"/")
+			if scopedTargetOutside(ctx, tool, fp.Path, []string{alias}, false, lexical) {
 				return ToolResult{}, fmt.Errorf("file.write_patch in artifact-writer scope may only write under %s/ (path %q is outside)", alias, fp.Path)
 			}
 		}
@@ -304,8 +385,8 @@ func PlanWriterView(src *Registry, alias string, allowed []string) *Registry {
 		case tool.Name == "file.write_patch":
 			_ = view.Register(planWriterPatchTool(tool, alias, allowedSet))
 		case tool.Name == "file.write" || tool.Name == "file.edit":
-			_ = view.Register(pathScopedTool(tool, func(cleaned, raw string) error {
-				if !allowedSet[cleaned] {
+			_ = view.Register(pathScopedTool(tool, func(ctx context.Context, cleaned, raw string) error {
+				if scopedTargetOutside(ctx, tool, raw, allowed, true, allowedSet[cleaned]) {
 					return fmt.Errorf("%s in plan-writer scope may only write the candidate plan (path %q is not allowed)", tool.Name, raw)
 				}
 				return nil
@@ -329,7 +410,7 @@ func planWriterPatchTool(tool Tool, alias string, allowed map[string]bool) Tool 
 		}
 		for _, fp := range res.Patches {
 			cleaned := cleanScopePath(fp.Path)
-			if !allowed[cleaned] {
+			if scopedTargetOutside(ctx, tool, fp.Path, allowedEntries(allowed), true, allowed[cleaned]) {
 				return ToolResult{}, fmt.Errorf("file.write_patch in plan-writer scope may only write the candidate plan (path %q is not allowed)", fp.Path)
 			}
 		}

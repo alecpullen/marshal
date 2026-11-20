@@ -487,7 +487,7 @@ func TestFallbackWriterFileWriteToolRejectsUnmarshalError(t *testing.T) {
 		},
 	}
 
-	wrapped := pathScopedTool(tool, func(cleaned, raw string) error {
+	wrapped := pathScopedTool(tool, func(ctx context.Context, cleaned, raw string) error {
 		if !pathInAllowlist(cleaned, allowed) {
 			return fmt.Errorf("file.write in fallback scope may only write under the declared scope (path %q is outside)", raw)
 		}
@@ -502,6 +502,57 @@ func TestFallbackWriterFileWriteToolRejectsUnmarshalError(t *testing.T) {
 	if !strings.Contains(err.Error(), "could not parse arguments") {
 		t.Errorf("expected parse error, got: %v", err)
 	}
+}
+
+// TestToolResolvePathSurvivesViews pins that a tool's path resolver travels
+// with it into every view and clone. A view that narrows a handler must still
+// answer "which file would this write touch?" the same way, or policy target
+// preparation, patch previews and retry hints judge a different file than the
+// handler writes.
+func TestToolResolvePathSurvivesViews(t *testing.T) {
+	resolver := func(_ context.Context, path string, write bool) (string, error) {
+		if write {
+			return "/canonical/" + path, nil
+		}
+		return "/read/" + path, nil
+	}
+	src := New()
+	for _, tool := range []Tool{
+		{Name: "file.read", Risk: RiskReadOnly, Handler: nopHandler, ResolvePath: resolver},
+		{Name: "file.write", Risk: RiskWorkspaceWrite, Handler: nopHandler, ResolvePath: resolver},
+		{Name: "file.write_patch", Risk: RiskWorkspaceWrite, Handler: nopHandler, ResolvePath: resolver},
+	} {
+		if err := src.Register(tool); err != nil {
+			t.Fatalf("Register(%s): %v", tool.Name, err)
+		}
+	}
+
+	check := func(t *testing.T, view *Registry, name string) {
+		t.Helper()
+		tool, ok := view.Lookup(name)
+		if !ok {
+			t.Fatalf("%s missing from view", name)
+		}
+		if tool.ResolvePath == nil {
+			t.Fatalf("%s lost its ResolvePath in the view", name)
+		}
+		got, err := tool.ResolvePath(context.Background(), "x.txt", true)
+		if err != nil {
+			t.Fatalf("%s ResolvePath: %v", name, err)
+		}
+		if got != "/canonical/x.txt" {
+			t.Fatalf("%s ResolvePath = %q, want the write target", got, got)
+		}
+	}
+
+	check(t, ReadOnlyView(src), "file.read")
+	for _, name := range []string{"file.write", "file.write_patch"} {
+		check(t, FallbackWriterView(src, []string{"x.txt"}), name)
+	}
+	for _, name := range []string{"file.write", "file.write_patch"} {
+		check(t, ArtifactWriterView(src, "@run"), name)
+	}
+	check(t, PlanWriterView(src, "@plan", []string{"@plan/x.md"}), "file.write")
 }
 
 // Review focus 3: the plan-writer child creates its plan with file.write.

@@ -27,6 +27,7 @@ func (t *toolSet) fileEditTool() registry.Tool {
 			`},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"],"additionalProperties":false}`),
 		Risk: registry.RiskWorkspaceWrite,
 	}
+	tool.ResolvePath = t.resolvePathFunc
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[fileEditArgs](tool, call.Args)
 		if err != nil {

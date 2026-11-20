@@ -91,6 +91,7 @@ func (t *toolSet) fileReadTool() registry.Tool {
 			`},"start_line":{"type":"integer","description":"1-based first line to return"},"end_line":{"type":"integer","description":"1-based last line to return"}},"required":["path"],"additionalProperties":false}`),
 		Risk: registry.RiskReadOnly,
 	}
+	tool.ResolvePath = t.resolveReadOnlyPathFunc
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[fileReadArgs](tool, call.Args)
 		if err != nil {
@@ -804,6 +805,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 		// edits through file.edit.
 		Internal: true,
 	}
+	tool.ResolvePath = t.resolvePathFunc
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[fileWritePatchArgs](tool, call.Args)
 		if err != nil {
@@ -1132,6 +1134,7 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			`},"content":{"type":"string","description":"exact file content to write"}},"required":["path","content"],"additionalProperties":false}`),
 		Risk: registry.RiskWorkspaceWrite,
 	}
+	tool.ResolvePath = t.resolvePathFunc
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[fileWriteArgs](tool, call.Args)
 		if err != nil {

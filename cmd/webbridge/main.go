@@ -114,6 +114,9 @@ type config struct {
 	// oauthRefresh runs `<marshal-bin> daemon refresh` beside the bridge
 	// (P4 D12). Off unless asked.
 	oauthRefresh bool
+	// tunnels runs `<marshal-bin> daemon tunnels` beside the bridge
+	// (one-daemon D7).
+	tunnels bool
 	// relayJoins names the hosts that may join this bridge as a relay, each
 	// with the file holding that name's join secret (P8 D11). A bridge with
 	// none relays nothing.
@@ -203,6 +206,12 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		return config{}, fmt.Errorf("WEBBRIDGE_OAUTH_REFRESH: %w", err)
 	}
 	oauthRefresh := fs.Bool("oauth-refresh", oauthRefreshDefault, "run <marshal-bin> daemon refresh alongside the bridge")
+	// The tunnels helper's variable is read the same way (one-daemon D7).
+	tunnelsDefault, err := strconv.ParseBool(envOr("WEBBRIDGE_TUNNELS", "false"))
+	if err != nil {
+		return config{}, fmt.Errorf("WEBBRIDGE_TUNNELS: %w", err)
+	}
+	tunnels := fs.Bool("tunnels", tunnelsDefault, "run <marshal-bin> daemon tunnels alongside the bridge")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -212,7 +221,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	cfg := config{socket: *socket, addr: *addr, previewAddr: *previewAddr, token: *token, tokenFile: *tokenFile, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
 		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL,
-		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh,
+		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh, tunnels: *tunnels,
 		join: *join, joinName: *joinName, joinTokenFile: *joinTokenFile, joinCAFile: *joinCAFile}
 	pm, err := parseProjectMounts(projectMounts)
 	if err != nil {
@@ -937,6 +946,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		// return before it returns, so the bridge never leaves a
 		// helper behind.
 		helper := &bridge.Helper{
+			Name:   "refresh",
 			Argv:   []string{cfg.marshalBin, "daemon", "refresh"},
 			Stderr: stderr,
 		}
@@ -950,6 +960,29 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		defer func() {
 			stopHelper()
 			<-helperDone
+		}()
+	}
+	if cfg.tunnels {
+		// The tunnels helper (one-daemon D7): `<marshal-bin> daemon
+		// tunnels` keeps one SSH tunnel per host beside the bridge and
+		// reports them on the socket. It is not the refresh helper: the
+		// hosts are its report, so it is not handed to
+		// SetRefreshHelper. run waits for it before returning, as it
+		// does for the refresh helper.
+		helper := &bridge.Helper{
+			Name:   "tunnels",
+			Argv:   []string{cfg.marshalBin, "daemon", "tunnels", "--socket", cfg.socket},
+			Stderr: stderr,
+		}
+		tunnelsCtx, stopTunnels := context.WithCancel(ctx)
+		tunnelsDone := make(chan struct{})
+		go func() {
+			defer close(tunnelsDone)
+			helper.Run(tunnelsCtx)
+		}()
+		defer func() {
+			stopTunnels()
+			<-tunnelsDone
 		}()
 	}
 	sln, lerr := bridge.ListenLocal(cfg.socket)

@@ -108,6 +108,46 @@ func TestParseConfigEnvAndFlags(t *testing.T) {
 	}
 }
 
+// TestParseConfigReadsTheTunnelsFlag: --tunnels and WEBBRIDGE_TUNNELS turn
+// the tunnels helper on, and a variable that does not parse is an error
+// naming it.
+func TestParseConfigReadsTheTunnelsFlag(t *testing.T) {
+	for _, k := range []string{"WEBBRIDGE_TUNNELS", "WEBBRIDGE_ADDR", "WEBBRIDGE_SOCKET"} {
+		t.Setenv(k, "")
+	}
+	cfg, err := parseConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if cfg.tunnels {
+		t.Error("tunnels = true with neither the flag nor the variable; want false")
+	}
+
+	cfg, err = parseConfig([]string{"--tunnels"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig --tunnels: %v", err)
+	}
+	if !cfg.tunnels {
+		t.Error("tunnels = false with --tunnels; want true")
+	}
+
+	t.Setenv("WEBBRIDGE_TUNNELS", "1")
+	cfg, err = parseConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig WEBBRIDGE_TUNNELS=1: %v", err)
+	}
+	if !cfg.tunnels {
+		t.Error("tunnels = false with WEBBRIDGE_TUNNELS=1; want true")
+	}
+
+	t.Setenv("WEBBRIDGE_TUNNELS", "maybe")
+	if _, err := parseConfig(nil, io.Discard); err == nil {
+		t.Fatal("WEBBRIDGE_TUNNELS=maybe: expected error, got nil")
+	} else if !strings.Contains(err.Error(), "WEBBRIDGE_TUNNELS") {
+		t.Errorf("error %q does not name WEBBRIDGE_TUNNELS", err)
+	}
+}
+
 func TestParseConfigProjects(t *testing.T) {
 	cfg, err := parseConfig([]string{"--project", "/tmp/project"}, io.Discard)
 	if err != nil {

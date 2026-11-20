@@ -28,7 +28,7 @@ func isolateWebbridgeEnv(t *testing.T) {
 		"WEBBRIDGE_PROFILE", "WEBBRIDGE_SOCKET", "WEBBRIDGE_ADDR", "WEBBRIDGE_TOKEN",
 		"WEBBRIDGE_CWD_ROOT", "WEBBRIDGE_STATE_DIR", "WEBBRIDGE_WORKSPACE",
 		"WEBBRIDGE_EGRESS", "WEBBRIDGE_SECRETS", "WEBBRIDGE_SECRETS_KEY_FILE",
-		"WEBBRIDGE_IDLE_SESSION_TIMEOUT", "WEBBRIDGE_OAUTH_REFRESH",
+		"WEBBRIDGE_IDLE_SESSION_TIMEOUT", "WEBBRIDGE_OAUTH_REFRESH", "WEBBRIDGE_TUNNELS",
 		"WEBBRIDGE_RELAY_JOIN", "WEBBRIDGE_JOIN", "WEBBRIDGE_JOIN_NAME",
 		"WEBBRIDGE_JOIN_TOKEN_FILE", "WEBBRIDGE_JOIN_CA_FILE",
 	} {
@@ -449,6 +449,76 @@ func TestTheDaemonStartsNoHelperUnasked(t *testing.T) {
 	}
 	if _, err := os.Stat(argsFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the helper script ran without --oauth-refresh; want it never run")
+	}
+}
+
+// TestTheDaemonSupervisesTheTunnelsHelper: --tunnels runs `<marshal-bin>
+// daemon tunnels --socket <socket>` beside the daemon, and takes it down
+// again when the bridge stops.
+func TestTheDaemonSupervisesTheTunnelsHelper(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+	script, argsFile := helperScript(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{"--addr", "off", "--socket", socket,
+			"--tunnels", "--marshal-bin", script}, io.Discard, io.Discard)
+	}()
+
+	// The helper is the marshal binary with `daemon tunnels`, dialling the
+	// socket this daemon serves on.
+	want := "daemon tunnels --socket " + socket
+	if argv := waitForArgs(t, argsFile); argv != want {
+		t.Errorf("helper argv = %q, want %q", argv, want)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not return within 10s of its context being cancelled")
+	}
+}
+
+// TestTheDaemonStartsNoTunnelsHelperUnasked: without --tunnels, the
+// daemon runs no tunnels helper.
+func TestTheDaemonStartsNoTunnelsHelperUnasked(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+	script, argsFile := helperScript(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{"--addr", "off", "--socket", socket,
+			"--marshal-bin", script}, io.Discard, io.Discard)
+	}()
+
+	waitForDaemon(t, socketClient(socket))
+	// The helper records its arguments as it starts, so half a second is
+	// long enough for one that was going to run.
+	time.Sleep(500 * time.Millisecond)
+	if b, err := os.ReadFile(argsFile); err == nil {
+		t.Fatalf("the tunnels helper ran without --tunnels: %q", string(b))
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
 	}
 }
 

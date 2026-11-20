@@ -1808,6 +1808,8 @@ class DaemonInfo {
     required this.socket,
     this.studioAddr,
     this.studioError,
+    this.webListen,
+    this.webError,
     required this.projects,
     required this.pinned,
     required this.children,
@@ -1830,6 +1832,10 @@ class DaemonInfo {
   /// makes a busy port a named failure instead of "nothing is serving".
   final String? studioAddr;
   final String? studioError;
+  /// WebListen is the web listener's bound address ("unix:&lt;path&gt;" or
+  /// host:port), and WebError is why it bound nothing (D10).
+  final String? webListen;
+  final String? webError;
   /// filled per request
   final List<String> projects;
   /// filled per request
@@ -1854,6 +1860,8 @@ class DaemonInfo {
       socket: json['socket'] as String,
       studioAddr: json['studioAddr'] as String?,
       studioError: json['studioError'] as String?,
+      webListen: json['webListen'] as String?,
+      webError: json['webError'] as String?,
       projects: _list(
         json['projects'],
         (value) => value as String,
@@ -1897,6 +1905,12 @@ class DaemonInfo {
     }
     if (studioError != null) {
       json['studioError'] = studioError;
+    }
+    if (webListen != null) {
+      json['webListen'] = webListen;
+    }
+    if (webError != null) {
+      json['webError'] = webError;
     }
     json['projects'] = projects;
     json['pinned'] = pinned;
@@ -2108,6 +2122,33 @@ class DaemonHostsReport {
 
   factory DaemonHostsReport.fromJson(Map<String, dynamic> json) {
     return DaemonHostsReport(
+      hosts: _list(
+        json['hosts'],
+        (value) => _object(value, DaemonHost.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['hosts'] = [
+      for (final value in hosts) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// HostList is GET /api/hosts's answer: the hosts this daemon keeps a tunnel
+/// to, as its tunnel helper last reported them (one-daemon D10).
+class HostList {
+  const HostList({
+    required this.hosts,
+  });
+
+  final List<DaemonHost> hosts;
+
+  factory HostList.fromJson(Map<String, dynamic> json) {
+    return HostList(
       hosts: _list(
         json['hosts'],
         (value) => _object(value, DaemonHost.fromJson),

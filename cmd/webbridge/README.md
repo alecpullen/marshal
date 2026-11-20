@@ -137,8 +137,8 @@ its project host through `project/hold` after every handshake, with the index
 watcher on. `GET /api/daemon` reports the pins and marks each pinned child,
 and `marshal daemon status` prints them.
 
-`--oauth-refresh` (also `WEBBRIDGE_OAUTH_REFRESH`, off unless asked; local
-profile only) supervises `marshal daemon refresh` beside the bridge. That
+`--oauth-refresh` (also `WEBBRIDGE_OAUTH_REFRESH`, off unless asked) supervises
+`marshal daemon refresh` beside the bridge. That
 helper holds `<data>/oauth-refresh.lock` and, every few seconds, re-reads the
 user config's modification time and size, refreshing the OAuth providers it
 names and rebuilding its workers when the file changes. One process refreshes:
@@ -228,8 +228,9 @@ are never logged: the audit log records `secret_set` and
 
 Agents reach the network through a proxy that enforces a per-agent
 policy, injects credentials the agent never sees, and logs every
-connection. `--egress on` (the default; `WEBBRIDGE_EGRESS=off` or
-`--egress off` disables it) starts it at bridge start:
+connection. `--egress on` (off unless asked; `--egress on` or
+`WEBBRIDGE_EGRESS=on` enables it) starts it at bridge start, and it fails to
+start without a usable container runtime:
 
 - **Container mode.** The bridge creates an internal network
   (`marshal-agents`), builds `marshal-egress:<version>` from a
@@ -241,17 +242,16 @@ connection. `--egress on` (the default; `WEBBRIDGE_EGRESS=off` or
   (mode 0600): `GET /policy` streams policy snapshots, `POST /log` takes
   connection records, `POST /blocked` reports refused requests, and
   `GET /leaf` mints a leaf certificate, so the sidecar never holds a CA key.
-- **Process mode** (no container runtime). The same proxy runs in the
-  bridge on `127.0.0.1:<port>` and agents get the proxy variables.
-  A process can ignore them, so this is advisory, and `GET /api/network`
-  reports `processMode: true`.
+  Egress applies to container agents only; a host agent has no proxy, and
+  `GET /api/network` reports `processMode: true` when egress is off, meaning
+  there is no isolation.
 
 Agent tokens are derived from the agent ID with a key kept in
 `<state-dir>/egress/token.key` (mode 0600), so a container that outlives
 a bridge restart keeps authenticating.
 
 Per-agent modes are `off`, `open` and `allowlist`. A workspace with no
-`[network]` is `open`. Injecting a credential into a host needs a
+`[network]` is `open`. Injecting a credential into an agent container needs a
 writable secrets backend (`local` or `openbao`), because the workspace CA
 key lives in the vault at `vault:ca/<workspace>`; with the `env` backend
 a spawn that asks for injection is refused. Provider keys stored at

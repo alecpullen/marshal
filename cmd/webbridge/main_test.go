@@ -529,7 +529,7 @@ func TestPrintEnvWritesTheMarkerAndTheEnvironment(t *testing.T) {
 	}
 }
 
-// TestTheLocalResolverPrintsWithThisBinary: the local profile's resolver runs
+// TestTheLocalResolverPrintsWithThisBinary: the daemon's resolver runs
 // this executable with print-env, so a project child prints the environment
 // its own bridge sees.
 func TestTheLocalResolverPrintsWithThisBinary(t *testing.T) {

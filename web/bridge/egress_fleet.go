@@ -416,8 +416,9 @@ func (f *Fleet) egressAttachedAs(id, container string) {
 	h.setIP(id, ip)
 }
 
-// egressProcessMode reports whether enforcement is advisory: there is no
-// container isolation, so a process may bypass the proxy.
+// egressProcessMode reports whether the egress proxy is off, which the API
+// still publishes as processMode: with no proxy there is no isolation, and
+// only container agents are ever proxied.
 func (f *Fleet) egressProcessMode() bool {
 	return f.egress == nil
 }

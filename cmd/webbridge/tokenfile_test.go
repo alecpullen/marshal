@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestReadOrCreateToken pins the token hand-off the local profile relies on: a
+// TestReadOrCreateToken pins the token hand-off the daemon relies on: a
 // 0600 file that a restart reuses, so an open Studio tab keeps working, and
 // that is minted when it is missing or left empty.
 func TestReadOrCreateToken(t *testing.T) {

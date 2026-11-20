@@ -112,8 +112,8 @@ session, with its index watched, until `marshal daemon unpin`. A fleet agent
 the local daemon starts on a local project runs on that project's child,
 beside the TUI's sessions. The bridge follows each fleet agent's session, so a
 turn started from its session screen shows in the fleet and its requests reach
-the bridge. An agent with a child of its own — a git agent, a workspace agent,
-or any agent while the egress proxy is on — starts that child with a viewer
+the bridge. An agent with a child of its own — a git agent, or a workspace agent —
+starts that child with a viewer
 socket of its own (`<state>/v/a-<hash>.sock`) and opens with `⏎` too. A
 containerized agent serves viewers inside its container on `viewers.sock`,
 beside its control socket, and the bridge's attach dials it on the host side;

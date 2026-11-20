@@ -50,12 +50,13 @@
 # service.
 #
 # Agents the studio spawns run in containers: the studio's projects have a
-# workspace, and any daemon containerises an agent that has one whenever podman
-# or docker is on PATH, so the host-process fallback that would use
-# --marshal-bin is not reached here. A spawn therefore needs the agent image,
-# and for a source build the default is `ghcr.io/marshal/agent:latest`. The
-# studio itself serves without it; only spawning agents needs it, which is most
-# of what the studio is for.
+# workspace, and a daemon containerises an agent that has one whenever a
+# rootless podman or docker is present (a rootful docker is refused on Linux).
+# There is no host-process fallback for a workspace agent — --marshal-bin only
+# reaches agents without one — so a spawn without a usable runtime answers 501,
+# and every spawn needs the agent image. For a source build the default is
+# `ghcr.io/marshal/agent:latest`. The studio itself serves without it; only
+# spawning agents needs it, which is most of what the studio is for.
 #
 # The agent's marshal comes from the *image*, not from --marshal-bin, so this
 # is a third artifact to refresh alongside the SPA and the two binaries: a host
@@ -73,12 +74,11 @@
 #
 # `--status` says when the image is missing or older than ./marshal.
 #
-# The state dir is the container runtime's `marshal-state` volume, not a
-# directory beside it: agent containers mount subpaths of that volume, so the
-# bridge and its containers must see the same files. A rootless podman volume
-# is writable and used; a rootful docker one is not, and the script falls back
-# to a plain directory — studio still serves, but agents cannot see their
-# state. `--status` prints which one is in use.
+# The state dir is a host directory, `$data_dir/studio/state`: agent containers
+# bind subpaths of it, so the bridge and its containers see the same files, and
+# the user's config home is bound read-only beside it. On Linux a container
+# needs the state dir bind-mounted, so a rootless podman or docker is required
+# and a rootful one is refused. `--status` prints the directory.
 #
 # `go build ./cmd/marshal ./cmd/webbridge` without -o only type-checks the two
 # mains and writes nothing; `-o .` is what puts both binaries in the repo root,

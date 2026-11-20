@@ -39,7 +39,7 @@ func versionString() string {
 }
 
 // daemonVersion is the bare version: the stamped release version, else the
-// source build's dev+<commit> (decision 7). The local profile reports it
+// source build's dev+<commit> (decision 7). The daemon reports it
 // through GET /api/daemon, which wants the version itself rather than the
 // banner around it, and the fleet carries it as its build version.
 func daemonVersion() string {
@@ -108,11 +108,11 @@ type config struct {
 	// in outbound notifications. Empty yields relative links.
 	publicURL string
 	// idleSessionTimeout is how long a project session with no viewer
-	// and no run lives on in the local profile (P4 D7a); zero never
+	// and no run lives on in the daemon (P4 D7a); zero never
 	// ends one.
 	idleSessionTimeout time.Duration
-	// oauthRefresh runs `<marshal-bin> daemon refresh` beside the local
-	// profile's bridge (P4 D12). Off unless asked.
+	// oauthRefresh runs `<marshal-bin> daemon refresh` beside the bridge
+	// (P4 D12). Off unless asked.
 	oauthRefresh bool
 	// relayJoins names the hosts that may join this bridge as a relay, each
 	// with the file holding that name's join secret (P8 D11). A bridge with
@@ -143,11 +143,11 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	fs := flag.NewFlagSet("webbridge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	profile := fs.String("profile", envOr("WEBBRIDGE_PROFILE", ""), "retired: local is accepted and ignored")
-	socket := fs.String("socket", envOr("WEBBRIDGE_SOCKET", ""), "unix socket to serve on (--profile local)")
+	socket := fs.String("socket", envOr("WEBBRIDGE_SOCKET", ""), "unix socket to serve on")
 	addr := fs.String("addr", envOr("WEBBRIDGE_ADDR", "127.0.0.1:7700"), "listen address")
 	previewAddr := fs.String("preview-addr", envOr("WEBBRIDGE_PREVIEW_ADDR", ""), "listen address for previews, served from a separate origin (default: the --addr host on a free port; \"off\" disables)")
 	token := fs.String("token", envOr("WEBBRIDGE_TOKEN", ""), "bearer token for /api routes (generated when empty)")
-	tokenFile := fs.String("token-file", envOr("WEBBRIDGE_TOKEN_FILE", ""), "file to read the bearer token from, and create it 0600 when absent (--profile local)")
+	tokenFile := fs.String("token-file", envOr("WEBBRIDGE_TOKEN_FILE", ""), "file to read the bearer token from, and create it 0600 when absent")
 	marshalBin := fs.String("marshal-bin", envOr("WEBBRIDGE_MARSHAL_BIN", "marshal"), "marshal binary to supervise")
 	cwdRoot := fs.String("cwd-root", envOr("WEBBRIDGE_CWD_ROOT", ""), "default cwd for session list/load (defaults to the working directory)")
 	var projects stringList
@@ -195,14 +195,14 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if err != nil {
 		return config{}, fmt.Errorf("WEBBRIDGE_IDLE_SESSION_TIMEOUT: %w", err)
 	}
-	idleSessionTimeout := fs.Duration("idle-session-timeout", idleTimeoutDefault, "how long a project session with no viewer and no run lives on (--profile local; 0 never ends one)")
+	idleSessionTimeout := fs.Duration("idle-session-timeout", idleTimeoutDefault, "how long a project session with no viewer and no run lives on (0 never ends one)")
 	// The boolean flag reads its variable the same way, before it is
 	// declared: a variable that does not parse is a configuration error.
 	oauthRefreshDefault, err := strconv.ParseBool(envOr("WEBBRIDGE_OAUTH_REFRESH", "false"))
 	if err != nil {
 		return config{}, fmt.Errorf("WEBBRIDGE_OAUTH_REFRESH: %w", err)
 	}
-	oauthRefresh := fs.Bool("oauth-refresh", oauthRefreshDefault, "run <marshal-bin> daemon refresh alongside the bridge (--profile local)")
+	oauthRefresh := fs.Bool("oauth-refresh", oauthRefreshDefault, "run <marshal-bin> daemon refresh alongside the bridge")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -310,7 +310,7 @@ func applyDaemonDefaults(cfg *config, given givenSettings, profile string) error
 		return fmt.Errorf("--token-file is for the TCP listener or a join, and neither is set")
 	}
 	if cfg.idleSessionTimeout < 0 {
-		return fmt.Errorf("--idle-session-timeout %s: the local profile waits a negative time for an idle session", cfg.idleSessionTimeout)
+		return fmt.Errorf("--idle-session-timeout %s: a session timeout cannot be negative", cfg.idleSessionTimeout)
 	}
 
 	// The daemon's defaults, each applying only when its flag and its
@@ -491,7 +491,7 @@ func runSubcommand(ctx context.Context, args []string, stdout io.Writer) (bool, 
 	return false, nil
 }
 
-// localProjectEnv is the local profile's project environment resolver: project
+// localProjectEnv is the daemon's project environment resolver: project
 // children print their environment by re-running this binary with "print-env"
 // (P4 D7). Symlinks are resolved, so a login shell that starts elsewhere still
 // reaches the binary.
@@ -564,7 +564,7 @@ func genToken() (string, error) {
 // readOrCreateToken returns the token held in path, creating the file with a
 // fresh token when it is missing or empty.
 //
-// This is how the local profile hands the Studio its token: the daemon reads
+// This is how the daemon hands the Studio its token: the daemon reads
 // or mints the file once at startup and the browser is pointed at a URL
 // carrying the same value, so the secret is never typed, never on a command
 // line a process list would show, and never in the log. The file is written
@@ -632,7 +632,7 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	// The local profile reports when it started, and the plan dates that
+	// The daemon reports when it started, and the plan dates that
 	// from the start of run rather than from the listener.
 	startedAt := time.Now()
 
@@ -666,11 +666,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	// --addr off means the local socket is the only listener, and the
+	// --addr off means the unix socket is the only listener, and the
 	// socket is peer-checked rather than token-checked: there is no
 	// bearer token to generate.
 	//
-	// --token-file is how the local profile hands the Studio its token.
+	// --token-file is how the daemon hands the Studio its token.
 	// It is read when present and minted when absent, so a restarted
 	// daemon keeps one token and an open Studio tab keeps working. The
 	// token stays out of the log either way. A joining bridge reads or

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -146,7 +148,7 @@ func TestTheDaemonRefuses(t *testing.T) {
 		// retired flag are pinned with.
 		want string
 	}{
-		{"idle timeout negative", []string{"--profile", "local", "--idle-session-timeout", "-5m"}, nil, "local"},
+		{"idle timeout negative", []string{"--idle-session-timeout", "-5m"}, nil, "cannot be negative"},
 		{"oauth refresh unparsable", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_OAUTH_REFRESH": "yes"}, "WEBBRIDGE_OAUTH_REFRESH"},
 		// --profile is retired: local, or no flag at all, is every bridge.
 		{"profile local", []string{"--profile", "local"}, nil, ""},
@@ -155,6 +157,7 @@ func TestTheDaemonRefuses(t *testing.T) {
 		// The settings the daemon once guarded behind the profile are its
 		// own: the egress proxy is off unless asked for, and asking is fine.
 		{"egress on", []string{"--egress", "on"}, nil, ""},
+		{"egress on from the variable", nil, map[string]string{"WEBBRIDGE_EGRESS": "on"}, ""},
 		// The token file is a listener's and a join's alike: with no
 		// listener and no join, there is nothing to hand it to.
 		{"token file without a listener or a join", []string{"--profile", "local", "--addr", "off", "--token-file", tokenFile}, nil, "the TCP listener or a join"},
@@ -196,6 +199,41 @@ func TestTheDaemonRefuses(t *testing.T) {
 			// the variable instead.
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error %q does not name %s", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestTheRetiredProfileWarnsOnce pins the one rule the retired flag still
+// carries: local, or no flag at all, is accepted, and only an explicit local
+// is worth a warning.
+func TestTheRetiredProfileWarnsOnce(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		env  map[string]string
+		want int
+	}{
+		{"flag", []string{"--profile", "local"}, nil, 1},
+		{"variable", nil, map[string]string{"WEBBRIDGE_PROFILE": "local"}, 1},
+		{"absent", nil, nil, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateWebbridgeEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			if _, err := parseConfig(tc.args, io.Discard); err != nil {
+				t.Fatalf("parseConfig(%v) refused the settings: %v", tc.args, err)
+			}
+			if got := strings.Count(buf.String(), "level=WARN"); got != tc.want {
+				t.Errorf("warnings = %d, want %d (%s)", got, tc.want, buf.String())
 			}
 		})
 	}
@@ -289,7 +327,7 @@ func TestTheLocalProfileServesItsSocket(t *testing.T) {
 		t.Fatalf("socket still exists after shutdown: %v", err)
 	}
 	if strings.Contains(stderr.String(), "generated bearer token") {
-		t.Fatalf("the local profile generated a token: %q", stderr.String())
+		t.Fatalf("the daemon generated a token: %q", stderr.String())
 	}
 }
 
@@ -379,9 +417,9 @@ func TestTheLocalProfileSupervisesTheRefreshHelper(t *testing.T) {
 	}
 }
 
-// TestTheLocalProfileStartsNoHelperUnasked: without --oauth-refresh, the
-// local profile runs no helper and reports none.
-func TestTheLocalProfileStartsNoHelperUnasked(t *testing.T) {
+// TestTheDaemonStartsNoHelperUnasked: without --oauth-refresh, the
+// daemon runs no helper and reports none.
+func TestTheDaemonStartsNoHelperUnasked(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
 	socket := localSocketPath(t)

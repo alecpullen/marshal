@@ -937,7 +937,9 @@ func (f *Fleet) containerRuntime() (path, name string, ok bool) {
 }
 
 // runtimeIsRootless is whether the runtime the probe finds is rootless: the
-// injected answer when a test set one, else the process-wide probe's.
+// injected answer when a test set one, else the process-wide probe's. A test
+// that injects probe must inject this too, or the answer comes from the real
+// runtime on this machine.
 func (f *Fleet) runtimeIsRootless() bool {
 	if f.rootless != nil {
 		return f.rootless()
@@ -1038,7 +1040,7 @@ func (f *Fleet) runtimeForRoot(root string) (*agentRuntime, error) {
 }
 
 // onProjectChild reports whether a runs on its project's child (P4 D10
-// decision 2): a plain local agent of a local profile. A git agent's tree is
+// decision 2): a plain local agent of this daemon. A git agent's tree is
 // deleted with the agent, and a workspace is what makes a container, so each
 // of those keeps a child of its own.
 func (f *Fleet) onProjectChild(a Agent) bool {

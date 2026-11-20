@@ -15,10 +15,10 @@ request — so a Studio rebuild needs neither a relink nor a restart (one-daemon
 D12). The TUI and the browser share that one daemon, its socket and its
 listener.
 
-Nothing on that listener authenticates a browser: Marshal holds no bearer
-secret, and the operator's proxy is the login (one-daemon D13). A listener on a
-loopback address is reachable by every account on the machine, which is why
-`marshal daemon status` says so beside the address.
+Nothing on that listener authenticates a browser: Marshal holds no browser
+credential of its own, and the operator's proxy is the login (one-daemon D13). A
+listener on a loopback address is reachable by every account on the machine,
+which is why `marshal daemon status` says so beside the address.
 
 One helper owns it: `scripts/dev-daemon.sh`. It builds into the repository
 root and restarts the service; it does not watch the tree, because a restart
@@ -225,11 +225,11 @@ is tailnet-only — no LAN exposure, no public DNS record. Remove just it with
 `tailscale serve --https=8443 off`; `tailscale serve reset` clears every entry
 on the host, including ones you did not create.
 
-The proxy is now the only gate (D13). Marshal holds no bearer secret and checks
-no browser's identity: tailnet membership is the login, and a request that
-arrives at `:7700` is answered. What the listener does check for itself is what
-a browser sends on another site's behalf — the `Host` it is addressed to (only
-`localhost`, `127.0.0.1`, `::1` and the published origin's host), a
+The proxy is now the only gate (D13). Marshal holds no browser credential and
+checks no browser's identity: tailnet membership is the login, and a request
+that arrives at `:7700` is answered. What the listener does check for itself is
+what a browser sends on another site's behalf — the `Host` it is addressed to
+(only `localhost`, `127.0.0.1`, `::1` and the published origin's host), a
 state-changing request whose `Sec-Fetch-Site` or `Origin` is another site's,
 and an `/api/` body that is not JSON (`web/bridge/webguard.go`). So the
 published origin has to be named, or the forwarded browser is refused before

@@ -21,9 +21,9 @@ looked in (one-daemon D12). `GET /api/daemon` reports the resolved directory as
 
 The web listener is off unless you ask for it. It takes `unix` (a `web.sock`
 beside the daemon's own), an absolute socket path, or a loopback `host:port`,
-and refuses anything else: it serves the Studio and the API with no bearer
-check, so the operator's proxy in front of it is the only thing
-authenticating a browser (one-daemon D3, D13).
+and refuses anything else: it serves the Studio and the API with no
+authentication of its own, so the operator's proxy in front of it is the only
+thing authenticating a browser (one-daemon D3, D13).
 
 | Flag | Meaning |
 |---|---|
@@ -36,15 +36,12 @@ authenticating a browser (one-daemon D3, D13).
 `--addr` and `--token-file` are retired and ignored, and `--token`, `--tls-cert`
 and `--tls-key` are refused.
 
-## TLS belongs to the proxy
-
-`webbridge` serves no TLS itself (one-daemon D3): a certificate, and the login
-in front of it, are the proxy's business.
-
 ## The daemon
 
-`webbridge` is the user's own daemon, not a fleet: a unix socket instead of a
-bearer token, and its agents are host processes unless they have a workspace.
+`webbridge` has one shape: the user's own daemon (one-daemon D1). It listens on
+a unix socket, and its agents are host processes unless they have a workspace,
+which runs them in a container. It serves no TLS itself (D3): a certificate, and
+whatever admits the browser, are the proxy's business, not the daemon's.
 
 ```bash
 webbridge --socket ~/.local/share/marshal/daemon/marshal.sock --web-listen unix
@@ -215,7 +212,7 @@ are never logged: the audit log records `secret_set` and
 - **Status links** (`/api/status-links`) give a revocable, read-only
   public page at `/s/<token>`. It shows the agent name, project folder
   name, status, progress, task list and the current step headline, and
-  nothing else. It needs no bearer token, is rate limited per IP, and
+  nothing else. It needs no credential, is rate limited per IP, and
   answers 404 for unknown, expired and revoked tokens alike.
 
 ## Egress proxy

@@ -3,7 +3,9 @@ package tunnels
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"marshal/internal/fleetprofile"
@@ -42,8 +44,9 @@ func statusArgv(ssh string, h fleetprofile.Host) []string {
 	return argv
 }
 
-// forwardArgv is the ssh -N command that forwards local to remote on h.
-func forwardArgv(ssh string, h fleetprofile.Host, local, remote string) []string {
+// forwardArgv is the ssh -N command that forwards local to remote on h, and
+// its preview listener to previewPort on this machine when previewAddr is set.
+func forwardArgv(ssh string, h fleetprofile.Host, local, remote string, previewPort int, previewAddr string) []string {
 	argv := []string{sshProgram(ssh), "-N"}
 	argv = append(argv, sshOptions()...)
 	argv = append(argv,
@@ -52,9 +55,22 @@ func forwardArgv(ssh string, h fleetprofile.Host, local, remote string) []string
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
 		"-L", local+":"+remote,
-		h.SSH,
 	)
+	if previewAddr != "" {
+		argv = append(argv, "-L", "127.0.0.1:"+strconv.Itoa(previewPort)+":"+bracketed(previewAddr))
+	}
+	argv = append(argv, h.SSH)
 	return argv
+}
+
+// bracketed is addr with an IPv6 host in brackets, as net.JoinHostPort writes
+// it; an address it cannot split is left as it came.
+func bracketed(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // remoteCommand is `<marshal> daemon status --json` as the remote shell reads
@@ -78,27 +94,63 @@ type statusDoc struct {
 	SchemaVersion int  `json:"schemaVersion"`
 	Answering     bool `json:"answering"`
 	Daemon        struct {
-		Socket string `json:"socket"`
+		Socket      string `json:"socket"`
+		PreviewAddr string `json:"previewAddr"`
 	} `json:"daemon"`
 }
 
-// remoteSocket reads the answering daemon's socket from a status document.
-func remoteSocket(name string, doc []byte) (string, error) {
+// remoteDaemon reads the answering daemon's socket and preview address from a
+// status document. The preview address is "" when the remote serves no
+// previews, or names one that is not loopback: the remote only ever binds
+// loopback, so a forward to anything else is not one.
+func remoteDaemon(name string, doc []byte) (socket, previewAddr string, err error) {
 	var status statusDoc
 	if err := json.Unmarshal(doc, &status); err != nil {
-		return "", fmt.Errorf("read %s's status document: %w", name, err)
+		return "", "", fmt.Errorf("read %s's status document: %w", name, err)
 	}
 	if status.SchemaVersion != 1 {
-		return "", fmt.Errorf("%s's marshal writes status schema %d; this marshal reads 1",
+		return "", "", fmt.Errorf("%s's marshal writes status schema %d; this marshal reads 1",
 			name, status.SchemaVersion)
 	}
 	if !status.Answering {
-		return "", fmt.Errorf("the daemon on %s is not answering; start it there with marshal daemon start", name)
+		return "", "", fmt.Errorf("the daemon on %s is not answering; start it there with marshal daemon start", name)
 	}
 	if status.Daemon.Socket == "" {
-		return "", fmt.Errorf("%s's daemon names no socket", name)
+		return "", "", fmt.Errorf("%s's daemon names no socket", name)
 	}
-	return status.Daemon.Socket, nil
+	return status.Daemon.Socket, loopbackAddr(status.Daemon.PreviewAddr), nil
+}
+
+// loopbackAddr is addr when its host is loopback, and "" otherwise.
+func loopbackAddr(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	switch {
+	case host == "127.0.0.1", host == "::1":
+		return net.JoinHostPort(host, port)
+	case strings.EqualFold(host, "localhost"):
+		return net.JoinHostPort(host, port)
+	}
+	return ""
+}
+
+// freeLoopbackPort answers a port free on 127.0.0.1 at the time of the call.
+func freeLoopbackPort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("find a free loopback port for the preview forward: %w", err)
+	}
+	defer listener.Close()
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("find a free loopback port for the preview forward: %s is not a TCP address", listener.Addr())
+	}
+	return addr.Port, nil
 }
 
 // socketPath is dir/<name>.sock, or an error when it is longer than

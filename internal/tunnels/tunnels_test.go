@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,9 +20,19 @@ import (
 // remoteSocketPath is the socket the scripted status document names.
 const remoteSocketPath = "/home/u/.local/share/marshal/daemon/daemon.sock"
 
-// statusDocument is `marshal daemon status --json` as a tunnel reads it.
+// statusDocument is `marshal daemon status --json` as a tunnel reads it, with
+// no preview listener.
 func statusDocument() []byte {
-	return []byte(`{"schemaVersion":1,"answering":true,"daemon":{"socket":"` + remoteSocketPath + `"}}`)
+	return statusDocumentPreviewing("")
+}
+
+// statusDocumentPreviewing is the same document with daemon.previewAddr set.
+func statusDocumentPreviewing(previewAddr string) []byte {
+	if previewAddr == "" {
+		return []byte(`{"schemaVersion":1,"answering":true,"daemon":{"socket":"` + remoteSocketPath + `"}}`)
+	}
+	return []byte(`{"schemaVersion":1,"answering":true,"daemon":{"socket":"` + remoteSocketPath +
+		`","previewAddr":"` + previewAddr + `"}}`)
 }
 
 // fixture is one test's fleet.toml, socket directory and fakes.
@@ -54,7 +65,7 @@ func newFixture(t *testing.T) *fixture {
 	f.script.startFn = func([]string) (Process, error) {
 		return f.script.addLive(), nil
 	}
-	f.probe.fn = func(string) error { return nil }
+	f.probe.fn = func(string) (string, error) { return "", nil }
 	f.cfg = Config{
 		FleetFile:  f.fleet,
 		Dir:        f.dir,
@@ -111,7 +122,7 @@ func (f *fixture) start() *running {
 
 // TestRunNeedsReportAndProbe covers the two required callbacks.
 func TestRunNeedsReportAndProbe(t *testing.T) {
-	probe := func(context.Context, string) error { return nil }
+	probe := func(context.Context, string) (string, error) { return "", nil }
 	report := func(context.Context, []contract.DaemonHost) error { return nil }
 
 	err := Run(context.Background(), Config{Probe: probe})
@@ -191,7 +202,120 @@ func TestALiveTunnelIsReported(t *testing.T) {
 		t.Fatalf("Start was called %d times, want 1", len(starts))
 	}
 	assertArgv(t, starts[0],
-		forwardArgv("", fleetprofile.Host{Name: "box", SSH: "me@box"}, wantSocket, remoteSocketPath))
+		forwardArgv("", fleetprofile.Host{Name: "box", SSH: "me@box"}, wantSocket, remoteSocketPath, 0, ""))
+
+	if h.PreviewPort != 0 {
+		t.Errorf("PreviewPort = %d, want 0 on a host that serves no previews", h.PreviewPort)
+	}
+	forwarded := forwards(starts[0])
+	if len(forwarded) != 1 {
+		t.Fatalf("the forward has %d -L arguments (%q), want only the socket's", len(forwarded), forwarded)
+	}
+}
+
+// TestALiveTunnelReportsItsPreviewPort covers a remote that serves previews:
+// the forward carries a second -L to a loopback port of this machine's, and
+// the host is reported on that port.
+func TestALiveTunnelReportsItsPreviewPort(t *testing.T) {
+	const previewAddr = "127.0.0.1:54321"
+	f := newFixture(t)
+	f.writeFleet("box", "me@box")
+	f.script.outputFn = func([]string) ([]byte, error) { return statusDocumentPreviewing(previewAddr), nil }
+	f.probe.fn = func(string) (string, error) { return previewAddr, nil }
+	f.start()
+
+	liveIdx := f.rec.wait(t, 0, hasState("box", contract.HostLive, ""))
+	report, _ := f.rec.at(liveIdx)
+	h, _ := hostNamed(report, "box")
+	if h.PreviewPort <= 0 {
+		t.Fatalf("PreviewPort = %d, want the port the preview listener is forwarded to", h.PreviewPort)
+	}
+
+	starts := f.script.startArgvs()
+	if len(starts) == 0 {
+		t.Fatal("Start was never called")
+	}
+	forwarded := forwards(starts[0])
+	if len(forwarded) != 2 {
+		t.Fatalf("the forward's -L arguments = %q, want the socket's and the preview's", forwarded)
+	}
+	want := "127.0.0.1:" + strconv.Itoa(h.PreviewPort) + ":" + previewAddr
+	if forwarded[1] != want {
+		t.Fatalf("the preview forward = %q, want %q", forwarded[1], want)
+	}
+}
+
+// TestAHostWithoutPreviewsReportsNoPort covers a daemon whose previews are off:
+// no second -L, and no reported port.
+func TestAHostWithoutPreviewsReportsNoPort(t *testing.T) {
+	f := newFixture(t)
+	f.writeFleet("box", "me@box")
+	f.start()
+
+	idx := f.rec.wait(t, 0, hasState("box", contract.HostLive, ""))
+	report, _ := f.rec.at(idx)
+	h, _ := hostNamed(report, "box")
+	if h.PreviewPort != 0 {
+		t.Fatalf("PreviewPort = %d, want 0 when the remote serves no previews", h.PreviewPort)
+	}
+	for i, argv := range f.script.startArgvs() {
+		if got := forwards(argv); len(got) != 1 {
+			t.Fatalf("forward %d's -L arguments = %q, want only the socket's", i, got)
+		}
+	}
+}
+
+// TestAMovedPreviewListenerRestartsTheTunnel covers a remote preview listener
+// that moves while the tunnel is live: the process is stopped, and the next
+// attempt forwards the address the daemon now serves.
+func TestAMovedPreviewListenerRestartsTheTunnel(t *testing.T) {
+	const (
+		first  = "127.0.0.1:54321"
+		second = "127.0.0.1:59999"
+	)
+	f := newFixture(t)
+	f.writeFleet("box", "me@box")
+	var moved atomic.Bool
+	f.script.outputFn = func([]string) ([]byte, error) {
+		if moved.Load() {
+			return statusDocumentPreviewing(second), nil
+		}
+		return statusDocumentPreviewing(first), nil
+	}
+	f.probe.fn = func(string) (string, error) {
+		if moved.Load() {
+			return second, nil
+		}
+		return first, nil
+	}
+	f.start()
+
+	live := f.rec.wait(t, 0, hasState("box", contract.HostLive, ""))
+	moved.Store(true)
+
+	// The moved listener ends the attempt, so the host is down with the move
+	// as its reason...
+	f.rec.wait(t, live+1, hasState("box", contract.HostDown, "moved its preview listener to "+second))
+	// ...and the next attempt forwards the new address.
+	deadline := time.Now().Add(5 * time.Second)
+	for f.script.startCount() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the tunnel was started %d times in 5s, want the moved listener forwarded",
+				f.script.startCount())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if p := f.script.process(0); p == nil || !p.stopped() {
+		t.Fatal("the process forwarding the old preview address was not stopped")
+	}
+	if p := f.script.process(1); p == nil || p.stopped() {
+		t.Fatal("the process forwarding the new preview address was stopped")
+	}
+	starts := f.script.startArgvs()
+	last := forwards(starts[len(starts)-1])
+	if len(last) != 2 || !strings.HasSuffix(last[1], ":"+second) {
+		t.Fatalf("the new forward's -L arguments = %q, want the preview forward to %s", last, second)
+	}
 }
 
 // TestAFailedStatusCallIsDownWithItsLine covers ssh's own message becoming the
@@ -316,7 +440,7 @@ func TestAForwardThatNeverAnswersIsStopped(t *testing.T) {
 	f.cfg.LiveWithin = 400 * time.Millisecond
 	f.cfg.Backoff = time.Second
 	f.cfg.MaxBackoff = time.Second
-	f.probe.fn = func(string) error { return errors.New("no answer") }
+	f.probe.fn = func(string) (string, error) { return "", errors.New("no answer") }
 	f.start()
 
 	f.rec.wait(t, 0, hasState("box", contract.HostDown, "did not answer"))
@@ -331,11 +455,11 @@ func TestALiveTunnelWhoseDaemonStopsIsDown(t *testing.T) {
 	f := newFixture(t)
 	f.writeFleet("box", "me@box")
 	var failing atomic.Bool
-	f.probe.fn = func(string) error {
+	f.probe.fn = func(string) (string, error) {
 		if failing.Load() {
-			return errors.New("no route to the daemon")
+			return "", errors.New("no route to the daemon")
 		}
-		return nil
+		return "", nil
 	}
 	f.start()
 
@@ -669,20 +793,20 @@ func (r *recorder) wait(t *testing.T, from int, matches func([]contract.DaemonHo
 // prober is Probe, answering what the test says and remembering the sockets.
 type prober struct {
 	mu     sync.Mutex
-	fn     func(socket string) error
+	fn     func(socket string) (string, error)
 	calls  int
 	socket []string
 }
 
-// probe asks the daemon at socket.
-func (p *prober) probe(_ context.Context, socket string) error {
+// probe asks the daemon at socket, and answers the preview address it reports.
+func (p *prober) probe(_ context.Context, socket string) (string, error) {
 	p.mu.Lock()
 	p.calls++
 	p.socket = append(p.socket, socket)
 	fn := p.fn
 	p.mu.Unlock()
 	if fn == nil {
-		return nil
+		return "", nil
 	}
 	return fn(socket)
 }
@@ -715,6 +839,17 @@ func hostNamed(hosts []contract.DaemonHost, name string) (contract.DaemonHost, b
 		}
 	}
 	return contract.DaemonHost{}, false
+}
+
+// forwards is every -L argument in an ssh argv, in order.
+func forwards(argv []string) []string {
+	var out []string
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "-L" {
+			out = append(out, argv[i+1])
+		}
+	}
+	return out
 }
 
 // hasState matches a report whose host name is in state, with a last error

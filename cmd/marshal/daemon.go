@@ -187,9 +187,12 @@ func runDaemonTunnels(ctx context.Context, args []string, stderr io.Writer) erro
 		FleetFile: fleetprofile.Path(home),
 		Dir:       filepath.Join(filepath.Dir(*socket), "hosts"),
 		Report:    daemon.NewClient(*socket).ReportHosts,
-		Probe: func(ctx context.Context, socket string) error {
-			_, err := daemon.NewClient(socket).Info(ctx)
-			return err
+		Probe: func(ctx context.Context, socket string) (string, error) {
+			info, err := daemon.NewClient(socket).Info(ctx)
+			if err != nil {
+				return "", err
+			}
+			return info.PreviewAddr, nil
 		},
 		Stderr: stderr,
 	})

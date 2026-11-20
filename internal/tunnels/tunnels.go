@@ -38,8 +38,9 @@ type Config struct {
 	// Report sends every host's state to the daemon, replacing its last
 	// report. Required.
 	Report func(ctx context.Context, hosts []contract.DaemonHost) error
-	// Probe asks the daemon at socket for GET /api/daemon. Required.
-	Probe  func(ctx context.Context, socket string) error
+	// Probe asks the daemon at socket for GET /api/daemon, and answers its
+	// preview address. Required.
+	Probe  func(ctx context.Context, socket string) (previewAddr string, err error)
 	Stderr io.Writer // where load and report failures are written; nil discards them
 	SSH    string    // the ssh binary; "" is "ssh" on PATH
 
@@ -279,7 +280,7 @@ func (r *runner) supervise(t *tunnel) {
 			// failed.
 			return
 		}
-		r.setState(t, contract.HostDown, err.Error())
+		r.setState(t, contract.HostDown, err.Error(), 0)
 		if !t.liveFrom.IsZero() && r.cfg.Now().Sub(t.liveFrom) >= liveReset {
 			// A tunnel that was live for a while is not in a failure loop.
 			delay = r.cfg.Backoff
@@ -309,7 +310,7 @@ func (r *runner) attempt(t *tunnel) error {
 	if err != nil {
 		return err
 	}
-	remote, err := remoteSocket(t.name, out)
+	remote, previewAddr, err := remoteDaemon(t.name, out)
 	if err != nil {
 		return err
 	}
@@ -318,17 +319,25 @@ func (r *runner) attempt(t *tunnel) error {
 			return fmt.Errorf(`ssh cannot forward a socket path that contains ":": %s`, path)
 		}
 	}
+	// A port of its own each attempt: one the last attempt's ssh still holds
+	// surfaces as "Address already in use", and the next attempt avoids it.
+	previewPort := 0
+	if previewAddr != "" {
+		if previewPort, err = freeLoopbackPort(); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(r.cfg.Dir, 0o700); err != nil {
 		return fmt.Errorf("make the tunnel directory %s: %w", r.cfg.Dir, err)
 	}
-	proc, err := r.cfg.Commands.Start(forwardArgv(r.cfg.SSH, t.host, local, remote))
+	proc, err := r.cfg.Commands.Start(forwardArgv(r.cfg.SSH, t.host, local, remote, previewPort, previewAddr))
 	if err != nil {
 		return err
 	}
-	if err := r.awaitLive(t, proc, local); err != nil {
+	if err := r.awaitLive(t, proc, local, previewPort); err != nil {
 		return err
 	}
-	return r.watchLive(t, proc, local)
+	return r.watchLive(t, proc, local, previewAddr, previewPort)
 }
 
 // status reads the remote daemon's status document for t's host.
@@ -350,8 +359,9 @@ func (r *runner) status(t *tunnel) ([]byte, error) {
 }
 
 // awaitLive waits for the forward to answer through the local socket, and
-// leaves it running once it does.
-func (r *runner) awaitLive(t *tunnel, proc Process, local string) error {
+// leaves it running once it does. The answer's preview address does not count
+// here: this probe only learns that the forward works.
+func (r *runner) awaitLive(t *tunnel, proc Process, local string, previewPort int) error {
 	ticker := time.NewTicker(probeInterval)
 	defer ticker.Stop()
 	deadline := time.NewTimer(r.cfg.LiveWithin)
@@ -373,9 +383,9 @@ func (r *runner) awaitLive(t *tunnel, proc Process, local string) error {
 				return proc.Err()
 			default:
 			}
-			if err := r.probe(t, local); err == nil {
+			if _, err := r.probe(t, local); err == nil {
 				t.liveFrom = r.cfg.Now()
-				r.setState(t, contract.HostLive, "")
+				r.setState(t, contract.HostLive, "", previewPort)
 				return nil
 			}
 		}
@@ -383,8 +393,9 @@ func (r *runner) awaitLive(t *tunnel, proc Process, local string) error {
 }
 
 // watchLive keeps probing a live tunnel. ssh stays up while its daemon is not
-// answering; only a forward that exits ends the attempt.
-func (r *runner) watchLive(t *tunnel, proc Process, local string) error {
+// answering; only a forward that exits, or a remote preview listener that moved
+// out from under it, ends the attempt.
+func (r *runner) watchLive(t *tunnel, proc Process, local, previewAddr string, previewPort int) error {
 	ticker := time.NewTicker(r.cfg.Check)
 	defer ticker.Stop()
 	for {
@@ -400,32 +411,56 @@ func (r *runner) watchLive(t *tunnel, proc Process, local string) error {
 				return proc.Err()
 			default:
 			}
-			if err := r.probe(t, local); err != nil {
+			addr, err := r.probe(t, local)
+			if err != nil {
 				r.setState(t, contract.HostDown,
-					fmt.Sprintf("%s's daemon stopped answering: %v", t.name, err))
+					fmt.Sprintf("%s's daemon stopped answering: %v", t.name, err), 0)
 				continue
 			}
-			r.setState(t, contract.HostLive, "")
+			if addr != previewAddr {
+				// The forward answers a listener this tunnel does not carry:
+				// the next attempt forwards the one the daemon now serves.
+				proc.Stop()
+				return fmt.Errorf("%s's daemon moved its preview listener to %s",
+					t.name, orNowhere(addr))
+			}
+			r.setState(t, contract.HostLive, "", previewPort)
 		}
 	}
 }
 
-// probe asks the daemon behind the tunnel to answer.
-func (r *runner) probe(t *tunnel, socket string) error {
+// orNowhere is addr, or "nowhere" when the daemon answered no preview address
+// where it had one.
+func orNowhere(addr string) string {
+	if addr == "" {
+		return "nowhere"
+	}
+	return addr
+}
+
+// probe asks the daemon behind the tunnel to answer, and answers the preview
+// address it reports.
+func (r *runner) probe(t *tunnel, socket string) (string, error) {
 	ctx, cancel := context.WithTimeout(t.ctx, probeTimeout)
 	defer cancel()
 	return r.cfg.Probe(ctx, socket)
 }
 
 // setState records t's state and signals the reporter when it changed. Since
-// moves only with the state, and LastError belongs to down.
-func (r *runner) setState(t *tunnel, state contract.HostState, lastErr string) {
+// moves only with the state, LastError belongs to down, and PreviewPort to
+// live.
+func (r *runner) setState(t *tunnel, state contract.HostState, lastErr string, previewPort int) {
+	port := 0
+	if state == contract.HostLive {
+		port = previewPort
+	}
 	r.mu.Lock()
-	changed := t.state.State != state || t.state.LastError != lastErr
+	changed := t.state.State != state || t.state.LastError != lastErr || t.state.PreviewPort != port
 	if t.state.State != state {
 		t.state.State = state
 		t.state.Since = r.cfg.Now().UnixMilli()
 	}
+	t.state.PreviewPort = port
 	switch state {
 	case contract.HostDown:
 		t.state.LastError = lastErr

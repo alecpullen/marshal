@@ -413,8 +413,11 @@ func TestIntegrateTargetsCapturedFeatureWorktree(t *testing.T) {
 		t.Fatalf("snapshots = %v, want one of the exact target root", h.snapshots)
 	}
 	commits, released := h.admitter.last().counts()
-	if commits != 1 || released != 0 {
-		t.Fatalf("admission = %d commits, %d releases, want it spent exactly once", commits, released)
+	// Commit marks the proof consumed; Release is what returns the admission
+	// lease. Both must happen, or the session's next policy evaluation waits
+	// forever on a lease this mutation never gave back.
+	if commits != 1 || released != 1 {
+		t.Fatalf("admission = %d commits, %d releases, want one commit and one release", commits, released)
 	}
 }
 
@@ -923,8 +926,8 @@ func TestDiscardIsExplicitAndPreservesDirtyWork(t *testing.T) {
 			t.Fatalf("discard merged something: %v", merges)
 		}
 		commits, released := h.admitter.last().counts()
-		if commits != 1 || released != 0 {
-			t.Fatalf("admission = %d commits, %d releases, want it spent once", commits, released)
+		if commits != 1 || released != 1 {
+			t.Fatalf("admission = %d commits, %d releases, want one commit and one release", commits, released)
 		}
 
 		again, err := svc.Discard(ctx, mutationFor(child), newMutationHarness().deps())

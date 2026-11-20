@@ -818,9 +818,11 @@ func (p *mutationProof) spend() error {
 }
 
 func (p *mutationProof) release() {
-	if !p.spent {
-		p.admission.Release()
-	}
+	// Release unlocks the admission lease even after Commit: Commit only marks
+	// the proof consumed. policy.Admission.Release is idempotent, so an unused
+	// proof and a spent one take this path, and a session that integrated one
+	// child can be admitted again for the next.
+	p.admission.Release()
 }
 
 func (s *Service) admitMutation(ctx context.Context, deps MutationDeps, effectKey string) (*mutationProof, error) {

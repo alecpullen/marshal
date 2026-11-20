@@ -48,3 +48,7 @@ func (p *Passthrough) CaptureCommandEnvironment(dir string) ([]string, map[strin
 func (p *Passthrough) Capabilities() Capabilities {
 	return Capabilities{Backend: "passthrough"}
 }
+
+// SupportsLinkedWorktrees reports that commands run unconfined on the host, so a
+// linked worktree's pointer into the repository's common git directory resolves.
+func (p *Passthrough) SupportsLinkedWorktrees() bool { return true }

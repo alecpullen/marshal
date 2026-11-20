@@ -48,6 +48,14 @@ func (c *Container) Capabilities() Capabilities {
 	}
 }
 
+// SupportsLinkedWorktrees reports false: the container mounts only the workspace
+// directory (see buildArgs' -v workdir:workdir:rw), while a linked worktree's
+// .git is a file pointing into the repository's common git directory outside it.
+// Git commands inside the container therefore cannot resolve the worktree, so
+// isolated dispatch refuses this backend instead of mounting extra metadata or
+// discovering the failure after a model has started.
+func (c *Container) SupportsLinkedWorktrees() bool { return false }
+
 // newContainer constructs a Container. The denySet is precomputed once and
 // reused across all Run calls; EnvDenylist / EnvAllowlist are immutable
 // after construction, so this is safe across Runs as long as Config isn't

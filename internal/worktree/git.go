@@ -145,6 +145,114 @@ func (g CLIGitOps) BranchExists(dir, branch string) bool {
 	return err == nil
 }
 
+// isObjectID reports whether s could be a git object id: a hex string long
+// enough to be a prefix. It is the argv guard the exact-commit helpers need —
+// an object id can never start with "-", so a value that passes is not an
+// option and cannot interpolate anything into git's argument list.
+func isObjectID(s string) bool {
+	if len(s) < 4 || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// RepositoryID returns the canonical absolute path of the repository's common
+// git directory. That path is the repository's identity: every worktree of one
+// repository reports the same value, while a copy, a separate clone or a
+// different repository reports its own. It is what a recorded workspace binds
+// to, so a replaced or pivoted checkout cannot pass as the recorded one.
+func (g CLIGitOps) RepositoryID(dir string) (string, error) {
+	out, err := g.run(dir, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	common := strings.TrimSpace(out)
+	if common == "" {
+		return "", fmt.Errorf("worktree git: rev-parse --git-common-dir: empty output")
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(dir, common)
+	}
+	return CanonicalPath(common), nil
+}
+
+// ResolveCommit resolves oid to the full id of the commit it names. The
+// argument must be an object id, never a ref name, so dispatch starts at an
+// exact existing commit rather than a branch that may move. ^{commit} makes
+// git refuse a tree, a blob or a tag object that does not peel to a commit.
+func (g CLIGitOps) ResolveCommit(dir, oid string) (string, error) {
+	if !isObjectID(oid) {
+		return "", fmt.Errorf("worktree git: %q is not a commit object id", oid)
+	}
+	return g.run(dir, "rev-parse", "--verify", oid+"^{commit}")
+}
+
+// CommitIDs lists the commits reachable from to but not from, newest first. It
+// is the child's candidate history: what it committed on top of its base.
+func (g CLIGitOps) CommitIDs(dir, from, to string) ([]string, error) {
+	if !isObjectID(from) || !isObjectID(to) {
+		return nil, fmt.Errorf("worktree git: rev-list needs commit object ids, got %q and %q", from, to)
+	}
+	out, err := g.runRaw(dir, "rev-list", to, "--not", from)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			ids = append(ids, line)
+		}
+	}
+	return ids, nil
+}
+
+// ChangedPaths lists the paths whose content differs between two commits.
+// -z keeps paths with spaces and newlines intact; renames report both sides,
+// because a candidate that moved a file did change both paths.
+func (g CLIGitOps) ChangedPaths(dir, from, to string) ([]string, error) {
+	if !isObjectID(from) || !isObjectID(to) {
+		return nil, fmt.Errorf("worktree git: diff needs commit object ids, got %q and %q", from, to)
+	}
+	out, err := g.runRaw(dir, "diff", "--name-only", "-z", from, to)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, field := range strings.Split(out, "\x00") {
+		if field != "" {
+			paths = append(paths, field)
+		}
+	}
+	return paths, nil
+}
+
+// IsAncestor reports whether older is an ancestor of newer (git merge-base
+// --is-ancestor). The exit code carries the answer — 0 yes, 1 no, anything
+// else a real failure — so it runs the command directly instead of through
+// run, which collapses every non-zero exit into one error.
+func (g CLIGitOps) IsAncestor(dir, older, newer string) (bool, error) {
+	if !isObjectID(older) || !isObjectID(newer) {
+		return false, fmt.Errorf("worktree git: merge-base --is-ancestor needs commit object ids, got %q and %q", older, newer)
+	}
+	cmd := exec.Command("git", "-C", dir, "merge-base", "--is-ancestor", older, newer)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("worktree git: merge-base --is-ancestor %s %s: %w: %s", older, newer, err, strings.TrimSpace(string(out)))
+}
+
 func (g CLIGitOps) WorktreeAdd(dir, path, branch, startPoint string) error {
 	_, err := g.run(dir, "worktree", "add", "-b", branch, path, startPoint)
 	return err

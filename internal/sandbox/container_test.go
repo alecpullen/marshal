@@ -795,3 +795,34 @@ func TestContainerCaptureSeparatesShellAndLauncher(t *testing.T) {
 		t.Fatalf("captured shell environment did not reach the image: %v", args)
 	}
 }
+
+// TestLinkedWorktreeCapabilityIsPerBackend pins which backends can host a linked
+// git worktree. A linked worktree's .git is a file pointing into the
+// repository's common git directory, which the container's workspace-only mount
+// does not include, while restricted and passthrough execute on the host. The
+// fixture constructs the container directly, so it needs no running runtime.
+func TestLinkedWorktreeCapabilityIsPerBackend(t *testing.T) {
+	container := newContainer(Config{Backend: "container"}, "docker", "/bin/true", nil)
+	if container.SupportsLinkedWorktrees() {
+		t.Fatal("the container backend mounts only the workspace, so a linked worktree cannot resolve its git directory")
+	}
+	if !newRestricted(Config{Backend: "restricted"}, nil).SupportsLinkedWorktrees() {
+		t.Fatal("the restricted backend executes on the host and must permit a linked worktree")
+	}
+	if !(&Passthrough{}).SupportsLinkedWorktrees() {
+		t.Fatal("the passthrough backend executes on the host and must permit a linked worktree")
+	}
+	// Support is opt-in: a runner that does not implement the capability
+	// supports nothing, so isolated dispatch refuses instead of assuming a host.
+	if native.SupportsLinkedWorktrees(noCapabilityRunner{}) {
+		t.Fatal("a runner without the capability was reported as supporting linked worktrees")
+	}
+}
+
+// noCapabilityRunner is a command runner that states nothing about linked
+// worktrees.
+type noCapabilityRunner struct{}
+
+func (noCapabilityRunner) Run(context.Context, native.CommandRequest) (native.CommandResult, error) {
+	return native.CommandResult{}, nil
+}

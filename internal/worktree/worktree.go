@@ -41,6 +41,13 @@ type SetupPlan struct {
 	Hooks []config.WorktreeSetupHook
 }
 
+// WorktreePath is where a branch's checkout lives under worktreesDir. The
+// branch is flattened so a slash-named branch is one directory, and callers
+// that must record a path before creating anything derive it the same way.
+func WorktreePath(worktreesDir, branch string) string {
+	return filepath.Join(worktreesDir, strings.ReplaceAll(branch, "/", "-"))
+}
+
 // EnsureWorktree returns the run's worktree, creating it on the first call
 // and reusing it on resume. A branch that exists without its worktree is an
 // error the human must resolve: silently reusing the branch would append a
@@ -50,7 +57,7 @@ type SetupPlan struct {
 // configured hooks are returned in Worktree.SetupPlan for the caller to
 // execute (hook execution needs a CommandRunner this package cannot import).
 func EnsureWorktree(git GitOps, repoRoot, worktreesDir, branch, startRef string, setup WorktreeSetup) (Worktree, error) {
-	path := filepath.Join(worktreesDir, strings.ReplaceAll(branch, "/", "-"))
+	path := WorktreePath(worktreesDir, branch)
 	if git.BranchExists(repoRoot, branch) {
 		existing, err := git.WorktreeList(repoRoot)
 		if err != nil {

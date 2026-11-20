@@ -314,6 +314,32 @@ func init() {
 	migrations = append(migrations, migrateMemoryContentHash)
 	migrations = append(migrations, migrateMemoryScopes)
 	migrations = append(migrations, migrateMessageImages)
+	migrations = append(migrations, migrateSubagentWorkspaces)
+}
+
+// migrateSubagentWorkspaces (version 5) adds the owner-scoped table of subagent
+// workspace records. One row is one owner's task: (owner, task_key) is the
+// primary key, and (owner, invocation_id) is unique so one logical dispatch
+// cannot record a second workspace. The whole versioned record lives in
+// record_json; revision is a column so a compare-and-swap is one conditional
+// UPDATE. The owner references agent_sessions: a record belongs to the session
+// that owns the work.
+func migrateSubagentWorkspaces(tx *sql.Tx) error {
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS session_subagent_workspaces (
+			owner_session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+			task_key TEXT NOT NULL,
+			invocation_id TEXT NOT NULL,
+			revision INTEGER NOT NULL,
+			record_json TEXT NOT NULL,
+			PRIMARY KEY (owner_session_id, task_key),
+			UNIQUE (owner_session_id, invocation_id)
+		)`); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_session_subagent_workspaces_invocation
+		ON session_subagent_workspaces(owner_session_id, invocation_id)`)
+	return err
 }
 
 // migrateMemoryScopes (version 3) adds scope, owner and provenance columns

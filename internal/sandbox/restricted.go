@@ -56,6 +56,11 @@ func (r *Restricted) Capabilities() Capabilities {
 	}
 }
 
+// SupportsLinkedWorktrees reports that commands run on the host filesystem, so
+// a linked worktree — whose .git points into the repository's common git
+// directory outside the worktree root — works normally.
+func (r *Restricted) SupportsLinkedWorktrees() bool { return true }
+
 func (r *Restricted) Run(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
 	if strings.TrimSpace(req.Command) == "" {
 		return native.CommandResult{Meta: metaFor(r.Capabilities(), r.cfg)}, errEmptyCommand

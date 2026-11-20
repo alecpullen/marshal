@@ -24,8 +24,11 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/buildinfo"
 	"marshal/internal/daemon"
+	"marshal/internal/fleetprofile"
 	"marshal/internal/llm/provider"
 	"marshal/internal/repo"
+	"marshal/internal/tunnels"
+	"marshal/web/bridge/contract"
 )
 
 // daemonClient is the part of daemon.Client that `status`, `pin` and
@@ -64,7 +67,7 @@ var daemonStartTimeout = 5 * time.Second
 
 // runDaemon implements
 // `marshal daemon <install|start|stop|status|restart|uninstall>`, and
-// dispatches `refresh` as well.
+// dispatches `refresh` and `tunnels` as well.
 //
 // It owns the user-facing half of the local daemon: it resolves the binaries
 // and paths decision 10 names, renders them into a unit through
@@ -72,9 +75,9 @@ var daemonStartTimeout = 5 * time.Second
 // It never writes a unit itself and never runs a service-manager command —
 // that is all daemon.Manager, behind the daemonManagerFor seam.
 //
-// `refresh` is dispatched but left out of the usage hint: the daemon's unit
-// runs it, so it is an internal half of the daemon rather than a subcommand a
-// user is meant to type.
+// `refresh` and `tunnels` are dispatched but left out of the usage hint: the
+// daemon's unit runs them, so they are the internal halves of the daemon
+// rather than subcommands a user is meant to type.
 //
 // The I/O shape follows runSnapshots exactly (ctx, args, stdin, stdout,
 // stderr) so main.go's dispatch is uniform and tests can substitute streams.
@@ -104,6 +107,8 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return runDaemonSpawn(ctx, rest, stdout, stderr)
 	case "refresh":
 		return runDaemonRefresh(ctx, rest, stderr)
+	case "tunnels":
+		return runDaemonTunnels(ctx, rest, stderr)
 	default:
 		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|restart|join-token|token|pin|unpin|spawn|uninstall)", sub)
 	}
@@ -148,6 +153,52 @@ func runDaemonRefresh(ctx context.Context, args []string, stderr io.Writer) erro
 		HomeDir: home,
 		Auth:    provider.DefaultAuthResolver(),
 		Logger:  logger,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// tunnels
+// ---------------------------------------------------------------------------
+
+// tunnelsRunner is the helper's body; tests replace it.
+var tunnelsRunner = tunnels.Run
+
+// runDaemonTunnels implements `marshal daemon tunnels --socket PATH`: it runs
+// the SSH tunnel helper the daemon's unit starts, which keeps one forward per
+// fleet.toml host to that host's daemon socket and reports each one's state
+// back through the daemon's own socket.
+//
+// Usage: marshal daemon tunnels --socket PATH
+func runDaemonTunnels(ctx context.Context, args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("daemon tunnels", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	socket := fs.String("socket", "", "the daemon's socket, which the helper reports hosts to (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if rest := fs.Args(); len(rest) != 0 {
+		return fmt.Errorf("marshal daemon tunnels: unexpected argument %q", rest[0])
+	}
+	if *socket == "" {
+		return errors.New("marshal daemon tunnels: --socket is required")
+	}
+	home, err := daemonHome()
+	if err != nil {
+		return err
+	}
+	// Decision 9, as for refresh: the daemon stops the helper by signalling
+	// it, and SIGTERM from the service manager is an orderly stop.
+	ctx, stop := daemonSignalContext(ctx)
+	defer stop()
+	return tunnelsRunner(ctx, tunnels.Config{
+		FleetFile: fleetprofile.Path(home),
+		Dir:       filepath.Join(filepath.Dir(*socket), "hosts"),
+		Report:    daemon.NewClient(*socket).ReportHosts,
+		Probe: func(ctx context.Context, socket string) error {
+			_, err := daemon.NewClient(socket).Info(ctx)
+			return err
+		},
+		Stderr: stderr,
 	})
 }
 
@@ -568,9 +619,10 @@ func runDaemonToken(args []string, stdout io.Writer) error {
 	return nil
 }
 
-// readDaemonJoinSecret reads the join secret the way readFleetToken reads a
-// fleet token: without echo and behind a prompt on a terminal, else one line
-// from stdin, so a password manager can pipe it in.
+// readDaemonJoinSecret reads the join secret without echo and behind a prompt
+// on a terminal, else one line from stdin, so a password manager can pipe it
+// in — the care `marshal daemon token` takes with the daemon's own token file,
+// which is never printed to a terminal either.
 func readDaemonJoinSecret(stdin io.Reader, stderr io.Writer) (string, error) {
 	var raw []byte
 	if f, ok := stdin.(*os.File); ok && term.IsTerminal(f.Fd()) {
@@ -698,6 +750,9 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 	fmt.Fprintln(stdout, daemonRefreshLine(info))
 	if line, ok := daemonJoinLine(info); ok {
 		fmt.Fprintln(stdout, line)
+	}
+	for _, host := range info.Hosts {
+		fmt.Fprintln(stdout, daemonHostLine(host))
 	}
 	for _, child := range info.Children {
 		fmt.Fprintln(stdout, daemonChildLine(child, marshalVersion))
@@ -962,6 +1017,20 @@ func daemonJoinLine(info daemon.Info) (string, bool) {
 		line += " (" + lastErr + ")"
 	}
 	return line, true
+}
+
+// daemonHostLine renders one host's tunnel for `marshal daemon status`
+// (one-daemon D7): where the tunnel goes, its state, and — when it is down —
+// its last error, which is why the reader consulted this line, as
+// daemonJoinLine does for the relay.
+func daemonHostLine(h daemon.HostInfo) string {
+	line := fmt.Sprintf("host %s (%s): %s", h.Name, h.SSH, h.State)
+	if h.State == contract.HostDown {
+		if lastErr := strings.TrimSpace(h.LastError); lastErr != "" {
+			line += " (" + lastErr + ")"
+		}
+	}
+	return line
 }
 
 // restartCount is the noun for n restarts.

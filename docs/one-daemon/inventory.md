@@ -206,6 +206,18 @@ Plan: [plans/2026-11-20-od-6-remote-previews-plan.md](plans/2026-11-20-od-6-remo
 | `cmd/marshal/daemon.go` | — | Reshape | The host line names its preview port; the tunnels helper's `Probe` answers the preview address. |
 | `app/lib/src/client/bridge_client.dart`, `host_discovery_io.dart`, `daemon/status.dart` | — | Reshape | `BridgeClient.previewOrigin`, sent with every preview request for a remote host. |
 
+## Plan 7 — Adding and removing hosts from a browser (D15, open question 4)
+
+Plan: [plans/2026-11-20-od-7-hosts-from-a-browser-plan.md](plans/2026-11-20-od-7-hosts-from-a-browser-plan.md).
+
+| File | Lines | Action | What |
+|---|---:|---|---|
+| `internal/tunnels/ssh.go` | — | Reshape | `ForwardAgent=no`, `ForwardX11=no`, `PermitLocalCommand=no` and `RemoteCommand=none` on every tunnel command. |
+| `web/bridge/contract/daemon.go` | — | Add | `HostAdd`. |
+| `web/bridge/hostedit.go` | — | Add | `POST /api/hosts` and `DELETE /api/hosts/{name}`, running `marshal fleet add` and `remove`, one at a time. |
+| `app/lib/src/client/fleet_profiles.dart` | — | Reshape | One implementation over the home daemon's `BridgeClient`. `fleet_profiles_io.dart` and `fleet_profiles_stub.dart` are deleted. |
+| `app/lib/src/ui/settings/hosts_section.dart` | — | Reshape | A browser's add row is real, and its read-only note goes. |
+
 ## Stays as it is
 
 - The socket, its peer check and every socket-only route.

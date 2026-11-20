@@ -11,7 +11,7 @@ decisions 3, 5 and 6 (tokens) and 8 (discovery); the Studio's sign-in handover
 (`compose.yaml`, `build/Dockerfile.bridge`).
 Keeps: P7's rule that the client is the only place hosts are merged.
 Inventory of what changes: [`inventory.md`](inventory.md).
-Status: proposed 2026-11-20. Plans 1–6 approved 2026-11-20.
+Status: proposed 2026-11-20. Plans 1–7 approved 2026-11-20.
 
 Anchors are relative to `main` at `bbdc4486`.
 
@@ -308,7 +308,10 @@ or similar.
 - A host's detail shows its state, its last error and **Remove**.
 - There is no Sign in, no Sign out, no CA file and no token field.
 - In a browser the section is read-only, with the note "add hosts with
-  `marshal fleet add` on the machine this daemon runs on".
+  `marshal fleet add` on the machine this daemon runs on". Plan 7 reverses
+  this (open question 4). There, both builds add and remove hosts through
+  their home daemon's API: `POST /api/hosts` and `DELETE /api/hosts/<name>`
+  run `marshal fleet add` and `remove` on the daemon's machine.
 
 ## Assumptions
 
@@ -376,7 +379,13 @@ or similar.
    authenticate is `down` with ssh's own message.
 4. **Adding a host from a browser.** It would need a route on the web listener
    that edits `fleet.toml` on the daemon's machine. Recommendation: no;
-   D15 keeps the browser read-only.
+   D15 keeps the browser read-only. Reversed on 2026-11-20 at the user's
+   request, in plan 7:
+   - the daemon runs `marshal fleet add` and `remove` for the routes;
+   - the native app uses the same routes, and runs no `marshal fleet`;
+   - the tunnel's `ssh` refuses agent and X11 forwarding, local commands and
+     a configured remote command, so a host added this way gets nothing but
+     a tunnel.
 
 ## Plans
 
@@ -416,3 +425,8 @@ same change: [`inventory.md`](inventory.md) lists the files.
    [plans/2026-11-20-od-6-remote-previews-plan.md](plans/2026-11-20-od-6-remote-previews-plan.md).
    Forward the remote preview listener over the tunnel, and let the caller
    name its way in. It needs plans 2 and 3, and not 4 or 5.
+7. **Adding and removing hosts from a browser** (D15, open question 4):
+   [plans/2026-11-20-od-7-hosts-from-a-browser-plan.md](plans/2026-11-20-od-7-hosts-from-a-browser-plan.md).
+   `POST /api/hosts` and `DELETE /api/hosts/<name>` run `marshal fleet` on
+   the daemon's machine, both builds use them, and the tunnel's `ssh` is
+   hardened. It needs plans 2 and 3 (with plan 3's guard).

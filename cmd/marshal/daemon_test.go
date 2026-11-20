@@ -16,6 +16,8 @@ import (
 
 	"marshal/internal/app"
 	"marshal/internal/daemon"
+	"marshal/internal/fleetprofile"
+	"marshal/internal/tunnels"
 )
 
 // updateGolden rewrites the checked-in fixtures a currency test compares
@@ -1995,5 +1997,123 @@ func TestDaemonStatusPrintsTheJoin(t *testing.T) {
 				t.Errorf("line 5 = %q, want the relay line %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// fakeTunnelsRunner replaces the tunnels helper's body and answers its call
+// count, as fakeOAuthRefreshRunner does for refresh.
+func fakeTunnelsRunner(t *testing.T, run func(context.Context, tunnels.Config) error) *int {
+	t.Helper()
+	old := tunnelsRunner
+	t.Cleanup(func() { tunnelsRunner = old })
+	calls := 0
+	tunnelsRunner = func(ctx context.Context, cfg tunnels.Config) error {
+		calls++
+		return run(ctx, cfg)
+	}
+	return &calls
+}
+
+// TestDaemonTunnelsRunsTheHelperOnTheSocket: `marshal daemon tunnels` runs the
+// helper on the socket it was given, with fleet.toml under the resolved home
+// and its tunnel sockets in the hosts directory beside that socket.
+func TestDaemonTunnelsRunsTheHelperOnTheSocket(t *testing.T) {
+	home := daemonTestEnv(t)
+
+	var got tunnels.Config
+	calls := fakeTunnelsRunner(t, func(_ context.Context, cfg tunnels.Config) error {
+		got = cfg
+		return nil
+	})
+
+	socket := filepath.Join(home, "run", "daemon.sock")
+	var stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"tunnels", "--socket", socket},
+		strings.NewReader(""), io.Discard, &stderr); err != nil {
+		t.Fatalf("runDaemon tunnels: %v\nstderr: %s", err, stderr.String())
+	}
+	if *calls != 1 {
+		t.Fatalf("the tunnels helper ran %d times, want once", *calls)
+	}
+	if want := fleetprofile.Path(home); got.FleetFile != want {
+		t.Errorf("FleetFile = %q, want the fleet file under the test home %q", got.FleetFile, want)
+	}
+	if want := filepath.Join(filepath.Dir(socket), "hosts"); got.Dir != want {
+		t.Errorf("Dir = %q, want %q", got.Dir, want)
+	}
+	if got.Report == nil {
+		t.Error("Report is nil: the helper has nowhere to send its hosts")
+	}
+	if got.Probe == nil {
+		t.Error("Probe is nil: the helper cannot tell a live tunnel from a silent one")
+	}
+	if got.Stderr != &stderr {
+		t.Errorf("Stderr = %v, want the command's own stderr", got.Stderr)
+	}
+}
+
+// TestDaemonTunnelsNeedsTheSocket: the daemon's socket is how the helper
+// reports what each tunnel is doing, so without it the helper never runs.
+func TestDaemonTunnelsNeedsTheSocket(t *testing.T) {
+	daemonTestEnv(t)
+	calls := fakeTunnelsRunner(t, func(context.Context, tunnels.Config) error {
+		t.Error("the tunnels helper ran without --socket")
+		return nil
+	})
+
+	err := runDaemon(context.Background(), []string{"tunnels"},
+		strings.NewReader(""), io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("tunnels without --socket succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "--socket is required") {
+		t.Errorf("error = %q, want it to say --socket is required", err)
+	}
+	if *calls != 0 {
+		t.Errorf("the tunnels helper ran %d times, want none", *calls)
+	}
+}
+
+// TestDaemonStatusListsTheHosts: the text status gives one line per host the
+// tunnel helper reports, and a host that is down carries its last error on
+// that line.
+func TestDaemonStatusListsTheHosts(t *testing.T) {
+	daemonTestEnv(t)
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("state = running\npid = 4242\n"), nil
+	})
+	doc := `{"version":"1.0.0","profile":"local","pid":4242,"startedAt":1700000000000,"hosts":[` +
+		`{"name":"box","ssh":"box.example.com","state":"live","socket":"/tmp/hosts/box.sock"},` +
+		`{"name":"gpu","ssh":"gpu.example.com","state":"down","socket":"/tmp/hosts/gpu.sock",` +
+		`"lastError":"ssh: connect to host gpu.example.com port 22: Connection refused"}]}`
+	var info daemon.Info
+	if err := json.Unmarshal([]byte(doc), &info); err != nil {
+		t.Fatalf("unmarshal the daemon document: %v", err)
+	}
+	fakeDaemonSocket(t, fakeDaemonClient{info: info})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"status"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runDaemon status: %v\nstderr: %s", err, stderr.String())
+	}
+
+	want := []string{
+		"host box (box.example.com): live",
+		"host gpu (gpu.example.com): down (ssh: connect to host gpu.example.com port 22: Connection refused)",
+	}
+	var hostLines []string
+	for _, line := range strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n") {
+		if strings.HasPrefix(line, "host ") {
+			hostLines = append(hostLines, line)
+		}
+	}
+	if len(hostLines) != len(want) {
+		t.Fatalf("status printed %d host lines, want %d:\n%s", len(hostLines), len(want), stdout.String())
+	}
+	for i, line := range want {
+		if hostLines[i] != line {
+			t.Errorf("host line %d = %q, want %q", i+1, hostLines[i], line)
+		}
 	}
 }

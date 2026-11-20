@@ -3,153 +3,11 @@ package daemon
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
-
-// enrollmentStub is a bridge's enrollment route as a server profile serves it:
-// behind the shared bearer token, answering the connected body this client
-// reads. It records the Authorization header of every request it answers.
-func enrollmentStub(t *testing.T, wantToken string) (http.Handler, func() []string) {
-	t.Helper()
-	var (
-		mu   sync.Mutex
-		seen []string
-	)
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != marshalEnrollPath {
-			http.NotFound(w, r)
-			return
-		}
-		if r.Method != http.MethodPost {
-			t.Errorf("enrollment method = %s, want POST", r.Method)
-		}
-		auth := r.Header.Get("Authorization")
-		mu.Lock()
-		seen = append(seen, auth)
-		mu.Unlock()
-		if wantToken != "" && auth != "Bearer "+wantToken {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"state":"connected","instanceId":%q,"generation":"7:8",`+
-			`"projectId":"project-1","sessionId":"s1","token":"scoped-credential",`+
-			`"expiresAt":"2100-01-01T00:00:00Z"}`, "https://studio.example")
-	})
-	return handler, func() []string {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]string(nil), seen...)
-	}
-}
-
-// TestMarshalEnrollmentRemoteRequiresAuth proves an explicitly configured remote
-// enrolls over its authenticated TLS path or not at all: with no token source
-// there is nothing to authenticate with, and the client reports unsupported
-// rather than sending an unauthenticated request — or falling back to the local
-// socket's credential.
-func TestMarshalEnrollmentRemoteRequiresAuth(t *testing.T) {
-	serverTLS, trustedTLS, _ := attachCertificates(t)
-	handler, seen := enrollmentStub(t, "remote-token")
-	srv := httptest.NewUnstartedServer(handler)
-	srv.TLS = serverTLS
-	srv.StartTLS()
-	t.Cleanup(srv.Close)
-	base := srv.URL
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// No token source at all: unsupported, and nothing is dialled.
-	client, err := Remote(base, trustedTLS, nil)
-	if err != nil {
-		t.Fatalf("Remote(): %v", err)
-	}
-	enrollment, err := client.EnrollMarshal(ctx, "/work/one", "s1")
-	if !errors.Is(err, ErrMarshalUnsupported) {
-		t.Fatalf("a remote without a token source: err = %v, want unsupported", err)
-	}
-	if enrollment.Status.State != MarshalStateUnsupported {
-		t.Fatalf("state = %q, want %q", enrollment.Status.State, MarshalStateUnsupported)
-	}
-	if enrollment.Token != "" {
-		t.Fatal("an unauthenticated remote minted a credential")
-	}
-	if got := seen(); len(got) != 0 {
-		t.Fatalf("the remote was sent %d requests with no credential, want none", len(got))
-	}
-
-	// A token source that yields nothing is the same answer.
-	empty, err := Remote(base, trustedTLS, func(context.Context) (string, error) { return "", nil })
-	if err != nil {
-		t.Fatalf("Remote(): %v", err)
-	}
-	if _, err := empty.EnrollMarshal(ctx, "/work/one", "s1"); !errors.Is(err, ErrMarshalUnsupported) {
-		t.Fatalf("an empty token: err = %v, want unsupported", err)
-	}
-	if got := seen(); len(got) != 0 {
-		t.Fatalf("the remote was sent %d requests with an empty token, want none", len(got))
-	}
-
-	// A token source that fails is unsupported too, not an unauthenticated try.
-	failing, err := Remote(base, trustedTLS, func(context.Context) (string, error) {
-		return "", errors.New("keychain locked")
-	})
-	if err != nil {
-		t.Fatalf("Remote(): %v", err)
-	}
-	if _, err := failing.EnrollMarshal(ctx, "/work/one", "s1"); !errors.Is(err, ErrMarshalUnsupported) {
-		t.Fatalf("a failing token source: err = %v, want unsupported", err)
-	}
-	if got := seen(); len(got) != 0 {
-		t.Fatalf("the remote was sent %d requests with a failing token, want none", len(got))
-	}
-
-	// With a token the same remote enrolls, and the credential is the bridge's.
-	authed, err := Remote(base, trustedTLS, func(context.Context) (string, error) { return "remote-token", nil })
-	if err != nil {
-		t.Fatalf("Remote(): %v", err)
-	}
-	enrollment, err = authed.EnrollMarshal(ctx, "/work/one", "s1")
-	if err != nil {
-		t.Fatalf("EnrollMarshal(): %v", err)
-	}
-	if enrollment.Status.State != MarshalStateConnected || enrollment.Token != "scoped-credential" {
-		t.Fatalf("enrollment = %+v", enrollment)
-	}
-	if enrollment.Status.ProjectID != "project-1" || enrollment.Status.InstanceID != "https://studio.example" {
-		t.Fatalf("status = %+v", enrollment.Status)
-	}
-	if !enrollment.ExpiresAt.Equal(time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)) {
-		t.Fatalf("expiry = %v", enrollment.ExpiresAt)
-	}
-	seenNow := seen()
-	if len(seenNow) != 1 || seenNow[0] != "Bearer remote-token" {
-		t.Fatalf("the bridge read %v, want one authenticated request", seenNow)
-	}
-
-	// A server profile that does not serve enrollment is unsupported: the
-	// client does not retry over a broader path.
-	bare := httptest.NewUnstartedServer(http.NotFoundHandler())
-	bare.TLS = serverTLS
-	bare.StartTLS()
-	t.Cleanup(bare.Close)
-	unsupported, err := Remote(bare.URL, trustedTLS, func(context.Context) (string, error) { return "remote-token", nil })
-	if err != nil {
-		t.Fatalf("Remote(): %v", err)
-	}
-	if _, err := unsupported.EnrollMarshal(ctx, "/work/one", "s1"); !errors.Is(err, ErrMarshalUnsupported) {
-		t.Fatalf("a bridge without the route: err = %v, want unsupported", err)
-	}
-}
 
 // TestMarshalEnrollmentAmbiguousOrOffline proves discovery never guesses and
 // never fails the session that asked: two configured instances are ambiguous
@@ -157,7 +15,7 @@ func TestMarshalEnrollmentRemoteRequiresAuth(t *testing.T) {
 // an absent daemon is a status rather than an error anyone has to handle.
 func TestMarshalEnrollmentAmbiguousOrOffline(t *testing.T) {
 	local := MarshalInstance{ID: "/state/daemon/marshal.sock", Generation: "1:2"}
-	remote := MarshalInstance{ID: "https://studio.example", Generation: "3:4", Remote: true}
+	remote := MarshalInstance{ID: "https://studio.example", Generation: "3:4"}
 
 	// Two instances and no selection: nothing is enrolled, and the candidates
 	// are not guessed between.
@@ -236,7 +94,7 @@ func TestMarshalEnrollmentAmbiguousOrOffline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DiscoverMarshal(): %v", err)
 	}
-	if instance.ID != local.ID || instance.Generation != "99:1700000000000" || instance.Remote {
+	if instance.ID != local.ID || instance.Generation != "99:1700000000000" {
 		t.Fatalf("instance = %+v", instance)
 	}
 	if resolved, err := ResolveMarshalInstance([]MarshalInstance{instance}, ""); err != nil || resolved.Generation != instance.Generation {

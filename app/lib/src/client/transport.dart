@@ -1,14 +1,9 @@
 import 'dart:async';
 
 // The implementation is chosen when the app is compiled, not at run time: a
-// native build gets the unix socket and HTTPS transports, and a platform with
-// neither gets the stub that refuses both.
+// native build gets the unix socket transport, and a platform without one gets
+// the stub that refuses it.
 import 'transport_stub.dart' if (dart.library.io) 'transport_io.dart' as impl;
-
-/// A server profile's bearer token, resolved when a request needs one: a
-/// `token_cmd` runs, or the keychain is read, at that moment rather than at
-/// startup.
-typedef TokenProvider = Future<String> Function();
 
 /// One request to a bridge route.
 class Request {
@@ -101,11 +96,3 @@ abstract interface class Transport {
 
 /// Opens the transport that reaches a local daemon over its unix socket.
 Transport unixTransport(String socketPath) => impl.unixTransport(socketPath);
-
-/// Opens the transport that reaches a server profile: its origin, its bearer
-/// token, and the CA file its profile names when it names one.
-Transport serverTransport(
-  Uri base, {
-  required TokenProvider token,
-  String? caFile,
-}) => impl.serverTransport(base, token: token, caFile: caFile);

@@ -175,9 +175,8 @@ func NewJoiner(cfg JoinConfig, h http.Handler) (*Joiner, error) {
 }
 
 // joinURL applies fleet.toml's url rule to raw: an origin, https, or http on a
-// loopback host (D12). web/ is standard library only, so internal/fleetprofile's
-// checkURL cannot be imported: the rule is copied here, as the bridge copies
-// every other rule it shares with it.
+// loopback host (D12). web/ is standard library only, so the rule is stated
+// here rather than imported from internal/fleetprofile.
 func joinURL(raw string) (*url.URL, error) {
 	bad := func(format string, args ...any) error {
 		return fmt.Errorf("join url %q: %s", raw, fmt.Sprintf(format, args...))
@@ -234,10 +233,11 @@ func joinDialAddr(u *url.URL) string {
 	return net.JoinHostPort(u.Hostname(), port)
 }
 
-// joinTLSConfig is the client TLS configuration a join dials with, built as
-// fleetprofile.TLSConfig builds a profile's: the system roots kept and every
-// certificate in caFile added to them, TLS 1.2 the minimum, and http/1.1 the
-// only protocol offered, so the relay can take the connection over (D13).
+// joinTLSConfig is the client TLS configuration a join dials with, built here
+// rather than imported (web/ is standard library only): the system roots kept
+// and every certificate in caFile added to them, TLS 1.2 the minimum, and
+// http/1.1 the only protocol offered, so the relay can take the connection
+// over (D13).
 func joinTLSConfig(u *url.URL, caFile string) (*tls.Config, error) {
 	cfg := &tls.Config{
 		MinVersion: tls.VersionTLS12,

@@ -93,6 +93,7 @@ class DaemonInfo {
     required this.projects,
     required this.children,
     this.socket = '',
+    this.hosts = const [],
   });
 
   final String version;
@@ -102,6 +103,10 @@ class DaemonInfo {
   /// The daemon's socket, which a client dials to reach it (F1 decision 4:
   /// the app reads this rather than computing the path).
   final String socket;
+
+  /// The hosts the daemon keeps a tunnel to, which is every host this app can
+  /// reach beyond the daemon itself (one-daemon D9).
+  final List<DaemonHost> hosts;
 
   factory DaemonInfo.fromJson(Map<String, dynamic> json) => DaemonInfo(
     version: json['version'] as String? ?? '',
@@ -115,6 +120,9 @@ class DaemonInfo {
         .map((e) => DaemonChild.fromJson(e as Map<String, dynamic>))
         .toList(),
     socket: json['socket'] as String? ?? '',
+    hosts: ((json['hosts'] as List<dynamic>?) ?? const [])
+        .map((e) => DaemonHost.fromJson(e as Map<String, dynamic>))
+        .toList(),
   );
 }
 
@@ -134,5 +142,40 @@ class DaemonChild {
     root: json['root'] as String? ?? '',
     version: json['version'] as String? ?? '',
     pinned: json['pinned'] as bool? ?? false,
+  );
+}
+
+/// DaemonHost is one host the daemon keeps a tunnel to, as its status document
+/// lists it (one-daemon D7, D9).
+///
+/// [`socket`] is this machine's end of that tunnel, which is what a client
+/// dials to reach the host; [`state`] is the tunnel's state in the daemon's own
+/// words, and [`lastError`] is why it last failed, when it did.
+class DaemonHost {
+  const DaemonHost({
+    required this.name,
+    required this.ssh,
+    required this.state,
+    required this.socket,
+    this.lastError = '',
+    this.since = 0,
+  });
+
+  final String name;
+  final String ssh;
+  final String state;
+  final String socket;
+  final String lastError;
+
+  /// Unix milliseconds: when [`state`] last changed.
+  final int since;
+
+  factory DaemonHost.fromJson(Map<String, dynamic> json) => DaemonHost(
+    name: json['name'] as String? ?? '',
+    ssh: json['ssh'] as String? ?? '',
+    state: json['state'] as String? ?? '',
+    socket: json['socket'] as String? ?? '',
+    lastError: json['lastError'] as String? ?? '',
+    since: json['since'] as int? ?? 0,
   );
 }

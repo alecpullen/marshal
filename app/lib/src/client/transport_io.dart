@@ -8,15 +8,6 @@ import 'transport.dart';
 /// host the base URL names (internal/daemon/client.go does the same).
 Transport unixTransport(String socketPath) => _UnixTransport(socketPath);
 
-/// A server profile's transport: [base] is its origin, and every request
-/// carries `Authorization: Bearer` the token [token] resolves. [caFile], when
-/// the profile names one, joins the trusted roots for the handshake.
-Transport serverTransport(
-  Uri base, {
-  required TokenProvider token,
-  String? caFile,
-}) => _ServerTransport(base, token: token, caFile: caFile);
-
 /// The URI one request goes to.
 Uri _uri(Uri base, Request request) => base.replace(
   path: request.path,
@@ -26,7 +17,7 @@ Uri _uri(Uri base, Request request) => base.replace(
 /// Sets the headers and the body a request carries.
 HttpClientRequest _writeBody(HttpClientRequest httpRequest, Request request) {
   // The route's own headers, after the transport's: a conditional write names
-  // If-Match here, and the bearer token above is left alone.
+  // If-Match here, and it must survive a body being written too.
   for (final MapEntry(:key, :value) in request.headers.entries) {
     httpRequest.headers.set(key, value);
   }
@@ -93,60 +84,6 @@ class _UnixTransport implements Transport {
     final httpRequest = await client.openUrl(
       request.method,
       _uri(_base, request),
-    );
-    return _writeBody(httpRequest, request).close();
-  }
-
-  @override
-  Future<Response> send(Request request) async {
-    final client = _client();
-    try {
-      return await _read(await _open(client, request));
-    } finally {
-      client.close();
-    }
-  }
-
-  @override
-  Stream<String> lines(Request request) async* {
-    final client = _client();
-    try {
-      yield* _readLines(await _open(client, request));
-    } finally {
-      client.close();
-    }
-  }
-}
-
-class _ServerTransport implements Transport {
-  _ServerTransport(this.base, {required this.token, this.caFile});
-
-  final Uri base;
-  final TokenProvider token;
-  final String? caFile;
-
-  HttpClient _client() {
-    if (base.scheme != 'https') {
-      return HttpClient();
-    }
-    final context = SecurityContext(withTrustedRoots: true);
-    final file = caFile;
-    if (file != null) {
-      context.setTrustedCertificates(file);
-    }
-    return HttpClient(context: context);
-  }
-
-  Future<HttpClientResponse> _open(HttpClient client, Request request) async {
-    final httpRequest = await client.openUrl(
-      request.method,
-      _uri(base, request),
-    );
-    // Resolved here, per request: a token_cmd runs when the bridge is asked,
-    // not when the client is built.
-    httpRequest.headers.set(
-      HttpHeaders.authorizationHeader,
-      'Bearer ${await token()}',
     );
     return _writeBody(httpRequest, request).close();
   }

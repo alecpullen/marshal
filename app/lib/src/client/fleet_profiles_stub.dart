@@ -17,11 +17,7 @@ class _BrowserFleetProfiles implements FleetProfiles {
   bool get supported => false;
 
   @override
-  Future<void> add(String name, Uri url, {String? caFile}) =>
-      throw const FleetProfileFailure(_reason);
-
-  @override
-  Future<void> login(String name, String token) =>
+  Future<void> add(String name, String destination) =>
       throw const FleetProfileFailure(_reason);
 
   @override

@@ -4,10 +4,10 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart';
-import 'package:marshal_app/src/client/transport.dart';
 import 'package:marshal_app/src/model/terminal_session.dart';
 
 import '../support/fake_bridge.dart';
+import '../support/sockets.dart';
 
 FakeReply _json(Object body, [int status = 200]) => FakeReply(
   status,
@@ -31,10 +31,9 @@ void main() {
 
   setUp(() async {
     HttpOverrides.global = null;
-    bridge = await FakeBridge.onLoopback();
-    client = BridgeClient(
-      serverTransport(bridge.base, token: () async => 'unused'),
-    );
+    final box = await socketBridge();
+    bridge = box.bridge;
+    client = BridgeClient(box.transport);
     events = bridge.stream('GET', '/api/agents/a-1/terminal/t-1/events');
     bridge
       ..reply('POST', '/api/agents/a-1/terminal', _json({'terminalId': 't-1'}))

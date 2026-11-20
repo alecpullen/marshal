@@ -41,10 +41,13 @@ func TestArgsServeTheStudioWhenAsked(t *testing.T) {
 	if strings.Contains(joined, "--addr off") {
 		t.Errorf("args with a studio address still disable the listener: %q", joined)
 	}
-	// The refresh helper stays the last word: it is the one argument that is
-	// not a value the user set (decision 5).
-	if last := argv[len(argv)-1]; last != "--oauth-refresh" {
-		t.Errorf("args end with %q, want --oauth-refresh", last)
+	// The tunnel helper stays the last word, and the refresh helper just
+	// before it: neither is a value the user set (decision 5).
+	if last := argv[len(argv)-1]; last != "--tunnels" {
+		t.Errorf("args end with %q, want --tunnels", last)
+	}
+	if prev := argv[len(argv)-2]; prev != "--oauth-refresh" {
+		t.Errorf("args end with %q before --tunnels, want --oauth-refresh", prev)
 	}
 }
 

@@ -81,11 +81,12 @@ func TestThePlistNamesEverything(t *testing.T) {
 		t.Errorf("the plist does not carry %q:\n%s", want, plist)
 	}
 
-	// --oauth-refresh closes the argument list: the installed daemon
-	// always supervises the refresh helper (decision 5), so the flag is
-	// written and is the last element of the array.
-	if !strings.Contains(plist, "<string>--oauth-refresh</string>\n\t</array>") {
-		t.Errorf("the plist does not end ProgramArguments with --oauth-refresh:\n%s", plist)
+	// --oauth-refresh and --tunnels close the argument list: the installed
+	// daemon always supervises the refresh and tunnel helpers (decision 5),
+	// so both flags are written, and they are the last elements of the
+	// array in that order.
+	if !strings.Contains(plist, "<string>--oauth-refresh</string>\n\t\t<string>--tunnels</string>\n\t</array>") {
+		t.Errorf("the plist does not end ProgramArguments with --oauth-refresh, --tunnels:\n%s", plist)
 	}
 
 	// The escaping is what made that decode possible: the raw text must
@@ -151,7 +152,8 @@ func TestTheSystemdUnitNamesEverything(t *testing.T) {
 		` "--marshal-bin" "/opt/ma%%rshal's \"marshal\" & co/bin/marshal"` +
 		` "--idle-session-timeout" "45m0s"` +
 		` "--egress" "off"` +
-		` "--oauth-refresh"`
+		` "--oauth-refresh"` +
+		` "--tunnels"`
 	if !strings.Contains(unit, wantExec) {
 		t.Errorf("ExecStart line missing or mis-escaped:\nwant: %s\ngot:\n%s", wantExec, unit)
 	}
@@ -162,11 +164,12 @@ func TestTheSystemdUnitNamesEverything(t *testing.T) {
 		t.Errorf("the unit still carries --profile:\n%s", unit)
 	}
 
-	// --oauth-refresh is the last word of ExecStart: the installed daemon
-	// always supervises the refresh helper (decision 5).
+	// --tunnels is the last word of ExecStart: the installed daemon always
+	// supervises the tunnel helper, and the refresh helper just before it
+	// (decision 5).
 	for _, line := range strings.Split(unit, "\n") {
-		if strings.HasPrefix(line, "ExecStart=") && !strings.HasSuffix(line, ` "--oauth-refresh"`) {
-			t.Errorf("ExecStart does not end with --oauth-refresh: %s", line)
+		if strings.HasPrefix(line, "ExecStart=") && !strings.HasSuffix(line, ` "--oauth-refresh" "--tunnels"`) {
+			t.Errorf("ExecStart does not end with --oauth-refresh --tunnels: %s", line)
 		}
 	}
 

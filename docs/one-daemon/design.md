@@ -11,7 +11,7 @@ decisions 3, 5 and 6 (tokens) and 8 (discovery); the Studio's sign-in handover
 (`compose.yaml`, `build/Dockerfile.bridge`).
 Keeps: P7's rule that the client is the only place hosts are merged.
 Inventory of what changes: [`inventory.md`](inventory.md).
-Status: proposed 2026-11-20.
+Status: proposed 2026-11-20. Plan 1 approved 2026-11-20.
 
 Anchors are relative to `main` at `bbdc4486`.
 
@@ -159,17 +159,22 @@ The file keeps its privacy check, though it now holds no secret.
 
 **D7. The daemon keeps one SSH tunnel per host.** A helper,
 `marshal daemon tunnels`, runs beside the bridge the way the OAuth refresh
-helper does (`bridge.Helper`, `main.go:983`; P4 D12). For each host it:
+helper does (`bridge.Helper`, `main.go:983`; P4 D12). The bridge starts it when
+given `--tunnels`, which the installed unit always writes. The helper re-reads
+`fleet.toml` every 2 s. For each host it:
 1. Runs `ssh <dest> <marshal> daemon status --json` and reads the remote
    socket path from the document.
 2. Keeps one `ssh -N` process that forwards `<daemon dir>/hosts/<name>.sock`
    to that remote path. It runs with `BatchMode`, `ExitOnForwardFailure`,
-   `StreamLocalBindUnlink`, the default `StreamLocalBindMask` (`0177`) and a
-   keep-alive.
+   `StreamLocalBindUnlink`, the default `StreamLocalBindMask` (`0177`), a
+   keep-alive, and a connection of its own (`ControlMaster=no`,
+   `ControlPath=none`), so the helper supervises exactly one process.
 3. Restarts a process that exits, with a backoff that starts at 1 s and
    doubles to 30 s.
-4. Reports the host's state to the daemon over its socket: `connecting`,
-   `live`, or `down` with ssh's last line of stderr.
+4. Reports the host's state to the daemon with a socket-only
+   `PUT /api/daemon/hosts`: `connecting` before the first outcome, then
+   `live`, or `down` with ssh's last line of stderr. A retry stays `down`
+   until it is live.
 
 On the far end, the remote daemon sees the SSH login user as its peer. That
 daemon belongs to that user, so the caller is its owner, and the whole socket
@@ -179,9 +184,14 @@ included.
 **D8. Hosts are added and removed with `marshal fleet`.**
 - `marshal fleet add NAME DEST [--marshal PATH] [--no-notify]` and
   `marshal fleet remove NAME` edit `fleet.toml` under today's rules (atomic,
-  `0600`, comments kept; P8 D6), and then ask the helper to reload.
-- `marshal fleet login`, `marshal fleet token`, `marshal daemon token` and
-  `marshal daemon join-token` go.
+  `0600`, comments kept; P8 D6). The helper picks the change up on its next
+  read of the file, so neither command asks it to reload, and a hand edit is
+  picked up too. Each command waits up to 5 s for the daemon's report to
+  follow, so a client that rediscovers next sees the change.
+- `marshal fleet login`, `marshal fleet token` and `marshal fleet servers`
+  go. `marshal daemon status` lists the hosts.
+- `marshal daemon token` and `marshal daemon join-token` go in plan 3, with the
+  listener's token and the join they serve.
 - `marshal fleet --server NAME` becomes `marshal fleet --host NAME`.
 
 **D9. Clients reach every host through their own daemon.**
@@ -311,7 +321,8 @@ or similar.
 1. **Previews of a remote host's agents.** Either D7 forwards the remote
    preview port over the same SSH connection, or previews go through D10's
    forward. Recommendation: a second forward in the same `ssh` process, so a
-   preview keeps an origin of its own.
+   preview keeps an origin of its own. Deferred to plan 3, which settles D11's
+   preview listener.
 2. **Local MCP clients without the loopback listener.** Today a client on the
    laptop reaches `/mcp` over `127.0.0.1:7788`. Recommendation: add a stdio
    command, `marshal mcp --credential-file PATH`, that relays JSON-RPC to
@@ -320,7 +331,10 @@ or similar.
    clients to set `web_listen` to a loopback address.
 3. **SSH agent reachability for a systemd user service.** If `SSH_AUTH_SOCK`
    is not in the user manager's environment, either `marshal daemon install`
-   imports it or the documentation says to.
+   imports it or the documentation says to. Resolved while planning plan 2:
+   the documentation says to. The unit carries no `SSH_AUTH_SOCK`, because
+   the path is per login on Linux and per boot on macOS. A host that cannot
+   authenticate is `down` with ssh's own message.
 4. **Adding a host from a browser.** It would need a route on the web listener
    that edits `fleet.toml` on the daemon's machine. Recommendation: no;
    D15 keeps the browser read-only.
@@ -335,10 +349,12 @@ same change: [`inventory.md`](inventory.md) lists the files.
    It removes `--profile` and `hostOnly`, and makes container agents run from
    a daemon on the host. It runs first because a server machine needs it
    before it can stop running the containerized bridge.
-2. **Hosts over SSH** (D6–D9, D15). Add the tunnel helper,
-   `DaemonInfo.hosts`, `marshal fleet --host`, native discovery and Settings ›
-   Hosts. Delete the HTTPS transports, `fleet login`/`token`, and
-   `fleetprofile`'s token and TLS code.
+2. **Hosts over SSH** (D6–D9, D15):
+   [plans/2026-11-20-od-2-hosts-over-ssh-plan.md](plans/2026-11-20-od-2-hosts-over-ssh-plan.md).
+   Add the tunnel helper, `DaemonInfo.hosts`, `marshal fleet --host`, native
+   discovery and Settings › Hosts. Delete the HTTPS transports, `fleet
+   login`/`token`/`servers`, and `fleetprofile`'s token and TLS code. The
+   browser keeps its relayed hosts until plan 3.
 3. **The web listener** (D2, D3, D10–D14). Add the opt-in listener and the
    forward. Delete the TCP listener, `bearerAuth`, the sign-in handover, the
    join, the browser's token stores and the embed. Move the e2e suite onto the

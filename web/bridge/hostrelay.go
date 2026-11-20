@@ -35,8 +35,8 @@ const (
 )
 
 // relayNameRe is fleet.toml's host-name rule (D11). web/ is standard library
-// only, so internal/fleetprofile's serverNameRe cannot be imported: the rule
-// is copied here, as the bridge copies every other rule it shares with it.
+// only, so the rule is stated here rather than imported from
+// internal/fleetprofile.
 var relayNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // The relay's limits, with their defaults (decision 3). They are constants

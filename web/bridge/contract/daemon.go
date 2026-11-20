@@ -19,6 +19,7 @@ type DaemonInfo struct {
 	Children    []DaemonChild  `json:"children"`          // filled per request
 	Refresh     *DaemonRefresh `json:"refresh,omitempty"` // filled per request
 	Join        *DaemonJoin    `json:"join,omitempty"`    // filled per request
+	Hosts       []DaemonHost   `json:"hosts"`             // filled per request: the tunnel helper's last report
 	Restart     *DaemonRestart `json:"restart,omitempty"` // the daemon's own; filled per request
 }
 
@@ -40,6 +41,32 @@ type DaemonRestartProgress struct {
 type DaemonRefresh struct {
 	PID      int `json:"pid"`
 	Restarts int `json:"restarts"`
+}
+
+// HostState is a remote host's tunnel state (one-daemon D7).
+type HostState string
+
+const (
+	HostConnecting HostState = "connecting" // before the first attempt has an outcome
+	HostLive       HostState = "live"       // the tunnel answers GET /api/daemon
+	HostDown       HostState = "down"       // the last attempt failed; LastError says why
+)
+
+// DaemonHost is one remote host's tunnel as GET /api/daemon reports it
+// (one-daemon D7, D9).
+type DaemonHost struct {
+	Name      string    `json:"name"`
+	SSH       string    `json:"ssh"` // the destination, as fleet.toml names it
+	State     HostState `json:"state"`
+	Socket    string    `json:"socket"` // this machine's end of the tunnel
+	LastError string    `json:"lastError,omitempty"`
+	Since     int64     `json:"since"` // Unix milliseconds: when State last changed
+}
+
+// DaemonHostsReport is PUT /api/daemon/hosts's body: every host the tunnel
+// helper keeps, replacing its last report.
+type DaemonHostsReport struct {
+	Hosts []DaemonHost `json:"hosts"`
 }
 
 // DaemonChild is one project child as GET /api/daemon reports it.

@@ -39,7 +39,8 @@ func (s *Server) SetRefreshHelper(h *Helper) {
 // daemon answers what this daemon is. The info is copied and its projects
 // replaced with the workspace's current list, so a project added or
 // removed since startup is reported without restarting the daemon. The
-// children are current for the same reason, and so is the refresh helper.
+// children are current for the same reason, and so is the refresh helper,
+// and so are the hosts.
 func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	if s.daemonInfo == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not a daemon"})
@@ -66,6 +67,7 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 		join := j.Report()
 		out.Join = &join
 	}
+	out.Hosts = s.reportedHosts()
 	writeJSON(w, http.StatusOK, out)
 }
 

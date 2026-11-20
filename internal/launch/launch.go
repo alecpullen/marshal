@@ -20,7 +20,6 @@ import (
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/tui"
 	"marshal/internal/app/tui/fleet"
-	"marshal/internal/fleetprofile"
 )
 
 // ProgramResult is the value returned by a ProgramRunner. It carries the
@@ -78,13 +77,9 @@ type options struct {
 	reconnectFirst  time.Duration
 	reconnectMax    time.Duration
 
-	// remote is a server profile's loop: the transports the loop dials
-	// instead of the local daemon (decision 8). nil for the local daemon.
-	remote *remoteTarget
-	// tokenStore and tokenRunner replace the keychain and token_cmd's runner
-	// a server profile's token comes from; tests inject them.
-	tokenStore  fleetprofile.OpenStore
-	tokenRunner fleetprofile.CommandRunner
+	// host is the name of the machine the loop's socket tunnels to: another
+	// machine's daemon, not this one's. "" for this machine's daemon.
+	host string
 }
 
 type Option func(*options)

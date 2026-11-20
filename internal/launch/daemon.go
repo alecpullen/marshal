@@ -128,14 +128,11 @@ func withAgentVersion(v string) Option {
 	return func(o *options) { o.agentVersion = v }
 }
 
-// daemonClientFor is the client daemon mode talks to: the seam's, else the
-// remote one a server profile's loop was given, else one built for the socket.
+// daemonClientFor is the client daemon mode talks to: the seam's, else one
+// built for the socket.
 func (o *options) daemonClientFor() daemonClient {
 	if o.daemon != nil {
 		return o.daemon
-	}
-	if o.remote != nil {
-		return o.remote.attach
 	}
 	return daemon.NewClient(o.daemonSocket)
 }
@@ -414,7 +411,7 @@ func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonS
 		}
 	}()
 
-	tuiOpts := daemonTUIOptions(ctx, conn, step.root, l.home, l.logger, l.opts.remote == nil)
+	tuiOpts := daemonTUIOptions(ctx, conn, step.root, l.home, l.logger, l.opts.onThisMachine())
 	// Decision 8: every daemon session screen counts with the loop's fleet
 	// client, and gets the watch once the fleet has run. The watch is nil
 	// before that, so a plain `marshal` counts without notifying.
@@ -648,16 +645,17 @@ func addNoteOnce(ctx context.Context, sess acpclient.Session, text string) error
 
 // fleetClientFor is the loop's fleet client: the injected one as it is, else
 // one built for the loop's transport the first time the loop needs it
-// (decision 7): the server profile's HTTPS transport for a server's loop, the
-// socket's for the daemon's. The loop asks on its first step, so its client
-// outlives every screen it shows.
+// (decision 7): the socket's, named for the host the socket tunnels to. The
+// loop asks on its first step, so its client outlives every screen it shows.
 func (l *daemonLoop) fleetClientFor(ctx context.Context) acpclient.Fleet {
 	if l.fleetClient != nil {
 		return l.fleetClient
 	}
 	transport := fleetclient.Socket(l.opts.daemonSocket)
-	if l.opts.remote != nil {
-		transport = l.opts.remote.fleet
+	if l.opts.host != "" {
+		// The socket is a tunnel to the host, so the footer and a rejected
+		// request name the machine the screen is showing rather than "local".
+		transport.Server = l.opts.host
 	}
 	built := fleetclient.New(transport)
 	built.Start(ctx)
@@ -766,17 +764,25 @@ func daemonVersionLabel(v string) string {
 }
 
 // versionNote is what a session screen says when its agent is not this build
-// (decision 8). A server's agent is not restarted from here, so that note
-// carries no advice; the daemon's does.
+// (decision 8). A host's agent is not restarted from here, so that note
+// carries no advice; this machine's daemon's does.
 func (o *options) versionNote(theirs string) string {
 	ours := daemonVersionLabel(o.version())
-	if o.remote != nil {
-		return fmt.Sprintf("This marshal is %s; the server's agent is %s.", ours, daemonVersionLabel(theirs))
+	if !o.onThisMachine() {
+		return fmt.Sprintf("This marshal is %s; %s's agent is %s.", ours, o.host, daemonVersionLabel(theirs))
 	}
 	return fmt.Sprintf(
 		"This marshal is %s; the daemon's agent is %s. Restart the daemon after upgrading: `marshal daemon stop` then `marshal daemon start`.",
 		ours, daemonVersionLabel(theirs),
 	)
+}
+
+// onThisMachine says whether the loop's socket is this machine's daemon rather
+// than a tunnel to a host. A host's sessions are on another filesystem, its
+// config is not this machine's, and its notes name it, so the two are the same
+// case everywhere those differ.
+func (o *options) onThisMachine() bool {
+	return o.host == ""
 }
 
 // envWarningNote is what a session screen says when its project child could not
@@ -846,12 +852,12 @@ func dialDaemon(ctx context.Context, opts *options, step daemonStep) (*daemonCon
 	// handler can record the agent's marshal/restarting on it (decision 4).
 	conn := newDaemonConn()
 	// The local daemon's agent is a different process on the same filesystem,
-	// so the client reads its files directly. A server's agent is not on it at
-	// all (decision 8), so nothing of the session is read as a local file. The
-	// version is not pinned either way, because a daemon older than this binary
-	// still serves the session (the note says so).
+	// so the client reads its files directly. A host's agent is not on it at
+	// all (decision 8), so nothing of the session is read as a
+	// local file. The version is not pinned either way, because a daemon older
+	// than this binary still serves the session (the note says so).
 	host, err := rpc.Dial(handshakeCtx, stream, rpc.DialOptions{
-		SharedFilesystem: opts.remote == nil,
+		SharedFilesystem: opts.onThisMachine(),
 		Handlers:         rpc.Handlers{Notify: conn.note},
 	})
 	if err != nil {

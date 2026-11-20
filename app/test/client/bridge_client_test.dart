@@ -9,6 +9,7 @@ import 'package:marshal_app/src/client/event_stream.dart';
 import 'package:marshal_app/src/client/transport.dart';
 
 import '../support/fake_bridge.dart';
+import '../support/sockets.dart';
 
 /// [BridgeClient] against the in-process fake bridge: one test per route, so
 /// a route's path, method and decoded type are pinned without a daemon.
@@ -20,11 +21,9 @@ void main() {
     // flutter_test's binding answers every HttpClient with 400; the fake
     // bridge is on this machine, so the real client is wanted back.
     HttpOverrides.global = null;
-    fake = await FakeBridge.onLoopback();
-    addTearDown(fake.close);
-    client = BridgeClient(
-      serverTransport(fake.base, token: () async => 'unused'),
-    );
+    final box = await socketBridge();
+    fake = box.bridge;
+    client = BridgeClient(box.transport);
   });
 
   test('daemon reads the daemon document', () async {

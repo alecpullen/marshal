@@ -53,7 +53,8 @@ import 'package:marshal_app/src/model/clients_model.dart';
 import 'package:marshal_app/src/model/connections_model.dart';
 import 'package:marshal_app/src/model/environment_model.dart';
 import 'package:marshal_app/src/model/environments_model.dart';
-import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/model/fleet_store.dart'
+    show HostTunnel, HostView;
 import 'package:marshal_app/src/model/general_model.dart';
 import 'package:marshal_app/src/model/hosts_model.dart';
 import 'package:marshal_app/src/model/library_model.dart';
@@ -882,8 +883,8 @@ Widget _designer({StateKind? state}) => EnvironmentDesigner(
   state: state,
 );
 
-/// The `marshal fleet` commands as a fixture: a build that can add, remove
-/// and sign in, which runs nothing. A screen fixture draws the state a command
+/// The `marshal fleet` commands as a fixture: a build that can add and
+/// remove, which runs nothing. A screen fixture draws the state a command
 /// leaves behind; it never runs one.
 class _FixtureFleetProfiles implements FleetProfiles {
   const _FixtureFleetProfiles();
@@ -892,17 +893,14 @@ class _FixtureFleetProfiles implements FleetProfiles {
   bool get supported => true;
 
   @override
-  Future<void> add(String name, Uri url, {String? caFile}) async {}
-
-  @override
-  Future<void> login(String name, String token) async {}
+  Future<void> add(String name, String destination) async {}
 
   @override
   Future<void> remove(String name) async {}
 }
 
 /// The Hosts add form, open with the failure an add comes back with: the
-/// fields are kept, and the profile it names is not written.
+/// fields are kept, and the host it names is not written.
 Widget _hostsAdd() => Sheet(
   title: 'Add a host',
   actions: [Btn('Cancel', onTap: () {})],
@@ -911,12 +909,13 @@ Widget _hostsAdd() => Sheet(
       shellHosts,
       profiles: const _FixtureFleetProfiles(),
     ),
-    initialFailure: 'studio is already in fleet.toml',
+    initialFailure: 'box is already in fleet.toml',
   ),
 );
 
-/// A server profile whose token the bridge refused: its detail offers Sign in,
-/// because a refusal is terminal and waiting never clears it (decision 6).
+/// A host whose token the bridge refused: its detail offers Sign in, because a
+/// refusal is terminal and waiting never clears it (decision 6). It is the
+/// browser's case, because only a browser keeps a token to sign in with.
 Widget _hostsSignIn() {
   final refused = HostView(
     name: 'studio',
@@ -925,11 +924,37 @@ Widget _hostsSignIn() {
     lastContact: shellNow.subtract(const Duration(minutes: 4)),
   );
   return HostDetail(
+    model: HostsModel.fixture(
+      [shellHosts.first, refused],
+      profiles: const _FixtureFleetProfiles(),
+      storeToken: (host, token) async {},
+    ),
+    host: refused,
+    now: shellNow,
+  );
+}
+
+/// An SSH host whose tunnel is down: the detail says the destination, the
+/// tunnel's state and what ssh last said (D7).
+Widget _hostsDown() {
+  final box = HostView(
+    name: 'box',
+    kind: HostKind.server,
+    reach: HostReach.unreachable,
+    lastContact: shellNow.subtract(const Duration(minutes: 4)),
+    destination: 'me@box',
+    tunnel: HostTunnel(
+      state: 'down',
+      lastError: 'Permission denied (publickey).',
+      since: shellNow.subtract(const Duration(minutes: 4)),
+    ),
+  );
+  return HostDetail(
     model: HostsModel.fixture([
       shellHosts.first,
-      refused,
+      box,
     ], profiles: const _FixtureFleetProfiles()),
-    host: refused,
+    host: box,
     now: shellNow,
   );
 }
@@ -1008,6 +1033,7 @@ Widget _settings({int section = 0, StateKind? state}) {
       kind: HostKind.server,
       reach: HostReach.unreachable,
       lastContact: shellNow.subtract(const Duration(minutes: 4)),
+      destination: 'me@studio',
     ),
   ], profiles: const _FixtureFleetProfiles());
   final general = GeneralModel.fixture(
@@ -1283,6 +1309,7 @@ final _daemonInfo = DaemonInfo(
   projects: const ['/home/u/marshal'],
   pinned: const ['/home/u/widgets'],
   children: const [],
+  hosts: const [],
 );
 
 /// The registry of screens. F0 has one, the gallery; each later phase adds
@@ -1456,6 +1483,14 @@ final screens = <ScreenCase>[
   ScreenCase(
     name: 'settings · hosts · relayed',
     ready: () => _hostsRelayed(),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 0, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · hosts · down',
+    ready: () => _hostsDown(),
     states: {
       for (final kind in requiredStates)
         kind: () => _settings(section: 0, state: kind),

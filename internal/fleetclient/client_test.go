@@ -2,14 +2,12 @@ package fleetclient
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -203,19 +201,6 @@ type fakeBridge struct {
 // newFakeBridge is a bridge answering the fixtures.
 func newFakeBridge(t *testing.T) *fakeBridge {
 	t.Helper()
-	return newFakeBridgeAt(t, false)
-}
-
-// newTLSFakeBridge is newFakeBridge over HTTPS, so a test can read it through
-// a server profile's transport. Trust the server with trustedClient().
-func newTLSFakeBridge(t *testing.T) *fakeBridge {
-	t.Helper()
-	return newFakeBridgeAt(t, true)
-}
-
-// newFakeBridgeAt is the fixture: over TLS when tls is set.
-func newFakeBridgeAt(t *testing.T, useTLS bool) *fakeBridge {
-	t.Helper()
 	budgets, daemon := fixtureBudgets(), fixtureDaemon()
 	b := &fakeBridge{
 		t:           t,
@@ -251,31 +236,9 @@ func newFakeBridgeAt(t *testing.T, useTLS bool) *fakeBridge {
 		}
 		mux.ServeHTTP(w, r)
 	})
-	if useTLS {
-		b.srv = httptest.NewTLSServer(handler)
-	} else {
-		b.srv = httptest.NewServer(handler)
-	}
+	b.srv = httptest.NewServer(handler)
 	t.Cleanup(b.srv.Close)
 	return b
-}
-
-// serverTLSConfig is a configuration that trusts the bridge's certificate, for
-// a transport that dials it itself rather than through srv.Client().
-func (b *fakeBridge) serverTLSConfig(t *testing.T) *tls.Config {
-	t.Helper()
-	serverTransport, ok := b.srv.Client().Transport.(*http.Transport)
-	if !ok || serverTransport.TLSClientConfig == nil {
-		t.Fatal("the fixture bridge is not serving TLS")
-	}
-	return serverTransport.TLSClientConfig.Clone()
-}
-
-// authHeaders is every request's Authorization header, in order.
-func (b *fakeBridge) authHeaders() []string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return append([]string(nil), b.auth...)
 }
 
 // record notes one request.
@@ -1100,103 +1063,11 @@ func TestSocketIsTheLocalDaemonsTransport(t *testing.T) {
 	if !tr.Local {
 		t.Error("Local = false, want true")
 	}
-	if tr.Token != nil {
-		t.Error("Token is set, want none on the socket")
-	}
 	if tr.HTTP == nil || tr.HTTP.Transport == nil {
 		t.Fatal("HTTP = nil, want a transport dialling the socket")
 	}
 	if fmt.Sprint(tr.HTTP.Timeout) != "0s" {
 		t.Errorf("HTTP.Timeout = %v, want none: the stream is long-lived", tr.HTTP.Timeout)
-	}
-}
-
-// TestHTTPSReadsABridgeOverTLS: a server profile's transport reaches the
-// bridge over TLS, trusting only the certificate it was given, and carries the
-// token on every request.
-func TestHTTPSReadsABridgeOverTLS(t *testing.T) {
-	const token = "profile-token"
-
-	b := newTLSFakeBridge(t)
-	tr := HTTPS("studio", b.srv.URL+"/", b.serverTLSConfig(t), func(context.Context) (string, error) {
-		return token, nil
-	})
-
-	if tr.Server != "studio" {
-		t.Errorf("Server = %q, want %q", tr.Server, "studio")
-	}
-	if want := strings.TrimSuffix(b.srv.URL, "/"); tr.BaseURL != want {
-		t.Errorf("BaseURL = %q, want %q: the base carries no trailing slash", tr.BaseURL, want)
-	}
-	if tr.Local {
-		t.Error("Local = true, want false: a server profile has no daemon of its own")
-	}
-	if tr.Token == nil {
-		t.Fatal("Token = nil, want the profile's token")
-	}
-	transport, ok := tr.HTTP.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("HTTP.Transport = %T, want the transport's own *http.Transport", tr.HTTP.Transport)
-	}
-	if transport.TLSClientConfig == nil {
-		t.Error("TLSClientConfig = nil, want the profile's configuration")
-	}
-	if transport.Proxy != nil {
-		t.Error("Proxy is set, want none: the profile names a host, not a proxy")
-	}
-	if transport.TLSHandshakeTimeout != 10*time.Second {
-		t.Errorf("TLSHandshakeTimeout = %v, want 10s", transport.TLSHandshakeTimeout)
-	}
-	if tr.HTTP.Timeout != 0 {
-		t.Errorf("HTTP.Timeout = %v, want none: the stream is long-lived", tr.HTTP.Timeout)
-	}
-
-	c := startTransport(t, tr)
-	waitConnected(t, c)
-
-	if s := c.State(); s.Server != "studio" {
-		t.Errorf("State().Server = %q, want %q", s.Server, "studio")
-	}
-	if got := b.readCount("/api/agents"); got == 0 {
-		t.Error("no agents read over TLS, want the bridge's answer")
-	}
-
-	// A frame travels the same stream the reads opened.
-	b.delta(mustJSON(t, map[string]any{"kind": "activity", "sessionId": "a1", "activity": "over TLS"}))
-	waitFor(t, "the frame over TLS", func() bool {
-		for _, a := range c.State().Agents {
-			if a.ID == "a1" {
-				return a.Activity == "over TLS"
-			}
-		}
-		return false
-	})
-
-	auths := b.authHeaders()
-	if len(auths) == 0 {
-		t.Fatal("the bridge took no requests")
-	}
-	for i, got := range auths {
-		if want := "Bearer " + token; got != want {
-			t.Errorf("request %d Authorization = %q, want %q", i, got, want)
-		}
-	}
-}
-
-// TestHTTPSNeverReadsTheDaemon: a server profile's transport never asks for
-// GET /api/daemon, which only the local daemon answers.
-func TestHTTPSNeverReadsTheDaemon(t *testing.T) {
-	b := newTLSFakeBridge(t)
-	c := startTransport(t, HTTPS("studio", b.srv.URL, b.serverTLSConfig(t), func(context.Context) (string, error) {
-		return "profile-token", nil
-	}))
-	waitConnected(t, c)
-
-	if got := b.readCount("/api/daemon"); got != 0 {
-		t.Errorf("/api/daemon reads = %d, want none for a server profile", got)
-	}
-	if s := c.State(); s.Daemon != nil {
-		t.Errorf("Daemon = %+v, want none: a server profile has no daemon of its own", *s.Daemon)
 	}
 }
 

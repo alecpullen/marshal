@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -55,6 +56,12 @@ type Server struct {
 	// refresh, when set, is the daemon's refresh helper, reported per
 	// request by GET /api/daemon (see SetRefreshHelper).
 	refresh *Helper
+	// hostsMu guards hosts, the last report the tunnel helper made
+	// (daemonhosts.go).
+	hostsMu sync.Mutex
+	// hosts is the tunnel helper's last report, sorted by name and never
+	// nil once reported: GET /api/daemon answers it.
+	hosts []DaemonHost
 	// relay, when set, is the table of the hosts that may join this bridge:
 	// the network listener then answers the join route, and the forward and
 	// hosts routes sit behind the bearer check (hostrelay.go).
@@ -221,6 +228,12 @@ func (s *Server) SocketHandler() http.Handler {
 			// bridge, so it is the socket's own operation: the network
 			// listener answers it 404 (P6 B5).
 			s.restartDaemon(w, r)
+			return
+		}
+		if r.URL.Path == daemonHostsPath {
+			// The tunnel helper's report is the socket's own: the network
+			// listener answers it 404 (one-daemon D7).
+			s.reportHosts(w, r)
 			return
 		}
 		if r.URL.Path == marshalEnrollPath {

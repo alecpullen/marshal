@@ -1,6 +1,6 @@
 # One daemon plan 1: one daemon — implementation plan
 
-Date: 2026-11-20. Status: ready for review.
+Date: 2026-11-20. Status: approved 2026-11-20.
 
 Base: `main` at `bbdc4486`. Every anchor below was checked there. The baseline
 (`go test -count=1 ./web/bridge/ ./cmd/webbridge/ ./internal/daemon/

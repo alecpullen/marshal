@@ -20,9 +20,11 @@ const (
 )
 
 // Helper runs one long-lived helper process and restarts it when it exits
-// (P4 D12's `marshal daemon refresh`). The zero values of its tuning fields
-// are the production defaults.
+// (P4 D12's `marshal daemon refresh`). Name labels the log, so a bridge with
+// more than one helper says which one exited. The zero values of its tuning
+// fields are the production defaults.
 type Helper struct {
+	Name        string        // the helper's name in the bridge's log
 	Argv        []string      // the command and its arguments
 	Stderr      io.Writer     // the helper's standard error; nil discards it
 	Backoff     time.Duration // the first restart's delay; zero means helperBackoff
@@ -67,8 +69,8 @@ func (h *Helper) Run(ctx context.Context) {
 		}
 		// A start that failed counts as an exit: it is logged and counted as
 		// a restart like any other.
-		slog.Default().Warn("webbridge: refresh helper exited",
-			"status", exitStatus(err), "restartIn", delay)
+		slog.Default().Warn("webbridge: helper exited",
+			"helper", h.Name, "status", exitStatus(err), "restartIn", delay)
 		h.setPID(0)
 		h.countRestart()
 		if time.Since(began) >= h.steadyRun() {

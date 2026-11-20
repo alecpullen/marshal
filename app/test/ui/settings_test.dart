@@ -80,9 +80,6 @@ void main() {
     StateKind? state,
     List<HostView>? listing,
     FleetProfiles? profiles,
-    List<String>? stored,
-    List<String>? cleared,
-    List<String>? retried,
   }) {
     final prefs = preferences ?? GeneralPreferences();
     return SettingsPlace(
@@ -91,15 +88,7 @@ void main() {
       state: state,
       sections: {
         SettingsSectionKind.hosts: (state) => HostsSection(
-          model: HostsModel.fixture(
-            listing ?? hosts,
-            profiles: profiles,
-            storeToken: stored == null
-                ? null
-                : (host, token) async => stored.add('$host: $token'),
-            clearToken: cleared?.add,
-            retry: retried?.add,
-          ),
+          model: HostsModel.fixture(listing ?? hosts, profiles: profiles),
           state: state,
           now: now,
         ),
@@ -149,6 +138,20 @@ void main() {
             message.message == 'Add a host',
       ),
       hasLength(1),
+    );
+  });
+
+  testWidgets('a browser says where hosts are added', (tester) async {
+    // A browser cannot run `marshal fleet add`: it lists the hosts its daemon
+    // forwards to, so the add row says where hosts are added (one-daemon D15).
+    await pump(tester, place());
+
+    expect(
+      find.text(
+        'Add hosts with `marshal fleet add` on the machine this daemon runs '
+        'on (D15).',
+      ),
+      findsOneWidget,
     );
   });
 
@@ -299,31 +302,6 @@ void main() {
     );
   });
 
-  testWidgets('an unauthorized host offers sign in', (tester) async {
-    await pump(
-      tester,
-      place(
-        profiles: _Runner(),
-        stored: <String>[],
-        listing: [
-          hosts.first,
-          HostView(
-            name: 'studio',
-            kind: HostKind.server,
-            reach: HostReach.unauthorized,
-            lastContact: now.subtract(const Duration(minutes: 4)),
-          ),
-        ],
-      ),
-    );
-
-    await tester.tap(find.text('studio'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Sign in'), findsOneWidget);
-    expect(find.text('Token'), findsOneWidget);
-  });
-
   testWidgets('a native build offers no sign in', (tester) async {
     // A native build keeps no token of its own: the daemon reaches its hosts
     // over the tunnels it keeps, so there is nothing here to sign in to.
@@ -379,105 +357,10 @@ void main() {
     expect(
       find.descendant(
         of: find.byType(HostDetail),
-        matching: find.text('A server profile, through hub'),
+        matching: find.text('Through hub'),
       ),
       findsOneWidget,
     );
-  });
-
-  testWidgets('a relayed host behind a refused relay says to sign in to the '
-      'relay', (tester) async {
-    await pump(
-      tester,
-      place(
-        profiles: _Runner(),
-        listing: [
-          hosts.first,
-          HostView(
-            name: 'hub',
-            kind: HostKind.server,
-            reach: HostReach.unauthorized,
-            lastContact: now.subtract(const Duration(minutes: 4)),
-          ),
-          HostView(
-            name: 'laptop',
-            kind: HostKind.server,
-            reach: HostReach.unauthorized,
-            lastContact: now.subtract(const Duration(minutes: 4)),
-            via: 'hub',
-          ),
-        ],
-      ),
-    );
-
-    await tester.tap(find.text('laptop'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Sign in to the relay first.'), findsOneWidget);
-    expect(
-      find.text('Sign in'),
-      findsNothing,
-      reason: 'signing in to the host cannot clear the relay’s refusal',
-    );
-  });
-
-  testWidgets('a relayed host offers sign out where a store can clear it', (
-    tester,
-  ) async {
-    final stored = <String>[];
-    final cleared = <String>[];
-    final retried = <String>[];
-    await pump(
-      tester,
-      place(
-        profiles: _Runner(),
-        stored: stored,
-        cleared: cleared,
-        retried: retried,
-        listing: [
-          hosts.first,
-          HostView(
-            name: 'hub',
-            kind: HostKind.server,
-            reach: HostReach.live,
-            lastContact: now,
-          ),
-          HostView(
-            name: 'laptop',
-            kind: HostKind.server,
-            reach: HostReach.unauthorized,
-            lastContact: now.subtract(const Duration(minutes: 4)),
-            via: 'hub',
-          ),
-        ],
-      ),
-    );
-
-    await tester.tap(find.text('laptop'));
-    await tester.pumpAndSettle();
-
-    // A browser signs in by writing the host's own key, and then asks the host
-    // to try again (decision 6).
-    await tester.enterText(
-      find.descendant(
-        of: find.byType(Field),
-        matching: find.byType(EditableText),
-      ),
-      'a-token',
-    );
-    await tester.tap(find.text('Sign in'));
-    await tester.pumpAndSettle();
-
-    expect(stored, ['laptop: a-token']);
-    expect(retried, ['laptop']);
-
-    // Signing out clears that key and asks again, so the host reads "token
-    // refused" until it is signed in to once more (spec D22).
-    await tester.tap(find.text('Sign out'));
-    await tester.pumpAndSettle();
-
-    expect(cleared, ['laptop']);
-    expect(retried, ['laptop', 'laptop']);
   });
 
   testWidgets('appearance changes the theme', (tester) async {

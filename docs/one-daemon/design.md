@@ -11,7 +11,7 @@ decisions 3, 5 and 6 (tokens) and 8 (discovery); the Studio's sign-in handover
 (`compose.yaml`, `build/Dockerfile.bridge`).
 Keeps: P7's rule that the client is the only place hosts are merged.
 Inventory of what changes: [`inventory.md`](inventory.md).
-Status: proposed 2026-11-20. Plans 1, 2 and 3 approved 2026-11-20.
+Status: proposed 2026-11-20. Plans 1–5 approved 2026-11-20.
 
 Anchors are relative to `main` at `bbdc4486`.
 
@@ -141,6 +141,12 @@ the `--state-volume` and `--project-mount` flags.
 - The agent image and its Dockerfiles stay.
 - Container agents started by a daemon on the host mount its state directory
   by path. Assumption A5 names what must be checked first.
+- Planning plan 5 settled the rest. Named-volume state and project mounts are
+  deleted, and `NewFleet` loses both parameters. The `marshal-` volume prefix
+  stays reserved for workspaces. `--state-volume` and `--project-mount` are
+  refused, while `--profile` and plan 3's retired listener flags stay accepted,
+  because installed units carry them. `docs/DEPLOYMENT.md` becomes "Running
+  Marshal on a server".
 
 ### Hosts
 
@@ -257,6 +263,12 @@ preview_url` is the public origin preview links name.
   `dev-studio.sh`'s second one.
 - The web build, and the check that it fetches nothing from a CDN, move to
   that artifact's own CI job.
+- Planning plan 4 settled where the directory is. It is `share/marshal/studio`
+  beside the binaries (the release archive, a checkout) or above them
+  (`<prefix>/bin` with `<prefix>/share`: Homebrew, `install.sh`, both app
+  bundles). `webbridge` finds it from its own executable, and
+  `--studio-dir` overrides that. A daemon with no files serves a 503 page that
+  names where it looked, and runs on.
 
 **D13. Marshal authenticates no browser.** The operator's proxy does it:
 Tailscale Serve, Cloudflare Access, Caddy with an auth module, oauth2-proxy,
@@ -369,11 +381,14 @@ same change: [`inventory.md`](inventory.md) lists the files.
    browser's token stores and the fleet client's rejected state. Move the e2e
    suite onto the web listener. It depends on plan 2, because the forward
    dials plan 2's tunnel sockets.
-4. **The Studio as files** (D12), split out of plan 3 while planning it.
+4. **The Studio as files** (D12), split out of plan 3 while planning it:
+   [plans/2026-11-20-od-4-studio-as-files-plan.md](plans/2026-11-20-od-4-studio-as-files-plan.md).
    Delete the embed, serve the Studio from a directory beside the binaries,
    ship that directory in the release archive, Homebrew, `install.sh` and both
    app bundles, give its web build and CDN check a CI job of their own, and
    delete `scripts/dev-studio.sh`.
-5. **Retire the containerized daemon** (D5) and sweep the docs: `AGENTS.md`,
+5. **Retire the containerized daemon** (D5) and sweep the docs:
+   [plans/2026-11-20-od-5-retire-the-container-daemon-plan.md](plans/2026-11-20-od-5-retire-the-container-daemon-plan.md).
+   The sweep covers `AGENTS.md`,
    `cmd/webbridge/README.md`, `scripts/e2e/README.md`, P4, P5, P8,
    distribution and F1.

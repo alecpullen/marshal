@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -372,6 +374,151 @@ func TestTheForwardSendsNoPreviewOriginWithoutAPort(t *testing.T) {
 	seen := tunnel.next(t)
 	if got := seen.header.Values(contract.PreviewOriginHeader); len(got) != 0 {
 		t.Fatalf("the hop carried %q, want no preview origin", got)
+	}
+}
+
+// TestAForwardFromThisMachineNamesThePreviewPort: a request from this machine
+// names the host's own preview port, which the tunnel carries — whatever
+// preview_url hands a caller behind the proxy (one-daemon open question 1).
+func TestAForwardFromThisMachineNamesThePreviewPort(t *testing.T) {
+	s := NewServer(testFleet(t))
+	if err := s.SetPreviewURL("https://p{token}.preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	tunnel := newFakeTunnel(t, okTunnel())
+	host := liveHost("box", tunnel.socket)
+	host.PreviewPort = 54400
+	reportHosts(t, s, host)
+
+	rec := doReq(t, s, http.MethodGet, hostForwardPrefix+"box/api/agents", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the forward = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	seen := tunnel.next(t)
+	if got := seen.header.Values(contract.PreviewOriginHeader); len(got) != 1 || got[0] != "http://localhost:54400" {
+		t.Fatalf("the hop carried %q, want exactly http://localhost:54400", got)
+	}
+}
+
+// TestAForwardFromTheProxyNamesThePreviewURL: a request that came through the
+// proxy is given this daemon's preview_url as the way back to the host's
+// previews, template and all (one-daemon open question 1).
+func TestAForwardFromTheProxyNamesThePreviewURL(t *testing.T) {
+	s := NewServer(testFleet(t), "https://studio.example.com")
+	if err := s.SetPreviewURL("https://p{token}.preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	tunnel := newFakeTunnel(t, okTunnel())
+	host := liveHost("box", tunnel.socket)
+	host.PreviewPort = 54400
+	reportHosts(t, s, host)
+
+	req := httptest.NewRequest(http.MethodGet, hostForwardPrefix+"box/api/agents", nil)
+	req.Host = "studio.example.com"
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the forward = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	seen := tunnel.next(t)
+	if got := seen.header.Values(contract.PreviewOriginHeader); len(got) != 1 || got[0] != "https://p{token}.preview.example.com" {
+		t.Fatalf("the hop carried %q, want exactly the template preview_url", got)
+	}
+}
+
+// forwardPreviewIssue posts the preview-issue route through the forward, from
+// the proxy, and returns the recorder.
+func forwardPreviewIssue(t *testing.T, s *Server, host, agent string, port int) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, hostForwardPrefix+"box/api/agents/"+agent+"/preview/"+strconv.Itoa(port), nil)
+	req.Host = host
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestAForwardedPreviewIsRecorded: the link a host issues through this daemon's
+// preview_url is recorded against that host, under its token and its agent and
+// port, and the caller gets the host's answer unchanged (one-daemon open
+// question 1).
+func TestAForwardedPreviewIsRecorded(t *testing.T) {
+	s := NewServer(testFleet(t), "https://studio.example.com")
+	if err := s.SetPreviewURL("https://p{token}.preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	tok := strings.Repeat("ab", 24)
+	issued := "https://p" + tok + ".preview.example.com/preview/a1/3000/"
+	answer := `{"url":"` + issued + `"}`
+	tunnel := newFakeTunnel(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, answer)
+	}))
+	host := liveHost("box", tunnel.socket)
+	host.PreviewPort = 54400
+	reportHosts(t, s, host)
+
+	rec := forwardPreviewIssue(t, s, "studio.example.com", "a1", 3000)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the forwarded issue = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	seen := tunnel.next(t)
+	if seen.method != http.MethodPost || seen.path != "/api/agents/a1/preview/3000" {
+		t.Fatalf("the host was sent %s %s, want the issue route", seen.method, seen.path)
+	}
+	if got := rec.Body.String(); got != answer {
+		t.Fatalf("the caller got %q, want the host's own answer %q", got, answer)
+	}
+	if got, want := rec.Header().Get("Content-Length"), strconv.Itoa(len(answer)); got != want {
+		t.Fatalf("Content-Length = %q, want %q: the recorded response is not re-framed", got, want)
+	}
+
+	s.relaysMu.Lock()
+	rel, ok := s.relaysByToken[tok]
+	byAgent, agentOK := s.relaysByAgent["a1/3000"]
+	s.relaysMu.Unlock()
+	if !ok {
+		t.Fatal("the issued link was not recorded under its token")
+	}
+	if rel.Host != "box" || rel.AgentID != "a1" || rel.Port != 3000 || !rel.InHost {
+		t.Fatalf("recorded %+v, want box's a1/3000 with the token in the host", rel)
+	}
+	if !agentOK || byAgent.Token != tok {
+		t.Fatalf("recorded by agent %+v (ok %v), want the same entry", byAgent, agentOK)
+	}
+}
+
+// TestASharedOriginPreviewIsRecordedByItsToken: a link on a shared origin
+// carries its token in ?t=, and is recorded under that token (one-daemon open
+// question 1).
+func TestASharedOriginPreviewIsRecordedByItsToken(t *testing.T) {
+	s := NewServer(testFleet(t), "https://studio.example.com")
+	if err := s.SetPreviewURL("https://preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	tok := strings.Repeat("cd", 24)
+	issued := "https://preview.example.com/preview/a1/3000/?t=" + tok
+	tunnel := newFakeTunnel(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"url": issued})
+	}))
+	host := liveHost("box", tunnel.socket)
+	host.PreviewPort = 54400
+	reportHosts(t, s, host)
+
+	if rec := forwardPreviewIssue(t, s, "studio.example.com", "a1", 3000); rec.Code != http.StatusOK {
+		t.Fatalf("the forwarded issue = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	tunnel.next(t)
+
+	s.relaysMu.Lock()
+	rel, ok := s.relaysByToken[tok]
+	s.relaysMu.Unlock()
+	if !ok {
+		t.Fatal("the ?t= link was not recorded under its token")
+	}
+	if rel.InHost {
+		t.Fatalf("recorded %+v, want the token not in the host", rel)
+	}
+	if rel.Host != "box" || rel.AgentID != "a1" || rel.Port != 3000 {
+		t.Fatalf("recorded %+v, want box's a1/3000", rel)
 	}
 }
 

@@ -78,6 +78,14 @@ func (s *Server) hostForward(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// A preview link the host issues names the origin the caller reaches this
+	// daemon's preview listener through, in place of the host's own port. A
+	// caller on this machine names the host's preview port, which the tunnel
+	// carries; a caller behind the proxy names this daemon's preview_url, and
+	// the link it gets back comes here to be relayed (one-daemon open
+	// question 1). The caller cannot choose that origin through the forward.
+	fromThisMachine := isLoopbackName(r.Host)
+	namesPreviewURL := !fromThisMachine && s.previewURL != ""
 	proxy := &httputil.ReverseProxy{
 		Transport: s.hostTransport(host.Socket),
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -99,12 +107,11 @@ func (s *Server) hostForward(w http.ResponseWriter, r *http.Request) {
 			// X-Forwarded-* is added (D10).
 			out.Header.Del("Authorization")
 			out.Header.Del("Cookie")
-			// A preview link on the host names the host's own preview port,
-			// which this daemon reaches through the tunnel. The caller cannot
-			// choose that origin through the forward (one-daemon open
-			// question 1).
 			out.Header.Del(contract.PreviewOriginHeader)
-			if host.PreviewPort > 0 {
+			switch {
+			case namesPreviewURL:
+				out.Header.Set(contract.PreviewOriginHeader, s.previewURL)
+			case host.PreviewPort > 0:
 				out.Header.Set(contract.PreviewOriginHeader, fmt.Sprintf("http://localhost:%d", host.PreviewPort))
 			}
 		},
@@ -114,6 +121,14 @@ func (s *Server) hostForward(w http.ResponseWriter, r *http.Request) {
 		// An event stream is flushed as it is written, so a caller sees each
 		// event when the host writes it rather than when a buffer fills (D10).
 		FlushInterval: -1,
+	}
+	if namesPreviewURL && r.Method == http.MethodPost && isPreviewIssuePath(rest.path) {
+		// The host named this daemon's preview_url in the link it issued, so
+		// the request that follows the link comes here: record which host
+		// issued it, for the relay to send it back there (previewrelay.go).
+		// The forward sets no other ModifyResponse; one it had would still
+		// run, chained here.
+		proxy.ModifyResponse = s.recordForwardedPreview(name)
 	}
 	proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), hopPathKey{}, rest)))
 }

@@ -431,6 +431,13 @@ func (s *Server) PreviewHandler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		if rel, ok := s.previewRelayFor(r); ok {
+			// A preview a forwarded host issued through this daemon's
+			// preview_url is served by that host, through its tunnel
+			// (previewrelay.go). Anything else is this daemon's own.
+			s.relayPreview(w, r, rel)
+			return
+		}
 		s.preview(w, r)
 	})
 }

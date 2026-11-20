@@ -83,6 +83,16 @@ type Server struct {
 	// a host dials its tunnel socket through the transport built for it, and
 	// keeps it, so a stream keeps its connection (hostforward.go).
 	hostTransports sync.Map
+	// relaysMu guards both relay tables below (previewrelay.go). A forward
+	// records a link a host issued, and a request on this daemon's preview
+	// listener reads it back.
+	relaysMu sync.Mutex
+	// relaysByToken is the forwarded previews this daemon may relay, by the
+	// token the link carries.
+	relaysByToken map[string]previewRelay
+	// relaysByAgent is the same table keyed by agent ID and port, "<id>/<port>",
+	// for a link whose credential is a ?t= or a cookie.
+	relaysByAgent map[string]previewRelay
 	// factoryAuth is the one factory policy lock: grant management, client
 	// deletion, project removal, delegation settings and the authorization
 	// guarding a durable factory mutation all take it. It is created with the
@@ -132,7 +142,9 @@ func NewServer(target any, args ...any) *Server {
 	}
 	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux(),
 		factoryAuth:   newFactoryMCPAuthorizer(ws),
-		marshalEnroll: newMarshalEnrollments()}
+		marshalEnroll: newMarshalEnrollments(),
+		relaysByToken: make(map[string]previewRelay),
+		relaysByAgent: make(map[string]previewRelay)}
 	s.routes()
 	// The planner API owns live backend sessions, so it exists only when this
 	// server has a fleet to hold them.

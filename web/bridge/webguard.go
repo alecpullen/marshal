@@ -103,12 +103,21 @@ func (s *Server) allowedHost(host string) bool {
 	if name == "" {
 		return false
 	}
-	switch name {
-	case "localhost", "127.0.0.1", "::1":
+	if isLoopbackName(name) {
 		return true
 	}
 	published, ok := publicHostName(s.publicURLBase)
 	return ok && name == published
+}
+
+// isLoopbackName reports whether host (port dropped) is localhost, 127.0.0.1
+// or ::1: this machine, by every name a browser on it may reach.
+func isLoopbackName(host string) bool {
+	switch normalizeHost(hostName(host)) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }
 
 // hostName is host without its port. A bracketed IPv6 literal keeps its

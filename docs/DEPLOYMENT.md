@@ -1,88 +1,150 @@
-# Deploying the webbridge as a container
+# Running Marshal on a server
 
-The bridge runs as a Linux container with all state on a named volume.
-This is the only supported deployment for containerized agents: a Unix
-socket created inside a container is not dialable from a macOS host, so
-the bridge must be a Linux container sharing the state volume with its
-agents.
+A server is a Linux machine that runs Marshal's daemon as its user's service,
+reached over SSH from a laptop and, when you want a page, by a browser through
+the proxy you put in front of it.
 
-## Quick start
+## What a server is
 
-```bash
-docker compose up -d
-```
-
-The compose file mounts the Docker socket into the bridge container so
-it can spawn agent containers. Inside the container the bridge binds to
-`0.0.0.0:7700` (required for Docker's port forwarding to reach it); the
-compose file publishes the port as `127.0.0.1:7700` on the host, so the
-API is reachable only from localhost. The bridge rejects unauthenticated
-API calls — generate a token with `webbridge --token` or let it
-auto-generate one (printed to stderr on first boot).
-
-## The Docker socket
-
-**Mounting `/var/run/docker.sock` makes the bridge container
-root-equivalent on its host.** This is not a new privilege — a
-host-process bridge that could invoke `docker` already had it — but in
-a compose file it reads as a choice, so it is a deliberate one. The
-bridge needs the daemon to spawn agent containers; there is no way to
-grant that without root-equivalent access to the Docker API.
-
-## State volume
-
-One named volume, `marshal-state`, mounted at `/state` in the bridge:
-
-```
-/state/work/<agentID>/      agent workspace
-/state/repos/<hash>/        shared bare mirrors
-/state/sockets/<agentID>/   per-agent ACP socket
-/state/audit/               audit log
-```
-
-Agents mount only their own subpaths:
-
-```
---mount type=volume,source=marshal-state,target=/work,volume-subpath=work/<id>
---mount type=volume,source=marshal-state,target=/run/marshal,volume-subpath=sockets/<id>
-```
-
-The option name differs by runtime: Docker spells it `volume-subpath=`,
-Podman spells it `subpath=` (per `podman-run(1)`). The bridge detects
-the runtime and builds the mount argument accordingly.
-
-`--state-volume` must name the volume mounted at `--state-dir` (default
-`marshal-state`). A mismatch — a volume name that does not match the
-volume actually mounted at the state directory — surfaces as a
-`cannot access path …` error from the runtime naming the configured
-volume rather than the mounted one, so the two flags must be kept in
-step.
-
-## Local project mounts
-
-A containerized bridge sees a host checkout at its own mount point, but
-Docker resolves a bind-mount source against the daemon's view, not the
-bridge's. Declare each shared root at startup:
+A server runs the same daemon a laptop runs: there is no server build and no
+server mode (one-daemon D5). Install Marshal with `install.sh` or Homebrew,
+then install the daemon.
 
 ```bash
-docker compose run bridge \
-  --project-mount /Users/you/code:/host-projects
+curl -fsSL https://raw.githubusercontent.com/alecpullen/marshal/main/scripts/install.sh | sh
+# or: brew install alecpullen/tap/marshal
+marshal daemon install
 ```
 
-The bridge reads the checkout at `/host-projects/marshal` and passes
-`/Users/you/code/marshal` as the mount source for the agent. An
-undeclared path fails loudly with `mounts denied` — the good failure
-mode, surfacing at spawn rather than as an empty workspace.
+`install.sh` runs `marshal daemon install` itself; after Homebrew, run it once
+by hand. It writes the systemd user unit, starts it, and turns on linger for
+your user, so the daemon outlives a logout; `--no-linger` leaves linger alone.
 
-## Image
+## Workspace agents
 
-The bridge image is larger than the agent image because it carries git
-and the Docker CLI. This is inherent: the bridge runs every git
-operation itself (clone, mirror, push) and spawns agent containers
-through the mounted Docker socket.
+An agent with a workspace runs in a container (D4), which needs a rootless
+runtime: rootless Podman or rootless Docker, on the daemon user's `PATH`. A
+rootful runtime is refused rather than used, and the refusal names the fix:
+`docker runs as root, and a daemon on the host needs a rootless runtime on
+Linux (rootless Docker or Podman)`. Every other agent — a plain local agent,
+the control agent — is a host process on its project's child, and needs no
+runtime at all.
 
-Build locally:
+`marshal daemon status` names what the daemon serves: its `studio:` line is
+the directory the Studio is served from, and its `web:` line is where the web
+listener bound (`web: off` when it serves none).
+
+## Reaching it from a laptop
+
+A host is an SSH destination (D6–D9). On the laptop:
 
 ```bash
-docker build -f build/Dockerfile.bridge -t marshal/webbridge:dev .
+marshal fleet add box you@box.example.com
+marshal fleet --host box
 ```
+
+`fleet add` writes the host's table to `~/.config/marshal/fleet.toml` — mode
+`0600`, comments kept — and waits for the laptop's daemon to report it. Add
+`--marshal PATH` for a remote binary that is not on `PATH`, and `--no-notify`
+to leave that host's desktop notifications off. The laptop's daemon keeps one
+`ssh -N` per host and reports it in `marshal daemon status`, as `host box
+(you@box.example.com): live`, or `down` with ssh's last line beside it.
+
+The SSH has to work without a prompt (A1–A3):
+
+- OpenSSH 6.7 or later at both ends, with `AllowStreamLocalForwarding yes` on
+  the server (the default): the tunnel forwards a unix socket.
+- A key the service can use unattended — one with no passphrase, or one an
+  agent it can reach holds — and the server's key already in `known_hosts`.
+  ssh runs with `BatchMode`, so a prompt is a failure whose message
+  `marshal daemon status` reports as the host's last error.
+- `marshal` on the remote's non-interactive `PATH`, or its path in the host's
+  table: `marshal = "/home/you/.local/bin/marshal"`, or `--marshal` above.
+
+Then `marshal fleet --host box` opens that daemon's fleet.
+
+## A browser
+
+The daemon serves the Studio and its API, and authenticates no browser: the
+proxy you put in front of it does (D10, D13). In
+`~/.config/marshal/config.toml`:
+
+```toml
+[daemon]
+web_listen = "unix"          # web.sock beside the daemon's socket, mode 0600
+web_url = "https://marshal.example.com"
+preview_listen = "127.0.0.1:7790"
+preview_url = "https://preview.example.com"
+```
+
+`web_listen` is `unix`, an absolute socket path, or a loopback address; any
+other address is refused at start. `web_group` makes a socket `0660` in that
+group for a proxy that runs as another user, and needs an absolute path, since
+the daemon's directory is private. `web_url` is the address the proxy
+publishes, and it is the daemon's public URL too: `marshal studio` opens it,
+and the unit passes it as `--public-url`.
+
+Tailscale Serve, which authenticates the tailnet for you:
+
+```bash
+# web_listen = "127.0.0.1:7700"; web_url = "https://box.<tailnet>.ts.net"
+tailscale serve --bg 7700
+```
+
+Caddy, with whatever auth module you pick:
+
+```
+marshal.example.com {
+	reverse_proxy unix//home/you/.local/share/marshal/daemon/web.sock
+}
+```
+
+Let `/hooks/`, `/status/` and `/mcp` through without the proxy's login: each
+of them carries its own credential.
+
+Previews are published on a second hostname: `preview_listen` fixes the
+preview listener's loopback port and `preview_url` is the origin preview links
+name (D11).
+
+Set `web_url` to exactly the address the proxy publishes. The web listener
+answers only that host and the loopback names, and refuses a state-changing
+request another site's page made. A misconfigured proxy is recognisable: a
+wrong `Host` is refused with `this daemon does not answer to host <host>; set
+[daemon] web_url to the address the proxy publishes`, a cross-site write with
+`cross-site request refused`, and an `/api/` body that is not JSON with `the
+API takes application/json`.
+
+Turn response buffering off for `/api/`: the event streams must flush as they
+are written. nginx spells it `proxy_buffering off;`, and Caddy
+`flush_interval -1` in the `reverse_proxy` block.
+
+Keep the proxy's idle timeout above 30 s. The streams send a heartbeat every
+25 s, and a shorter timeout severs a session's stream while it sits quiet.
+
+A proxy that answers an expired session with a redirect to its login page is
+read by the Studio as signed out — `signed out: reload to sign in again` — and
+a reload signs in again.
+
+## MCP clients
+
+An MCP client on the server runs `marshal mcp --credential-file PATH`, which
+relays the client's stdin and stdout JSON-RPC to `/mcp` over the daemon's
+socket. The file is the `0600` credential Settings › Access shows once. From
+another machine, make `ssh box marshal mcp --credential-file PATH` the client's
+command.
+
+## The agent image
+
+Unchanged: workspace agents run the image in
+[`docs/AGENT-IMAGE.md`](AGENT-IMAGE.md), which covers building it and
+declaring a per-project one.
+
+## Moving from the containerized bridge
+
+A machine that ran the retired containerized bridge moves over in four steps:
+
+1. Finish or discard the agents that bridge still holds.
+2. Stop the compose stack: `docker compose down`.
+3. Install the daemon on the host, as above.
+4. The old `marshal-state` volume is not read by the daemon on the host, and
+   can be deleted once nothing in it is wanted.

@@ -128,24 +128,24 @@ func TestTheDaemonsDefaults(t *testing.T) {
 	}
 }
 
-// TestTheDaemonRefuses pins the settings the daemon refuses, and the relay's
-// flags, whose refusals sit beside them. The retired --profile is refused
-// unless it says local.
+// TestTheDaemonRefuses pins the settings the daemon refuses. The retired
+// --profile is refused unless it says local, and the retired --relay-join is
+// refused outright (TestRelayJoinIsRefused). The four join flags are not
+// refused: they are accepted and ignored (TestTheJoinFlagsAreIgnored).
 func TestTheDaemonRefuses(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
-	// A token and a join secret file: parseConfig only records where they
-	// are, so neither needs contents until a bridge reads it.
+	// A token file: parseConfig only records where it is, so it needs no
+	// contents until the daemon reads it.
 	tokenFile := filepath.Join(t.TempDir(), "studio.token")
-	joinSecret := filepath.Join(t.TempDir(), "join.secret")
 
 	cases := []struct {
 		name string
 		args []string
 		env  map[string]string
 		// want is the text the refusal must name. An empty want means the
-		// settings are accepted, which is what the join's token rule and the
-		// retired flag are pinned with.
+		// settings are accepted, which is what the retired flag is pinned
+		// with.
 		want string
 	}{
 		{"idle timeout negative", []string{"--idle-session-timeout", "-5m"}, nil, "cannot be negative"},
@@ -158,25 +158,10 @@ func TestTheDaemonRefuses(t *testing.T) {
 		// own: the egress proxy is off unless asked for, and asking is fine.
 		{"egress on", []string{"--egress", "on"}, nil, ""},
 		{"egress on from the variable", nil, map[string]string{"WEBBRIDGE_EGRESS": "on"}, ""},
-		// The token file is a listener's and a join's alike: with no
-		// listener and no join, there is nothing to hand it to.
-		{"token file without a listener or a join", []string{"--profile", "local", "--addr", "off", "--token-file", tokenFile}, nil, "the TCP listener or a join"},
-		// A join needs the url it dials, the name it joins under, the file
-		// holding that name's secret, and a token to check relayed requests
-		// with.
-		{"join without a name", []string{"--profile", "local", "--addr", "off", "--join", "http://127.0.0.1:7700", "--join-token-file", joinSecret, "--token-file", tokenFile}, nil, "--join-name"},
-		{"join without a token file", []string{"--profile", "local", "--addr", "off", "--join", "http://127.0.0.1:7700", "--join-name", "box", "--token-file", tokenFile}, nil, "--join-token-file"},
-		{"join without a bearer token", []string{"--profile", "local", "--addr", "off", "--join", "http://127.0.0.1:7700", "--join-name", "box", "--join-token-file", joinSecret}, nil, "--token or --token-file"},
-		{"join name without a join", []string{"--profile", "local", "--join-name", "box"}, nil, "--join"},
-		{"join token file without a join", []string{"--profile", "local", "--join-token-file", joinSecret}, nil, "--join"},
-		{"join ca file without a join", []string{"--profile", "local", "--join-ca-file", joinSecret}, nil, "--join"},
-		{"relay join without a pair", []string{"--profile", "local", "--relay-join", "box"}, nil, "expected NAME=PATH"},
-		{"relay join given twice", []string{"--profile", "local", "--relay-join", "box=" + joinSecret, "--relay-join", "box=" + tokenFile}, nil, "given twice"},
-		{"relay join twice from the variable", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_RELAY_JOIN": "box=" + joinSecret + ",box=" + tokenFile}, "given twice"},
-		// --addr off leaves the socket as the only listener, but a join
-		// still needs the token its relayed requests are checked with, so
-		// --token-file is accepted and read.
-		{"token file for a join", []string{"--profile", "local", "--addr", "off", "--join", "http://127.0.0.1:7700", "--join-name", "box", "--join-token-file", joinSecret, "--token-file", tokenFile}, nil, ""},
+		// A token is for the TCP listener: with the listener off, there is
+		// nothing to hand it to, and refusing beats accepting it unused.
+		{"token without a listener", []string{"--profile", "local", "--addr", "off", "--token", "s3cret"}, nil, "the TCP listener"},
+		{"token file without a listener", []string{"--profile", "local", "--addr", "off", "--token-file", tokenFile}, nil, "the TCP listener"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -201,6 +186,91 @@ func TestTheDaemonRefuses(t *testing.T) {
 				t.Errorf("error %q does not name %s", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestRelayJoinIsRefused pins the one retirement that is a refusal: the relay
+// a joining host dialled into has no place in the one daemon, where a remote
+// daemon is a host reached over SSH (D6). The refusal says so, by flag and by
+// variable alike.
+func TestRelayJoinIsRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		env  map[string]string
+	}{
+		{"flag", []string{"--relay-join", "box=/tmp/box.secret"}, nil},
+		{"variable", nil, map[string]string{"WEBBRIDGE_RELAY_JOIN": "box=/tmp/box.secret"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateWebbridgeEnv(t)
+			t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			_, err := parseConfig(tc.args, io.Discard)
+			if err == nil {
+				t.Fatalf("parseConfig(%v) accepted the retired --relay-join", tc.args)
+			}
+			if !strings.Contains(err.Error(), "--relay-join is retired") || !strings.Contains(err.Error(), "SSH") {
+				t.Errorf("error %q does not retire --relay-join for a host reached over SSH", err)
+			}
+		})
+	}
+}
+
+// TestTheJoinFlagsAreIgnored pins the retirement the other way round: an
+// installed unit's four join flags still start the daemon — the files they
+// name are never opened — and one warning names them. The warning goes
+// through slog, the path the retired --profile takes, so the test reads the
+// handler that writes where stderr would hold it.
+func TestTheJoinFlagsAreIgnored(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{
+			"--addr", "off", "--socket", socket,
+			"--join", "https://relay.example",
+			"--join-name", "box",
+			"--join-token-file", "/nonexistent/join.secret",
+			"--join-ca-file", "/nonexistent/relay.pem",
+		}, io.Discard, io.Discard)
+	}()
+
+	// The daemon serves: the flags are ignored rather than refused, and the
+	// secret files they name are never read, so a missing one stops nothing.
+	waitForDaemon(t, socketClient(socket))
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
+	}
+
+	want := "--join, --join-name, --join-token-file, --join-ca-file are retired and ignored"
+	if got := strings.Count(logged.String(), "retired and ignored"); got != 1 {
+		t.Fatalf("warnings = %d, want 1: %s", got, logged.String())
+	}
+	if !strings.Contains(logged.String(), want) {
+		t.Errorf("the warning does not name the four flags as %q: %s", want, logged.String())
+	}
+	if !strings.Contains(logged.String(), "marshal daemon install") {
+		t.Errorf("the warning does not say how to rewrite the unit: %s", logged.String())
 	}
 }
 

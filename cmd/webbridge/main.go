@@ -117,26 +117,6 @@ type config struct {
 	// tunnels runs `<marshal-bin> daemon tunnels` beside the bridge
 	// (one-daemon D7).
 	tunnels bool
-	// relayJoins names the hosts that may join this bridge as a relay, each
-	// with the file holding that name's join secret (P8 D11). A bridge with
-	// none relays nothing.
-	relayJoins []relayJoin
-	// join is the relay this bridge dials out to, joinName the name it
-	// joins under, joinTokenFile the file holding that name's secret, and
-	// joinCAFile an optional certificate to trust when dialling it (P8
-	// D12). Empty join means this bridge joins nothing.
-	join          string
-	joinName      string
-	joinTokenFile string
-	joinCAFile    string
-}
-
-// relayJoin is one host a relay names and the file holding its join secret
-// (P8 D11). The command reads the file and hands the bridge the value
-// (decision 2); the bridge never opens a secret file.
-type relayJoin struct {
-	name string
-	path string
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -177,20 +157,16 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	egress := fs.String("egress", envOr("WEBBRIDGE_EGRESS", "off"), "egress proxy for agents: on or off")
 	baoCAFile := fs.String("bao-ca-file", envOr("WEBBRIDGE_BAO_CA_FILE", ""), "extra CA certificate to trust for OpenBao")
 	publicURL := fs.String("public-url", envOr("WEBBRIDGE_PUBLIC_URL", ""), "externally reachable base URL, used for links in outbound notifications")
-	// The relay's side: each NAME=PATH names a host that may join this
-	// bridge and the file holding that name's secret (P8 D11). The flag is
-	// repeatable; the variable carries the same pairs comma-separated, as
-	// one value, when the flag is not given.
-	var relayJoinArgs stringList
-	fs.Func("relay-join", "host NAME=PATH that may join this bridge as a relay, its secret in PATH (repeatable; WEBBRIDGE_RELAY_JOIN carries pairs comma-separated)", func(v string) error {
-		relayJoinArgs = append(relayJoinArgs, v)
-		return nil
-	})
-	// The joining side: the relay this bridge dials out to (P8 D12).
-	join := fs.String("join", envOr("WEBBRIDGE_JOIN", ""), "relay URL to join: https, or http on a loopback host")
-	joinName := fs.String("join-name", envOr("WEBBRIDGE_JOIN_NAME", ""), "the name this bridge joins its relay under")
-	joinTokenFile := fs.String("join-token-file", envOr("WEBBRIDGE_JOIN_TOKEN_FILE", ""), "file holding the relay's join secret for --join-name")
-	joinCAFile := fs.String("join-ca-file", envOr("WEBBRIDGE_JOIN_CA_FILE", ""), "extra CA certificate to trust when dialling the relay")
+	// The relay and the joiner are retired (one-daemon D6): a remote daemon
+	// is a host reached over SSH, not a bridge that dials in or is dialled.
+	// --relay-join is refused; it stays declared so the refusal names the
+	// flag rather than the parser's "flag provided but not defined". The
+	// join flags stay declared and are accepted and ignored, because the
+	// unit files already installed carry them (applyDaemonDefaults warns).
+	fs.Func("relay-join", "retired: a remote daemon is a host reached over SSH", func(string) error { return nil })
+	for _, f := range []string{"join", "join-name", "join-token-file", "join-ca-file"} {
+		fs.String(f, "", "retired; ignored")
+	}
 	// The duration flags read their variable through envOr like the rest,
 	// then hand the text to the parser: a variable that does not parse is
 	// a configuration error rather than a silent fallback.
@@ -221,8 +197,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	cfg := config{socket: *socket, addr: *addr, previewAddr: *previewAddr, token: *token, tokenFile: *tokenFile, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
 		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL,
-		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh, tunnels: *tunnels,
-		join: *join, joinName: *joinName, joinTokenFile: *joinTokenFile, joinCAFile: *joinCAFile}
+		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh, tunnels: *tunnels}
 	pm, err := parseProjectMounts(projectMounts)
 	if err != nil {
 		return config{}, err
@@ -230,9 +205,6 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	cfg.projectMounts = pm
 	given := givenFrom(fs)
 	if err := applyDaemonDefaults(&cfg, given, *profile); err != nil {
-		return config{}, err
-	}
-	if err := applyRelay(&cfg, given, relayJoinArgs); err != nil {
 		return config{}, err
 	}
 	// Half-configured TLS fails loudly. Serving plaintext because one
@@ -308,15 +280,43 @@ func applyDaemonDefaults(cfg *config, given givenSettings, profile string) error
 		return fmt.Errorf("--profile %q: the server profile is retired; every webbridge is the daemon (docs/one-daemon/design.md)", profile)
 	}
 
-	// A token belongs to the TCP listener, or to the join a bridge makes: D12
-	// names either as a joining bridge's bearer token, because relayed
-	// requests are checked with it. Without a join, --addr off has no use for
-	// one, and refusing beats accepting it and never using it.
-	if cfg.addr == "off" && cfg.join == "" && given.set("token", "WEBBRIDGE_TOKEN", cfg.token) {
-		return fmt.Errorf("--token is for the TCP listener or a join, and neither is set")
+	// --relay-join is retired: a remote daemon is a host reached over SSH,
+	// not a bridge that dials in and is reversed onto (D6). It is refused
+	// rather than ignored, because a unit that carries it asked for a
+	// listener that no longer exists.
+	if given.given("relay-join", "WEBBRIDGE_RELAY_JOIN") {
+		return fmt.Errorf("--relay-join is retired: a remote daemon is a host reached over SSH (marshal fleet add; docs/one-daemon/design.md D6)")
 	}
-	if cfg.addr == "off" && cfg.join == "" && given.set("token-file", "WEBBRIDGE_TOKEN_FILE", cfg.tokenFile) {
-		return fmt.Errorf("--token-file is for the TCP listener or a join, and neither is set")
+
+	// The four join flags are retired too, but accepted and ignored: the
+	// units already installed carry them, and a daemon that refused to
+	// start over one would need the rewrite it is warning about first. One
+	// warning names the ones that were given, by flag or by variable.
+	var retired []string
+	for _, f := range []struct{ flag, env string }{
+		{"join", "WEBBRIDGE_JOIN"},
+		{"join-name", "WEBBRIDGE_JOIN_NAME"},
+		{"join-token-file", "WEBBRIDGE_JOIN_TOKEN_FILE"},
+		{"join-ca-file", "WEBBRIDGE_JOIN_CA_FILE"},
+	} {
+		if given.given(f.flag, f.env) {
+			retired = append(retired, "--"+f.flag)
+		}
+	}
+	if len(retired) > 0 {
+		slog.Default().Warn("webbridge: " + strings.Join(retired, ", ") +
+			" are retired and ignored; run marshal daemon install to rewrite the unit")
+	}
+
+	// A token is for the TCP listener: --addr off leaves the socket as the
+	// only listener, and the socket is peer-checked rather than
+	// token-checked, so it has no use for one. Refusing beats accepting it
+	// and never using it.
+	if cfg.addr == "off" && given.set("token", "WEBBRIDGE_TOKEN", cfg.token) {
+		return fmt.Errorf("--token is for the TCP listener, and --addr off")
+	}
+	if cfg.addr == "off" && given.set("token-file", "WEBBRIDGE_TOKEN_FILE", cfg.tokenFile) {
+		return fmt.Errorf("--token-file is for the TCP listener, and --addr off")
 	}
 	if cfg.idleSessionTimeout < 0 {
 		return fmt.Errorf("--idle-session-timeout %s: a session timeout cannot be negative", cfg.idleSessionTimeout)
@@ -338,114 +338,6 @@ func applyDaemonDefaults(cfg *config, given givenSettings, profile string) error
 		cfg.workspace = filepath.Join(dir, "fleet.json")
 	}
 	return nil
-}
-
-// applyRelay validates the relay's flags and the join's, and resolves the
-// --relay-join pairs (P8 D11, D12). The refusals sit beside
-// applyDaemonDefaults', because the daemon can both relay and join.
-func applyRelay(cfg *config, given givenSettings, pairs []string) error {
-	// The flag is repeatable; the variable carries the same pairs
-	// comma-separated, as one value, when the flag is not given.
-	if len(pairs) == 0 {
-		if env := os.Getenv("WEBBRIDGE_RELAY_JOIN"); env != "" {
-			pairs = strings.Split(env, ",")
-		}
-	}
-	seen := make(map[string]bool, len(pairs))
-	for _, pair := range pairs {
-		name, path, ok := strings.Cut(pair, "=")
-		if !ok || name == "" || path == "" {
-			return fmt.Errorf("--relay-join %q: expected NAME=PATH", pair)
-		}
-		if seen[name] {
-			return fmt.Errorf("--relay-join %s: the name is given twice", name)
-		}
-		seen[name] = true
-		cfg.relayJoins = append(cfg.relayJoins, relayJoin{name: name, path: path})
-	}
-
-	// A join needs the url it dials, the name it joins under and the file
-	// holding that name's secret. Every one is required: a join that
-	// cannot present all three is refused before it dials anything.
-	joined := given.set("join", "WEBBRIDGE_JOIN", cfg.join)
-	if joined {
-		if !given.set("join-name", "WEBBRIDGE_JOIN_NAME", cfg.joinName) {
-			return fmt.Errorf("--join needs --join-name")
-		}
-		if !given.set("join-token-file", "WEBBRIDGE_JOIN_TOKEN_FILE", cfg.joinTokenFile) {
-			return fmt.Errorf("--join needs --join-token-file")
-		}
-		// Relayed requests are checked with this bridge's own bearer token
-		// (D15), so a joining bridge without one would join and then refuse
-		// everything that reached it.
-		if cfg.token == "" && cfg.tokenFile == "" {
-			return fmt.Errorf("--join needs a bearer token: give --token or --token-file")
-		}
-		return nil
-	}
-	for _, f := range []struct{ flag, env, value string }{
-		{"join-name", "WEBBRIDGE_JOIN_NAME", cfg.joinName},
-		{"join-token-file", "WEBBRIDGE_JOIN_TOKEN_FILE", cfg.joinTokenFile},
-		{"join-ca-file", "WEBBRIDGE_JOIN_CA_FILE", cfg.joinCAFile},
-	} {
-		if given.set(f.flag, f.env, f.value) {
-			return fmt.Errorf("--%s is for --join", f.flag)
-		}
-	}
-	return nil
-}
-
-// readSecretFile reads a join secret from path. A file group or other can
-// read is refused, naming it: the file is a credential, and this is the one
-// place the command touches one (decision 2). The bridge is handed the
-// value and never opens the file.
-func readSecretFile(path string) (string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", fmt.Errorf("join secret %s: %w", path, err)
-	}
-	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		return "", fmt.Errorf("join secret %s has mode %o; it must be 0600", path, perm)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("join secret %s: %w", path, err)
-	}
-	secret := strings.TrimSpace(string(data))
-	if secret == "" {
-		return "", fmt.Errorf("join secret %s is empty", path)
-	}
-	return secret, nil
-}
-
-// readRelaySecrets reads each --relay-join secret file, keyed by the name
-// that may join with it (P8 D11).
-func readRelaySecrets(joins []relayJoin) (map[string]string, error) {
-	secrets := make(map[string]string, len(joins))
-	for _, join := range joins {
-		secret, err := readSecretFile(join.path)
-		if err != nil {
-			return nil, err
-		}
-		secrets[join.name] = secret
-	}
-	return secrets, nil
-}
-
-// buildJoiner builds the joiner this bridge dials out with (P8 D12). The join
-// secret is read here, from the file the command names, and the bridge is
-// handed the value (decision 2): bridge never opens a secret file.
-func buildJoiner(cfg config, api *bridge.Server) (*bridge.Joiner, error) {
-	secret, err := readSecretFile(cfg.joinTokenFile)
-	if err != nil {
-		return nil, err
-	}
-	return bridge.NewJoiner(bridge.JoinConfig{
-		URL:    cfg.join,
-		Name:   cfg.joinName,
-		Secret: secret,
-		CAFile: cfg.joinCAFile,
-	}, api.RelayedHandler())
 }
 
 // buildSecretProvider constructs the backend the flags select.
@@ -682,11 +574,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// --token-file is how the daemon hands the Studio its token.
 	// It is read when present and minted when absent, so a restarted
 	// daemon keeps one token and an open Studio tab keeps working. The
-	// token stays out of the log either way. A joining bridge reads or
-	// mints it too, even under --addr off: relayed requests are checked
-	// with this token, so a join without one would refuse everything that
-	// reached it (D12, D15).
-	if cfg.token == "" && cfg.tokenFile != "" && (cfg.addr != "off" || cfg.join != "") {
+	// token stays out of the log either way.
+	if cfg.token == "" && cfg.tokenFile != "" && cfg.addr != "off" {
 		cfg.token, err = readOrCreateToken(cfg.tokenFile)
 		if err != nil {
 			return err
@@ -837,41 +726,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fleet.StartScheduler(nil)
 
 	api := bridge.NewServer(fleet, cfg.token, cfg.publicURL, bridge.NewFactoryAPI(factoryStore, factoryController, fleet))
-
-	// A bridge given --relay-join relays the hosts that join it (D11). Each
-	// secret is read here and handed to the bridge as a value (decision 2):
-	// a file group or other can read stops the start, naming the file. A
-	// bridge given none relays nothing, and its own API is unchanged.
-	if len(cfg.relayJoins) > 0 {
-		secrets, err := readRelaySecrets(cfg.relayJoins)
-		if err != nil {
-			shutdownFactory()
-			fleet.Close()
-			return err
-		}
-		relay, err := bridge.NewHostRelay(secrets)
-		if err != nil {
-			shutdownFactory()
-			fleet.Close()
-			return err
-		}
-		api.SetHostRelay(relay)
-	}
-
-	// A joining bridge dials out to its relay and serves the connections the
-	// relay reverses onto it (D12, D13). It is built and set here, before any
-	// listener serves, so the per-request read in GET /api/daemon cannot race
-	// the field; only Run waits for the signal context below.
-	var joiner *bridge.Joiner
-	if cfg.join != "" {
-		joiner, err = buildJoiner(cfg, api)
-		if err != nil {
-			shutdownFactory()
-			fleet.Close()
-			return err
-		}
-		api.SetJoiner(joiner)
-	}
 
 	// serveErr carries the first listener to stop serving. The socket and
 	// the TCP listener can both exist, so it holds two, and each goroutine
@@ -1068,25 +922,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		shutdownFactory()
 		fleet.Close()
 	})
-
-	// A joining bridge dials out to its relay and serves the connections the
-	// relay reverses onto it (D12, D13). The joiner itself was built and set
-	// before the listeners started; here it only runs, on sigCtx, so a
-	// shutdown stops it with the listeners and run waits for it before it
-	// returns.
-	if joiner != nil {
-		joined := make(chan struct{})
-		go func() {
-			defer close(joined)
-			_ = joiner.Run(sigCtx)
-		}()
-		// stop is idempotent, so cancelling here as well as in the defer
-		// above is what lets run wait for the joiner on every path out.
-		defer func() {
-			stop()
-			<-joined
-		}()
-	}
 
 	select {
 	case err := <-serveErr:

@@ -95,6 +95,100 @@ func TestTheIdleTimeoutRoundTripsThroughASave(t *testing.T) {
 	}
 }
 
+// TestDaemonWebSettingsAreReadFromTheUserConfig pins the five web and
+// preview keys (one-daemon D10/D11): each is read from the user config as
+// written.
+func TestDaemonWebSettingsAreReadFromTheUserConfig(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, filepath.Join(home, ".config", "marshal", "config.toml"),
+		"[daemon]\n"+
+			"web_listen = \"unix\"\n"+
+			"web_group = \"marshal\"\n"+
+			"web_url = \"https://marshal.example\"\n"+
+			"preview_listen = \"127.0.0.1:7790\"\n"+
+			"preview_url = \"https://preview.example\"\n")
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "web_listen", got: cfg.Daemon.WebListen, want: "unix"},
+		{name: "web_group", got: cfg.Daemon.WebGroup, want: "marshal"},
+		{name: "web_url", got: cfg.Daemon.WebURL, want: "https://marshal.example"},
+		{name: "preview_listen", got: cfg.Daemon.PreviewListen, want: "127.0.0.1:7790"},
+		{name: "preview_url", got: cfg.Daemon.PreviewURL, want: "https://preview.example"},
+	} {
+		if tc.got != tc.want {
+			t.Fatalf("Daemon.%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// TestDaemonWebSettingsRoundTripThroughASave pins that non-default values
+// written by writeSections are read back by the next load.
+func TestDaemonWebSettingsRoundTripThroughASave(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.Daemon.WebListen = "/run/user/1000/marshal/web.sock"
+	cfg.Daemon.WebGroup = "marshal"
+	cfg.Daemon.WebURL = "https://marshal.example"
+	cfg.Daemon.PreviewListen = "127.0.0.1:7790"
+	cfg.Daemon.PreviewURL = "https://preview.example"
+
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{WorkingDir: dir, HomeDir: filepath.Join(dir, "home")})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "WebListen", got: loaded.Daemon.WebListen, want: cfg.Daemon.WebListen},
+		{name: "WebGroup", got: loaded.Daemon.WebGroup, want: cfg.Daemon.WebGroup},
+		{name: "WebURL", got: loaded.Daemon.WebURL, want: cfg.Daemon.WebURL},
+		{name: "PreviewListen", got: loaded.Daemon.PreviewListen, want: cfg.Daemon.PreviewListen},
+		{name: "PreviewURL", got: loaded.Daemon.PreviewURL, want: cfg.Daemon.PreviewURL},
+	} {
+		if tc.got != tc.want {
+			t.Fatalf("Daemon.%s = %q after round trip, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// TestDaemonWebSettingsDefaultEmpty pins that the defaults serve nothing:
+// the web listener, the preview listener and the two public addresses are
+// unset until the user asks for them.
+func TestDaemonWebSettingsDefaultEmpty(t *testing.T) {
+	cfg := Default()
+	for _, tc := range []struct {
+		name string
+		got  string
+	}{
+		{name: "WebListen", got: cfg.Daemon.WebListen},
+		{name: "WebGroup", got: cfg.Daemon.WebGroup},
+		{name: "WebURL", got: cfg.Daemon.WebURL},
+		{name: "PreviewListen", got: cfg.Daemon.PreviewListen},
+		{name: "PreviewURL", got: cfg.Daemon.PreviewURL},
+	} {
+		if tc.got != "" {
+			t.Fatalf("Daemon.%s = %q, want empty", tc.name, tc.got)
+		}
+	}
+}
+
 // TestDaemonEgressIsReadFromTheUserConfig pins [daemon] egress, which turns
 // the egress proxy sidecar on for container agents: off unless the user says
 // so, and an explicit false stays false.

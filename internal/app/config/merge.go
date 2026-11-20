@@ -415,6 +415,23 @@ func merge(cfg *Config, file configFile) error {
 		if file.Daemon.StudioAddr != nil && *file.Daemon.StudioAddr != "" {
 			cfg.Daemon.StudioAddr = *file.Daemon.StudioAddr
 		}
+		// The web and preview settings (one-daemon D10/D11). Each merges as
+		// studio_addr does: a set, non-empty value wins.
+		if file.Daemon.WebListen != nil && *file.Daemon.WebListen != "" {
+			cfg.Daemon.WebListen = *file.Daemon.WebListen
+		}
+		if file.Daemon.WebGroup != nil && *file.Daemon.WebGroup != "" {
+			cfg.Daemon.WebGroup = *file.Daemon.WebGroup
+		}
+		if file.Daemon.WebURL != nil && *file.Daemon.WebURL != "" {
+			cfg.Daemon.WebURL = *file.Daemon.WebURL
+		}
+		if file.Daemon.PreviewListen != nil && *file.Daemon.PreviewListen != "" {
+			cfg.Daemon.PreviewListen = *file.Daemon.PreviewListen
+		}
+		if file.Daemon.PreviewURL != nil && *file.Daemon.PreviewURL != "" {
+			cfg.Daemon.PreviewURL = *file.Daemon.PreviewURL
+		}
 		// The relay the daemon joins (P8 D12). All three are user-global, as
 		// studio_addr is, and an empty value never overwrites one already
 		// set, so a project file cannot unset the user's join.

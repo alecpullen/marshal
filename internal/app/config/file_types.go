@@ -170,6 +170,11 @@ type fileDaemon struct {
 	IdleSessionTimeout *string `toml:"idle_session_timeout"`
 	Egress             *bool   `toml:"egress"`
 	StudioAddr         *string `toml:"studio_addr"`
+	WebListen          *string `toml:"web_listen"`
+	WebGroup           *string `toml:"web_group"`
+	WebURL             *string `toml:"web_url"`
+	PreviewListen      *string `toml:"preview_listen"`
+	PreviewURL         *string `toml:"preview_url"`
 	JoinURL            *string `toml:"join_url"`
 	JoinName           *string `toml:"join_name"`
 	JoinCAFile         *string `toml:"join_ca_file"`

@@ -119,6 +119,14 @@ type Verification struct {
 
 // Integration is the durable journal of one parent integration or discard
 // attempt. P3 writes it; P2 only carries it through the record.
+//
+// The journal is ordered so a restart can always tell what happened: an accepted
+// mutation is journalled as intent — with the exact source and the target commit
+// it is about to sit on — before git runs, then as the result it proved
+// (integrated, no_changes or conflict). OperationID is also written into the
+// merge commit's message, so the merge in the target's history and the journal
+// entry name each other. A refusal is journalled too: it is evidence that
+// nothing was mutated, not the absence of a decision.
 type Integration struct {
 	OperationID    string `json:"operation_id"`
 	Kind           string `json:"kind"`
@@ -251,6 +259,28 @@ func validOutcome(s string) bool {
 	case OutcomePreparing, OutcomePrepared, OutcomeRunning, OutcomeDone,
 		OutcomeFailed, OutcomeStopped, OutcomePartial, OutcomeInterrupted,
 		OutcomeUnknown:
+		return true
+	}
+	return false
+}
+
+// validIntegrationState reports whether s is one of the journalled integration
+// states. A journal write of anything else is refused rather than stored: a
+// record that names a state this build cannot interpret is unreadable evidence.
+func validIntegrationState(s string) bool {
+	switch s {
+	case IntegrationIntent, IntegrationIntegrated, IntegrationNoChanges,
+		IntegrationConflict, IntegrationRefused, IntegrationUnknown,
+		IntegrationDiscarded:
+		return true
+	}
+	return false
+}
+
+// validCleanupState reports whether s is one of the cleanup states.
+func validCleanupState(s string) bool {
+	switch s {
+	case CleanupRetained, CleanupComplete, CleanupIntegratedPending, CleanupUnknown:
 		return true
 	}
 	return false

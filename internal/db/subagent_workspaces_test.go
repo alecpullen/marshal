@@ -264,6 +264,103 @@ func TestWorkspaceStoreRejectsUnsupportedAndUnownedRecords(t *testing.T) {
 	}
 }
 
+// journalRecordFixture is a record mid-integration: the journal holds an accepted
+// operation's intent and the cleanup it still owes, which is exactly the state a
+// restart has to read back before it may recover anything.
+func journalRecordFixture(owner, taskKey, invocationID string) subagentwork.Record {
+	rec := workspaceRecordFixture(owner, taskKey, invocationID)
+	rec.Integration = &subagentwork.Integration{
+		OperationID:    "op-journal-1",
+		Kind:           subagentwork.KindIntegrate,
+		State:          subagentwork.IntegrationIntent,
+		ExpectedSource: "2222222222222222222222222222222222222222",
+		BeforeTarget:   "1111111111111111111111111111111111111111",
+		SnapshotHash:   "snapshot-1",
+	}
+	rec.CleanupState = subagentwork.CleanupIntegratedPending
+	return rec
+}
+
+// TestWorkspaceStoreJournalSurvivesReopen pins the journal across a restart: an
+// in-flight intent and a settled receipt are both readable after the database is
+// closed and reopened, so recovery never has to guess what happened.
+func TestWorkspaceStoreJournalSurvivesReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agents.db")
+	database := openWorkspaceDB(t, path)
+	createWorkspaceOwner(t, database, "owner-a")
+	store := NewSubagentWorkspaceStore(database)
+
+	created, ok, err := store.Create(ctx, journalRecordFixture("owner-a", "task-1", "inv-1"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !ok {
+		t.Fatal("Create reported an existing record for a new owner and task key")
+	}
+	if created.Integration == nil || created.Integration.State != subagentwork.IntegrationIntent {
+		t.Fatalf("created integration = %+v, want the journalled intent", created.Integration)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened := openWorkspaceDB(t, path)
+	reopenedStore := NewSubagentWorkspaceStore(reopened)
+	inFlight, err := reopenedStore.Get(ctx, "owner-a", "task-1")
+	if err != nil {
+		t.Fatalf("Get after reopen: %v", err)
+	}
+	if inFlight.Integration == nil || *inFlight.Integration != *created.Integration {
+		t.Fatalf("reopened integration = %+v, want the journalled %+v", inFlight.Integration, *created.Integration)
+	}
+	if inFlight.CleanupState != subagentwork.CleanupIntegratedPending {
+		t.Fatalf("reopened cleanup state = %q, want %q", inFlight.CleanupState, subagentwork.CleanupIntegratedPending)
+	}
+	if inFlight.Revision != created.Revision || inFlight.Outcome != created.Outcome {
+		t.Fatalf("reopened record = %+v, want revision %d and outcome %q", inFlight, created.Revision, created.Outcome)
+	}
+
+	// The operation settles into a receipt with a proven result; that too must
+	// survive a restart, including the commit it names.
+	settled := inFlight
+	integrated := *inFlight.Integration
+	integrated.State = subagentwork.IntegrationIntegrated
+	integrated.ResultCommit = "3333333333333333333333333333333333333333"
+	settled.Integration = &integrated
+	settled.CleanupState = subagentwork.CleanupComplete
+	updated, err := reopenedStore.CompareAndSwap(ctx, settled, inFlight.Revision)
+	if err != nil {
+		t.Fatalf("CompareAndSwap: %v", err)
+	}
+	if updated.Revision != inFlight.Revision+1 {
+		t.Fatalf("updated revision = %d, want %d", updated.Revision, inFlight.Revision+1)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	again := openWorkspaceDB(t, path)
+	defer again.Close()
+	persisted, err := NewSubagentWorkspaceStore(again).Get(ctx, "owner-a", "task-1")
+	if err != nil {
+		t.Fatalf("Get after the second reopen: %v", err)
+	}
+	if persisted.Integration == nil || persisted.Integration.State != subagentwork.IntegrationIntegrated {
+		t.Fatalf("persisted integration = %+v, want the settled receipt", persisted.Integration)
+	}
+	if persisted.Integration.ResultCommit != integrated.ResultCommit ||
+		persisted.Integration.OperationID != integrated.OperationID ||
+		persisted.Integration.ExpectedSource != integrated.ExpectedSource ||
+		persisted.Integration.BeforeTarget != integrated.BeforeTarget ||
+		persisted.Integration.SnapshotHash != integrated.SnapshotHash {
+		t.Fatalf("persisted receipt = %+v, want %+v", *persisted.Integration, integrated)
+	}
+	if persisted.CleanupState != subagentwork.CleanupComplete {
+		t.Fatalf("persisted cleanup state = %q, want %q", persisted.CleanupState, subagentwork.CleanupComplete)
+	}
+}
+
 // recordsEqualFixture compares the durable fields of two records. It exists so a
 // failure prints both records rather than a bare "not equal".
 func recordsEqualFixture(a, b subagentwork.Record) bool {

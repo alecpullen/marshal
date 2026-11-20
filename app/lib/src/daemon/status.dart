@@ -151,12 +151,17 @@ class DaemonChild {
 /// [`socket`] is this machine's end of that tunnel, which is what a client
 /// dials to reach the host; [`state`] is the tunnel's state in the daemon's own
 /// words, and [`lastError`] is why it last failed, when it did.
+///
+/// [`previewPort`] is this machine's loopback port forwarded to the host's
+/// preview listener, which is the origin a preview of work on that host is
+/// opened through; 0 is a host that serves no previews.
 class DaemonHost {
   const DaemonHost({
     required this.name,
     required this.ssh,
     required this.state,
     required this.socket,
+    this.previewPort = 0,
     this.lastError = '',
     this.since = 0,
   });
@@ -165,6 +170,7 @@ class DaemonHost {
   final String ssh;
   final String state;
   final String socket;
+  final int previewPort;
   final String lastError;
 
   /// Unix milliseconds: when [`state`] last changed.
@@ -175,6 +181,7 @@ class DaemonHost {
     ssh: json['ssh'] as String? ?? '',
     state: json['state'] as String? ?? '',
     socket: json['socket'] as String? ?? '',
+    previewPort: json['previewPort'] as int? ?? 0,
     lastError: json['lastError'] as String? ?? '',
     since: json['since'] as int? ?? 0,
   );

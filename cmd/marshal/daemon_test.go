@@ -2177,3 +2177,51 @@ func TestDaemonStatusListsTheHosts(t *testing.T) {
 		}
 	}
 }
+
+// TestDaemonStatusNamesAHostsPreviewPort: a live host that serves previews
+// says which loopback port they are forwarded to, because that port is the
+// only way to reach them. A host with no port, and a host that is down
+// whatever it last reported, keep the line they had.
+func TestDaemonStatusNamesAHostsPreviewPort(t *testing.T) {
+	daemonTestEnv(t)
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("state = running\npid = 4242\n"), nil
+	})
+	doc := `{"version":"1.0.0","profile":"local","pid":4242,"startedAt":1700000000000,"hosts":[` +
+		`{"name":"box","ssh":"box.example.com","state":"live","socket":"/tmp/hosts/box.sock",` +
+		`"previewPort":4173},` +
+		`{"name":"gpu","ssh":"gpu.example.com","state":"live","socket":"/tmp/hosts/gpu.sock"},` +
+		`{"name":"old","ssh":"old.example.com","state":"down","socket":"/tmp/hosts/old.sock",` +
+		`"previewPort":4173,"lastError":"ssh: connect to host old.example.com port 22: Connection refused"}]}`
+	var info daemon.Info
+	if err := json.Unmarshal([]byte(doc), &info); err != nil {
+		t.Fatalf("unmarshal the daemon document: %v", err)
+	}
+	fakeDaemonSocket(t, fakeDaemonClient{info: info})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"status"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runDaemon status: %v\nstderr: %s", err, stderr.String())
+	}
+
+	want := []string{
+		"host box (box.example.com): live, previews on localhost:4173",
+		"host gpu (gpu.example.com): live",
+		"host old (old.example.com): down (ssh: connect to host old.example.com port 22: Connection refused)",
+	}
+	var hostLines []string
+	for _, line := range strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n") {
+		if strings.HasPrefix(line, "host ") {
+			hostLines = append(hostLines, line)
+		}
+	}
+	if len(hostLines) != len(want) {
+		t.Fatalf("status printed %d host lines, want %d:\n%s", len(hostLines), len(want), stdout.String())
+	}
+	for i, line := range want {
+		if hostLines[i] != line {
+			t.Errorf("host line %d = %q, want %q", i+1, hostLines[i], line)
+		}
+	}
+}

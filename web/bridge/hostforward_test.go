@@ -332,6 +332,49 @@ func TestAForwardDropsTheCallersCredentials(t *testing.T) {
 	}
 }
 
+// TestTheForwardNamesTheHostsPreviewPort: a request carried to a host that
+// serves previews names the origin this machine reaches that host's preview
+// listener through, in the one form the tunnel provides; the caller's own
+// header stops here (one-daemon open question 1).
+func TestTheForwardNamesTheHostsPreviewPort(t *testing.T) {
+	s := NewServer(testFleet(t))
+	tunnel := newFakeTunnel(t, okTunnel())
+	host := liveHost("box", tunnel.socket)
+	host.PreviewPort = 54400
+	reportHosts(t, s, host)
+
+	rec := doReq(t, s, http.MethodGet, hostForwardPrefix+"box/api/agents", nil, map[string]string{
+		contract.PreviewOriginHeader: "http://elsewhere:9999",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the forward = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	seen := tunnel.next(t)
+	if got := seen.header.Values(contract.PreviewOriginHeader); len(got) != 1 || got[0] != "http://localhost:54400" {
+		t.Fatalf("the hop carried %q, want exactly http://localhost:54400", got)
+	}
+}
+
+// TestTheForwardSendsNoPreviewOriginWithoutAPort: a host that serves no
+// previews is named no origin, and the caller's own is dropped rather than
+// passed on.
+func TestTheForwardSendsNoPreviewOriginWithoutAPort(t *testing.T) {
+	s := NewServer(testFleet(t))
+	tunnel := newFakeTunnel(t, okTunnel())
+	reportHosts(t, s, liveHost("box", tunnel.socket))
+
+	rec := doReq(t, s, http.MethodGet, hostForwardPrefix+"box/api/agents", nil, map[string]string{
+		contract.PreviewOriginHeader: "http://elsewhere:9999",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the forward = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	seen := tunnel.next(t)
+	if got := seen.header.Values(contract.PreviewOriginHeader); len(got) != 0 {
+		t.Fatalf("the hop carried %q, want no preview origin", got)
+	}
+}
+
 // TestAForwardStreams: an event reaches the caller as the host writes it, not
 // when the host's handler returns (D10).
 func TestAForwardStreams(t *testing.T) {

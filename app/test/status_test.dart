@@ -39,6 +39,10 @@ void main() {
       daemon.hosts.single.socket,
       '/home/u/.local/share/marshal/daemon/hosts/box.sock',
     );
+    // The port this machine reaches the host's preview listener through: a
+    // preview of work on that host is opened on this machine, not on the host
+    // itself (one-daemon previews).
+    expect(daemon.hosts.single.previewPort, 54400);
   });
 
   test('refuses an unknown schema', () {

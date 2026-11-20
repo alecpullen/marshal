@@ -140,6 +140,55 @@ esac
     expect(box.requests.single.uri, '/api/agents');
   });
 
+  test('a host with a preview port names it', () async {
+    // A preview of work on a remote host opens through the loopback port the
+    // daemon forwards to that host's preview listener, so that host's client
+    // names it. A host serving no previews names nothing, and neither does the
+    // local daemon, whose previews already open on this machine.
+    final binary = await fakeMarshal(
+      statusDocument(
+        '${dir.path}/daemon.sock',
+        hosts: [
+          {
+            'name': 'box',
+            'ssh': 'me@box',
+            'state': 'live',
+            'socket': '${dir.path}/box.sock',
+            'previewPort': 54400,
+            'since': 1763300000000,
+          },
+          {
+            'name': 'tower',
+            'ssh': 'me@tower',
+            'state': 'live',
+            'socket': '${dir.path}/tower.sock',
+            'since': 1763300000000,
+          },
+        ],
+      ),
+    );
+
+    final hosts = await discoverHosts(cli: DaemonCli(binary: binary));
+
+    expect(
+      hosts.singleWhere((host) => host.name == 'box').client.previewOrigin,
+      'http://localhost:54400',
+    );
+    expect(
+      hosts.singleWhere((host) => host.name == 'tower').client.previewOrigin,
+      isNull,
+      reason: 'a host serving no previews names no way to them',
+    );
+    expect(
+      hosts
+          .singleWhere((host) => host.name == localHostName)
+          .client
+          .previewOrigin,
+      isNull,
+      reason: 'the local daemon’s previews open on this machine already',
+    );
+  });
+
   test('a host with no socket is not listed', () async {
     // A tunnel that has not bound its socket yet reaches nothing, so the app
     // lists no host it could not dial.

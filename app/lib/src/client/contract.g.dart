@@ -1808,6 +1808,7 @@ class DaemonInfo {
     required this.socket,
     this.webListen,
     this.webError,
+    this.previewAddr,
     required this.projects,
     required this.pinned,
     required this.children,
@@ -1827,6 +1828,9 @@ class DaemonInfo {
   /// host:port), and WebError is why it bound nothing (D10).
   final String? webListen;
   final String? webError;
+  /// PreviewAddr is the preview listener's bound address (host:port), or ""
+  /// when previews are off.
+  final String? previewAddr;
   /// filled per request
   final List<String> projects;
   /// filled per request
@@ -1852,6 +1856,7 @@ class DaemonInfo {
       socket: json['socket'] as String,
       webListen: json['webListen'] as String?,
       webError: json['webError'] as String?,
+      previewAddr: json['previewAddr'] as String?,
       projects: _list(
         json['projects'],
         (value) => value as String,
@@ -1892,6 +1897,9 @@ class DaemonInfo {
     }
     if (webError != null) {
       json['webError'] = webError;
+    }
+    if (previewAddr != null) {
+      json['previewAddr'] = previewAddr;
     }
     json['projects'] = projects;
     json['pinned'] = pinned;
@@ -2041,6 +2049,7 @@ class DaemonHost {
     required this.ssh,
     required this.state,
     required this.socket,
+    this.previewPort,
     this.lastError,
     required this.since,
     this.rawEnums = const {},
@@ -2052,6 +2061,9 @@ class DaemonHost {
   final HostState state;
   /// this machine's end of the tunnel
   final String socket;
+  /// PreviewPort is this machine's loopback port forwarded to the host's
+  /// preview listener, or 0 when the host serves no previews.
+  final int? previewPort;
   final String? lastError;
   /// Unix milliseconds: when State last changed
   final int since;
@@ -2072,6 +2084,7 @@ class DaemonHost {
       ssh: json['ssh'] as String,
       state: state,
       socket: json['socket'] as String,
+      previewPort: (json['previewPort'] as num?)?.toInt(),
       lastError: json['lastError'] as String?,
       since: (json['since'] as num).toInt(),
       rawEnums: rawEnums,
@@ -2084,6 +2097,9 @@ class DaemonHost {
     json['ssh'] = ssh;
     json['state'] = rawEnums['state'] ?? state.wire;
     json['socket'] = socket;
+    if (previewPort != null) {
+      json['previewPort'] = previewPort;
+    }
     if (lastError != null) {
       json['lastError'] = lastError;
     }

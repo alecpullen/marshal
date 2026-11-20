@@ -9,18 +9,26 @@ type DaemonInfo struct {
 	Socket    string `json:"socket"`
 	// WebListen is the web listener's bound address ("unix:<path>" or
 	// host:port), and WebError is why it bound nothing (D10).
-	WebListen string         `json:"webListen,omitempty"`
-	WebError  string         `json:"webError,omitempty"`
-	Projects  []string       `json:"projects"`          // filled per request
-	Pinned    []string       `json:"pinned"`            // filled per request
-	Children  []DaemonChild  `json:"children"`          // filled per request
-	Refresh   *DaemonRefresh `json:"refresh,omitempty"` // filled per request
-	Hosts     []DaemonHost   `json:"hosts"`             // filled per request: the tunnel helper's last report
-	Restart   *DaemonRestart `json:"restart,omitempty"` // the daemon's own; filled per request
+	WebListen string `json:"webListen,omitempty"`
+	WebError  string `json:"webError,omitempty"`
+	// PreviewAddr is the preview listener's bound address (host:port), or ""
+	// when previews are off.
+	PreviewAddr string         `json:"previewAddr,omitempty"`
+	Projects    []string       `json:"projects"`          // filled per request
+	Pinned      []string       `json:"pinned"`            // filled per request
+	Children    []DaemonChild  `json:"children"`          // filled per request
+	Refresh     *DaemonRefresh `json:"refresh,omitempty"` // filled per request
+	Hosts       []DaemonHost   `json:"hosts"`             // filled per request: the tunnel helper's last report
+	Restart     *DaemonRestart `json:"restart,omitempty"` // the daemon's own; filled per request
 	// StudioDir is the directory the Studio is served from, or "" when the
 	// daemon found none (one-daemon D12).
 	StudioDir string `json:"studioDir,omitempty"`
 }
+
+// PreviewOriginHeader carries the origin a caller reaches this daemon's
+// preview listener through. A preview link is built from it, in place of the
+// daemon's own preview port (one-daemon open question 1).
+const PreviewOriginHeader = "X-Marshal-Preview-Origin"
 
 // DaemonRestartRequest is POST /api/daemon/restart's body (P6 B5).
 type DaemonRestartRequest struct {
@@ -54,12 +62,15 @@ const (
 // DaemonHost is one remote host's tunnel as GET /api/daemon reports it
 // (one-daemon D7, D9).
 type DaemonHost struct {
-	Name      string    `json:"name"`
-	SSH       string    `json:"ssh"` // the destination, as fleet.toml names it
-	State     HostState `json:"state"`
-	Socket    string    `json:"socket"` // this machine's end of the tunnel
-	LastError string    `json:"lastError,omitempty"`
-	Since     int64     `json:"since"` // Unix milliseconds: when State last changed
+	Name   string    `json:"name"`
+	SSH    string    `json:"ssh"` // the destination, as fleet.toml names it
+	State  HostState `json:"state"`
+	Socket string    `json:"socket"` // this machine's end of the tunnel
+	// PreviewPort is this machine's loopback port forwarded to the host's
+	// preview listener, or 0 when the host serves no previews.
+	PreviewPort int    `json:"previewPort,omitempty"`
+	LastError   string `json:"lastError,omitempty"`
+	Since       int64  `json:"since"` // Unix milliseconds: when State last changed
 }
 
 // DaemonHostsReport is PUT /api/daemon/hosts's body: every host the tunnel

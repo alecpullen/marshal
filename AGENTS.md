@@ -139,8 +139,11 @@ daemon. `marshal fleet add NAME DEST` and `marshal fleet remove NAME` write the
 file, keeping its comments. A daemon run with `--tunnels` (as `marshal daemon
 install` writes it) runs `marshal daemon tunnels`, which keeps one `ssh -N` per
 host forwarding `<daemon dir>/hosts/<name>.sock` to that host's socket, and
-reports each tunnel in `GET /api/daemon`'s `hosts`. `internal/fleetprofile` owns
-that file, and `internal/tunnels` the tunnels.
+reports each tunnel in `GET /api/daemon`'s `hosts`. The same `ssh` forwards the
+host's preview listener to a free loopback port, reported as `previewPort`, and
+a preview requested through the tunnel names it in `X-Marshal-Preview-Origin`,
+so the link opens on this machine. `internal/fleetprofile` owns that file, and
+`internal/tunnels` the tunnels.
 
 ### End-to-end and usability suites
 

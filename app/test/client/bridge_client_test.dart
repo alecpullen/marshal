@@ -15,6 +15,7 @@ import '../support/sockets.dart';
 /// a route's path, method and decoded type are pinned without a daemon.
 void main() {
   late FakeBridge fake;
+  late Transport transport;
   late BridgeClient client;
 
   setUp(() async {
@@ -23,7 +24,8 @@ void main() {
     HttpOverrides.global = null;
     final box = await socketBridge();
     fake = box.bridge;
-    client = BridgeClient(box.transport);
+    transport = box.transport;
+    client = BridgeClient(transport);
   });
 
   test('daemon reads the daemon document', () async {
@@ -295,6 +297,82 @@ void main() {
     expect(url, 'http://127.0.0.1:5173/preview/t-1/');
     expect(fake.requests.single.method, 'POST');
     expect(fake.requests.single.uri, '/api/agents/a-1/preview/5173');
+  });
+
+  test('a preview names the client’s preview origin', () async {
+    // A link the route answers with has to open on this machine, so a client
+    // that reaches the host's preview listener through a forwarded loopback
+    // port says which one it is, and the bridge builds the URL from that.
+    final remote = BridgeClient(
+      transport,
+      previewOrigin: 'http://localhost:54400',
+    );
+    fake.reply(
+      'POST',
+      '/api/agents/a-1/preview/5173',
+      const FakeReply(
+        200,
+        body: '{"url":"http://localhost:54400/preview/t-1/"}',
+      ),
+    );
+
+    expect(
+      await remote.preview('a-1', 5173),
+      'http://localhost:54400/preview/t-1/',
+    );
+    expect(
+      fake.requests.single.headers[previewOriginHeader.toLowerCase()],
+      'http://localhost:54400',
+      reason: 'the port the host forwards is the origin the link is built on',
+    );
+  });
+
+  test('a preview without an origin sends no header', () async {
+    // The local daemon's previews open on this machine already, so a client
+    // with no forwarded port names nothing and the bridge keeps its own answer.
+    fake.reply(
+      'POST',
+      '/api/agents/a-1/preview/5173',
+      const FakeReply(200, body: '{"url":"http://127.0.0.1:5173/x/"}'),
+    );
+
+    await client.preview('a-1', 5173);
+
+    expect(
+      fake.requests.single.headers,
+      isNot(contains(previewOriginHeader.toLowerCase())),
+      reason: 'a client with no origin names none',
+    );
+  });
+
+  test('a non-preview call sends no preview origin header', () async {
+    // The origin is the preview route's business alone (web/bridge/preview.go
+    // reads it from that request): a client that has one must not let it ride
+    // on every call, or each route would read a header only previews answer.
+    final remote = BridgeClient(
+      transport,
+      previewOrigin: 'http://localhost:54400',
+    );
+    fake.reply(
+      'GET',
+      '/api/daemon',
+      const FakeReply(
+        200,
+        body:
+            '{"version":"0.9.1","profile":"local","pid":42,'
+            '"startedAt":1763300000000,"socket":"/tmp/daemon.sock",'
+            '"projects":[],"pinned":[],"children":[]}',
+      ),
+    );
+
+    await remote.daemon();
+
+    expect(fake.requests.single.uri, '/api/daemon');
+    expect(
+      fake.requests.single.headers,
+      isNot(contains(previewOriginHeader.toLowerCase())),
+      reason: 'only a preview names the origin it is reached through',
+    );
   });
 
   test('a preview answer that names no url yields no URL', () async {

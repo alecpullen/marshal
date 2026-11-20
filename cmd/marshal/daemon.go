@@ -187,9 +187,12 @@ func runDaemonTunnels(ctx context.Context, args []string, stderr io.Writer) erro
 		FleetFile: fleetprofile.Path(home),
 		Dir:       filepath.Join(filepath.Dir(*socket), "hosts"),
 		Report:    daemon.NewClient(*socket).ReportHosts,
-		Probe: func(ctx context.Context, socket string) error {
-			_, err := daemon.NewClient(socket).Info(ctx)
-			return err
+		Probe: func(ctx context.Context, socket string) (string, error) {
+			info, err := daemon.NewClient(socket).Info(ctx)
+			if err != nil {
+				return "", err
+			}
+			return info.PreviewAddr, nil
 		},
 		Stderr: stderr,
 	})
@@ -950,13 +953,19 @@ func daemonStudioLine(info daemon.Info) string {
 // daemonHostLine renders one host's tunnel for `marshal daemon status`
 // (one-daemon D7): where the tunnel goes, its state, and — when it is down —
 // its last error, which is why the reader consulted this line, as the web line
-// does for a listener that bound nothing.
+// does for a listener that bound nothing. A live host that serves previews
+// says where they are, because that loopback port is the only way to reach
+// them; a host with no port, and one that is down whatever it last reported,
+// say nothing about previews.
 func daemonHostLine(h daemon.HostInfo) string {
 	line := fmt.Sprintf("host %s (%s): %s", h.Name, h.SSH, h.State)
 	if h.State == contract.HostDown {
 		if lastErr := strings.TrimSpace(h.LastError); lastErr != "" {
 			line += " (" + lastErr + ")"
 		}
+	}
+	if h.State == contract.HostLive && h.PreviewPort > 0 {
+		line += fmt.Sprintf(", previews on localhost:%d", h.PreviewPort)
 	}
 	return line
 }

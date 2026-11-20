@@ -87,7 +87,7 @@ func TestARestartReturnsTheReexec(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"--profile", "local", "--addr", "off", "--socket", socket,
+		done <- run(ctx, []string{"--profile", "local", "--socket", socket,
 			"--oauth-refresh=false"}, io.Discard, io.Discard)
 	}()
 
@@ -134,7 +134,7 @@ func TestARefusedOwnBuildKeepsTheDaemon(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"--profile", "local", "--addr", "off", "--socket", socket,
+		done <- run(ctx, []string{"--profile", "local", "--socket", socket,
 			"--oauth-refresh=false"}, io.Discard, io.Discard)
 	}()
 
@@ -190,7 +190,7 @@ func TestTheDaemonReexecutesInPlace(t *testing.T) {
 
 	socket := filepath.Join(dir, "marshal.sock")
 	cmd := exec.Command(bin,
-		"--profile", "local", "--addr", "off", "--socket", socket,
+		"--profile", "local", "--socket", socket,
 		"--state-dir", filepath.Join(dir, "state"),
 		"--workspace", filepath.Join(dir, "fleet.json"),
 		"--marshal-bin", "/usr/bin/false", "--oauth-refresh=false")

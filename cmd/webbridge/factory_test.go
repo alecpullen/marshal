@@ -20,7 +20,7 @@ func TestFactoryStartupOrdering(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer owned.Close()
-	err = run(context.Background(), []string{"--token", "test-token", "--workspace", filepath.Join(root, "workspace.json"), "--state-dir", state, "--cwd-root", root, "--egress", "off", "--preview-addr", "off"}, io.Discard, io.Discard)
+	err = run(context.Background(), []string{"--workspace", filepath.Join(root, "workspace.json"), "--state-dir", state, "--cwd-root", root, "--egress", "off", "--preview-addr", "off"}, io.Discard, io.Discard)
 	if !errors.Is(err, bridge.ErrFactoryLocked) {
 		t.Fatalf("startup must refuse owned journal before starting work: %v", err)
 	}

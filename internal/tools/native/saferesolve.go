@@ -115,6 +115,41 @@ func detectDoubledWorktree(p string) (string, bool) {
 	return cleaned, true
 }
 
+// doubledWorktreeError returns the diagnostic for a mistaken repeated
+// .marshal/worktrees/<branch>/ segment, or nil when the target is not doubled
+// or its literal entry really exists.
+//
+// The check runs on the JOINED target, not on the request alone: a session
+// already inside worktree <project>/.marshal/worktrees/feat-x that writes
+// ".marshal/worktrees/feat-x/foo.go" joins into a nested duplicate tree, and
+// the useful answer is the path relative to the worktree it is standing in.
+func doubledWorktreeError(root, rel string) error {
+	joined := rel
+	if !filepath.IsAbs(joined) {
+		joined = filepath.Join(root, rel)
+	}
+	suggestion, ok := detectDoubledWorktree(joined)
+	if !ok {
+		return nil
+	}
+	// The suggestion only fires when the literal path is not real, so a
+	// workspace that genuinely nests that layout (a doc tree describing the
+	// on-disk structure, say) stays usable instead of being rejected.
+	// Lstat, not Stat: a dangling symlink is still a real entry at the literal
+	// path, so it must not be second-guessed as a typo.
+	if _, err := os.Lstat(joined); err == nil {
+		return nil
+	}
+	display := suggestion
+	if !filepath.IsAbs(rel) {
+		if relative, rerr := filepath.Rel(root, suggestion); rerr == nil &&
+			relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			display = relative
+		}
+	}
+	return fmt.Errorf("%w: path %q contains a duplicated worktree segment; relative paths resolve from the current worktree root — did you mean %q?", ErrPathEscapes, rel, filepath.ToSlash(display))
+}
+
 // SafeResolve resolves a relative path rel against root, following symlinks,
 // and verifies that the result is still contained within root.
 //
@@ -135,8 +170,11 @@ func SafeResolve(root, rel string) (string, error) {
 		return "", err
 	}
 	rel = expanded
-	if suggestion, ok := detectDoubledWorktree(rel); ok {
-		return "", fmt.Errorf("%w: path %q contains a duplicated worktree segment; relative paths resolve from the current worktree root — did you mean %q?", ErrPathEscapes, rel, suggestion)
+	// The diagnostic fires only when the joined literal entry is absent, so a
+	// workspace that genuinely nests that layout stays usable.
+	absRootForDiagnostic, _ := filepath.Abs(root)
+	if derr := doubledWorktreeError(absRootForDiagnostic, rel); derr != nil {
+		return "", derr
 	}
 
 	// Reject absolute paths immediately.

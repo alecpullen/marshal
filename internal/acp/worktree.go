@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -387,7 +388,7 @@ func (g *finishGitOps) BranchDelete(dir, branch string, force bool) error {
 // Merge handles session/merge: merge the agent's branch into the branch the
 // project was on when the session was isolated, then clean up. It refuses
 // rather than improvising — see the four Reason constants.
-func (w *WorktreeManager) Merge(_ context.Context, params json.RawMessage) (any, error) {
+func (w *WorktreeManager) Merge(ctx context.Context, params json.RawMessage) (any, error) {
 	var p mergeParams
 	if err := decodeParams(params, &p, "session/merge"); err != nil {
 		return nil, err
@@ -403,6 +404,15 @@ func (w *WorktreeManager) Merge(_ context.Context, params json.RawMessage) (any,
 	// remove the worktree while this merge is mid-flight.
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	// The merge rewrites the project checkout and removes the worktree, so it
+	// takes the exclusive lifecycle lock on both roots before touching either.
+	// It never holds an ordinary shared use across an upgrade: the git calls
+	// below inherit this lease instead of acquiring their own.
+	releaseTargets, lockErr := acquireLifecycleLocks(ctx, w.git, rt.ProjectRoot, ws.ActiveRoot)
+	if lockErr != nil {
+		return nil, serverErrorf("merge: %v", lockErr)
+	}
+	defer releaseTargets()
 	res := MergeResult{Branch: ws.Branch, Target: p.TargetBranch}
 
 	// 0. The merge target is fixed at isolation time and persisted. A caller
@@ -496,7 +506,7 @@ func (w *WorktreeManager) verifyOwnership(rt *WorktreeRuntime, ws session.Worksp
 // Discard handles session/discard: remove the worktree and delete the
 // branch. The branch is unmerged by definition, so the delete is forced.
 // The explicit RPC call is the confirmation; the UI gates it behind one.
-func (w *WorktreeManager) Discard(_ context.Context, params json.RawMessage) (any, error) {
+func (w *WorktreeManager) Discard(ctx context.Context, params json.RawMessage) (any, error) {
 	var p discardParams
 	if err := decodeParams(params, &p, "session/discard"); err != nil {
 		return nil, err
@@ -509,6 +519,13 @@ func (w *WorktreeManager) Discard(_ context.Context, params json.RawMessage) (an
 	// merge the branch while this discard is removing it.
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	// A discard removes the worktree and deletes the branch, so it takes the
+	// exclusive lifecycle lock on both roots before touching either.
+	releaseTargets, lockErr := acquireLifecycleLocks(ctx, w.git, rt.ProjectRoot, ws.ActiveRoot)
+	if lockErr != nil {
+		return nil, serverErrorf("discard: %v", lockErr)
+	}
+	defer releaseTargets()
 	// Never delete a worktree/branch we cannot prove we own.
 	if verr := w.verifyOwnership(rt, ws); verr != nil {
 		return nil, verr
@@ -591,4 +608,57 @@ func (w *WorktreeManager) Prune(_ context.Context, params json.RawMessage) (any,
 		}
 	}
 	return res, nil
+}
+
+// acquireLifecycleLocks takes the exclusive lifecycle lock on every root a
+// worktree mutation will rewrite or delete, in canonical sorted order, and
+// returns their combined release. It is the ACP adapter's half of the
+// workspace-use protocol: the merge and discard paths call it before touching
+// either root, and their internal git calls inherit it rather than acquiring a
+// shared use of their own.
+//
+// A root whose repository cannot be identified (a test fake with no repository
+// identity, or a path that is no git checkout) is skipped: there is no
+// cross-process participant to coordinate with.
+func acquireLifecycleLocks(ctx context.Context, git worktree.GitOps, roots ...string) (func(), error) {
+	canonical := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		canonical[worktree.CanonicalPath(root)] = struct{}{}
+	}
+	ordered := make([]string, 0, len(canonical))
+	for root := range canonical {
+		ordered = append(ordered, root)
+	}
+	sort.Strings(ordered)
+
+	releases := make([]func(), 0, len(ordered))
+	releaseAll := func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}
+	identifier, ok := git.(interface {
+		RepositoryID(dir string) (string, error)
+	})
+	if !ok {
+		return releaseAll, nil
+	}
+	for _, root := range ordered {
+		repository, err := identifier.RepositoryID(root)
+		if err != nil || repository == "" {
+			// Not a git checkout: no cross-process participant to coordinate with.
+			continue
+		}
+		release, err := worktree.AcquireTargetLock(ctx, repository, root)
+		if err != nil {
+			releaseAll()
+			return nil, err
+		}
+		releases = append(releases, release)
+	}
+	return releaseAll, nil
 }

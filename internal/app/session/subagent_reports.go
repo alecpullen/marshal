@@ -49,3 +49,23 @@ func (s *State) ClearSubagentReports() {
 	s.subagentReports = nil
 	s.mu.Unlock()
 }
+
+// SubagentReportText returns the body of the persisted subagent report a
+// retained owned-workspace record references, when this session still holds that
+// message. The record keeps only the reference: a missing message returns ""
+// rather than a reconstructed report, so a retained task never appears to have
+// a report it does not have.
+func (s *State) SubagentReportText(messageDBID int64) string {
+	if messageDBID == 0 {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.messages {
+		m := s.messages[i]
+		if m.DBID == messageDBID && m.ContentType == ContentTypeSubagentReport {
+			return m.Content
+		}
+	}
+	return ""
+}

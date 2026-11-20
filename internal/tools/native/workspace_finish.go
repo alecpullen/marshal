@@ -75,6 +75,20 @@ func (t *toolSet) workspaceFinishTool() registry.Tool {
 		if args.Squash != nil {
 			squash = *args.Squash
 		}
+		// Finishing rewrites the project checkout and removes the worktree, so it
+		// takes the exclusive lifecycle lock on both roots before touching either.
+		// It does not hold a shared lease across an upgrade: the protocol acquires
+		// exclusivity, and the git calls below inherit it rather than taking a
+		// shared use of their own.
+		releaseTargets, lerr := t.acquireTargetLocks(ctx, ws.ActiveRoot, ws.ProjectRoot)
+		if lerr != nil {
+			return registry.ToolResult{
+				Summary: "refused: workspace is in use",
+				Content: "Refused to finish: the workspace is still in use, so nothing was merged and no repository was changed. " + lerr.Error() +
+					" Wait for the running command, child or lifecycle operation at this target to settle, then call workspace.finish again.",
+			}, nil
+		}
+		defer releaseTargets()
 		res, err := worktree.FinishBranch(t.gitOps, ws.ProjectRoot, target, worktree.Worktree{Path: ws.ActiveRoot, Branch: ws.Branch}, worktree.FinishOptions{
 			Squash:        squash,
 			CommitMessage: args.Message,

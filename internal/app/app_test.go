@@ -926,7 +926,7 @@ func TestSubagentChildRegistryBorrowsConversationService(t *testing.T) {
 	_ = runner
 	t.Cleanup(func() { _ = jobMgr.Shutdown(context.Background()) })
 
-	child, childState, err := childFactory(agent.SubagentRequest{})
+	child, childState, err := childFactory(subagentRequestForSharing(parentState))
 	if err != nil {
 		t.Fatalf("child factory: %v", err)
 	}
@@ -4521,7 +4521,9 @@ func TestSubagentShellOutputDoesNotReachParent(t *testing.T) {
 	}
 }
 
-// The scope split must not move backups off the parent.
+// The scope split must not move backups off the parent. A child owns its own
+// workspace scope (its root, its ledger), but a SHARED child edits the
+// conversation's checkout, so its /undo evidence belongs to the conversation.
 func TestSubagentEditsStillBackUpToParent(t *testing.T) {
 	cfg := config.Default()
 	parentState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
@@ -4531,8 +4533,11 @@ func TestSubagentEditsStillBackUpToParent(t *testing.T) {
 	nativeOpts := native.Options{
 		WorkspaceRoot:  dir,
 		SessionState:   childState,
-		WorkspaceState: parentState,
-		Config:         cfg,
+		WorkspaceState: childState,
+		// The child works in its own bound root but leaves rollback evidence
+		// in the conversation's undo slot: that is what BackupState is for.
+		BackupState: parentState,
+		Config:      cfg,
 	}
 	if err := native.RegisterAll(childReg, nativeOpts); err != nil {
 		t.Fatalf("register: %v", err)
@@ -4562,7 +4567,7 @@ func TestSubagentChildRegistryKeepsSymbolsTool(t *testing.T) {
 		WorkspaceRoot: t.TempDir(),
 		Symbols:       lsp.NewSymbolQuery(nil, nil, 0),
 	}, nil, nil)
-	child, _, err := factory(agent.SubagentRequest{})
+	child, _, err := factory(subagentRequestForSharing(parentState))
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
@@ -4607,6 +4612,8 @@ func TestSubagentWritesUnderRequestedActor(t *testing.T) {
 	child, _, err := factory(agent.SubagentRequest{
 		ActorID:    "child-42",
 		ActorLabel: "a subagent (review)",
+		Binding:    mustSharedBinding(parentState),
+		Target:     mustSharedTarget(parentState),
 	})
 	if err != nil {
 		t.Fatalf("factory: %v", err)

@@ -540,6 +540,39 @@ func (r *Runner) setContextPackMessage(messages []schema.ChatMessage, pack conte
 	return messages
 }
 
+// workspaceRoot returns the root this session's tools and shell.run actually
+// operate in: the active workspace root (a worktree while the session is
+// isolated), falling back to the project root the session was launched from.
+// It is read live — the interactive parent can rebind mid-turn — so callers
+// that must stay cache-stable belong in the volatile tail, not the prefix.
+func (r *Runner) workspaceRoot() string {
+	if r.State == nil {
+		return ""
+	}
+	if ws := r.State.Workspace(); ws.ActiveRoot != "" {
+		return ws.ActiveRoot
+	}
+	return r.State.WorkingDir
+}
+
+// workspaceStateMessage renders the workspace binding in force for this
+// request as a volatile tail message. The turn-start system prompt names the
+// root once; this message keeps the model honest when an interactive parent
+// rebinds the session mid-turn, which a cached prefix cannot follow. It is
+// always emitted, even at the project root, so the model never has to infer a
+// root from the launch directory.
+func (r *Runner) workspaceStateMessage() schema.ChatMessage {
+	if r.State == nil {
+		return buildWorkspaceStateMessage("", "", "")
+	}
+	ws := r.State.Workspace()
+	root := ws.ActiveRoot
+	if root == "" {
+		root = r.State.WorkingDir
+	}
+	return buildWorkspaceStateMessage(root, ws.ProjectRoot, ws.Branch)
+}
+
 // withWorkingState returns messages plus this request's working-state
 // tail. The tail is rebuilt for every request and never stored in the
 // runner's message slice, so it cannot leak into compaction, pruning,
@@ -549,12 +582,14 @@ func (r *Runner) setContextPackMessage(messages []schema.ChatMessage, pack conte
 //
 // The live interaction tuple is always part of the tail, even when the
 // context pack has no volatile sections: a mode change mid-turn must reach
-// the model on the next request without touching the cached prefix.
+// the model on the next request without touching the cached prefix. The
+// current workspace binding rides there for the same reason.
 func (r *Runner) withWorkingState(messages []schema.ChatMessage) []schema.ChatMessage {
 	if r.State == nil {
 		return messages
 	}
-	extra := make([]schema.ChatMessage, 0, 2)
+	extra := make([]schema.ChatMessage, 0, 3)
+	extra = append(extra, r.workspaceStateMessage())
 	window, threshold, _ := r.State.TurnBudget()
 	if msg, ok := BuildWorkingStateMessage(r.State.ContextPack(), WorkingStateBudget{
 		Used:      r.calibratedEstimate(messages),
@@ -611,7 +646,7 @@ func (r *Runner) systemPromptMessage() schema.ChatMessage {
 		NativeTools:  r.NativeTools,
 		Access:       r.promptAccessState(),
 		Addendum:     r.SystemPromptAddendum,
-		WorkingDir:   r.State.WorkingDir,
+		WorkingDir:   r.workspaceRoot(),
 		Roster:       r.agentRoster(),
 		LoadedNames:  r.State.LoadedToolNames(),
 		Narration:    r.NarrationPrompt,

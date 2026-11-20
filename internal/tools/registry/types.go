@@ -43,6 +43,15 @@ type WorkspaceEffect uint8
 const (
 	WorkspaceEffectUnknown WorkspaceEffect = iota
 	WorkspaceEffectSessionOnly
+	// WorkspaceEffectManaged marks a tool whose handler owns the whole
+	// workspace mutation it performs: it takes exact-root serialization
+	// itself, admits the exact effect at its own mutation boundary, and
+	// captures the snapshot of the root it will touch. The default root
+	// preflight is skipped for it because that preflight is bound to the
+	// parent's CURRENT root and would serialize on a lock the handler is
+	// about to take — not because the tool is exempt from policy or from the
+	// conversation end gate.
+	WorkspaceEffectManaged
 )
 
 type Tool struct {
@@ -59,6 +68,39 @@ type Tool struct {
 	Internal bool
 	Handler  ToolHandler
 
+	// ResolvePath resolves one path argument with this toolset's own rules —
+	// its roots, its aliases and symlink resolution — for the operation write
+	// selects. Policy target preparation, patch previews and retry hints use
+	// it so they judge the file the tool would really touch rather than
+	// whichever spelling the caller happened to use. Nil for a tool that takes
+	// no path.
+	ResolvePath func(context.Context, string, bool) (string, error)
+
+	// PrepareCommand prepares the actual native command a call would run: the
+	// normalized bytes, the exact directory and workspace, and the captured
+	// launch environment. Policy evaluation and launch consume this one
+	// preparation so they agree on what is about to execute. Nil for an
+	// optional tool that runs no shell command.
+	PrepareCommand CommandPreparer
+
+	// OwnsAdmission leaves the opaque policy proof unconsumed for this tool:
+	// dispatch attaches it to the handler's context and does not commit it, so
+	// the handler can admit the exact effect at its own mutation boundary. Only
+	// a tool whose workspace effect it serializes itself may set it; every
+	// other tool keeps dispatch's ordinary admit-then-run path. It is a
+	// statement about WHERE a proof is spent, never permission to skip policy,
+	// approval or the conversation end gate.
+	OwnsAdmission bool
+
+	// PrepareEffect returns the deterministic key of the exact workspace effect
+	// a call would apply. Dispatch computes it before policy evaluation and
+	// fingerprints it with the rest of the call; the handler recomputes it under
+	// the workspace lease and admits that one. A record, source or target that
+	// changed in between therefore produces a different key, and the earlier
+	// proof no longer describes the mutation. Nil for a tool with no such
+	// effect.
+	PrepareEffect func(context.Context, ToolCall) (string, error)
+
 	// validator is the compiled form of Schema, built once by Register.
 	// Shared by pointer through cloneTool: jsonschema.Schema is immutable
 	// after compilation and safe for concurrent use.
@@ -66,9 +108,19 @@ type Tool struct {
 }
 
 // NeedsWorkspacePreflight reports whether snapshot and workspace serialization
-// are needed. Session-only tools must provide their own state synchronization.
+// are needed. Session-only tools must provide their own state synchronization,
+// and a managed tool owns exact-root serialization, admission and snapshotting
+// itself — including the choice of WHICH root to protect, which the default
+// preflight cannot know.
 func (t Tool) NeedsWorkspacePreflight() bool {
-	return t.Risk != RiskReadOnly && t.WorkspaceEffect != WorkspaceEffectSessionOnly
+	if t.Risk == RiskReadOnly {
+		return false
+	}
+	switch t.WorkspaceEffect {
+	case WorkspaceEffectSessionOnly, WorkspaceEffectManaged:
+		return false
+	}
+	return true
 }
 
 type ToolCall struct {

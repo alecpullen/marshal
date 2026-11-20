@@ -56,6 +56,11 @@ func (r *Restricted) Capabilities() Capabilities {
 	}
 }
 
+// SupportsLinkedWorktrees reports that commands run on the host filesystem, so
+// a linked worktree — whose .git points into the repository's common git
+// directory outside the worktree root — works normally.
+func (r *Restricted) SupportsLinkedWorktrees() bool { return true }
+
 func (r *Restricted) Run(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
 	if strings.TrimSpace(req.Command) == "" {
 		return native.CommandResult{Meta: metaFor(r.Capabilities(), r.cfg)}, errEmptyCommand
@@ -71,9 +76,26 @@ func (r *Restricted) Run(ctx context.Context, req native.CommandRequest) (native
 
 	cmd := shellCommand(restrictedWrapCommand(req.Command, r.cfg))
 	cmd.Dir = req.Dir
-	cmd.Env = r.buildEnv()
+	// A prepared command pins the environment it was approved with, already
+	// filtered by this backend's allow/deny policy. Nil keeps the legacy path,
+	// which filters the ambient environment here at launch.
+	if req.Environment != nil {
+		cmd.Env = cloneEnvStrings(req.Environment)
+	} else {
+		cmd.Env = r.buildEnv()
+	}
 
 	return executeCommand(runCtx, cmd, req, metaFor(r.Capabilities(), r.cfg))
+}
+
+// CaptureCommandEnvironment reports the environment this backend would give a
+// child in dir: the same allow/deny filtering Run applies, with PWD naming the
+// directory the child actually runs in. A variable the policy drops is absent
+// from both the captured environment and the known analyzer facts, so policy
+// never learns a value the process will not have.
+func (r *Restricted) CaptureCommandEnvironment(dir string) ([]string, map[string]string, error) {
+	env, known := localCommandEnvironment(r.buildEnv(), dir)
+	return env, known, nil
 }
 
 // buildEnv constructs the child environment.
@@ -160,6 +182,74 @@ func (r *Restricted) buildEnv() []string {
 
 	// Apply denylist to the final result.
 	return envutil.FilterKeys(out, r.denySet)
+}
+
+// knownShellVariables are the variables the shell analysis can classify a
+// command by. knownCommandEnvironment reports only these, never the whole
+// captured environment: a policy fingerprint must not carry unrelated ambient
+// state, let alone a secret.
+//
+// This list must agree with native's knownVariableNames; the sandbox cannot
+// import it through native without depending on the toolset, so the two are
+// kept in step by their tests.
+var knownShellVariables = []string{"HOME", "PATH", "PWD", "SHELL", "TMPDIR", "USER"}
+
+// cloneEnvStrings copies an environment slice, preserving nil versus an
+// intentionally empty non-nil list.
+func cloneEnvStrings(environment []string) []string {
+	if environment == nil {
+		return nil
+	}
+	out := make([]string, len(environment))
+	copy(out, environment)
+	return out
+}
+
+// setEnvValue sets key=value in env, replacing an existing entry.
+func setEnvValue(env []string, key, value string) []string {
+	for i, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok && k == key {
+			env[i] = key + "=" + value
+			return env
+		}
+	}
+	return append(env, key+"="+value)
+}
+
+// knownCommandEnvironment returns the analyzer-visible subset of a captured
+// environment. A variable the environment does not carry is absent, never
+// guessed from the host.
+func knownCommandEnvironment(environment []string) map[string]string {
+	all := make(map[string]string, len(environment))
+	for _, kv := range environment {
+		if key, value, ok := strings.Cut(kv, "="); ok && key != "" {
+			all[key] = value
+		}
+	}
+	known := make(map[string]string, len(knownShellVariables))
+	for _, name := range knownShellVariables {
+		if value, ok := all[name]; ok {
+			known[name] = value
+		}
+	}
+	return known
+}
+
+// localCommandEnvironment completes a local backend's filtered child
+// environment with the working-directory fact a local launch implies: the
+// child runs in dir, so PWD is that directory rather than whichever directory
+// the parent process happened to be in. The second result is the
+// analyzer-visible subset of that same list, never a guess at a value the
+// filter dropped.
+func localCommandEnvironment(environment []string, dir string) ([]string, map[string]string) {
+	env := cloneEnvStrings(environment)
+	if dir != "" {
+		env = setEnvValue(env, "PWD", dir)
+	}
+	if env == nil {
+		env = []string{}
+	}
+	return env, knownCommandEnvironment(env)
 }
 
 // homeDir resolves the invoking user's home directory for the env floor.

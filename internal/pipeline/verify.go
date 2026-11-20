@@ -17,6 +17,7 @@ import (
 	"github.com/google/shlex"
 
 	"marshal/internal/repo"
+	"marshal/internal/worktree"
 )
 
 // CommandRunner is the seam for running verify commands. The real
@@ -25,6 +26,34 @@ type CommandRunner interface {
 	// Run executes argv in dir and returns its combined output. A non-zero
 	// exit is returned as an error along with whatever output was produced.
 	Run(ctx context.Context, dir string, argv []string) (string, error)
+}
+
+// holdRootUse takes the shared root-use lease a pipeline command runs under. A
+// verification or operation runner touches a checkout directly rather than
+// through the conversation's command service, so it publishes its own use for
+// exactly as long as the command runs: an owned-child lifecycle mutation at that
+// root refuses while it is in flight, in this process and every other Marshal
+// process.
+//
+// A directory that is no git checkout (a scratch directory, a unit-test fixture)
+// acquires nothing, because there is no cross-process participant to coordinate
+// with.
+func holdRootUse(ctx context.Context, dir string) (func(), error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return func() {}, nil
+	}
+	repository, err := worktree.CLIGitOps{}.RepositoryID(dir)
+	if err != nil || repository == "" {
+		return func() {}, nil
+	}
+	lease, err := worktree.AcquireWorkspaceUse(ctx, repository, dir, worktree.UseIdentity{
+		Kind: worktree.UseKindPipeline,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = lease.Release(true) }, nil
 }
 
 // CLICommandRunner executes commands with exec.CommandContext. No shell is
@@ -165,6 +194,14 @@ func (v Verifier) Run(ctx context.Context, dir string) (VerifyResult, error) {
 	if v.Runner == nil {
 		return VerifyResult{}, fmt.Errorf("pipeline verify: no CommandRunner configured")
 	}
+	// The gate's commands touch the checkout directly, so they run under the
+	// shared root-use lease for it: a lifecycle mutation at that root refuses
+	// while verification is in flight.
+	releaseUse, useErr := holdRootUse(ctx, dir)
+	if useErr != nil {
+		return VerifyResult{}, fmt.Errorf("pipeline verify: %w", useErr)
+	}
+	defer releaseUse()
 	runCtx := ctx
 	if v.Timeout > 0 {
 		var cancel context.CancelFunc

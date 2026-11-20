@@ -412,14 +412,14 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 		}
 		if len(lines) > 0 {
 			sort.Strings(lines)
-			b.WriteString("Also discovered from configured providers (fresh probe, not locally pinned):\n")
+			b.WriteString("Also discovered from configured providers:\n")
 			for _, line := range lines {
 				b.WriteString(line)
 			}
 		}
 	}
 	if annotated > 0 {
-		b.WriteString("Pick a subagent model by the role bindings above (the user's own ranking); prefer a preset marked local for secrets or private data; omit model to use your own.\n")
+		b.WriteString("Pick a subagent model by the role bindings above; prefer one marked local; omit model to use your own.\n")
 	}
 	b.WriteString("model must be a provider/model pair from a configured provider.")
 	return b.String()
@@ -516,7 +516,14 @@ func baseRulesFor(systemAccess bool) string {
 // also push back on over-loading: active skills are budgeted
 // (skills.max_active) and misfit loads waste both the budget and the
 // context window.
-const skillDirective = `Skills are instruction sets you load on demand with skill.load. Deciding to load one is YOUR job — load skills whose description directly matches what you are about to do, BEFORE acting. Active skills are budgeted; don't over-load. When a loaded skill tells you to dispatch or spawn a subagent, use the agent.run tool.`
+const skillDirective = `Skills are instruction sets you load on demand with skill.load. Deciding to load one is YOUR job — load one whose description directly matches what you are about to do, BEFORE acting. Active skills are budgeted; don't over-load. When a skill says to dispatch or spawn a subagent, use agent.run.`
+
+// delegationWorkspaceDirective is the parent half of the dispatch contract: what
+// a parent owes a child before it dispatches, and who commits. It is deliberately
+// one compact paragraph: the system prompt has a fixed byte budget
+// (TestDefaultPromptBudget), so the shipped skills and the agent.run description
+// carry the detail.
+const delegationWorkspaceDirective = `agent.run children own a worktree from your committed HEAD; commit what they need, then merge their branch. "shared": you commit.`
 
 const FinalizationDirective = `You are being asked to stop using tools and conclude this turn. Produce the best final answer you can from the transcript, context pack, and tool results already gathered. Do NOT call tools. If a required fact is genuinely missing, state what you would check next and give your best partial answer. Respond with a single action of type "final".`
 
@@ -815,6 +822,10 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 		b.WriteString(roster)
 		b.WriteString("\n")
 	}
+	if hasAgentRunTool(tools) {
+		b.WriteString(delegationWorkspaceDirective)
+		b.WriteString("\n")
+	}
 
 	b.WriteString("\n")
 	if nativeTools {
@@ -990,6 +1001,33 @@ func BuildInteractionStateMessage(access interaction.State) schema.ChatMessage {
 			mode, onOff(access.Auto), onOff(access.System), access.Revision,
 		),
 	}
+}
+
+// buildWorkspaceStateMessage renders the workspace binding in force for this
+// request: the root relative paths and shell.run's cwd come from, the project
+// checkout that stays a read-only reference while the session is isolated, and
+// the commit-first step a worktree session owes before merging back.
+//
+// It belongs in the per-request tail, not the system prompt: an interactive
+// parent can rebind the session mid-turn, and the turn-start prompt is
+// cache-stable.
+func buildWorkspaceStateMessage(root, projectRoot, branch string) schema.ChatMessage {
+	var b strings.Builder
+	b.WriteString("Current workspace: root=")
+	b.WriteString(root)
+	if branch != "" {
+		b.WriteString(" (git worktree on branch ")
+		b.WriteString(branch)
+		b.WriteString(")")
+	}
+	b.WriteString(". Relative paths in tool arguments resolve from this root, and shell.run runs with this directory as its cwd.")
+	if projectRoot != "" && projectRoot != root {
+		b.WriteString(" The project checkout ")
+		b.WriteString(projectRoot)
+		b.WriteString(" stays readable as a reference but is not a write target; commit your work in this worktree before merging it back.")
+	}
+	b.WriteString(" This is the authoritative workspace for this request; it supersedes the turn-start description above.")
+	return schema.ChatMessage{Role: schema.RoleUser, Content: b.String(), Volatile: true}
 }
 
 // BuildToolResultMessage formats a tool result for the model. The

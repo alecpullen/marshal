@@ -460,6 +460,11 @@ type State struct {
 	// a restart that restored the transcript — cannot enqueue a request twice.
 	// Guarded by mu.
 	subagentSteers map[string]subagentSteerReceipt
+	// subagentWorkspaces retains this conversation's owned-workspace records
+	// by task key, newest revision winning (see subagents.go). It is metadata
+	// the live subagent views join by WorkKey — never a second source of
+	// lifecycle truth. Guarded by mu.
+	subagentWorkspaces subagentWorkspaceLedger
 	// runEvents is the plan-run event log: verify failures, review
 	// findings, commits, retries. In-memory only, never persisted.
 	runEvents []RunEvent

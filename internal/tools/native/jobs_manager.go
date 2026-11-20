@@ -19,11 +19,17 @@ import (
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
+	"marshal/internal/worktree"
 )
 
 // ErrJobManagerClosed is returned by Launch and Start when the manager has been
 // shut down.
 var ErrJobManagerClosed = errors.New("job manager is closed")
+
+// ErrWorkspaceBusy is returned by AcquireIdleWorkspaces and by a launch at a
+// frozen root: the workspace still has admitted work, or a lifecycle mutation
+// has frozen its roots against new commands.
+var ErrWorkspaceBusy = errors.New("workspace is not idle")
 
 // ErrTurnStopped is returned by Launch when the owning turn's explicit stop was
 // already accepted. A stopped turn cannot admit more commands, so the caller
@@ -345,6 +351,11 @@ type LaunchSpec struct {
 	Dir string
 	// Runner overrides the manager's CommandRunner for this execution.
 	Runner CommandRunner
+	// Environment, when non-nil, is the captured launch environment prepared
+	// for this exact command: the "KEY=VALUE" list the process receives,
+	// including an intentionally empty list. Nil keeps the legacy behavior in
+	// which the runner inherits or builds its own environment.
+	Environment []string
 	// MaxOutputBytes bounds the retained tail of each stream. Non-positive
 	// uses the manager's configured limit.
 	MaxOutputBytes int
@@ -376,6 +387,13 @@ type LaunchSpec struct {
 	// Admit, when non-nil, acquires the admission for this exact attempt
 	// before the manager lock and commits it immediately before insertion.
 	Admit func(context.Context) (*policy.Admission, error)
+	// WorkspaceUses are the shared root-use leases this command holds. The
+	// manager takes ownership of them at insertion and releases them only when
+	// the execution reaches terminal settlement — never at tool return, never at
+	// detach — so a command that keeps running after its caller stopped waiting
+	// keeps its workspace busy for as long as it runs. The caller releases them
+	// itself only if Launch fails.
+	WorkspaceUses []*worktree.UseLease
 }
 
 // WaitEndReason explains why a foreground wait stopped waiting. It never
@@ -509,6 +527,11 @@ type JobManager struct {
 	// narrow local interface so the manager does not read the gate's concrete
 	// types on the admission path.
 	workAdmission admissionGate
+	// frozen holds the canonical roots a lifecycle mutation has reserved with
+	// AcquireIdleWorkspaces. A launch at a frozen root is refused before the
+	// execution is inserted, so the mutation cannot gain a new workspace user
+	// after it has established idleness.
+	frozen map[string]bool
 }
 
 // admissionGate is the end gate's admission seam as this package sees it: register
@@ -596,6 +619,10 @@ type job struct {
 	// captured from the handler's context at admission. A zero ref means the
 	// execution has no Send now target and no interruption can select it.
 	operation session.OperationRef
+	// uses are the shared root-use leases this execution holds until terminal
+	// settlement. They are released after the completion is reported, so a
+	// detached command keeps its workspace busy for as long as it runs.
+	uses []*worktree.UseLease
 }
 
 // jobSink retains a bounded tail of one command stream, feeds the execution's
@@ -964,6 +991,11 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	if command == "" {
 		return JobInfo{}, fmt.Errorf("command is required")
 	}
+	// The captured environment is copied before the goroutine starts, so a
+	// caller that reuses or mutates its slice cannot change what an already
+	// admitted execution launches with. Nil stays nil: it is the explicit
+	// "runner decides" legacy spelling.
+	environment := cloneEnv(spec.Environment)
 	// An admitted command must already name the directory its admission bound:
 	// the attempt the authorizer approved captured that exact cwd, so a launch
 	// that would resolve one later could run an approved command somewhere it
@@ -994,6 +1026,35 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	}
 
 	m.evictCompleted()
+
+	// Resolve the working directory BEFORE the admission lock. The directory
+	// function reads session state, which must not be read under the manager's
+	// lock, and an execution has to expose its cwd at insertion: an idle check
+	// that could only see it after the goroutine started would miss the whole
+	// window between acceptance and process start.
+	jobDir := spec.Dir
+	dirFn := m.policy.DirFunc
+	defaultDir := m.policy.Dir
+	if spec.Admit != nil {
+		// An admitted launch captured its working directory with the attempt the
+		// admission bound, so neither a late resolver nor a committed default may
+		// choose it now: that would move an approved command. The admitted path
+		// requires a captured directory, so one of these fallbacks would only
+		// ever fire if a caller bypassed that check.
+		dirFn = nil
+		defaultDir = ""
+	}
+	if jobDir == "" {
+		if dirFn != nil {
+			jobDir = dirFn()
+		} else {
+			jobDir = defaultDir
+		}
+	}
+	jobRoot := ""
+	if jobDir != "" {
+		jobRoot = worktree.CanonicalPath(jobDir)
+	}
 
 	var admission *policy.Admission
 	if spec.Admit != nil {
@@ -1047,6 +1108,15 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 		m.mu.Unlock()
 		return JobInfo{}, fmt.Errorf("too many running commands (max %d)", max)
 	}
+	// A frozen root belongs to a lifecycle mutation that has reserved it. The
+	// check and the reservation install share this critical section, so a launch
+	// either sees the freeze and is refused or was already admitted before the
+	// freeze was installed — never inserted into a workspace the mutation
+	// believes idle.
+	if jobRoot != "" && m.frozen[jobRoot] {
+		m.mu.Unlock()
+		return JobInfo{}, fmt.Errorf("%w: %s is reserved for a workspace mutation", ErrWorkspaceBusy, jobDir)
+	}
 
 	runner := spec.Runner
 	if runner == nil {
@@ -1071,18 +1141,6 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	// lifetime and every wait that ends early.
 	jobCtx, jobCancel := context.WithCancel(m.managerCtx)
 
-	jobDir := spec.Dir
-	dirFn := m.policy.DirFunc
-	defaultDir := m.policy.Dir
-	if spec.Admit != nil {
-		// An admitted launch captured its working directory with the attempt the
-		// admission bound, so neither a late resolver nor a committed default may
-		// choose it now: that would move an approved command. The admitted path
-		// requires a captured directory, so one of these fallbacks would only
-		// ever fire if a caller bypassed that check.
-		dirFn = nil
-		defaultDir = ""
-	}
 	// Capture the resources this admission actually depends on, before the
 	// goroutine starts: they are what keeps a replaced backend open until this
 	// command releases it.
@@ -1098,12 +1156,16 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	now := time.Now()
 	j := &job{
 		info: JobInfo{
-			ID:             id,
-			ExecutionID:    ExecutionIdentity(id, origin),
-			Command:        command,
-			Status:         StatusRunning,
-			Attachment:     AttachmentForeground,
-			StartedAt:      now,
+			ID:          id,
+			ExecutionID: ExecutionIdentity(id, origin),
+			Command:     command,
+			Status:      StatusRunning,
+			Attachment:  AttachmentForeground,
+			StartedAt:   now,
+			// Dir is recorded at insertion, not when the process starts: an idle
+			// check has to see an admitted execution from the moment the manager
+			// accepted it, including the window before the goroutine runs.
+			Dir:            jobDir,
 			Wait:           spec.Wait,
 			Origin:         origin,
 			SourceEpoch:    m.epoch,
@@ -1117,6 +1179,7 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 		resources:  resources,
 		operation:  spec.Operation,
 		observer:   observer,
+		uses:       spec.WorkspaceUses,
 	}
 	if spec.Detached {
 		j.info.Attachment = AttachmentBackground
@@ -1162,46 +1225,120 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	// Increment wg under the lock so Shutdown either sees the counted
 	// goroutine or rejects the Launch outright.
 	m.wg.Add(1)
+	// Snapshot the admitted execution for the caller while the job is not yet
+	// visible to any other reader.
+	admitted := j.info
 	m.mu.Unlock()
 
 	if admission != nil {
 		admission.Release()
 	}
 
-	// Resolve a legacy launch's directory before the goroutine starts: a later
-	// workspace or config change must not redirect an admitted command. dirFn
-	// runs outside the manager lock so session state can never invert the lock
-	// order here. An admitted launch already carries the directory it was
-	// approved for, so it never resolves one now.
-	if jobDir == "" {
-		if dirFn != nil {
-			jobDir = dirFn()
-		} else {
-			jobDir = defaultDir
-		}
-	}
-	// Record the resolved directory on the execution: it is part of the
-	// captured snapshot a completion reports, and the reason a later reload
-	// cannot redirect an admitted command.
-	j.mu.Lock()
-	j.info.Dir = jobDir
-	admitted := j.info
-	j.mu.Unlock()
-
 	// Publish admission before the goroutine starts, even when the detached
 	// count is unchanged: the execution snapshot moved, and a client must never
 	// receive a settled snapshot before the admission it settles.
 	m.notifyChange()
 
-	go m.runJob(j, jobCtx, jobDir, command, runner, limit, lease)
+	go m.runJob(j, jobCtx, jobDir, command, environment, runner, limit, lease)
 
 	return admitted, nil
 }
 
-func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, runner CommandRunner, limit int, lease session.WorkLease) {
+// AcquireIdleWorkspaces reserves every root against new managed commands and
+// refuses while any admitted execution at one of them has not settled. It is
+// the local half of a lifecycle mutation's idleness: the caller composes it with
+// the runtime write gate, its live children and the cross-process target locks.
+//
+// The check and the reservation install share the manager's one critical
+// section, so a command is either refused by the freeze or was already admitted
+// before it — the insertion-to-start window cannot hide from it, because an
+// accepted execution records its cwd at insertion. The caller's release removes
+// every reservation; a context that ends before the freeze is installed leaves
+// nothing reserved.
+func (m *JobManager) AcquireIdleWorkspaces(ctx context.Context, roots []string) (func(), error) {
+	canonical := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		canonical[worktree.CanonicalPath(root)] = struct{}{}
+	}
+	if len(canonical) == 0 {
+		return func() {}, nil
+	}
+	ordered := make([]string, 0, len(canonical))
+	for root := range canonical {
+		ordered = append(ordered, root)
+	}
+	sort.Strings(ordered)
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, ErrJobManagerClosed
+	}
+	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	if m.frozen == nil {
+		m.frozen = make(map[string]bool)
+	}
+	// Check every root before reserving any, so a refusal leaves nothing frozen.
+	for _, root := range ordered {
+		if m.frozen[root] {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("%w: %s is already reserved", ErrWorkspaceBusy, root)
+		}
+		if id, busy := m.runningAtLocked(root); busy {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("%w: %s still has an admitted command (%s)", ErrWorkspaceBusy, root, id)
+		}
+	}
+	for _, root := range ordered {
+		m.frozen[root] = true
+	}
+	m.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+			for _, root := range ordered {
+				delete(m.frozen, root)
+			}
+			m.mu.Unlock()
+		})
+	}, nil
+}
+
+// runningAtLocked reports the first admitted execution at root that has not
+// settled, so the idle check can name the command that refuses it. The manager
+// lock is held, and the job lock is taken beneath it in the documented order.
+func (m *JobManager) runningAtLocked(root string) (string, bool) {
+	for _, j := range m.jobs {
+		j.mu.Lock()
+		dir, status, id := j.info.Dir, j.info.Status, j.info.ID
+		j.mu.Unlock()
+		if dir == "" || status.Terminal() {
+			continue
+		}
+		if worktree.CanonicalPath(dir) == root {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, environment []string, runner CommandRunner, limit int, lease session.WorkLease) {
 	req := CommandRequest{
 		Command:        command,
 		Dir:            dir,
+		Environment:    environment,
 		MaxOutputBytes: limit,
 		// Managed commands never derive an execution deadline from a caller's
 		// wait budget, and they keep a bounded recent tail rather than a
@@ -1215,7 +1352,14 @@ func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, ru
 			j.mu.Lock()
 			j.info.PID = pid
 			j.processStarted = true
+			executionID := j.info.ExecutionID
 			j.mu.Unlock()
+			// Record process-start evidence in each root's use note, so a later
+			// reader can tell a command that started from one that never did. The
+			// lease itself is untouched: it is released at terminal settlement.
+			for _, use := range j.uses {
+				_ = use.MarkStarted(pid, executionID)
+			}
 			m.notifyChange()
 		},
 	}
@@ -1310,6 +1454,12 @@ func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, ru
 	// before its completion record exists.
 	if lease != nil {
 		lease.Release()
+	}
+	// The command's root-use leases are released only now: after the process
+	// settled and after a detached completion was reported, so a command that
+	// outlived its caller kept its workspace busy for exactly as long as it ran.
+	for _, use := range j.uses {
+		_ = use.Release(true)
 	}
 	close(j.done)
 	m.wg.Done()

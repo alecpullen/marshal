@@ -55,8 +55,11 @@ The choice of model sets what a subagent can safely take on:
   judgment, but every decision the plan or the user settled still goes into
   the brief.
 
-Run tasks **sequentially**. Delegated tasks share your worktree, so a sibling's
-half-finished edits break the other's build and tests. Run two tasks at once
+Run tasks **sequentially**. Each isolated child commits its own task in its own
+worktree, but your own tree must still have the interfaces, plans and fixtures
+the next task needs: commit those before dispatching the task that consumes
+them, and integrate each child's retained branch (the report names it) before
+dispatching a task that builds on it. Run two tasks at once
 only when the plan explicitly marks them parallel-safe and their file sets are
 disjoint. Otherwise do not use `dispatching-parallel-agents` for plan tasks.
 
@@ -101,7 +104,9 @@ cleanly, ask, and resume. Never guess at it, and never hand it to a subagent.
 
 1. **Write the brief** from the template below. Paste the task section
    verbatim. Do not tell the subagent to read the plan; a subagent that reads
-   the whole plan inherits every other task's scope.
+   the whole plan inherits every other task's scope. Commit anything the task
+   needs from your own tree first — an isolated child starts at your committed
+   HEAD, so an uncommitted interface or fixture is invisible to it.
 2. Dispatch it with `agent.run` (`model` set to the user's choice; omit it
    for "same as mine"). Wait with `agent.await`.
 3. While it runs, peek now and then (`agent.await` with `"peek": true`). If
@@ -113,11 +118,22 @@ cleanly, ask, and resume. Never guess at it, and never hand it to a subagent.
    to the user.
 5. **If it reports DONE, check it yourself.** Its report is a claim, not
    evidence.
+   - The report names the child's retained branch and candidate commit. Review
+     that branch (`git.diff` against the reported base), not your own tree: an
+     isolated child's work is not in your checkout until you integrate it.
    - `git.status` / `git.diff`: changes stay within the task's files and its
      own tests, and embedded code landed verbatim. Revert anything outside
      scope, or treat it as a bigger decision.
-   - Re-run the task's Verify commands.
-   - Then commit.
+   - Re-run the task's Verify commands on the integrated result.
+   - Integrate explicitly with `agent.integrate`: to merge the retained branch
+     whose work you reviewed, pass the reported `task_key` and that exact
+     candidate SHA. It merges into the checkout the child was dispatched for,
+     so it never moves your own tree's unrelated work, and it refuses a
+     candidate or target that has changed since you looked. Integrate accepted
+     tasks **one at a time**, re-running the combined build and tests after
+     each: two tasks built from the same base can both be correct and still
+     conflict. A `conflict` receipt keeps both sides and is yours to resolve;
+     do not reset or force it. Then commit.
 
 Before the next task, read the signatures the next task consumes from the
 committed code. Paste those into its brief rather than relaying the previous

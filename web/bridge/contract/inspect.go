@@ -79,8 +79,38 @@ type CallDetail struct {
 	// carries: what was launched, who owned it, and how it ended. It is
 	// separate from Notice, which is coaching prose written for the model.
 	Execution *ExecutionDetail `json:"execution,omitempty"`
+	// Workspace is the workspace lifecycle evidence this call carried, when it
+	// carried any: the receipt's task key, candidate and integration state. It
+	// is historical — what the call recorded when it ran.
+	Workspace *SubagentWorkspace `json:"workspace,omitempty"`
 	// Summary is the call's own summary, uncut.
 	Summary string `json:"summary,omitempty"`
+}
+
+// SubagentWorkspace is one child's owned-workspace lifecycle evidence: what
+// the child was bound to, the commit it produced, the checkout that work
+// belongs in, and what became of the integration and of the workspace's
+// artifacts.
+//
+// Every field is optional, and an empty one is unknown rather than
+// zero-valued fact. Empty Execution, Integration or Cleanup means the record
+// predates the state or has not settled — never success. CandidateSHA is empty
+// for a child that produced no commit, and Reason is empty unless the record
+// explains its own outcome. A client must not infer an integration from the
+// presence of a candidate.
+type SubagentWorkspace struct {
+	TaskKey      string `json:"taskKey,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+	Root         string `json:"root,omitempty"`
+	Branch       string `json:"branch,omitempty"`
+	BaseSHA      string `json:"baseSha,omitempty"`
+	CandidateSHA string `json:"candidateSha,omitempty"`
+	TargetRoot   string `json:"targetRoot,omitempty"`
+	TargetBranch string `json:"targetBranch,omitempty"`
+	Execution    string `json:"execution,omitempty"`
+	Integration  string `json:"integration,omitempty"`
+	Cleanup      string `json:"cleanup,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 // ExecutionDetail is one managed command execution's structured evidence:

@@ -15,6 +15,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
+	"marshal/internal/subagentwork"
 )
 
 // SubagentStatus is the lifecycle state of a registered subagent view.
@@ -85,6 +86,64 @@ type SubagentView struct {
 	// embedded so the card carries the same lightweight facts the conversation
 	// work index stores. It never carries the full report body.
 	SubagentWorkFacts
+
+	// Workspace is the read-only lifecycle evidence of this child's owned
+	// workspace, joined by task key from the conversation's retained records.
+	// It is a copy taken when the view is projected, so it never aliases a
+	// mutable parent workspace, and nil means this conversation recorded no
+	// owned workspace for the child — not that one was discarded.
+	Workspace *SubagentWorkspaceFacts
+}
+
+// SubagentWorkspaceFacts is the projection of one retained owned-workspace
+// record onto the facts a card explains the work's lifecycle with: what the
+// child was bound to, the commit it produced, the checkout that work belongs
+// in, and what became of the integration and of the workspace's artifacts.
+//
+// Every field is optional and an empty one is unknown, never a zero-valued
+// fact: an empty Execution, Integration or Cleanup means the record predates
+// the state or has not settled, and an empty CandidateSHA means the child
+// produced no commit. A reader must not infer an integration from either.
+type SubagentWorkspaceFacts struct {
+	TaskKey      string
+	Mode         string
+	Root         string
+	Branch       string
+	BaseSHA      string
+	CandidateSHA string
+	TargetRoot   string
+	TargetBranch string
+	Execution    string
+	Integration  string
+	Cleanup      string
+	Reason       string
+}
+
+// subagentWorkspaceFactsOf projects one retained record onto those facts. It
+// reads only what the record itself holds — never the live parent workspace —
+// so a card keeps naming the candidate and integration state the record
+// settled on.
+func subagentWorkspaceFactsOf(rec subagentwork.Record) *SubagentWorkspaceFacts {
+	if rec.TaskKey == "" {
+		return nil
+	}
+	out := &SubagentWorkspaceFacts{
+		TaskKey:      rec.TaskKey,
+		Mode:         string(rec.Binding.Mode),
+		Root:         rec.Binding.Root,
+		Branch:       rec.Binding.Branch,
+		BaseSHA:      rec.Binding.BaseSHA,
+		CandidateSHA: rec.Candidate,
+		TargetRoot:   rec.Target.Root,
+		TargetBranch: rec.Target.Branch,
+		Execution:    rec.Outcome,
+		Cleanup:      rec.CleanupState,
+	}
+	if rec.Integration != nil {
+		out.Integration = rec.Integration.State
+		out.Reason = rec.Integration.Reason
+	}
+	return out
 }
 
 // SubagentMeta is the optional metadata passed to RegisterSubagentWithMeta.
@@ -97,6 +156,95 @@ type SubagentMeta struct {
 	// step and the tool call. It is provenance, kept so a restored result can
 	// still name where it came from.
 	Origin SubagentOrigin
+	// WorkKey, when non-empty, is the stable key the dispatcher already
+	// allocated for this child's owned workspace. Registration adopts it
+	// instead of minting a fresh one, so the live card, the durable workspace
+	// record and the report all name one identity. Empty keeps the ordinary
+	// minting path (pipeline and review workers, which own no workspace).
+	WorkKey string
+}
+
+// subagentWorkspaceLedger is the conversation's retained view of its children's
+// owned workspaces, keyed by the child's stable task key. It is metadata only:
+// the durable record is the store's, and the live card joins this by WorkKey.
+type subagentWorkspaceLedger map[string]subagentwork.Record
+
+// ApplySubagentWorkspace retains one owned-workspace record for this
+// conversation, keeping the newest revision of each task key.
+//
+// It is owner-scoped: a record another conversation owns is never adopted,
+// because a session must not be able to read, or act on, work it does not own.
+// The stored value is a deep copy, so a caller that mutates the record it
+// passed in — or the service that reuses it — cannot rewrite what this session
+// retained. A revision no newer than the one already held is ignored: the
+// ledger only moves forward.
+func (s *State) ApplySubagentWorkspace(record subagentwork.Record) {
+	if s == nil || record.TaskKey == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if record.OwnerSessionID != "" && s.sessionID != "" && record.OwnerSessionID != s.sessionID {
+		return
+	}
+	if s.subagentWorkspaces == nil {
+		s.subagentWorkspaces = make(subagentWorkspaceLedger)
+	}
+	if existing, ok := s.subagentWorkspaces[record.TaskKey]; ok && record.Revision <= existing.Revision {
+		return
+	}
+	s.subagentWorkspaces[record.TaskKey] = cloneSubagentWorkspaceRecord(record)
+}
+
+// SubagentWorkspaces returns this conversation's retained workspace records as
+// deep copies, ordered by revision (oldest first) and then by task key, so two
+// readers of the same state observe the same order without sharing any slice.
+func (s *State) SubagentWorkspaces() []subagentwork.Record {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.subagentWorkspaces) == 0 {
+		return nil
+	}
+	out := make([]subagentwork.Record, 0, len(s.subagentWorkspaces))
+	for _, record := range s.subagentWorkspaces {
+		out = append(out, cloneSubagentWorkspaceRecord(record))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Revision != out[j].Revision {
+			return out[i].Revision < out[j].Revision
+		}
+		return out[i].TaskKey < out[j].TaskKey
+	})
+	return out
+}
+
+// cloneSubagentWorkspaceRecord deep-copies a record: every slice and pointer it
+// carries gets its own backing memory, so the copy cannot alias the caller's.
+func cloneSubagentWorkspaceRecord(r subagentwork.Record) subagentwork.Record {
+	out := r
+	out.Commits = append([]string(nil), r.Commits...)
+	out.ChangedPaths = append([]string(nil), r.ChangedPaths...)
+	out.SetupWarnings = append([]string(nil), r.SetupWarnings...)
+	out.SetupPlan.Hooks = append(r.SetupPlan.Hooks[:0:0], r.SetupPlan.Hooks...)
+	if r.Dirty != nil {
+		dirty := *r.Dirty
+		out.Dirty = &dirty
+	}
+	if r.Integration != nil {
+		integration := *r.Integration
+		out.Integration = &integration
+	}
+	if r.Verification != nil {
+		out.Verification = make([]subagentwork.Verification, len(r.Verification))
+		for i, v := range r.Verification {
+			out.Verification[i] = v
+			if v.ExitCode != nil {
+				code := *v.ExitCode
+				out.Verification[i].ExitCode = &code
+			}
+		}
+	}
+	return out
 }
 
 // SubagentOrigin identifies the call that dispatched a subagent. It is stored
@@ -263,8 +411,15 @@ func (s *State) registerSubagent(meta SubagentMeta, work WorkID, label string, c
 	}
 	// The child's stable work identity is minted here, once, and never derived
 	// from a mutable id: the opaque key is what pairs an acknowledgment with a
-	// result across a resume, which a display id cannot.
-	v.WorkKey = rand.Text()
+	// result across a resume, which a display id cannot. A dispatcher that
+	// already allocated the key (agent.run, whose workspace record is keyed by
+	// it) passes it in, so the card, the record and the report name one
+	// identity instead of the card minting a second one.
+	if meta.WorkKey != "" {
+		v.WorkKey = meta.WorkKey
+	} else {
+		v.WorkKey = rand.Text()
+	}
 	v.RuntimeEpoch = epoch
 	v.Origin = meta.Origin
 	s.subagents = append(s.subagents, v)
@@ -717,13 +872,32 @@ func (s *State) FinishSubagent(id int64, summary string, err error) {
 
 // Subagents returns a copy of the registered subagent views in registration
 // order. The Child pointers inside reference live states; callers read them
-// under those states' own locks.
+// under those states' own locks. Each view carries a copy of its retained
+// workspace evidence, joined by task key: a card therefore keeps naming the
+// candidate and integration state the durable record settled on.
 func (s *State) Subagents() []SubagentView {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]SubagentView, len(s.subagents))
 	copy(out, s.subagents)
+	for i := range out {
+		out[i].Workspace = s.subagentWorkspaceFactsLocked(out[i].WorkKey)
+	}
 	return out
+}
+
+// subagentWorkspaceFactsLocked is the retained evidence for one task key, as a
+// fresh projection, or nil when this conversation holds no record for it.
+// Callers must hold s.mu.
+func (s *State) subagentWorkspaceFactsLocked(taskKey string) *SubagentWorkspaceFacts {
+	if taskKey == "" {
+		return nil
+	}
+	record, ok := s.subagentWorkspaces[taskKey]
+	if !ok {
+		return nil
+	}
+	return subagentWorkspaceFactsOf(record)
 }
 
 // Constants naming the lightweight work-index entries a subagent produces.
@@ -897,6 +1071,12 @@ func (s *State) SubagentSnapshot() SubagentSnapshot {
 	rev := s.subagentRevision
 	views := make([]SubagentView, len(s.subagents))
 	copy(views, s.subagents)
+	// The retained workspace evidence is a copy of the ledger's own record, so
+	// it is projected under the same lock the ledger is read with and never
+	// aliases the record a writer may later replace.
+	for i := range views {
+		views[i].Workspace = s.subagentWorkspaceFactsLocked(views[i].WorkKey)
+	}
 	var settlingIDs []int64
 	for id, settling := range s.subagentSettling {
 		if settling {

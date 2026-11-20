@@ -265,11 +265,19 @@ func TestResolveNamedRootRead(t *testing.T) {
 		t.Fatal("unknown alias returned nil error")
 	}
 
-	// Strict resolveNamedRoot still rejects an absolute path inside the
-	// alias root (write semantics pinned).
-	_, err = resolveNamedRoot(namedRoots, worktree, nil, absBrief)
-	if err == nil {
-		t.Fatal("strict resolveNamedRoot accepted an absolute path")
+	// Write mode accepts the same contained absolute path: an absolute
+	// spelling alone does not require System access, and the alias root is a
+	// read/write grant here.
+	got, err = resolveNamedRoot(namedRoots, worktree, nil, absBrief)
+	if err != nil {
+		t.Fatalf("write-mode resolve of a contained absolute path: %v", err)
+	}
+	if !resolvedEqual(got, absBrief) {
+		t.Fatalf("write-mode absolute alias-root path = %q, want %q", got, absBrief)
+	}
+	// An alias traversal that leaves the alias root is not granted.
+	if _, err := resolveNamedRoot(namedRoots, worktree, nil, "@run/../escape.md"); !errors.Is(err, ErrPathEscapes) {
+		t.Fatalf("alias traversal: got %v, want ErrPathEscapes", err)
 	}
 }
 

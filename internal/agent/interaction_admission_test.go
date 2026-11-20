@@ -541,3 +541,94 @@ func TestDispatchStaleApprovalCannotLaunchAfterAsk(t *testing.T) {
 		t.Fatalf("messages = %v, want a refusal", msgs)
 	}
 }
+
+// TestOwnsAdmissionLeavesTheProofForTheHandler pins WHERE a proof is spent. An
+// ordinary tool's proof is committed by dispatch before its handler runs, so the
+// handler cannot spend it again. A tool that declares OwnsAdmission keeps it:
+// dispatch attaches it to the handler's context untouched, and the handler
+// admits exactly one effect with it — which is what lets a lifecycle mutation
+// admit the record facts it only knows under the workspace lease.
+func TestOwnsAdmissionLeavesTheProofForTheHandler(t *testing.T) {
+	state := newTestState(t)
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	var runner *Runner
+
+	// handlerArgs reproduces the map dispatch evaluated, so BeginTool's
+	// fingerprint check answers "was this proof spent?" rather than "are these
+	// other facts?".
+	handlerArgs := func(call registry.ToolCall) map[string]any {
+		argsMap := map[string]any{}
+		if err := json.Unmarshal(call.Args, &argsMap); err != nil {
+			t.Fatalf("unmarshal handler args: %v", err)
+		}
+		return argsMap
+	}
+
+	var ordinaryErr error
+	if err := reg.Register(registry.Tool{
+		Name: "file.write",
+		Risk: registry.RiskWorkspaceWrite,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			ordinaryErr = policy.ErrApprovalRequired
+			if _, err := runner.Authorizer.BeginTool(ctx, policy.Call{
+				InvocationID: policy.InvocationID(ctx),
+				ToolName:     call.Name,
+				Args:         handlerArgs(call),
+			}); err != nil {
+				ordinaryErr = err
+			}
+			return registry.ToolResult{Summary: "wrote"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	managedAdmitted := false
+	if err := reg.Register(registry.Tool{
+		Name:            "agent.integrate",
+		Risk:            registry.RiskWorkspaceWrite,
+		WorkspaceEffect: registry.WorkspaceEffectManaged,
+		OwnsAdmission:   true,
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			admission, err := runner.Authorizer.BeginTool(ctx, policy.Call{
+				InvocationID: policy.InvocationID(ctx),
+				ToolName:     call.Name,
+				Args:         handlerArgs(call),
+			})
+			if err != nil {
+				return registry.ToolResult{}, err
+			}
+			if commitErr := admission.Commit(); commitErr != nil {
+				admission.Release()
+				return registry.ToolResult{}, commitErr
+			}
+			admission.Release()
+			managedAdmitted = true
+			return registry.ToolResult{Summary: "integrated"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	pol.WithRegistry(reg)
+	runner = NewRunner(&agenttest.ScriptedProvider{}, reg, pol, state, "test-model")
+
+	if _, err := runner.executeToolCall(context.Background(), ModelAction{
+		Type: ActionToolCall, Tool: "file.write", Args: json.RawMessage(`{"path":"a.txt","content":"x"}`), ToolCallID: "c1",
+	}); err != nil {
+		t.Fatalf("ordinary dispatch: %v", err)
+	}
+	if !errors.Is(ordinaryErr, policy.ErrStaleAdmission) {
+		t.Fatalf("an ordinary tool's proof was still spendable in its handler: %v", ordinaryErr)
+	}
+
+	if _, err := runner.executeToolCall(context.Background(), ModelAction{
+		Type: ActionToolCall, Tool: "agent.integrate", Args: json.RawMessage(`{"task_key":"task-1","expected_head":"abc"}`), ToolCallID: "c2",
+	}); err != nil {
+		t.Fatalf("managed dispatch: %v", err)
+	}
+	if !managedAdmitted {
+		t.Fatal("a tool that owns its admission could not spend its proof at the handler")
+	}
+}

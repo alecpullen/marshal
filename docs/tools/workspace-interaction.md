@@ -32,6 +32,14 @@ branch that is not already present.
 There is deliberately no removal path (`workspace.go:20`) — the tool covers
 mechanics, and the `using-worktrees` skill covers judgment.
 
+**What the model is told.** The turn-start system prompt names the root the
+session is actually bound to — the worktree root while isolated, never the
+launch directory. Because an interactive parent can rebind mid-turn, each
+request also carries a volatile `Current workspace: root=…` tail message naming
+the binding in force for that request, the project checkout it may still read
+as a reference, and the commit-first step before merging back. That message
+rides after the transcript, so a rebind never rewrites the cache-stable prefix.
+
 If the worktree directory is removed while the session is running — a merged
 branch cleaned up from another terminal, `git worktree remove` — the next tool
 call returns the session to the project root and writes one system notice
@@ -68,6 +76,13 @@ description says to commit worktree changes first.
 Use this instead of `shell.run git merge`, and pop or drop any stash you created
 before calling it. See `git.md` for the merge-hygiene note and why it fires too
 late to help.
+
+**This is the session's own worktree.** A subagent's workspace is not this one:
+`agent.integrate` (see [`delegation.md`](delegation.md)) is the per-child
+equivalent, merging one owned candidate into the checkout that child was
+dispatched for. It takes a task key and an exact candidate, never a path, so it
+cannot be aimed at a checkout the caller does not own, and `workspace.finish`
+cannot merge a child's candidate in its place.
 
 ## question.ask
 

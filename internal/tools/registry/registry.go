@@ -183,5 +183,8 @@ func cloneTool(tool Tool) Tool {
 	}
 	// cloned.validator intentionally shares the compiled schema: it is
 	// immutable after compilation and safe for concurrent use.
+	// cloned.ResolvePath and cloned.PrepareCommand are copied with the rest of
+	// the struct: a view that narrows a handler must still resolve paths and
+	// prepare commands exactly as the tool does.
 	return cloned
 }

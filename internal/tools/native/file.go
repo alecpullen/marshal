@@ -91,6 +91,7 @@ func (t *toolSet) fileReadTool() registry.Tool {
 			`},"start_line":{"type":"integer","description":"1-based first line to return"},"end_line":{"type":"integer","description":"1-based last line to return"}},"required":["path"],"additionalProperties":false}`),
 		Risk: registry.RiskReadOnly,
 	}
+	tool.ResolvePath = t.resolveReadOnlyPathFunc
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[fileReadArgs](tool, call.Args)
 		if err != nil {
@@ -804,6 +805,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 		// edits through file.edit.
 		Internal: true,
 	}
+	tool.ResolvePath = t.resolvePathFunc
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[fileWritePatchArgs](tool, call.Args)
 		if err != nil {
@@ -890,7 +892,7 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 	// with it, so a caller between commit units never loses committed evidence
 	// and never claims the unwritten files were applied.
 	finalize := func(interrupted error) (registry.ToolResult, error) {
-		if ws := t.wsState(); ws != nil {
+		if ws := t.backupState(); ws != nil {
 			ws.StoreBackup(backups)
 		}
 		committed := committedPaths(backups)
@@ -1032,7 +1034,7 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 			// complete attempt. A file that does not exist yet has nothing to
 			// protect, and an Exists:false record for a missing file would make
 			// a rollback fail on os.Remove.
-			if ws := t.wsState(); ws != nil && fileExists {
+			if ws := t.backupState(); ws != nil && fileExists {
 				pending := make([]session.BackupFile, 0, len(backups)+1)
 				pending = append(pending, backups...)
 				pending = append(pending, session.BackupFile{
@@ -1132,6 +1134,7 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			`},"content":{"type":"string","description":"exact file content to write"}},"required":["path","content"],"additionalProperties":false}`),
 		Risk: registry.RiskWorkspaceWrite,
 	}
+	tool.ResolvePath = t.resolvePathFunc
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[fileWriteArgs](tool, call.Args)
 		if err != nil {
@@ -1269,7 +1272,7 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 		// because StoreBackup replaces it. A file that does not exist yet has
 		// nothing to protect, and an Exists:false record for a missing file
 		// would make a rollback fail on os.Remove.
-		if ws := t.wsState(); ws != nil && exists {
+		if ws := t.backupState(); ws != nil && exists {
 			ws.StoreBackup(append(ws.Backup(), session.BackupFile{
 				Path:    args.Path,
 				Content: original,
@@ -1284,7 +1287,7 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 
 		t.recordWrite(path)
 
-		if ws := t.wsState(); ws != nil {
+		if ws := t.backupState(); ws != nil {
 			ws.StoreBackup([]session.BackupFile{{
 				Path:    args.Path,
 				Content: original,

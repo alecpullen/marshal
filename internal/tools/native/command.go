@@ -58,6 +58,9 @@ func (t *toolSet) shellRunTool() registry.Tool {
 		Description: "Run a command with the workspace root as current working directory. Prefer repo.search, symbols and file.read to broad searches. Never use shell.run to create or modify files (including redirection, heredocs or tee); use file.write or file.edit. Use git.* for repository state and workspace tools for worktrees. Commands are not killed by elapsed time: they continue in background with a job_id. agent.await reports status, exit code, stop cause and output; agent.kill stops a job.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","description":"live progress card for work >30s with measurable progress. Download bytes: {\"profile\":\"download\",\"source\":\"events-v1\"} (real Content-Length). Go tests: {\"profile\":\"tests\",\"source\":\"go-test-json\"} (no producer). For custom or multi-phase jobs or producers, load skill progress-reporting.","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false},"timeout_seconds":{"type":"integer","description":"maximum seconds this call waits before the still-running command continues in the background; it never limits the command's lifetime. Omit or pass 0 for the foreground wait."},"background":{"type":"boolean","description":"start the command and return its job_id immediately"}},"required":["command"],"additionalProperties":false}`),
 		Risk:        registry.RiskCommand,
+		// PrepareCommand resolves the exact command, cwd and launch
+		// environment policy evaluates and launch must use.
+		PrepareCommand: t.prepareCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[shellRunArgs](tool, call.Args)
@@ -96,7 +99,8 @@ func (t *toolSet) testRunTool() registry.Tool {
 		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","description":"live progress card for a command you will watch (roughly >30s with something real to count). Common: {\"profile\":\"download\",\"source\":\"events-v1\"} for byte counts from a real Content-Length, {\"profile\":\"tests\",\"source\":\"go-test-json\"} for go tests, which needs no producer. Load skill progress-reporting for a multi-phase or custom job, or to write a producer.","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false}},"additionalProperties":false}`),
 		Risk:   registry.RiskCommand,
 		// Internal: the general agent runs tests through shell.run; only the swarm tester (TesterView) gets this constrained tool.
-		Internal: true,
+		Internal:       true,
+		PrepareCommand: t.prepareCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[testRunArgs](tool, call.Args)
@@ -213,16 +217,17 @@ func (t *toolSet) configuredTestCommand() string {
 // and the environment the analysis reads. Everything is resolved here, before
 // the authorizer evaluates the command, so a workspace or config change after
 // admission cannot redirect work that was already approved.
+//
+// A proof attached by dispatch already captured the shell facts it evaluated:
+// those are deep-copied and admitted as they are, so a later mutation through
+// either the proof or the launcher cannot retarget a command that was already
+// approved.
 func (t *toolSet) commandAttempt(ctx context.Context, toolName, invocationID, command string) policy.CommandAttempt {
-	// A proof attached by dispatch already captured the shell facts it
-	// evaluated: admit exactly those, under that proof's logical identity,
-	// rather than re-deriving a second description of the same command. The
-	// captured command bytes are the ones that were approved.
 	if input, ok := policy.ShellInputFromContext(ctx); ok {
 		attempt := policy.CommandAttempt{
 			InvocationID: policy.InvocationID(ctx),
 			ToolName:     toolName,
-			Input:        input,
+			Input:        cloneShellInput(input),
 		}
 		if attempt.InvocationID == "" {
 			attempt.InvocationID = invocationID
@@ -253,10 +258,29 @@ func (t *toolSet) commandAttempt(ctx context.Context, toolName, invocationID, co
 			Dir:           dir,
 			WorkspaceRoot: workspace,
 			HomeDir:       home,
-			ReadRoots:     append([]string(nil), t.additionalRoots...),
+			ReadRoots:     t.commandReadRoots(),
 			Env:           knownEnvironment(),
 		},
 	}
+}
+
+// cloneShellInput deep-copies prepared facts so that admitting them cannot
+// reach back into the proof (or the launcher's copy) through a shared slice or
+// map. The nil/non-nil distinction of Environment is preserved: an
+// intentionally empty captured environment stays empty, and nil keeps the
+// legacy "the runner decides" spelling.
+func cloneShellInput(in policy.ShellInput) policy.ShellInput {
+	out := in
+	out.ReadRoots = append([]string(nil), in.ReadRoots...)
+	if in.Env != nil {
+		env := make(map[string]string, len(in.Env))
+		for key, value := range in.Env {
+			env[key] = value
+		}
+		out.Env = env
+	}
+	out.Environment = cloneEnv(in.Environment)
+	return out
 }
 
 // knownEnvironment is the environment map the shell analysis expands against.
@@ -265,13 +289,7 @@ func (t *toolSet) commandAttempt(ctx context.Context, toolName, invocationID, co
 // guessed, and copying the whole process environment would make the admission
 // fingerprint depend on unrelated ambient state.
 func knownEnvironment() map[string]string {
-	env := make(map[string]string, 8)
-	for _, name := range []string{"HOME", "PATH", "PWD", "SHELL", "TMPDIR", "USER"} {
-		if value, ok := os.LookupEnv(name); ok {
-			env[name] = value
-		}
-	}
-	return env
+	return knownEnvironmentFrom(os.Environ())
 }
 
 // runManagedCommandWithProgress launches one ordinary command through the
@@ -337,14 +355,41 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, toolName, c
 		return registry.ToolResult{}, fmt.Errorf("shell execution is unavailable: this registry has no command admission")
 	}
 	attempt := t.commandAttempt(ctx, toolName, callID, command)
+	// The bytes this call would run and the bytes its approval prepared must be
+	// the same bytes. A mismatch means two different commands are in play — an
+	// edited or stale proof — and neither may be launched on the other's
+	// approval.
+	accepted := attempt.Input
+	if strings.TrimSpace(accepted.Command) != command {
+		return registry.ToolResult{}, fmt.Errorf(
+			"%s: this call would run %q but its approval prepared %q; refusing to launch either",
+			toolName, command, strings.TrimSpace(accepted.Command))
+	}
+	if strings.TrimSpace(accepted.Dir) == "" {
+		return registry.ToolResult{}, fmt.Errorf("%s: the prepared command has no working directory", toolName)
+	}
 	admit := func(admitCtx context.Context) (*policy.Admission, error) {
 		return t.commandAdmission(admitCtx, attempt)
 	}
 
 	operation, _ := session.OperationFromContext(ctx)
+	// The command's root-use leases are taken before admission and handed to the
+	// service with the launch. The service owns them from insertion until
+	// terminal settlement — not until this call returns, and not until it
+	// detaches — so a command that outlives its caller keeps its workspace busy
+	// for exactly as long as it runs. A failed launch gets them back here.
+	uses, err := t.acquireCommandWorkspaceUses(ctx, accepted.Dir, accepted.WorkspaceRoot)
+	if err != nil {
+		return registry.ToolResult{}, err
+	}
+	// Command, Dir and Environment come from the accepted attempt, never from a
+	// fresh root read: a workspace or config change between preparation and
+	// insertion must not move the directory or the environment of a command that
+	// was already approved.
 	info, err := t.jobManager.Launch(ctx, LaunchSpec{
-		Command:        command,
-		Dir:            t.commandRoot(),
+		Command:        strings.TrimSpace(accepted.Command),
+		Dir:            accepted.Dir,
+		Environment:    accepted.Environment,
 		Runner:         t.runner,
 		MaxOutputBytes: t.maxOutputBytes,
 		Stdout:         t.activeCallWriter(callID),
@@ -355,8 +400,10 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, toolName, c
 		Wait:           wait,
 		Progress:       progressCfg,
 		Admit:          admit,
+		WorkspaceUses:  uses,
 	})
 	if err != nil {
+		releaseWorkspaceUses(uses)
 		return registry.ToolResult{}, err
 	}
 	if background {

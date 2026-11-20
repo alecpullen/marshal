@@ -22,6 +22,41 @@ type Subagent struct {
 	// Session.Stack reads for the subagent. Nil means the subagent cannot be
 	// drilled into: a status-only card, or a child the session has released.
 	Drill *SubagentDrill `json:"drill,omitempty"`
+
+	// Workspace is the retained lifecycle evidence of the child's owned
+	// workspace, when this conversation owns one. It is the session's copy of
+	// the durable record joined by task key, so a card keeps naming its
+	// candidate and its integration state after a restart. Nil means no owned
+	// workspace was ever recorded, which is not the same as one that was
+	// discarded.
+	Workspace *SubagentWorkspace `json:"workspace,omitempty"`
+}
+
+// SubagentWorkspace is one child's owned-workspace lifecycle evidence as a
+// client reads it: what the child was bound to, the commit it produced, the
+// checkout that work is integrated into, and what became of the integration
+// and of the workspace's own artifacts.
+//
+// Every field is optional, and an empty one is unknown rather than
+// zero-valued fact. Empty Execution, Integration or Cleanup means the record
+// predates the state or has not settled — it is never success.
+// CandidateSHA is empty for a child that has produced no commit (a running
+// child, a cancelled one, a failed one), and Reason is empty unless the record
+// explains its own outcome. A client must not infer an integration from the
+// presence of a candidate.
+type SubagentWorkspace struct {
+	TaskKey      string `json:"taskKey,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+	Root         string `json:"root,omitempty"`
+	Branch       string `json:"branch,omitempty"`
+	BaseSHA      string `json:"baseSha,omitempty"`
+	CandidateSHA string `json:"candidateSha,omitempty"`
+	TargetRoot   string `json:"targetRoot,omitempty"`
+	TargetBranch string `json:"targetBranch,omitempty"`
+	Execution    string `json:"execution,omitempty"`
+	Integration  string `json:"integration,omitempty"`
+	Cleanup      string `json:"cleanup,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 // SubagentDrill is what a view drilled into a subagent reads about the child

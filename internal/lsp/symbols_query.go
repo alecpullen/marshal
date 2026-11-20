@@ -77,6 +77,23 @@ func NewSymbolQuery(h *Handle, index SymbolIndex, projectID int64) *SymbolQuery 
 	return &SymbolQuery{h: h, index: index, projectID: projectID, wait: symbolWait}
 }
 
+// IndexOnly returns a copy of the query that answers from the project index
+// alone, with no language-server handle.
+//
+// It exists for a caller bound to a different checkout than the handle's root: a
+// server-backed answer is relativized to the handle's root, so handing the
+// parent's query to a child in its own worktree would report the parent's
+// symbols in paths that look like the child's own. The index is the
+// project-scoped, read-only half, and it is what such a caller keeps.
+func (q *SymbolQuery) IndexOnly() *SymbolQuery {
+	if q == nil {
+		return nil
+	}
+	out := *q
+	out.h = nil
+	return &out
+}
+
 // languageServer is one language a query considers, with its client when the
 // server came up in time.
 type languageServer struct {

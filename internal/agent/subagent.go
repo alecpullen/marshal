@@ -5,15 +5,40 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"marshal/internal/app/session"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/subagentwork"
 	"marshal/internal/tools/registry"
 	"marshal/internal/watch/watchctx"
+	"marshal/internal/worktree"
 )
+
+// acquireChildWorkspaceUse takes the shared root-use lease a child holds for its
+// whole model lifetime: an owned-child lifecycle mutation at the child's root
+// must see a live child even between its tool calls, and because the lease is
+// published per repository and root, a shared-mode child in another runtime is
+// covered by exactly the same record.
+//
+// A child with no recorded repository (an explicit non-git fixture) acquires
+// nothing: there is no cross-process participant to coordinate with.
+func acquireChildWorkspaceUse(ctx context.Context, record subagentwork.Record, executionID string) (*worktree.UseLease, error) {
+	repository := strings.TrimSpace(record.Binding.Repository)
+	root := strings.TrimSpace(record.Binding.Root)
+	if repository == "" || root == "" {
+		return nil, nil
+	}
+	return worktree.AcquireWorkspaceUse(ctx, repository, root, worktree.UseIdentity{
+		OwnerSessionID: record.OwnerSessionID,
+		ActorID:        record.TaskKey,
+		ExecutionID:    executionID,
+		Kind:           worktree.UseKindChild,
+	})
+}
 
 // ownedExecutionControl is the ExecutionControl a synthetic child owns when it
 // has a stop group of its own rather than inheriting a parent operation's: an
@@ -74,6 +99,19 @@ type SubagentRequest struct {
 	ActorID string
 	// ActorLabel is the human writer name shown alongside ActorID.
 	ActorLabel string
+	// TaskKey is the stable identity of this child's owned work, allocated by
+	// the dispatcher before the workspace exists. It is opaque: nothing parses
+	// it, and it keys the child's workspace record and its isolated ledger.
+	TaskKey string
+	// Binding is the workspace this child is bound to. The factory never
+	// re-derives it from the parent's current workspace, so a later parent
+	// rebind cannot retarget a running child. Mode decides whether the child
+	// shares the captured checkout or owns an isolated worktree.
+	Binding subagentwork.Binding
+	// Target is the parent checkout and branch this child's work is destined
+	// for. It is recorded with the child's evidence so a later integration
+	// names the same target the dispatch captured.
+	Target subagentwork.Target
 }
 
 // SubagentModelPreview describes what model a subagent will use before it
@@ -169,9 +207,25 @@ func subagentReportImages(args agentRunArgs, child *Runner) []schema.ImageRef {
 // surfaces during an ad-hoc task), and question.ask (a subtask runs in its
 // own orphaned child session.State that no ACP client or TUI ever sees —
 // there is no live user who could answer a question, so the call would block
-// forever). All other tools are visible so the child can perform
-// implementation work; their own Risk levels and the shared policy engine
-// still gate approval for writes, commands, and destructive tools.
+// forever).
+//
+// It also excludes the tools that would let a child escape the workspace its
+// dispatcher bound it to: mode.request and tools.select widen a child's own
+// surface, workspace.worktree and workspace.finish rebind a checkout or merge
+// it (the parent owns integration), and shell.sudo is privileged execution. A
+// child asks its parent; it never re-targets itself.
+//
+// agent.integrate and agent.discard belong to the same rule for the same
+// reason: they mutate work the PARENT owns on behalf of the parent's review, and
+// a child acting on a sibling's task key would integrate or destroy work it
+// never reviewed. A child reports; the parent decides.
+//
+// All other tools are visible so the child can perform implementation work;
+// their own Risk levels and the shared policy engine still gate approval for
+// writes, commands, and destructive tools. The list lives HERE and nowhere
+// else: the app applies this one view to the fully assembled child registry,
+// so native registration and inherited session tools are filtered by the same
+// rule and no second, narrower copy of the exclusion set can drift.
 func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 	view := registry.New()
 	for _, tool := range src.List() {
@@ -179,7 +233,11 @@ func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 			continue
 		}
 		switch tool.Name {
-		case "agent.run", "agent.await", "agent.kill", "agent.steer", "question.ask":
+		case "agent.run", "agent.await", "agent.kill", "agent.steer", "question.ask",
+			subagentIntegrateTool, subagentDiscardTool,
+			"mode.request", "tools.select",
+			"workspace.worktree", "workspace.finish",
+			"shell.sudo":
 			continue
 		}
 		_ = view.Register(tool)
@@ -203,6 +261,11 @@ type subagentToolConfig struct {
 	// ResponseChan. The tool handler is shared across the parent runner's
 	// parallel batch, so the mutex lives on the config (not the handler).
 	consentMu sync.Mutex
+
+	// workspaces is the owned-workspace half of this build: the conversation's
+	// one allocation/observation service and the backend's own linked-worktree
+	// capability. Unwired builds keep the pre-cutover captured-checkout binding.
+	workspaces subagentWorkspaceConfig
 }
 
 // WithSubagentExec overrides the default child runner executor. Used in
@@ -258,6 +321,15 @@ type agentRunArgs struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 	Thinking    string   `json:"thinking,omitempty"`
 	System      bool     `json:"system,omitempty"`
+	// Workspace selects how the child is bound to files. A pointer
+	// distinguishes "the caller said nothing" (nil, which means isolated)
+	// from an explicit empty string, which is rejected like any other unknown
+	// value rather than quietly read as the default.
+	Workspace *string `json:"workspace,omitempty"`
+	// BaseCommit starts an isolated child at an exact existing commit instead
+	// of the captured parent HEAD. Shared mode rejects it: a shared child
+	// works in the captured checkout as it is.
+	BaseCommit string `json:"base_commit,omitempty"`
 }
 
 // NewSubagentTool returns the registry.Tool entry for agent.run. The
@@ -279,9 +351,9 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 	concurrency := state.SubagentMaxConcurrency()
 	tool := registry.Tool{
 		Name:        "agent.run",
-		Description: fmt.Sprintf("Delegate a scoped subtask to a fresh child agent. It runs in the background: this returns a handle (subagent N) immediately and the report arrives later as a [subagent N finished] message. Do not treat the task as done until then; use agent.await to wait or peek, agent.steer to redirect, agent.kill to stop. Up to %d run at once; writes across agents are serialized. The child has your tools except agent.run and question.ask. \"model\" (provider/model) overrides the model; \"agent\" names a configured custom agent (not a role binding from the agent profiles table).", concurrency),
+		Description: fmt.Sprintf("Delegate a scoped subtask to a fresh child agent. It runs in the background: this returns a handle (subagent N) immediately and the report arrives later as a [subagent N finished] message. Do not treat the task as done until then; use agent.await to wait or peek, agent.steer to redirect, agent.kill to stop. Up to %d run at once; writes across agents are serialized. By default the child works in its own git worktree and branch created from your committed HEAD, and commits its own scoped work there: commit what it needs before you dispatch, then integrate its branch yourself. \"workspace\": \"shared\" puts it in your checkout instead and leaves commits to you. \"base_commit\" (isolated only) starts it at an exact existing commit. The child has your tools except agent.run and question.ask. \"model\" (provider/model) overrides the model; \"agent\" names a configured custom agent (not a role binding from the agent profiles table).", concurrency),
 		Schema: json.RawMessage(
-			`{"type":"object","properties":{"prompt":{"type":"string","description":"the subtask, passed verbatim"},"description":{"type":"string","description":"short label"},"agent":{"type":"string","description":"configured custom agent name"},"model":{"type":"string","description":"provider/model pair"},"temperature":{"type":"number","description":"sampling temperature override"},"thinking":{"type":"string","description":"reasoning effort override (low/medium/high)"},"system":{"type":"boolean","description":"grant system access (parent must have it)"}},"required":["prompt","description"],"additionalProperties":false}`,
+			`{"type":"object","properties":{"prompt":{"type":"string","description":"the subtask, passed verbatim"},"description":{"type":"string","description":"short label"},"agent":{"type":"string","description":"configured custom agent name"},"model":{"type":"string","description":"provider/model pair"},"temperature":{"type":"number","description":"sampling temperature override"},"thinking":{"type":"string","description":"reasoning effort override (low/medium/high)"},"system":{"type":"boolean","description":"grant system access (parent must have it)"},"workspace":{"type":"string","enum":["isolated","shared"],"description":"isolated (default): the child owns a worktree and branch from your committed HEAD and commits its own work; shared: it works in your checkout and you commit"},"base_commit":{"type":"string","description":"isolated only: exact existing commit the child starts from (default: your current HEAD)"}},"required":["prompt","description"],"additionalProperties":false}`,
 		),
 		// The dispatch stays RiskWorkspaceWrite: the child's tool set
 		// includes write tools (file.write, file.write_patch, shell.run,
@@ -323,6 +395,37 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		// model gets a clean tool error instead of a silent downgrade.
 		if args.System && !state.SystemAccess() {
 			return registry.ToolResult{}, errors.New("agent.run: system access requested but this session does not have it")
+		}
+		// The workspace mode is decided before anything is allocated: an
+		// explicit empty or unknown value, a base commit on a shared child, or
+		// isolated dispatch on a backend that cannot host a linked worktree all
+		// fail here, so a refused call costs no slot, no worktree and no
+		// provider request.
+		mode, err := resolveSubagentWorkspaceMode(args.Workspace, args.BaseCommit)
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
+		if cfg.workspaces.wired() && mode == subagentwork.ModeIsolated && !cfg.workspaces.isolatedSupported {
+			return registry.ToolResult{}, errors.New("agent.run: isolated worktrees are unavailable on this execution backend; pass \"workspace\": \"shared\" if the child may work in your checkout")
+		}
+		// A build with no workspace service cannot allocate the worktree an
+		// isolated child needs. The omitted default keeps the pre-cutover
+		// binding such builds have always used, but an explicit request for
+		// isolation is refused rather than quietly run in the parent's
+		// checkout: the caller asked for a different operation, and a shared run
+		// that reported success would be a lie about where the work happened.
+		if !cfg.workspaces.wired() && mode == subagentwork.ModeIsolated && args.Workspace != nil {
+			return registry.ToolResult{}, errors.New("agent.run: isolated workspaces are unavailable in this build (no workspace service is wired); omit \"workspace\" to run the child in the captured checkout")
+		}
+		// One logical dispatch owns one task. The identity is derived from the
+		// execution facts before any workspace exists; a repeat of the same call
+		// observes the record it already has and starts nothing.
+		taskKey, invocationID, existing, err := cfg.workspaces.lookup(ctx, state)
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
+		if existing != nil {
+			return duplicateDispatchReceipt(state, *existing, args), nil
 		}
 		// Admission stays synchronous so cap/depth violations fail the tool
 		// call directly. EnterSubagentWork also registers the child's creation
@@ -372,13 +475,37 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		if args.Description != "" {
 			actorLabel = fmt.Sprintf("a subagent (%s)", args.Description)
 		}
+		// The child is bound to the workspace captured HERE, at dispatch, and
+		// never to a pointer the parent keeps moving: a parent that enters or
+		// leaves a worktree after this call must not retarget a running child.
+		//
+		// A build that owns workspaces allocates (or re-observes) the record's
+		// workspace from the captured parent checkout, so an isolated child gets
+		// its own branch and worktree and a shared child gets the captured root.
+		// A build without the service (an embedded fixture) keeps the
+		// pre-cutover binding of the parent's own checkout, which is what its
+		// tests exercise; production always wires the service.
+		var record subagentwork.Record
+		binding, target := capturedCheckoutBinding(state)
+		if cfg.workspaces.wired() {
+			record, err = cfg.workspaces.prepare(ctx, state, args, mode, taskKey, invocationID)
+			if err != nil {
+				state.ExitSubagentWork(workID)
+				return registry.ToolResult{}, fmt.Errorf("agent.run: allocate the owned workspace: %w", err)
+			}
+			binding, target = record.Binding, record.Target
+		}
 		child, childState, err := factory(SubagentRequest{
 			Agent: args.Agent, Model: args.Model,
 			Temperature: args.Temperature, Thinking: args.Thinking, System: args.System,
 			ActorID: string(workID), ActorLabel: actorLabel,
+			TaskKey: taskKey, Binding: binding, Target: target,
 		})
 		if err != nil {
 			state.ExitSubagentWork(workID)
+			// The workspace exists and is retained either way: record why the
+			// child was never built instead of leaving it looking prepared.
+			cfg.workspaces.complete(ctx, state, record, subagentwork.OutcomeFailed, 0)
 			return registry.ToolResult{}, fmt.Errorf("agent.run: build child: %w", err)
 		}
 		// Register a summary card in the parent transcript in place of the
@@ -388,6 +515,11 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		// anchors at the dispatch position.
 		meta := session.SubagentMeta{
 			Role: RoleSubtask,
+			// Preserve the key the dispatcher already allocated. The card, the
+			// durable workspace record and the report then name one identity
+			// instead of the registration minting a second one; a build with no
+			// workspace service leaves it empty and keeps the minting path.
+			WorkKey: taskKey,
 		}
 		// Task 8: record where this child was dispatched from. The turn and
 		// step come from the runner's stamped execution origin (the actual
@@ -453,8 +585,31 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			}
 			state.AddSubagentTokens(view.ID, u.PromptTokens+u.CompletionTokens)
 		}
+		// Lease the child's workspace before the goroutine starts, so an admitted
+		// child is visible to a lifecycle mutation from its first moment — not
+		// only while one of its tool calls happens to run. A refusal here means
+		// the workspace is already being rewritten, which is exactly the case the
+		// protocol exists to refuse.
+		childUse, useErr := acquireChildWorkspaceUse(childCtx, record, string(workID))
+		if useErr != nil {
+			cancel()
+			state.ExitSubagentWork(workID)
+			cfg.workspaces.complete(ctx, state, record, subagentwork.OutcomeFailed, 0)
+			return registry.ToolResult{}, fmt.Errorf("agent.run: lease the child workspace: %w", useErr)
+		}
 		go func() {
 			defer cancel()
+			if childUse != nil {
+				// Registered first so it runs LAST: the lease covers the child's
+				// whole model lifetime, including the record, report and stop-group
+				// settlement below.
+				defer func() { _ = childUse.Release(true) }()
+			}
+			// The completion path re-observes and settles its own copy of the
+			// record: the dispatch receipt below was built from the record as
+			// it stood at allocation, and sharing the variable would race the
+			// receipt against this goroutine.
+			completed := record
 			// I1: a panic in the child (cfg.exec, a tool handler, the SQLite
 			// write path) must not crash the whole process. The child now runs
 			// on a bare goroutine with no parent-runner panic handling, so
@@ -479,6 +634,16 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 					if bindErr := state.BindSubagentReport(view.ID, panicReport); bindErr != nil {
 						state.Logger().Error("bind subagent panic report failed", "error", bindErr, "subagent_id", view.ID)
 					}
+					// The panic path settles the record too: a crashed child is a
+					// failed execution whose workspace evidence is retained, and
+					// leaving the record looking prepared would make a retained
+					// task indistinguishable from one still in flight.
+					completed = cfg.workspaces.observe(childCtx, state, completed)
+					panicReportID := int64(0)
+					if recorded, ok := state.Subagent(view.ID); ok {
+						panicReportID = recorded.Report.MessageID
+					}
+					cfg.workspaces.complete(childCtx, state, completed, subagentwork.OutcomeFailed, panicReportID)
 					state.PushSubagentReport(panicReport)
 					state.ExitSubagentWork(workID)
 					state.FinishSubagent(view.ID, "", fmt.Errorf("subagent %d panicked: %v", view.ID, r))
@@ -494,7 +659,26 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 					}
 				}
 			}()
-			summary, salvagedReason, runErr := cfg.exec(childCtx, child, args.Prompt)
+			// Required workspace setup runs under the child's bounded actor
+			// BEFORE the model: a worktree whose build state could not be
+			// established must not spend model tokens, and a refusal here is a
+			// failed dispatch rather than a quietly degraded child. The
+			// worktree and branch are retained either way.
+			var summary, salvagedReason string
+			var runErr error
+			if setupErr := cfg.workspaces.runSetup(childCtx, state, record, child); setupErr != nil {
+				runErr = setupErr
+			} else {
+				summary, salvagedReason, runErr = cfg.exec(childCtx, child, args.Prompt)
+			}
+			// The workspace's actual evidence is read once, here: after the
+			// child's run and before the report is written, so the report, the
+			// retained record and the card name the same candidate.
+			//
+			// It is a LOCAL, never an assignment to the captured record: the
+			// dispatch handler builds its receipt from that record, and this
+			// goroutine has no happens-before edge with that read.
+			observed := cfg.workspaces.observe(childCtx, state, record)
 			// The child's images ride its report, the same way its text does:
 			// taken here, once, so nothing between the child settling and the
 			// report being persisted can consume or lose them.
@@ -507,6 +691,12 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 				errText = runErr.Error()
 			}
 			summaryLine, content := subagentResultText(view.ID, args.Description, summary, salvagedReason, errText)
+			// The report carries the workspace identity the receipt named, so a
+			// parent reading the report never has to reconstruct the task key,
+			// mode, root, branch, starting commit or integration target.
+			if block := subagentWorkspaceBlock(observed); block != "" {
+				content += "\n\n" + block
+			}
 			// Completion delivery is two-channel and unconditional.
 			// The transcript notice is for the user and appears immediately
 			// (the repaint rides the FinishSubagent broker event). The report
@@ -553,6 +743,16 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			if bindErr := state.BindSubagentReport(view.ID, report); bindErr != nil {
 				state.Logger().Error("bind subagent report failed", "error", bindErr, "subagent_id", view.ID)
 			}
+			// The execution outcome is settled on the durable record BEFORE the
+			// child is announced terminal. A waiter released by FinishSubagent
+			// must observe the same outcome, candidate and report the record
+			// names; a failed, stopped or partial run is recorded as exactly
+			// that and never promoted because its worktree holds commits.
+			reportID := int64(0)
+			if recorded, ok := state.Subagent(view.ID); ok {
+				reportID = recorded.Report.MessageID
+			}
+			cfg.workspaces.complete(childCtx, state, completed, subagentRecordOutcome(runErr, salvagedReason), reportID)
 			// C2: push the report and release the concurrency slot BEFORE
 			// FinishSubagent closes the done channel. A WaitSubagent caller
 			// (agent.await) unblocks on that close, so it must observe the
@@ -578,8 +778,8 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		}()
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("started as subagent %d — %s", view.ID, args.Description),
-			Content: fmt.Sprintf("Subagent %d (%s) is running in the background (%d in flight, max %d). Its report will be delivered to you as a [subagent %d finished] message when it completes. To wait for it, call agent.await with \"id\": %d; to peek at progress, call agent.await with \"id\": %d and \"peek\": true. Do not treat the task as complete until its result arrives.",
-				view.ID, args.Description, state.SubagentConcurrency(), state.SubagentMaxConcurrency(), view.ID, view.ID, view.ID),
+			Content: fmt.Sprintf("Subagent %d (%s) is running in the background (%d in flight, max %d). Its report will be delivered to you as a [subagent %d finished] message when it completes. To wait for it, call agent.await with \"id\": %d; to peek at progress, call agent.await with \"id\": %d and \"peek\": true. Do not treat the task as complete until its result arrives.%s",
+				view.ID, args.Description, state.SubagentConcurrency(), state.SubagentMaxConcurrency(), view.ID, view.ID, view.ID, workspaceReceiptSuffix(record)),
 			// Task 8: a machine-readable reference to the registered child's
 			// work, so a consumer can pair this dispatch with the report it
 			// later binds. The registered view's canonical key/epoch/id and

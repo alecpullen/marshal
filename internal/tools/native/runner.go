@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"time"
 
@@ -11,6 +12,30 @@ import (
 )
 
 type execRunner struct{}
+
+// LinkedWorktreeRunner is a CommandRunner that can execute commands inside a
+// linked git worktree. A linked worktree's .git is a file pointing into the
+// repository's common git directory, which lives outside the worktree root, so
+// a backend that mounts or confines only the working directory cannot host one.
+//
+// Support is a property of the backend, never a model-supplied argument:
+// callers derive it and refuse an unsupported isolated dispatch before
+// allocating anything.
+type LinkedWorktreeRunner interface {
+	SupportsLinkedWorktrees() bool
+}
+
+// SupportsLinkedWorktrees reports whether runner can host a linked git
+// worktree. A runner that does not implement LinkedWorktreeRunner supports
+// nothing: an absent capability is not a yes.
+func SupportsLinkedWorktrees(runner CommandRunner) bool {
+	linked, ok := runner.(LinkedWorktreeRunner)
+	return ok && linked.SupportsLinkedWorktrees()
+}
+
+// SupportsLinkedWorktrees reports that the default runner executes on the host,
+// where a linked worktree's common git directory is reachable.
+func (execRunner) SupportsLinkedWorktrees() bool { return true }
 
 func (execRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, error) {
 	// Honour the caller's timeout on both execution paths; previously only
@@ -29,7 +54,27 @@ func (execRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, e
 	// are unchanged.
 	cmd := shellCommand(req.Command)
 	cmd.Dir = req.Dir
+	// A prepared command pins the environment it was approved with. Nil is the
+	// legacy direct call, which inherits this process's environment.
+	if req.Environment != nil {
+		cmd.Env = cloneEnv(req.Environment)
+	}
 	return runCmd(ctx, cmd, req)
+}
+
+// CaptureCommandEnvironment reports the environment this runner gives a child:
+// the whole ambient environment it inherits, with PWD naming the directory the
+// child actually runs in rather than whichever directory this process was
+// started from.
+func (execRunner) CaptureCommandEnvironment(dir string) ([]string, map[string]string, error) {
+	env := cloneEnv(os.Environ())
+	if dir != "" {
+		env = setEnvValue(env, "PWD", dir)
+	}
+	if env == nil {
+		env = []string{}
+	}
+	return env, knownEnvironmentFrom(env), nil
 }
 
 // shellCommand builds the shell-wrapped command for the shell path. It

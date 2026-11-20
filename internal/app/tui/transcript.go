@@ -905,8 +905,93 @@ func toolBody(name string, c acpwire.WireCall, d *acpwire.CallDetail, w int) []s
 			}
 		}
 	}
+	// A lifecycle receipt's workspace evidence hangs under the output it
+	// explains. It is the call's own typed payload, so every call that
+	// recorded none — a legacy receipt, an ordinary tool — is unchanged.
+	out = append(out, workspaceBodyLines(d, w)...)
 	return out
 }
+
+// workspaceBodyLines renders a call's workspace lifecycle evidence as readable
+// lines: what the child was bound to, the candidate it produced, and what
+// became of its integration and of the workspace's own artifacts.
+//
+// It states only what the payload holds. An empty candidate or integration
+// reads as none recorded or not recorded, never as success, and a pending
+// integration or cleanup says so in as many words: a receipt that accepted the
+// merge but could not remove the worktree is not a finished operation.
+func workspaceBodyLines(d *acpwire.CallDetail, w int) []string {
+	if d == nil || d.Workspace == nil {
+		return nil
+	}
+	ws := d.Workspace
+	var lines []string
+	head := strings.TrimSpace(ws.Mode)
+	switch {
+	case head != "" && ws.Root != "":
+		head += " · " + ws.Root
+	case ws.Root != "":
+		head = ws.Root
+	}
+	if head != "" {
+		lines = append(lines, "workspace: "+head)
+	}
+	if ws.TaskKey != "" {
+		lines = append(lines, "task: "+ws.TaskKey)
+	}
+	if ws.CandidateSHA != "" {
+		lines = append(lines, "candidate: "+ws.CandidateSHA)
+	} else {
+		lines = append(lines, "candidate: none recorded")
+	}
+	target := strings.TrimSpace(ws.TargetBranch)
+	if ws.TargetRoot != "" {
+		if target != "" {
+			target += " · "
+		}
+		target += ws.TargetRoot
+	}
+	if target != "" {
+		lines = append(lines, "target: "+target)
+	}
+	if ws.Execution != "" {
+		lines = append(lines, "execution: "+ws.Execution)
+	}
+	switch ws.Integration {
+	case "":
+		lines = append(lines, "integration: not recorded")
+	case lifecycleIntegrationIntent:
+		lines = append(lines, "integration: pending — the work is not in the target yet")
+	default:
+		lines = append(lines, "integration: "+ws.Integration)
+	}
+	switch ws.Cleanup {
+	case "":
+		// Nothing recorded: say nothing rather than invent a state.
+	case lifecycleCleanupPending:
+		lines = append(lines, "cleanup: integrated, cleanup pending — the worktree and branch remain")
+	default:
+		lines = append(lines, "cleanup: "+ws.Cleanup)
+	}
+	if ws.Reason != "" {
+		lines = append(lines, "reason: "+ws.Reason)
+	}
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		for _, wl := range strings.Split(ansi.Wrap(line, w, WrapBreakpoints), "\n") {
+			out = append(out, dimStyle().Render(wl))
+		}
+	}
+	return out
+}
+
+// The two lifecycle states a body explains in words rather than echoing. They
+// are the record's own wire spellings, restated here because they are the
+// states a reader most often misreads as success.
+const (
+	lifecycleIntegrationIntent = "intent"
+	lifecycleCleanupPending    = "integrated_cleanup_pending"
+)
 
 // compactJSON is s with its JSON whitespace removed, or s itself when it does
 // not parse.

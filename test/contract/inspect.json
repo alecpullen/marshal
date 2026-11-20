@@ -23,7 +23,20 @@
         "name": "callDetail"
       }
     ],
-    "toolName": "file.edit"
+    "toolName": "file.edit",
+    "workspace": {
+      "baseSha": "1111111111111111111111111111111111111111",
+      "branch": "marshal/task-1",
+      "candidateSha": "2222222222222222222222222222222222222222",
+      "cleanup": "integrated_cleanup_pending",
+      "execution": "done",
+      "integration": "integrated",
+      "mode": "isolated",
+      "root": "/home/u/marshal/.marshal/worktrees/task-1",
+      "targetBranch": "main",
+      "targetRoot": "/home/u/marshal",
+      "taskKey": "task-1"
+    }
   },
   "CompletionDetail": {
     "output": "412 passed",
@@ -225,6 +238,20 @@
     "file": "internal/viewmodel/detail.go",
     "kind": "func",
     "name": "callDetail"
+  },
+  "SubagentWorkspace": {
+    "baseSha": "1111111111111111111111111111111111111111",
+    "branch": "marshal/task-1",
+    "candidateSha": "2222222222222222222222222222222222222222",
+    "cleanup": "integrated_cleanup_pending",
+    "execution": "done",
+    "integration": "integrated",
+    "mode": "isolated",
+    "reason": "merged; the worktree is still present",
+    "root": "/home/u/marshal/.marshal/worktrees/task-1",
+    "targetBranch": "main",
+    "targetRoot": "/home/u/marshal",
+    "taskKey": "task-1"
   },
   "ThoughtDetail": {
     "durationMs": 1800,

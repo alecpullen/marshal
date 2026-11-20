@@ -170,12 +170,35 @@ func (pe *PolicyEngine) evaluateNonShell(in Input, cfg config.Config, grants []s
 }
 
 // writesOutsideWorkspace reports whether a non-shell write targets a path that
-// cannot be proven inside the active workspace. A relative path is resolved by
-// the tool against the workspace root, so it is inside by construction; an
-// absolute one is resolved and compared with the root. An unplaceable target
-// (no root, unresolvable path) counts as outside: routine workspace work must
-// never be inferred from what cannot be located.
+// cannot be proven inside the active workspace.
+//
+// The caller's validated Targets win when it supplied any: dispatch resolves
+// each write path with the tool's own resolver, so a target the resolver
+// permitted is a write the tool will really make, and one it refused is
+// unplaceable. That is the only way an operation-specific grant (an approved
+// additional write root) can need no System while a read-only reference is
+// still never writable — the two are indistinguishable from the argument
+// spelling alone.
+//
+// With no validated targets the lexical rule applies: a relative path is
+// resolved by the tool against the workspace root, so it is inside by
+// construction; an absolute one is resolved and compared with the root. An
+// unplaceable target (no root, unresolvable path) counts as outside: routine
+// workspace work must never be inferred from what cannot be located.
 func writesOutsideWorkspace(in Input) bool {
+	if len(in.Targets) > 0 {
+		for _, target := range in.Targets {
+			if target.Validated {
+				// The tool's own resolver accepted this exact target for this
+				// operation, so it is a write the tool will really make.
+				continue
+			}
+			if target.Scope != ShellScopeWorkspace && target.Scope != ShellScopeReadRoot {
+				return true
+			}
+		}
+		return false
+	}
 	for _, subject := range subjectsForTool(in.ToolName, in.Args, "") {
 		if !filepath.IsAbs(subject) {
 			continue

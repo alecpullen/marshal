@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -1519,6 +1520,14 @@ func (c *Controller) CleanupWorktrees() error {
 	if c.Worktree.Path == "" {
 		return nil
 	}
+	// Removing the run's worktree and pruning its metadata rewrites the project
+	// checkout, so cleanup takes the exclusive lifecycle lock on both roots. Its
+	// internal git calls inherit the lease rather than acquiring a shared use.
+	releaseTargets, lockErr := c.acquireCleanupLocks(c.RepoRoot, c.Worktree.Path)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer releaseTargets()
 	if err := c.Git.WorktreeRemove(c.RepoRoot, c.Worktree.Path); err != nil {
 		return err
 	}
@@ -1527,6 +1536,53 @@ func (c *Controller) CleanupWorktrees() error {
 	}
 	c.Worktree.Path = ""
 	return nil
+}
+
+// acquireCleanupLocks takes the exclusive lifecycle lock on every root a
+// pipeline cleanup rewrites, in canonical sorted order. A root the git seam
+// cannot identify a repository for (a test fake) is skipped: there is no
+// cross-process participant to coordinate with.
+func (c *Controller) acquireCleanupLocks(roots ...string) (func(), error) {
+	canonical := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		canonical[worktree.CanonicalPath(root)] = struct{}{}
+	}
+	ordered := make([]string, 0, len(canonical))
+	for root := range canonical {
+		ordered = append(ordered, root)
+	}
+	sort.Strings(ordered)
+
+	releases := make([]func(), 0, len(ordered))
+	releaseAll := func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}
+	identifier, ok := c.Git.(interface {
+		RepositoryID(dir string) (string, error)
+	})
+	if !ok {
+		return releaseAll, nil
+	}
+	ctx := context.Background()
+	for _, root := range ordered {
+		repository, err := identifier.RepositoryID(root)
+		if err != nil || repository == "" {
+			continue
+		}
+		release, err := worktree.AcquireTargetLock(ctx, repository, root)
+		if err != nil {
+			releaseAll()
+			return nil, fmt.Errorf("pipeline cleanup: %w", err)
+		}
+		releases = append(releases, release)
+	}
+	return releaseAll, nil
 }
 
 // commitFix commits one review-fix round.

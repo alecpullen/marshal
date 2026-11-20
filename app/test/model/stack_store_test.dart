@@ -312,6 +312,54 @@ void main() {
     store.dispose();
   });
 
+  test('a node carrying fields this build does not know still loads', () async {
+    // A newer bridge may send a payload this build has no field for, and a call
+    // may carry no lifecycle evidence at all. Neither is an error: the store
+    // keeps the node it understands and drops what it does not.
+    final json = <String, dynamic>{
+      'sessionId': 's-1',
+      'rev': 3,
+      'roots': ['turn:1'],
+      'nodes': [
+        {
+          'id': 'turn:1',
+          'kind': 'turn',
+          'children': ['tool:1:call_1'],
+          'futureField': {'anything': true},
+        },
+        {
+          'id': 'tool:1:call_1',
+          'kind': 'tool',
+          'parent': 'turn:1',
+          'tool': {
+            'name': 'agent.integrate',
+            'display': 'Integrate task-1',
+            'calls': [
+              {
+                'callId': 'call_1',
+                'output': 'task_key: task-1',
+                'futureField': 7,
+              },
+            ],
+          },
+        },
+      ],
+    };
+    final fetcher = _Fetcher(StackSnapshot.fromJson(json));
+    final store = _store(fetcher);
+    await store.refresh();
+
+    expect(store.status, StackStatus.ready);
+    expect(store.rev, 3);
+    expect(store.node('turn:1')?.kind, 'turn');
+    // The call carries no lifecycle evidence in this fixture, which is the
+    // ordinary case for a receipt this build has no typed payload for.
+    final call = store.node('tool:1:call_1')?.tool?.calls?.single;
+    expect(call?.callID, 'call_1');
+    expect(call?.output, 'task_key: task-1');
+    store.dispose();
+  });
+
   test('plainText projects the row a selection copies', () async {
     final sequence = _Sequence.load('turn-settles.json');
     final fetcher = _Fetcher(sequence.snapshot);

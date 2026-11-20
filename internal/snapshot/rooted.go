@@ -104,6 +104,41 @@ func NewRooted(dataDir, projectRoot string, activeRoot func() string, maxFile in
 	return r
 }
 
+// Bound returns a view of this snapshotter whose operation root is fixed at
+// root: Track, Diff, Restore, LookupSnapshot, Status and HasActiveStore all
+// act on that root and never consult the receiver's activeRoot again.
+//
+// It exists for exactly one caller — a subagent child bound to a fixed
+// workspace. A child may not snapshot or restore whichever checkout the
+// parent later rebinds to, and it must not inherit the parent's mutable root
+// pointer, so its runner gets a Bound view instead of the receiver itself.
+//
+// Storage policy and options are COPIED, not re-derived: the data directory,
+// per-file ceiling, ignore list, storage limits, global-limit reader, git
+// binary override and logger all come from the receiver unchanged. Only the
+// operation root differs. Sweeps stay global — Maintain and Prune walk every
+// store under the snapshots root, because storage is bounded machine-wide and
+// an abandoned worktree store is exactly the kind that grows unnoticed. The
+// per-root service cache is not shared: the bound view resolves its own copy,
+// so the two can never hand each other a service for the wrong root.
+func (r *Rooted) Bound(root string) *Rooted {
+	if r == nil {
+		return nil
+	}
+	return &Rooted{
+		dataDir:      r.dataDir,
+		projectRoot:  r.projectRoot,
+		activeRoot:   func() string { return root },
+		maxFile:      r.maxFile,
+		ignore:       r.ignore,
+		logger:       r.logger,
+		limits:       r.limits,
+		limitsSet:    r.limitsSet,
+		globalLimits: r.globalLimits,
+		gitBinary:    r.gitBinary,
+	}
+}
+
 // newService builds a per-root Service that shares this Rooted's manager
 // configuration, including the Git executable override. Sharing it is what makes
 // a recording wrapper observe CAPTURE as well as maintenance: a Service whose

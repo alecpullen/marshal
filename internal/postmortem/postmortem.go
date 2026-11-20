@@ -105,6 +105,17 @@ type Report struct {
 	// ended. Additive: the schema version stays put, and an aggregator that
 	// ignores this field still sees the failure evidence above.
 	ExecutionEvidence []ExecutionEvidence `json:"execution_evidence,omitempty"`
+	// SubagentWorkspaces is the owned-worktree lifecycle evidence of this
+	// session's delegated children: which task and session own each workspace,
+	// what the child was bound to, the commit it produced, the checkout its
+	// work belongs in, and what became of the integration and the workspace's
+	// artifacts. Additive: the schema version stays put, and an aggregator that
+	// ignores this field still sees the failure evidence above.
+	//
+	// It is deliberately evidence rather than a verdict, and it carries no
+	// environment and no copy of a child's report: the durable report keeps
+	// referencing its own message.
+	SubagentWorkspaces []SubagentWorkspaceEvidence `json:"subagent_workspaces,omitempty"`
 	// Latency is the optional preflight-timing section (see latency.go): the
 	// hidden prompt-preparation work, its per-phase aggregates and the slowest
 	// measured turns. Additive and omitted when the session measured nothing,
@@ -267,6 +278,33 @@ type RunEventEntry struct {
 	Kind   string `json:"kind"`
 	Detail string `json:"detail"`
 	Count  int    `json:"count"`
+}
+
+// SubagentWorkspaceEvidence is one delegated child's owned-workspace evidence:
+// the session and task that own it, what the child was bound to, the commit it
+// produced, the checkout its work is integrated into, and the states the
+// execution, the integration and the artifact cleanup reached.
+//
+// It is deliberately evidence rather than a verdict, and it deliberately
+// carries no environment, no secret and no copy of the child's report body: the
+// report a child wrote is referenced by the durable message that holds it.
+// Every state is a recorded one, so an empty Execution, Integration or Cleanup
+// means the record predates the state or has not settled — never success — and
+// an empty Candidate is a child that produced no commit.
+type SubagentWorkspaceEvidence struct {
+	OwnerSessionID string `json:"owner_session_id"`
+	TaskKey        string `json:"task_key"`
+	Mode           string `json:"mode,omitempty"`
+	Root           string `json:"root,omitempty"`
+	Branch         string `json:"branch,omitempty"`
+	BaseSHA        string `json:"base_sha,omitempty"`
+	CandidateSHA   string `json:"candidate_sha,omitempty"`
+	TargetRoot     string `json:"target_root,omitempty"`
+	TargetBranch   string `json:"target_branch,omitempty"`
+	Execution      string `json:"execution,omitempty"`
+	Integration    string `json:"integration,omitempty"`
+	Cleanup        string `json:"cleanup,omitempty"`
+	Reason         string `json:"reason,omitempty"`
 }
 
 // MarkAgentPass records that the optional agent pass ran and appended
@@ -487,12 +525,56 @@ func Build(state *session.State, database *db.DB) (Report, error) {
 
 	collectTurnMetrics(state, database, &report, models, clean, parseIdx, addParse)
 
+	report.SubagentWorkspaces = collectSubagentWorkspaces(state, clean)
+
 	for model := range models {
 		report.Session.ModelsUsed = append(report.Session.ModelsUsed, model)
 	}
 	sort.Strings(report.Session.ModelsUsed)
 
 	return report, nil
+}
+
+// collectSubagentWorkspaces reads the conversation's retained owned-workspace
+// records as report evidence: the same durable task identity and candidate a
+// command's cwd evidence sits beside, so a reader can pair the two without
+// joining on prose.
+//
+// It copies the primitive state fields only. The record's setup plan, its
+// warnings and its report reference stay where they are — the report is
+// aggregated across sessions and must not carry a checkout's environment, and a
+// child's report body is already durably its own message.
+func collectSubagentWorkspaces(state *session.State, clean func(string) string) []SubagentWorkspaceEvidence {
+	records := state.SubagentWorkspaces()
+	if len(records) == 0 {
+		return nil
+	}
+	out := make([]SubagentWorkspaceEvidence, 0, len(records))
+	for _, rec := range records {
+		if rec.TaskKey == "" {
+			continue
+		}
+		ev := SubagentWorkspaceEvidence{
+			OwnerSessionID: rec.OwnerSessionID,
+			TaskKey:        rec.TaskKey,
+			Mode:           string(rec.Binding.Mode),
+			Root:           clean(rec.Binding.Root),
+			Branch:         clean(rec.Binding.Branch),
+			BaseSHA:        rec.Binding.BaseSHA,
+			CandidateSHA:   rec.Candidate,
+			TargetRoot:     clean(rec.Target.Root),
+			TargetBranch:   clean(rec.Target.Branch),
+			Execution:      rec.Outcome,
+			Cleanup:        rec.CleanupState,
+		}
+		if rec.Integration != nil {
+			ev.Integration = rec.Integration.State
+			ev.Reason = clean(rec.Integration.Reason)
+		}
+		out = append(out, ev)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TaskKey < out[j].TaskKey })
+	return out
 }
 
 // collectTurnMetrics folds the session's rows out of the turn_metrics table

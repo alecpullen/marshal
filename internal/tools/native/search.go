@@ -45,6 +45,7 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 			`},"max_results":{"type":"integer"},"mode":{"type":"string","enum":["auto","substring","regex"]},"include":{"type":"string"},"context":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),
 		Risk: registry.RiskReadOnly,
 	}
+	tool.ResolvePath = t.resolveReadOnlyPathFunc
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[repoSearchArgs](tool, call.Args)
 		if err != nil {

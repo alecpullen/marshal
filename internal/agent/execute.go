@@ -172,18 +172,95 @@ func (r *Runner) shellInputFor(toolName string, argsMap map[string]interface{}) 
 	}, true
 }
 
-// policyCall builds the evaluation input for one invocation. A shell tool
-// carries its parsed command facts and NOT the raw argument map: the native
-// command service admits the attempt through BeginCommand, which fingerprints
-// the same shell facts, so the two descriptions must be identical.
-func (r *Runner) policyCall(invocationID, toolName string, argsMap map[string]interface{}) policy.Call {
+// policyCall builds the evaluation input for one invocation.
+//
+// A tool that can prepare its own execution facts is evaluated against those
+// facts and nothing else: the prepared command bytes, directory, workspace and
+// backend environment are what launch will use, so a second description built
+// here would be a different command from the one that runs. A preparation
+// failure is returned to the caller rather than papered over — an unprepared
+// command must not be approved against a guess.
+//
+// A shell tool with no preparation (shell.sudo, whose combined prompt does its
+// own capture) keeps the legacy derived facts. Every other call carries its
+// argument map plus the targets its own path resolver validated: those are the
+// files the tool would really touch, so policy honors them instead of guessing
+// a scope from the argument text.
+func (r *Runner) policyCall(ctx context.Context, invocationID, toolName string, argsMap map[string]interface{}) (policy.Call, error) {
 	call := policy.Call{InvocationID: invocationID, ToolName: toolName}
+	tool, registered := r.Registry.Lookup(toolName)
+	// A tool that owns its admission also prepares the exact effect it would
+	// apply, and that preparation is bound into the proof. The handler recomputes
+	// it under the workspace lease, so a record, source or target that moved in
+	// the meantime yields a different key and the stale proof is refused rather
+	// than re-approved.
+	if registered && tool.PrepareEffect != nil {
+		args, err := json.Marshal(argsMap)
+		if err != nil {
+			return policy.Call{}, fmt.Errorf("marshal %s arguments for effect preparation: %w", toolName, err)
+		}
+		effectKey, err := tool.PrepareEffect(ctx, registry.ToolCall{ID: invocationID, Name: toolName, Args: args})
+		if err != nil {
+			return policy.Call{}, fmt.Errorf("%s: %w", toolName, err)
+		}
+		call.EffectKey = effectKey
+	}
+	if registered && tool.PrepareCommand != nil {
+		args, err := json.Marshal(argsMap)
+		if err != nil {
+			return policy.Call{}, fmt.Errorf("marshal %s arguments for preparation: %w", toolName, err)
+		}
+		facts, err := tool.PrepareCommand(ctx, registry.ToolCall{ID: invocationID, Name: toolName, Args: args})
+		if err != nil {
+			return policy.Call{}, fmt.Errorf("%s: %w", toolName, err)
+		}
+		call.Shell = &facts
+		return call, nil
+	}
 	if input, ok := r.shellInputFor(toolName, argsMap); ok {
 		call.Shell = &input
-		return call
+		return call, nil
 	}
 	call.Args = argsMap
-	return call
+	if registered {
+		call.Targets = r.validatedTargets(ctx, tool, toolName, argsMap)
+	}
+	return call, nil
+}
+
+// validatedTargets resolves a non-shell write's paths with the tool's own
+// resolver and returns them as trusted policy targets.
+//
+// A path the resolver accepted is a write the tool permits, so policy must not
+// demand System for it merely because it sits outside the primary root. A path
+// the resolver refused stays unvalidated and unknown, which keeps policy's
+// fail-closed answer for a target nothing could place.
+func (r *Runner) validatedTargets(ctx context.Context, tool registry.Tool, toolName string, argsMap map[string]interface{}) []policy.ShellTarget {
+	if tool.ResolvePath == nil {
+		return nil
+	}
+	paths := changedFilesForTool(toolName, argsMap)
+	if len(paths) == 0 {
+		return nil
+	}
+	targets := make([]policy.ShellTarget, 0, len(paths))
+	for _, path := range paths {
+		resolved, err := tool.ResolvePath(ctx, path, true)
+		if err != nil {
+			targets = append(targets, policy.ShellTarget{
+				Path:   path,
+				Scope:  policy.ShellScopeUnknown,
+				Effect: policy.ShellWrite,
+			})
+			continue
+		}
+		targets = append(targets, policy.ShellTarget{
+			Path:      resolved,
+			Effect:    policy.ShellWrite,
+			Validated: true,
+		})
+	}
+	return targets
 }
 
 // handlePolicyDecision runs one iteration of policy + approval for the
@@ -230,7 +307,11 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 		if r.State.InteractionState().Auto {
 			// Auto may have been enabled while this prompt was waiting. Its
 			// old proof names the pre-Auto revision; admit fresh facts instead.
-			fresh, ev, err := r.Authorizer.Evaluate(ctx, r.policyCall(invocationID, toolName, argsMap))
+			freshCall, callErr := r.policyCall(ctx, invocationID, toolName, argsMap)
+			if callErr != nil {
+				return policyLoopResult{}, callErr
+			}
+			fresh, ev, err := r.Authorizer.Evaluate(ctx, freshCall)
 			if err != nil {
 				return policyLoopResult{}, err
 			}
@@ -279,7 +360,10 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 				}
 				argsMap = updated
 			}
-			editedCall := r.policyCall(invocationID, toolName, argsMap)
+			editedCall, callErr := r.policyCall(ctx, invocationID, toolName, argsMap)
+			if callErr != nil {
+				return policyLoopResult{}, fmt.Errorf("policy re-evaluate after edit: %w", callErr)
+			}
 			editedProof, editedEval, perr := r.Authorizer.Evaluate(ctx, editedCall)
 			if perr != nil {
 				return policyLoopResult{}, fmt.Errorf("policy re-evaluate after edit: %w", perr)
@@ -344,7 +428,11 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 func (r *Runner) admitOrdinaryTool(ctx context.Context, invocationID, toolName string, argsMap map[string]interface{}, proof *policy.Authorization) (*policy.Admission, error) {
 	const maxStaleRetries = 3
 	for attempt := 0; ; attempt++ {
-		admission, err := r.Authorizer.BeginTool(policy.WithAuthorization(ctx, proof), r.policyCall(invocationID, toolName, argsMap))
+		call, callErr := r.policyCall(ctx, invocationID, toolName, argsMap)
+		if callErr != nil {
+			return nil, callErr
+		}
+		admission, err := r.Authorizer.BeginTool(policy.WithAuthorization(ctx, proof), call)
 		if err == nil {
 			return admission, nil
 		}
@@ -354,7 +442,7 @@ func (r *Runner) admitOrdinaryTool(ctx context.Context, invocationID, toolName s
 		// The snapshot moved under us. Re-evaluate against the live authority
 		// and retry; a Confirm is not re-approved here, because the approval
 		// was bound to the old snapshot and a mode change must refuse.
-		newProof, evaluation, evalErr := r.Authorizer.Evaluate(ctx, r.policyCall(invocationID, toolName, argsMap))
+		newProof, evaluation, evalErr := r.Authorizer.Evaluate(ctx, call)
 		if evalErr != nil {
 			return nil, evalErr
 		}
@@ -805,7 +893,11 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) (_ []s
 	// that now requires confirmation runs the normal approval path rather than
 	// being answered from a previous session's grant.
 	if tool.Cacheable {
-		preCall := r.policyCall(callID, toolName, argsMap)
+		preCall, callErr := r.policyCall(ctx, callID, toolName, argsMap)
+		if callErr != nil {
+			r.countToolCall(true, false)
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, callErr.Error(), toolCallID)}, nil
+		}
 		endPolicy := timing.measure(&timing.policyApproval)
 		_, preEval, preErr := r.Authorizer.Evaluate(ctx, preCall)
 		endPolicy()
@@ -879,7 +971,11 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) (_ []s
 		// Evaluate through the authorizer, which reads the session's live
 		// authority. The proof it returns binds the exact facts this
 		// iteration settled on, so the launch admits what was evaluated.
-		policyCall := r.policyCall(invocationID, toolName, argsMap)
+		policyCall, callErr := r.policyCall(ctx, invocationID, toolName, argsMap)
+		if callErr != nil {
+			r.countToolCall(true, false)
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, callErr.Error(), toolCallID)}, nil
+		}
 		endPolicy := timing.measure(&timing.policyApproval)
 		iterationProof, evaluation, evalErr := r.Authorizer.Evaluate(ctx, policyCall)
 		if evalErr != nil {
@@ -1012,11 +1108,14 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) (_ []s
 	// admission lease, commits the proof exactly once and releases before the
 	// handler runs. A shell/test/sudo tool instead carries the proof into the
 	// handler, where the native command service admits the exact attempt at
-	// the accepted launch — the one place the process actually starts.
+	// the accepted launch — the one place the process actually starts. A tool
+	// that declares OwnsAdmission keeps the same arrangement for a different
+	// reason: its mutation target is known only inside the handler, under the
+	// exact-root lease, so that handler admits the recomputed effect itself.
 	if proof != nil {
 		handlerCtx = policy.WithAuthorization(handlerCtx, proof)
 	}
-	if !isShellTool(toolName) {
+	if !isShellTool(toolName) && !tool.OwnsAdmission {
 		admission, admErr := r.admitOrdinaryTool(handlerCtx, invocationID, toolName, argsMap, proof)
 		if admErr != nil {
 			return r.settleAdmissionFailure(ctx, action, admErr), nil

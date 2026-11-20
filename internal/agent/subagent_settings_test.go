@@ -268,3 +268,32 @@ func TestSubagentSettingsUnboundIsOrdinaryBehaviour(t *testing.T) {
 		t.Fatalf("cap = %d, want the configured 5", cap)
 	}
 }
+
+// TestSubagentSettingsWorkspaceModeRefusedBeforeFactory pins that a snapshot
+// session still refuses an unknown workspace mode before it takes a slot or
+// builds a child: the snapshot changes the child's defaults, not the dispatch
+// contract.
+func TestSubagentSettingsWorkspaceModeRefusedBeforeFactory(t *testing.T) {
+	state := settingsState(t, session.SubagentSettings{Enabled: true, Concurrency: 2})
+	factoryCalls := 0
+	factory := func(_ SubagentRequest) (*Runner, *session.State, error) {
+		factoryCalls++
+		return &Runner{}, state, nil
+	}
+	tool := NewSubagentTool(factory, nil, registry.New(), state)
+	_, err := tool.Handler(t.Context(), registry.ToolCall{
+		Args: []byte(`{"prompt":"x","description":"y","workspace":"bogus"}`),
+	})
+	if err == nil {
+		t.Fatal("an unknown workspace mode was accepted under a settings snapshot")
+	}
+	if !strings.Contains(err.Error(), "unknown workspace") {
+		t.Fatalf("error = %v, want an unknown-workspace refusal", err)
+	}
+	if factoryCalls != 0 {
+		t.Fatalf("factory invocations = %d, want 0", factoryCalls)
+	}
+	if got := state.SubagentConcurrency(); got != 0 {
+		t.Fatalf("concurrency = %d, want 0 (the refusal must not take a slot)", got)
+	}
+}

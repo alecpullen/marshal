@@ -83,6 +83,13 @@ func applyFileOp(dir string, op *FileOp) error {
 func runRunOp(ctx context.Context, dir string, vr Verifier, op *RunOp) error {
 	ctx, cancel := vr.withTimeout(ctx)
 	defer cancel()
+	// A deterministic run operation touches the checkout directly, so it holds
+	// the shared root-use lease for the directory it runs in.
+	releaseUse, useErr := holdRootUse(ctx, dir)
+	if useErr != nil {
+		return fmt.Errorf("ops run: %w", useErr)
+	}
+	defer releaseUse()
 	out, err := vr.Runner.Run(ctx, dir, op.Command)
 	if err != nil {
 		var exitErr interface{ ExitCode() int }

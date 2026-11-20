@@ -317,3 +317,109 @@ func processAlive(pid int) (bool, string) {
 	}
 	return true, "kill 0 succeeded"
 }
+
+// TestCapturedEnvironmentSurvivesAmbientChange pins that a captured environment
+// is a value, not a live view: changing a fixture variable after preparation
+// must not change what an already prepared command launches with.
+func TestCapturedEnvironmentSurvivesAmbientChange(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("environment capture test relies on a POSIX shell")
+	}
+	t.Setenv("MARSHAL_CAPTURE_PIN", "captured")
+	r := newRestricted(Config{EnvAllowlist: []string{"MARSHAL_CAPTURE_PIN"}}, nil)
+	dir := t.TempDir()
+	env, _, err := r.CaptureCommandEnvironment(dir)
+	if err != nil {
+		t.Fatalf("CaptureCommandEnvironment: %v", err)
+	}
+
+	// The ambient value moves after capture; the launch must not follow it.
+	t.Setenv("MARSHAL_CAPTURE_PIN", "ambient-new")
+	res, err := r.Run(context.Background(), native.CommandRequest{
+		Command:     `echo "[$MARSHAL_CAPTURE_PIN]"`,
+		Dir:         dir,
+		Environment: env,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "[captured]") {
+		t.Fatalf("child saw the changed ambient value: %q", res.Stdout)
+	}
+	if strings.Contains(res.Stdout, "ambient-new") {
+		t.Fatalf("captured environment was re-read from the ambient one: %q", res.Stdout)
+	}
+}
+
+// TestRestrictedCaptureUsesEffectiveAllowlist pins that capture runs the same
+// allow/deny filtering as launch: a denied variable is absent from both the
+// captured environment and the analyzer facts, and only the analyzer's own
+// variables become known facts.
+func TestRestrictedCaptureUsesEffectiveAllowlist(t *testing.T) {
+	t.Setenv("HOME", "/tmp/marshal-capture-home")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("MARSHAL_CAPTURE_SECRET", "leaked")
+	dir := t.TempDir()
+	r := newRestricted(Config{
+		EnvAllowlist: []string{"HOME", "PATH", "MARSHAL_CAPTURE_SECRET"},
+		EnvDenylist:  []string{"HOME"},
+	}, nil)
+
+	env, known, err := r.CaptureCommandEnvironment(dir)
+	if err != nil {
+		t.Fatalf("CaptureCommandEnvironment: %v", err)
+	}
+	if got := envValue(env, "HOME"); got != "" {
+		t.Fatalf("denied variable in captured environment: HOME=%q", got)
+	}
+	if _, ok := known["HOME"]; ok {
+		t.Fatalf("denied variable in known facts: %v", known)
+	}
+	if got := envValue(env, "PATH"); got != "/usr/bin:/bin" {
+		t.Fatalf("allowed variable missing from captured environment: PATH=%q", got)
+	}
+	if known["PATH"] != "/usr/bin:/bin" {
+		t.Fatalf("allowed variable missing from known facts: %v", known)
+	}
+	// PWD is a local fact: it names the directory the child actually runs in.
+	if known["PWD"] != dir {
+		t.Fatalf("PWD fact = %q, want the captured cwd %q", known["PWD"], dir)
+	}
+	// A variable outside the analyzer's set never becomes a policy fact, even
+	// when the allowlist passes it to the child.
+	if _, ok := known["MARSHAL_CAPTURE_SECRET"]; ok {
+		t.Fatalf("non-analyzer variable leaked into known facts: %v", known)
+	}
+}
+
+// TestEmptyCapturedEnvironmentIsNotInheritance pins the two spellings apart: a
+// nil environment keeps the legacy construction, while a non-nil empty one is
+// an explicit "launch with nothing" and must not inherit anything.
+func TestEmptyCapturedEnvironmentIsNotInheritance(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("environment capture test relies on a POSIX shell")
+	}
+	t.Setenv("MARSHAL_CAPTURED_PROBE", "inherited")
+	sb := newTestSandbox(t, Config{Backend: "restricted", EnvAllowlist: []string{"MARSHAL_CAPTURED_PROBE"}})
+	dir := t.TempDir()
+	command := `echo "[${MARSHAL_CAPTURED_PROBE:-absent}]"`
+
+	legacy, err := sb.Run(context.Background(), native.CommandRequest{Command: command, Dir: dir})
+	if err != nil {
+		t.Fatalf("Run (nil environment): %v", err)
+	}
+	if !strings.Contains(legacy.Stdout, "[inherited]") {
+		t.Fatalf("nil environment lost legacy inheritance: %q", legacy.Stdout)
+	}
+
+	empty, err := sb.Run(context.Background(), native.CommandRequest{Command: command, Dir: dir, Environment: []string{}})
+	if err != nil {
+		t.Fatalf("Run (empty environment): %v", err)
+	}
+	if strings.Contains(empty.Stdout, "inherited") {
+		t.Fatalf("non-nil empty environment inherited the ambient one: %q", empty.Stdout)
+	}
+	if !strings.Contains(empty.Stdout, "[absent]") {
+		t.Fatalf("non-nil empty environment did not stay empty: %q", empty.Stdout)
+	}
+}

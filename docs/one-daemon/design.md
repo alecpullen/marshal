@@ -11,7 +11,7 @@ decisions 3, 5 and 6 (tokens) and 8 (discovery); the Studio's sign-in handover
 (`compose.yaml`, `build/Dockerfile.bridge`).
 Keeps: P7's rule that the client is the only place hosts are merged.
 Inventory of what changes: [`inventory.md`](inventory.md).
-Status: proposed 2026-11-20. Plans 1–5 approved 2026-11-20.
+Status: proposed 2026-11-20. Plans 1–6 approved 2026-11-20.
 
 Anchors are relative to `main` at `bbdc4486`.
 
@@ -339,8 +339,15 @@ or similar.
 1. **Previews of a remote host's agents.** Either D7 forwards the remote
    preview port over the same SSH connection, or previews go through D10's
    forward. Recommendation: a second forward in the same `ssh` process, so a
-   preview keeps an origin of its own. Deferred to plan 3, which settles D11's
-   preview listener.
+   preview keeps an origin of its own. Plan 3 left it out, and plan 6 takes
+   the recommendation:
+   - the tunnel helper forwards the remote's preview listener to a free
+     loopback port and reports it as `DaemonHost.previewPort`;
+   - a preview request names the caller's way in with
+     `X-Marshal-Preview-Origin`, set by the native Studio for a tunnel it
+     dials and by the forward for a host it forwards to;
+   - a browser that reaches the daemon from another machine still cannot open
+     a forwarded host's preview.
 2. **Local MCP clients without the loopback listener.** Today a client on the
    laptop reaches `/mcp` over `127.0.0.1:7788`. Recommendation: add a stdio
    command, `marshal mcp --credential-file PATH`, that relays JSON-RPC to
@@ -392,3 +399,7 @@ same change: [`inventory.md`](inventory.md) lists the files.
    The sweep covers `AGENTS.md`,
    `cmd/webbridge/README.md`, `scripts/e2e/README.md`, P4, P5, P8,
    distribution and F1.
+6. **Previews of a remote host's agents** (open question 1):
+   [plans/2026-11-20-od-6-remote-previews-plan.md](plans/2026-11-20-od-6-remote-previews-plan.md).
+   Forward the remote preview listener over the tunnel, and let the caller
+   name its way in. It needs plans 2 and 3, and not 4 or 5.

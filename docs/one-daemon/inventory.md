@@ -192,6 +192,18 @@ Plan: [plans/2026-11-20-od-5-retire-the-container-daemon-plan.md](plans/2026-11-
 | `docs/studio-flutter/f1-client.md` | — | Note | Decisions 3, 5, 6 and 8. |
 | `app/lib/src/client/README.md` | — | Reshape | "HTTPS to a server". |
 
+## Plan 6 — Previews of a remote host's agents (open question 1)
+
+Plan: [plans/2026-11-20-od-6-remote-previews-plan.md](plans/2026-11-20-od-6-remote-previews-plan.md).
+
+| File | Lines | Action | What |
+|---|---:|---|---|
+| `web/bridge/contract/daemon.go` | — | Add | `DaemonInfo.previewAddr`, `DaemonHost.previewPort` and `PreviewOriginHeader`. Regenerate `contract.g.dart` and the status fixture. |
+| `web/bridge/preview.go`, `hostforward.go` | — | Reshape | `SetPreviewAddr`; `issuePreview` builds the link from `X-Marshal-Preview-Origin` when the caller sends one; the forward sets it from the host's `previewPort`. |
+| `internal/tunnels` | — | Reshape | The status document's `previewAddr`, a second `-L` to a free loopback port, `DaemonHost.previewPort`, and a restart when the remote preview listener moves. |
+| `cmd/marshal/daemon.go` | — | Reshape | The host line names its preview port; the tunnels helper's `Probe` answers the preview address. |
+| `app/lib/src/client/bridge_client.dart`, `host_discovery_io.dart`, `daemon/status.dart` | — | Reshape | `BridgeClient.previewOrigin`, sent with every preview request for a remote host. |
+
 ## Stays as it is
 
 - The socket, its peer check and every socket-only route.

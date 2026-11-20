@@ -57,3 +57,30 @@ the user to review.
   new commits, call it again with `"target": "HEAD"` to merge on top of them.
 - Never delete a worktree or branch by hand. `workspace.finish` removes them
   after a successful merge; an unmerged branch is the user's to keep or drop.
+
+## Delegated work: who owns which checkout
+
+`agent.run` behaves the same way, per child, and the parent does the isolating.
+
+- **A child is isolated by default.** `agent.run` with no `workspace` argument
+  gives that child its own worktree and branch (`marshal/subagent/<task key>`),
+  created from your **committed** HEAD. Uncommitted work in your checkout is not
+  visible to it. So finish and commit whatever the child needs — a new
+  interface, a plan, a fixture — **before** you dispatch, and leave unrelated
+  user changes out of that commit. If an essential change cannot safely be
+  committed, settle that before dispatching dependent work.
+- **An isolated child commits its own scoped work.** It works in its own branch,
+  commits there, and reports the task key, branch, starting commit, candidate
+  commit and captured target. That branch is a retained candidate: your checkout
+  is unchanged, and nothing is merged for you.
+- **A shared child never commits.** `"workspace": "shared"` binds the child to
+  your checkout exactly as it is, so its edits land in your working tree and its
+  commits are yours to make. Choose it only for a small task whose files and
+  build state are genuinely suitable to share; a shared child cannot give you an
+  isolated candidate.
+- **Integration is explicit.** Bring a retained branch in yourself with git —
+  `shell.run git merge <branch>` (or `git cherry-pick <candidate>`) once you have
+  reviewed its candidate and its report. Check the report's branch and candidate
+  commit before you merge; do not assume the child's work is in your tree. Until
+  integration tooling exists, git is the only integration path, and the retained
+  branch stays on disk for you to keep or drop.

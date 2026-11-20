@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/subagentwork"
 	"marshal/internal/tools/registry"
 )
 
@@ -21,10 +22,18 @@ type agentAwaitArgs struct {
 	JobID          string `json:"job_id"`
 	Peek           bool   `json:"peek"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
+	// TaskKey inspects one retained owned task by its stable key. It is a
+	// mutually exclusive lookup mode: the task outlives the child, so a
+	// retained report and candidate stay readable after a restart without
+	// reviving anything.
+	TaskKey string `json:"task_key"`
 }
 
 type awaitOptions struct {
 	jobs JobAwaitSource
+	// workspaces is the conversation's owned-workspace service, used by the
+	// retained task_key lookup. Nil leaves that mode unavailable.
+	workspaces *subagentwork.Service
 }
 
 // AwaitOption customizes the agent.await tool's awaitable classes.
@@ -46,8 +55,8 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 	}
 	tool := registry.Tool{
 		Name:        "agent.await",
-		Description: `Wait for background work: a subagent ("id"), a background shell job ("job_id"), the first to finish ("any": true), or everything ("all": true). Pass exactly one. "peek": true with "id" or "job_id" returns current status and recent output immediately instead of waiting. "timeout_seconds" bounds a wait; on expiry you get what is still running, and nothing is stopped. A job result reports its status, its actual exit code when the process produced one, and the stop cause when it was stopped. Subagent reports also arrive on their own when they finish.`,
-		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"job_id":{"type":"string"},"any":{"type":"boolean"},"all":{"type":"boolean"},"peek":{"type":"boolean"},"timeout_seconds":{"type":"integer","description":"maximum seconds to wait; it never stops the targets"}},"additionalProperties":false}`),
+		Description: `Wait for background work: a subagent ("id"), a background shell job ("job_id"), the first to finish ("any": true), or everything ("all": true). Pass exactly one. "task_key" instead inspects one retained owned task by the key agent.run reported: its recorded outcome, workspace mode, worktree, branch, candidate commit and report. A retained task outlives its child, so this works after a restart and never revives anything. "peek": true with "id" or "job_id" returns current status and recent output immediately instead of waiting. "timeout_seconds" bounds a wait; on expiry you get what is still running, and nothing is stopped. A job result reports its status, its actual exit code when the process produced one, and the stop cause when it was stopped. Subagent reports also arrive on their own when they finish.`,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"job_id":{"type":"string"},"task_key":{"type":"string","description":"the retained task key agent.run reported"},"any":{"type":"boolean"},"all":{"type":"boolean"},"peek":{"type":"boolean"},"timeout_seconds":{"type":"integer","description":"maximum seconds to wait; it never stops the targets"}},"additionalProperties":false}`),
 		// MUST stay read-only: a blocking handler that held the write gate
 		// would deadlock the very child it is waiting for, once the parent
 		// runner carries a WriteGate.
@@ -73,14 +82,23 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 		if args.JobID != "" {
 			modes++
 		}
+		if args.TaskKey != "" {
+			modes++
+		}
 		if modes != 1 {
-			return registry.ToolResult{}, fmt.Errorf("%s requires exactly one of \"id\", \"any\": true, \"all\": true, or \"job_id\"", tool.Name)
+			return registry.ToolResult{}, fmt.Errorf("%s requires exactly one of \"id\", \"task_key\", \"any\": true, \"all\": true, or \"job_id\"", tool.Name)
 		}
 		// Validate the wait budget before every mode, peek included: a peek
 		// with a negative timeout is a caller mistake whether or not this
 		// particular mode would have waited.
 		if args.TimeoutSeconds < 0 {
 			return registry.ToolResult{}, fmt.Errorf("%s: timeout_seconds must be >= 0", tool.Name)
+		}
+		// The retained lookup is a read of the owner's durable records, not a
+		// wait: it never blocks on a live child and never revives one. The
+		// live numeric handles above are untouched by it.
+		if args.TaskKey != "" {
+			return cfg.retainedTaskResult(ctx, state, args.TaskKey)
 		}
 		if args.Peek {
 			switch {
@@ -589,6 +607,41 @@ func peekSubagent(state *session.State, id int64) (registry.ToolResult, error) {
 type agentKillArgs struct {
 	ID    int64  `json:"id"`
 	JobID string `json:"job_id"`
+}
+
+// retainedTaskResult renders one retained owned task by its stable key: the
+// recorded outcome, workspace mode, worktree, branch, candidate commit and the
+// retained report. It is a read of this owner's durable records, so it works
+// after a restart, it never blocks on a live child and it never revives one. A
+// key another conversation owns is not found, never borrowed.
+func (a awaitOptions) retainedTaskResult(ctx context.Context, state *session.State, taskKey string) (registry.ToolResult, error) {
+	if a.workspaces == nil {
+		return registry.ToolResult{}, fmt.Errorf("agent.await: retained task lookup is unavailable in this session")
+	}
+	rec, err := a.workspaces.Inspect(ctx, state.SessionID(), taskKey)
+	if err != nil {
+		if errors.Is(err, subagentwork.ErrRecordNotFound) {
+			return registry.ToolResult{}, fmt.Errorf("agent.await: no retained task %q belongs to this session", taskKey)
+		}
+		return registry.ToolResult{}, fmt.Errorf("agent.await: inspect retained task %q: %w", taskKey, err)
+	}
+	state.ApplySubagentWorkspace(rec)
+	var b strings.Builder
+	fmt.Fprintf(&b, "outcome: %s\n", subagentOutcomeWord(rec.Outcome))
+	if block := subagentWorkspaceBlock(rec); block != "" {
+		b.WriteString(block)
+		b.WriteString("\n")
+	}
+	if rec.ReportMessageID != 0 {
+		fmt.Fprintf(&b, "report message: %d\n", rec.ReportMessageID)
+	}
+	if text := state.SubagentReportText(rec.ReportMessageID); text != "" {
+		b.WriteString("\n" + text)
+	}
+	return registry.ToolResult{
+		Summary: fmt.Sprintf("task %s is %s", rec.TaskKey, subagentOutcomeWord(rec.Outcome)),
+		Content: strings.TrimRight(b.String(), "\n"),
+	}, nil
 }
 
 // NewSubagentKillTool returns the registry.Tool entry for agent.kill, the

@@ -749,3 +749,93 @@ func TestChildAuthorityStillTracksOwnerRevocation(t *testing.T) {
 		t.Fatalf("child write inside its root after revocation: %v", err)
 	}
 }
+
+// TestSubagentWorkspaceServiceIsConversationScoped pins the lifetime of the
+// conversation's owned-workspace service: one instance (and one durable store)
+// per conversation, borrowed by every rebuild, and none at all for a build that
+// has no database to record ownership in.
+func TestSubagentWorkspaceServiceIsConversationScoped(t *testing.T) {
+	service := &conversationCommandService{}
+	if got := service.subagentWorkspaces(nil); got != nil {
+		t.Fatal("a build with no database wired an owned-workspace service")
+	}
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "scope.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	first := service.subagentWorkspaces(database)
+	if first == nil {
+		t.Fatal("a persistent conversation wired no workspace service")
+	}
+	if second := service.subagentWorkspaces(database); second != first {
+		t.Fatal("a rebuild received a different workspace service instead of the conversation's one")
+	}
+	if store := service.subagentWorkspaceStore(database); store == nil {
+		t.Fatal("the conversation has no durable record store")
+	}
+}
+
+// TestRunWorkspaceRestartMarksInterruptedRecords pins the restart
+// reconciliation: a record a previous process left active becomes interrupted
+// (the child was up when the process ended) or unknown (its allocation was never
+// confirmed), while a finished record is left exactly as it was.
+func TestRunWorkspaceRestartMarksInterruptedRecords(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "restart.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject(t.TempDir(), "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	const owner = "restart-owner"
+	if err := database.CreateSession(owner, projectID, "work", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	state := session.New(config.Default(), t.TempDir(), time.Now(),
+		session.Persistence{DB: database, SessionID: owner, Logger: slog.New(slog.DiscardHandler)})
+	store := db.NewSubagentWorkspaceStore(database)
+	for _, rec := range []subagentwork.Record{
+		{Version: subagentwork.RecordVersion, OwnerSessionID: owner, TaskKey: "t-prepared", InvocationID: "inv-prepared", Outcome: subagentwork.OutcomePrepared},
+		{Version: subagentwork.RecordVersion, OwnerSessionID: owner, TaskKey: "t-preparing", InvocationID: "inv-preparing", Outcome: subagentwork.OutcomePreparing},
+		{Version: subagentwork.RecordVersion, OwnerSessionID: owner, TaskKey: "t-done", InvocationID: "inv-done", Outcome: subagentwork.OutcomeDone},
+	} {
+		if _, _, err := store.Create(context.Background(), rec); err != nil {
+			t.Fatalf("seed %s: %v", rec.TaskKey, err)
+		}
+	}
+
+	reconcileRestoredSubagentWorkspaces(context.Background(), store, state)
+
+	records, err := store.List(context.Background(), owner)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	outcomes := map[string]string{}
+	for _, rec := range records {
+		outcomes[rec.TaskKey] = rec.Outcome
+	}
+	if got := outcomes["t-prepared"]; got != subagentwork.OutcomeInterrupted {
+		t.Fatalf("a prepared record left by a previous process = %q, want interrupted", got)
+	}
+	if got := outcomes["t-preparing"]; got != subagentwork.OutcomeUnknown {
+		t.Fatalf("a preparing record left by a previous process = %q, want unknown", got)
+	}
+	if got := outcomes["t-done"]; got != subagentwork.OutcomeDone {
+		t.Fatalf("a finished record = %q, want it left as done", got)
+	}
+	// The conversation retains what it reconciled, so a card can join by key.
+	if retained := state.SubagentWorkspaces(); len(retained) != 2 {
+		t.Fatalf("retained %d reconciled records, want the two that changed", len(retained))
+	}
+}

@@ -11,8 +11,14 @@ risk: workspace_write
 Confirm all three. If any fails, do the work sequentially instead.
 
 1. **Decomposed** — the units exist and each has one deliverable. If not, use `work-decomposition` first.
-2. **Independent** — disjoint file sets, no unit needing another's output, and no shared build or test unit. Agents share one worktree: if two units compile or test together (the same Go package, the same crate, one test target), one agent's half-finished edit breaks the other's build, and each burns time debugging the other's work.
+2. **Independent** — disjoint file sets, no unit needing another's output, and no shared build or test unit. Each isolated child builds and commits in its own worktree, so parallel isolated children no longer break each other's build; a shared child, or two units that must compile together, still does. A dependency between units is an ordering problem that isolation does not fix.
 3. **Worth it** — 2+ units, each substantial. Parallelising trivial work costs more in coordination than it saves.
+
+**Commit first.** Every isolated child starts from your committed HEAD, so
+commit the interfaces, plans and fixtures the units share **before** you
+dispatch: an uncommitted file is invisible to every isolated child. Leave
+unrelated user changes out of that commit. Dispatch never stages or commits
+them.
 
 ## Dispatching
 

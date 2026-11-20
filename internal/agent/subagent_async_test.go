@@ -770,3 +770,39 @@ func TestAwaitAllUpdatesActiveToolCallArgs(t *testing.T) {
 		t.Errorf("never counted down to 1 running; saw: %s", joined)
 	}
 }
+
+// TestAwaitTaskKeyIsAMutuallyExclusiveMode pins the retained lookup's place in
+// agent.await's argument contract: it is one mode among id/task_key/any/all/
+// job_id, and passing it with another mode is refused rather than quietly
+// resolved.
+func TestAwaitTaskKeyIsAMutuallyExclusiveMode(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	await := NewSubagentAwaitTool(state)
+	if _, err := await.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"task_key":"task-1","id":3}`),
+	}); err == nil {
+		t.Fatal("await accepted two modes at once")
+	}
+	if _, err := await.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"task_key":"task-1","all":true}`),
+	}); err == nil {
+		t.Fatal("await accepted task_key together with all")
+	}
+}
+
+// TestAwaitTaskKeyNeedsTheWorkspaceService pins that the retained lookup does not
+// silently degrade: a build with no workspace service says so instead of
+// reporting an empty task.
+func TestAwaitTaskKeyNeedsTheWorkspaceService(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	await := NewSubagentAwaitTool(state)
+	_, err := await.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(`{"task_key":"task-1"}`),
+	})
+	if err == nil {
+		t.Fatal("retained lookup succeeded with no workspace service wired")
+	}
+	if !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("error = %v, want an unavailable-lookup refusal", err)
+	}
+}

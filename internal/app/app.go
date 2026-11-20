@@ -47,6 +47,7 @@ import (
 	"marshal/internal/sddauthor"
 	"marshal/internal/skills"
 	"marshal/internal/snapshot"
+	"marshal/internal/subagentwork"
 	"marshal/internal/tools/desktop"
 	"marshal/internal/tools/desktop/browser"
 	"marshal/internal/tools/mcp"
@@ -730,6 +731,17 @@ type conversationCommandService struct {
 	// leaves the previous generation in force.
 	generation int
 
+	// workspaceMu guards workspaces, the conversation's one owned-workspace
+	// service. It is created on the owner build and borrowed by every later
+	// one, so a config reload reuses the records, the running children and the
+	// service rather than mistaking itself for a process restart.
+	workspaceMu sync.Mutex
+	workspaces  *subagentwork.Service
+	// workspaceStore is the durable record store the service writes through. It
+	// is kept here so a restart reconciliation reads exactly the records the
+	// dispatcher will use.
+	workspaceStore subagentwork.Store
+
 	mu sync.Mutex
 	// lsp is the live language-server rescan seam. A completion resolves it at
 	// settlement time (not at installation), so a job that finishes after a
@@ -1299,6 +1311,19 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		},
 	}
 	parentPricing := pricing.Lookup(route.Preset, state.Logger())
+	// The conversation's one owned-workspace service and the backend's own
+	// linked-worktree capability. Both are instance-scoped wiring: a config
+	// reload borrows the same service (and its records) rather than starting a
+	// second one, and an absent capability refuses isolated dispatch instead of
+	// falling back to shared mode.
+	workspaceService := commandService.subagentWorkspaces(database)
+	isolatedSupported := native.SupportsLinkedWorktrees(commandRunner)
+	// A conversation owner reconciles what a PREVIOUS process left active. A
+	// rebuild borrows the live service and its records, so it skips this and
+	// never mistakes a config reload for a restart.
+	if owned {
+		reconcileRestoredSubagentWorkspaces(ctx, commandService.subagentWorkspaceStore(database), state)
+	}
 	// One write lock shared by the parent runner and every agent.run child:
 	// background children outlive the spawning turn, so parent and child
 	// writes must serialize on the same gate. The lock is the caller's
@@ -1312,15 +1337,20 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		state,
 		agent.WithSubagentParentModel(route.Preset.Model, parentPricing),
 		agent.WithSubagentParentProvider(resolvedProvider.Name()),
+		agent.WithSubagentWorkspaceService(workspaceService),
+		agent.WithIsolatedWorktreeSupport(isolatedSupported),
 	)); err != nil {
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	// agent.await and agent.kill both cover the same two classes of
 	// background work: subagents and shell jobs. Both take the job adapter so
-	// await can wait on (or peek at) a job and kill can terminate one.
+	// await can wait on (or peek at) a job and kill can terminate one. await
+	// additionally takes the workspace service so a retained task key stays
+	// inspectable after its child finished or the process restarted.
 	if err := reg.Register(agent.NewSubagentAwaitTool(state,
 		agent.WithAwaitJobs(jobAwaitAdapter{m: jobManager}),
+		agent.WithAwaitWorkspaces(workspaceService),
 	)); err != nil {
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)

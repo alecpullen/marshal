@@ -1,17 +1,100 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 
 	"marshal/internal/agent"
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/filetrack"
 	"marshal/internal/snapshot"
 	"marshal/internal/subagentwork"
 	"marshal/internal/tools/native"
+	"marshal/internal/worktree"
 )
+
+// subagentWorkspaces returns the conversation's one owned-workspace service,
+// creating it on the first build and returning the same instance to every later
+// one. A config reload therefore reuses the service, its store and the records
+// in it instead of starting a second one — and, because the service is
+// instance-scoped, two conversations in one process never share a store.
+//
+// A build with no database (an embedded fixture) has nowhere durable to record
+// ownership, so it wires no service at all: dispatch then keeps the pre-cutover
+// binding of the parent's captured checkout rather than claiming an ownership it
+// cannot prove.
+func (s *conversationCommandService) subagentWorkspaces(database *db.DB) *subagentwork.Service {
+	store := s.subagentWorkspaceStore(database)
+	if store == nil {
+		return nil
+	}
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
+	if s.workspaces == nil {
+		s.workspaces = subagentwork.NewService(store, worktree.CLIGitOps{})
+	}
+	return s.workspaces
+}
+
+// subagentWorkspaceStore returns the conversation's one durable record store, or
+// nil when this build has no database. It is the same instance the service
+// writes through, so a restart reconciliation and the dispatch service observe
+// one another's writes.
+func (s *conversationCommandService) subagentWorkspaceStore(database *db.DB) subagentwork.Store {
+	if s == nil || database == nil {
+		return nil
+	}
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
+	if s.workspaceStore == nil {
+		s.workspaceStore = db.NewSubagentWorkspaceStore(database)
+	}
+	return s.workspaceStore
+}
+
+// reconcileRestoredSubagentWorkspaces runs once per conversation owner: a
+// record this process did not write cannot still be running, so an active
+// outcome left by a previous process becomes interrupted (the child was up when
+// the process ended) or unknown (allocation was never confirmed).
+//
+// It is deliberately NOT called on a rebuild. A config reload borrows the live
+// service, keeps its records and its children, and must never mistake itself for
+// a restart; neither does a session with a child still live in this process.
+func reconcileRestoredSubagentWorkspaces(ctx context.Context, store subagentwork.Store, state *session.State) {
+	if store == nil || state == nil || state.HasRunningSubagent() {
+		return
+	}
+	records, err := store.List(ctx, state.SessionID())
+	if err != nil {
+		state.Logger().Warn("read retained subagent workspaces failed", "error", err)
+		return
+	}
+	for _, rec := range records {
+		var outcome string
+		switch rec.Outcome {
+		case subagentwork.OutcomePreparing:
+			// The intent was written but allocation never reported a definite
+			// result, so the artifacts on disk are unverified: unknown, not
+			// "interrupted", which would claim a child existed.
+			outcome = subagentwork.OutcomeUnknown
+		case subagentwork.OutcomePrepared, subagentwork.OutcomeRunning:
+			outcome = subagentwork.OutcomeInterrupted
+		default:
+			continue
+		}
+		updated := rec
+		updated.Outcome = outcome
+		written, casErr := store.CompareAndSwap(ctx, updated, rec.Revision)
+		if casErr != nil {
+			state.Logger().Warn("mark retained subagent workspace restarted failed", "error", casErr, "subagent_task", rec.TaskKey)
+			continue
+		}
+		state.ApplySubagentWorkspace(written)
+	}
+}
 
 // bindSubagentWorkspace fixes one child's whole tool surface to the workspace
 // its dispatcher recorded, and returns the native options that express it.

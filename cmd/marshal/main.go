@@ -442,7 +442,7 @@ func runFleetAdd(ctx context.Context, args []string, stderr io.Writer, home stri
 				return fmt.Errorf("marshal fleet add: --marshal given more than once")
 			}
 			marshalPath = strings.TrimPrefix(args[i], "--marshal=")
-			if marshalPath == "" {
+			if marshalPath == "" || strings.HasPrefix(marshalPath, "-") {
 				return fmt.Errorf("marshal fleet add: --marshal requires a path")
 			}
 		case args[i] == "--no-notify":

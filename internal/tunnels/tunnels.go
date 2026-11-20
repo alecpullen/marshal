@@ -118,6 +118,10 @@ type tunnel struct {
 	ctx     context.Context // ends the host's goroutine
 	cancel  context.CancelFunc
 	stopped chan struct{} // closed once the goroutine has stopped its process
+	// liveFrom is when the current attempt first answered, zero when it has
+	// not answered yet. The goroutine that owns the attempt is the only
+	// reader and writer.
+	liveFrom time.Time
 }
 
 // run reconciles the tunnels until ctx ends, with the reporter alongside.
@@ -268,7 +272,7 @@ func (r *runner) supervise(t *tunnel) {
 		if t.ctx.Err() != nil {
 			return
 		}
-		began := r.cfg.Now()
+		t.liveFrom = time.Time{}
 		err := r.attempt(t)
 		if t.ctx.Err() != nil {
 			// The attempt ended because this host was stopped, not because it
@@ -276,7 +280,7 @@ func (r *runner) supervise(t *tunnel) {
 			return
 		}
 		r.setState(t, contract.HostDown, err.Error())
-		if r.cfg.Now().Sub(began) >= liveReset {
+		if !t.liveFrom.IsZero() && r.cfg.Now().Sub(t.liveFrom) >= liveReset {
 			// A tunnel that was live for a while is not in a failure loop.
 			delay = r.cfg.Backoff
 		}
@@ -370,6 +374,7 @@ func (r *runner) awaitLive(t *tunnel, proc Process, local string) error {
 			default:
 			}
 			if err := r.probe(t, local); err == nil {
+				t.liveFrom = r.cfg.Now()
 				r.setState(t, contract.HostLive, "")
 				return nil
 			}

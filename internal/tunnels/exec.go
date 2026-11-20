@@ -63,8 +63,17 @@ func (execCommands) Output(ctx context.Context, argv []string) ([]byte, error) {
 	stderr := &lineTail{}
 	cmd.Stdout = &stdout
 	cmd.Stderr = stderr
+	// A grandchild that keeps stderr open (an ssh ProxyCommand, say) would
+	// otherwise hold Wait after ssh itself has exited.
+	cmd.WaitDelay = stopTimeout
 	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), &CommandError{Code: exitCode(cmd), Line: stderr.last()}
+		line := stderr.last()
+		if line == "" && ctx.Err() != nil {
+			// The call was cut short: ssh printed nothing, so the context is
+			// the only honest reason to report.
+			line = ctx.Err().Error()
+		}
+		return stdout.Bytes(), &CommandError{Code: exitCode(cmd), Line: line}
 	}
 	return stdout.Bytes(), nil
 }
@@ -80,6 +89,10 @@ func (execCommands) Start(argv []string) (Process, error) {
 	// web/bridge/helper.go (Helper.start) leaves them.
 	tail := &lineTail{}
 	cmd.Stderr = tail
+	// A grandchild that keeps stderr open (an ssh ProxyCommand from
+	// ~/.ssh/config, say) would otherwise hold Wait, and with it Done, after
+	// ssh itself has exited.
+	cmd.WaitDelay = stopTimeout
 	if err := cmd.Start(); err != nil {
 		return nil, &CommandError{Code: -1, Line: strings.TrimSpace(err.Error())}
 	}

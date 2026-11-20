@@ -852,8 +852,8 @@ func dialDaemon(ctx context.Context, opts *options, step daemonStep) (*daemonCon
 	// handler can record the agent's marshal/restarting on it (decision 4).
 	conn := newDaemonConn()
 	// The local daemon's agent is a different process on the same filesystem,
-	// so the client reads its files directly. A server's or a host's agent is
-	// not on it at all (decision 8), so nothing of the session is read as a
+	// so the client reads its files directly. A host's agent is not on it at
+	// all (decision 8), so nothing of the session is read as a
 	// local file. The version is not pinned either way, because a daemon older
 	// than this binary still serves the session (the note says so).
 	host, err := rpc.Dial(handshakeCtx, stream, rpc.DialOptions{

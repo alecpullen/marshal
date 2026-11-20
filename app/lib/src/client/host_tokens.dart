@@ -4,12 +4,11 @@ import 'host_tokens_stub.dart'
 
 // Where a relayed host's token is kept, in the build that has a store of its
 // own (spec D21). A browser keeps each host's token in local storage under
-// that host's own key; a native build has no such store and keeps tokens in
-// the OS keychain through `marshal fleet login`, which is what the Hosts
-// model uses when it is given no store. This is a file of its own because
-// `main.dart` compiles for both platforms and so cannot name the browser
-// store directly: the conditional import is the same one `main.dart` uses to
-// pick its Studio sign-in code.
+// that host's own key; a native build keeps no host token at all, because the
+// daemon reaches its hosts over its own tunnels. This is a file of its own
+// because `main.dart` compiles for both platforms and so cannot name the
+// browser store directly: the conditional import is the same one `main.dart`
+// uses to pick its Studio sign-in code.
 
 /// How this build writes a relayed host's token, or null where it has no
 /// store of its own.

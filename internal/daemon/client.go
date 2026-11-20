@@ -610,8 +610,8 @@ func (a *attachConn) Close() error                { return a.conn.Close() }
 // imported here and no internal type leaks into it.
 
 // marshalEnrollPath is the bridge's enrollment route. It is served on the
-// daemon's owner-only socket; a server profile that does not serve it answers
-// 404, which this client reports as unsupported rather than retrying elsewhere.
+// daemon's owner-only socket; a daemon that does not serve it answers 404,
+// which this client reports as unsupported rather than retrying elsewhere.
 const marshalEnrollPath = "/api/marshal/enroll"
 
 // The enrollment states the bridge reports.

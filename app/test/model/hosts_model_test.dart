@@ -252,8 +252,8 @@ void main() {
       reason: 'a host reached directly carries the page’s own token',
     );
 
-    // A native build keeps no token of its own: `marshal fleet token` reads one
-    // when a request needs it, so there is nothing for it to clear.
+    // A native build keeps no token of its own: hosts ride the daemon's own
+    // tunnels, so the model has no clearToken for it to call.
     final native = HostsModel.fixture([
       _host('laptop', via: 'hub'),
     ], profiles: _Runner());

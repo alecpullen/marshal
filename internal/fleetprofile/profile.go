@@ -45,8 +45,8 @@ type Local struct {
 // fileName is the file's name in the user's config directory.
 const fileName = "fleet.toml"
 
-// serverNameRe is what a host's name may hold (D6).
-var serverNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+// hostNameRe is what a host's name may hold (D6).
+var hostNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // rawFile, rawHost and rawLocal decode the file. They are separate from the
 // types above so that decoding can be strict and a missing notify can read as
@@ -167,7 +167,7 @@ func checkName(name string) error {
 	if name == "local" {
 		return fmt.Errorf("fleet.toml: hosts.local: \"local\" names the daemon's table, not a host; choose another name")
 	}
-	if !serverNameRe.MatchString(name) {
+	if !hostNameRe.MatchString(name) {
 		return fmt.Errorf("fleet.toml: hosts.%s: a host's name may hold only letters, digits, '.', '_' and '-'", name)
 	}
 	// Dots alone pass the character rule but are a path segment in every

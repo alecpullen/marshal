@@ -160,27 +160,31 @@ required and a rootful one is refused. `--status` prints the directory.
 `--install` rotates the token and signs every browser out; plain restarts keep
 it, so the browser stays signed in.
 
-## Reaching studio from the TUI fleet screen
+## Reaching a host from the TUI fleet screen
 
-Studio is a separate fleet from the local daemon (separate units, state, and
-restarts). To drive it from the TUI, give it a profile in
-`~/.config/marshal/fleet.toml` — the file must be `0600` and owned by you, and
-holds no token:
-
-```toml
-[servers.studio]
-url = "http://127.0.0.1:7700"
-token_cmd = "cat \"${MARSHAL_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/marshal}/studio/token\""
-notify = true
-```
-
-The `token_cmd` mirrors the helper's own data-dir resolution, so it survives
-`MARSHAL_DATA_DIR`/`XDG_DATA_HOME` moving; the shell expansion is done by
-`/bin/sh -c` at connect time. Then:
+The studio is not something the fleet screen reaches: the profile shape that
+pointed the screen at one is retired, and what it dials besides the local
+daemon is a **host** — a machine whose daemon it reaches over an SSH tunnel.
+The SSH prerequisites are under "Reaching another machine" below.
 
 ```bash
-marshal fleet --server studio
+marshal fleet add box you@box     # writes [hosts.box] ssh = "you@box"
+marshal fleet --host box          # the fleet screen, on box's daemon
+marshal daemon status             # host box (you@box): live
 ```
+
+`fleet add` writes the table into `~/.config/marshal/fleet.toml` — the file
+must be `0600` and owned by you, and holds no token — and waits for the local
+daemon's tunnel helper to report the host. That helper runs because
+`marshal daemon install` writes `--tunnels` into the unit, so a daemon
+installed before hosts existed needs `marshal daemon install` again.
+`marshal daemon status` then prints one line per host: `host box (you@box):
+live`, or `down` with the ssh error that stopped it.
+
+The studio itself is a browser surface at `http://127.0.0.1:7700` (the next
+section reaches it from another machine). A browser that lists the SSH hosts
+the daemon holds does not exist yet: it arrives with plan 3's forward for
+hosts.
 
 ## Reaching studio from another machine
 
@@ -234,13 +238,12 @@ Two things do not travel through the forward:
 - **Preview URLs** are gated to localhost hostnames (`isLocalhostName` in
   `web/bridge/preview.go`), so previews opened from the tailnet hostname are
   refused. Browse those from the box itself.
-- **`marshal fleet --server studio`** from another machine needs the forwarded
-  URL rather than the loopback one in `fleet.toml`:
-
-  ```toml
-  [servers.studio]
-  url = "https://<host>.<tailnet>.ts.net:8443"
-  ```
+- **The TUI's fleet screen** does not use the forward at all: `marshal fleet`
+  dials a daemon's socket, not a URL, and a remote daemon is a host reached
+  over SSH (`marshal fleet --host NAME`, next section). What the forward
+  gives you is the studio's own page and `/api` at the forwarded origin; a
+  browser signs in there once more, because the token lives in `localStorage`
+  per origin.
 
 ## Reaching another machine
 
@@ -354,13 +357,17 @@ mid-flight.
    The first run builds the SPA with `flutter build web`, builds both binaries,
    writes the unit and token, enables and starts the unit. `--install` implies
    a restart; no separate `start` is needed.
-4. **Add the fleet profile** (previous section) and confirm both services:
+4. **Confirm both services**, and add a host if you have another machine to
+   reach (optional: with no other machine, `fleet.toml` is never needed):
 
    ```bash
    ./scripts/dev-daemon.sh --status
    ./scripts/dev-studio.sh --status
    curl -fsS -H "Authorization: Bearer $(./scripts/dev-studio.sh --token)" \
      http://127.0.0.1:7700/api/projects
+
+   ./marshal fleet add box you@box  # optional: writes [hosts.box]
+   ./marshal daemon status          # host box (you@box): live
    ```
 
 5. **Verify a rebuild reaches the services.** Run the loop once and check the

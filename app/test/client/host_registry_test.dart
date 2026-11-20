@@ -7,8 +7,8 @@ import 'package:marshal_app/src/client/host.dart';
 import 'package:marshal_app/src/client/transport.dart';
 
 /// The host registry, held to F1 decision 8: a host's reach follows its fleet
-/// stream, an unreachable host is kept with its last contact, and a refused
-/// token is terminal.
+/// stream, an unreachable host is kept with its last contact, and the proxy's
+/// refusal is terminal.
 void main() {
   late _ScriptedTransport transport;
   late _FakeClock clock;
@@ -163,7 +163,7 @@ void main() {
     expect(host.lastContact, contact);
   });
 
-  test('a wrong token marks the host unauthorized', () async {
+  test('a proxy refusal marks the host unauthorized', () async {
     await pumpEventQueue();
     transport.last.addError(Unauthorized());
     await pumpEventQueue();
@@ -172,7 +172,7 @@ void main() {
     expect(
       transport.requests,
       hasLength(1),
-      reason: 'a refused token is never retried',
+      reason: 'a refused request is never retried: a reload clears it (D13)',
     );
   });
 
@@ -205,30 +205,6 @@ void main() {
       hasLength(requests),
       reason: 'a forgotten host is not retried',
     );
-  });
-
-  test("retry restarts a host's stream", () async {
-    // A refused token is terminal: the stream stops and is not retried
-    // (decision 6).
-    await pumpEventQueue();
-    transport.last.addError(Unauthorized());
-    await pumpEventQueue();
-    expect(host.reach, HostReach.unauthorized);
-    expect(transport.requests, hasLength(1));
-
-    // The token changed, so the host is asked to try once more.
-    registry.retry('local');
-    await pumpEventQueue();
-    expect(
-      transport.requests,
-      hasLength(2),
-      reason: 'the stream starts again rather than waiting for a new token',
-    );
-
-    // The new connection is followed as the old one was.
-    send(transport.last, ': hb\n\n');
-    await pumpEventQueue();
-    expect(host.reach, HostReach.live);
   });
 }
 

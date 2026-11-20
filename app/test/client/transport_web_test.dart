@@ -46,6 +46,16 @@ void main() {
     final call = calls.single;
     expect(call.ifMatch, '"0123"');
     expect(
+      call.contentType,
+      'application/json',
+      reason: 'a request with a body is JSON: the daemon answers 415 otherwise',
+    );
+    expect(
+      call.body,
+      '{"workspace":"alpha"}',
+      reason: 'the body is sent encoded, as the route reads it',
+    );
+    expect(
       call.authorization,
       isNull,
       reason: 'the page sends no Authorization (one-daemon D13)',
@@ -104,6 +114,7 @@ class FakeCall {
     required this.url,
     required this.authorization,
     this.ifMatch,
+    this.contentType,
     this.redirect,
     this.body,
   });
@@ -113,6 +124,9 @@ class FakeCall {
 
   /// The `If-Match` the route named, when it named one.
   final String? ifMatch;
+
+  /// The `Content-Type` the transport set, when the request had a body.
+  final String? contentType;
 
   /// The redirect mode the transport asked for.
   final String? redirect;
@@ -155,6 +169,7 @@ JSPromise<JSAny> _fakeFetch(JSString input, [JSAny? init]) {
       url: input.toDart,
       authorization: headers?.get('authorization'),
       ifMatch: headers?.get('if-match'),
+      contentType: headers?.get('content-type'),
       redirect: request?.redirect,
       body: requestBody == null ? null : (requestBody as JSString).toDart,
     ),

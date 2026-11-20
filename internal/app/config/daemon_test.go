@@ -280,6 +280,77 @@ func TestARetiredDaemonKeyIsNamed(t *testing.T) {
 	}
 }
 
+// TestARetiredDaemonKeyAloneWritesNoDaemonSection pins that the derived
+// Retired list alone does not earn a [daemon] table. A user config that sets
+// only a retired key — studio_addr here — leaves every real daemon value at
+// its default, so a project save must not bake a default-valued [daemon]
+// section into a shared, often-committed file, where it would pin today's
+// defaults. A real value still writes the section.
+func TestARetiredDaemonKeyAloneWritesNoDaemonSection(t *testing.T) {
+	t.Run("a retired key alone", func(t *testing.T) {
+		dir := t.TempDir()
+		home := filepath.Join(dir, "home")
+		work := filepath.Join(dir, "work")
+		writeFile(t, filepath.Join(home, ".config", "marshal", "config.toml"),
+			"[daemon]\nstudio_addr = \"127.0.0.1:7788\"\n")
+
+		cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !reflect.DeepEqual(cfg.Daemon.Retired, []string{"studio_addr"}) {
+			t.Fatalf("Daemon.Retired = %v, want the key the file still sets", cfg.Daemon.Retired)
+		}
+
+		path := filepath.Join(work, ".marshal", "config.toml")
+		if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+		saved, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read the saved config: %v", err)
+		}
+		text := string(saved)
+		if strings.Contains(text, "[daemon]") {
+			t.Errorf("the saved project config carries a [daemon] section for a retired key alone:\n%s", text)
+		}
+		for _, key := range []string{"idle_session_timeout", "egress", "web_listen", "web_group", "web_url", "preview_listen", "preview_url"} {
+			if strings.Contains(text, key) {
+				t.Errorf("the saved project config carries %q, want no daemon value:\n%s", key, text)
+			}
+		}
+	})
+
+	t.Run("a real value", func(t *testing.T) {
+		dir := t.TempDir()
+		home := filepath.Join(dir, "home")
+		work := filepath.Join(dir, "work")
+		writeFile(t, filepath.Join(home, ".config", "marshal", "config.toml"),
+			"[daemon]\negress = true\n")
+
+		cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+
+		path := filepath.Join(work, ".marshal", "config.toml")
+		if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+		saved, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read the saved config: %v", err)
+		}
+		text := string(saved)
+		if !strings.Contains(text, "[daemon]") {
+			t.Errorf("the saved project config carries no [daemon] section for egress = true:\n%s", text)
+		}
+		if !strings.Contains(text, "egress = true") {
+			t.Errorf("the saved project config drops the real value:\n%s", text)
+		}
+	})
+}
+
 // TestASaveDropsTheRetiredDaemonKeys pins that a save never writes a retired
 // key back to a file: the four only ever leave it.
 func TestASaveDropsTheRetiredDaemonKeys(t *testing.T) {

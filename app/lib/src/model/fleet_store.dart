@@ -847,7 +847,7 @@ class HostView {
   /// A local daemon, or a server profile.
   final HostKind kind;
 
-  /// The relay's host name this host is reached through, or null.
+  /// The daemon this host is reached through, or null.
   final String? via;
 
   /// The SSH destination this host is reached over, or null.

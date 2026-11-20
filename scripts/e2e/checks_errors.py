@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 
 from e2e_client import q
-from harness import Ctx, Skip, Suite, wait_until
+from harness import Ctx, Skip, Suite
 
 
 def register(s: Suite) -> None:

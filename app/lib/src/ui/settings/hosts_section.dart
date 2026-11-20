@@ -53,7 +53,7 @@ class HostsSection extends StatelessWidget {
               name: 'Add a host',
               description:
                   'Add hosts with `marshal fleet add` on the machine this '
-                  'daemon runs on (D15).',
+                  'daemon runs on.',
             ),
         ]),
       ],

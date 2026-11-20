@@ -285,6 +285,30 @@ func TestAForwardDoesNotChain(t *testing.T) {
 	tunnel.nothing(t)
 }
 
+// TestAForwardCarriesTheHostsRoute: splitForward refuses the api/hosts/
+// prefix, not the bare path, so /api/hosts/box/api/hosts is the host's own
+// host report — a route on the set the forward carries — and reaches it as
+// /api/hosts. Only a path below the api/hosts/ prefix would chain (D10).
+func TestAForwardCarriesTheHostsRoute(t *testing.T) {
+	s := NewServer(testFleet(t))
+	tunnel := newFakeTunnel(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"from": "box"})
+	}))
+	reportHosts(t, s, liveHost("box", tunnel.socket))
+
+	rec := doReq(t, s, http.MethodGet, hostForwardPrefix+"box/api/hosts", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the forward = %d, body = %s, want the host's own 200", rec.Code, rec.Body.String())
+	}
+	if body := trimJSON(rec.Body.String()); body != `{"from":"box"}` {
+		t.Fatalf("the forward answered %s, want the host's own body", body)
+	}
+	seen := tunnel.next(t)
+	if seen.method != http.MethodGet || seen.path != "/api/hosts" || seen.query != "" {
+		t.Fatalf("the host was sent %s %s?%s, want GET /api/hosts", seen.method, seen.path, seen.query)
+	}
+}
+
 // TestAForwardDropsTheCallersCredentials: the caller's bearer value and cookie
 // stop at this daemon; the host's own socket needs neither (D10).
 func TestAForwardDropsTheCallersCredentials(t *testing.T) {

@@ -149,7 +149,7 @@ void main() {
     expect(
       find.text(
         'Add hosts with `marshal fleet add` on the machine this daemon runs '
-        'on (D15).',
+        'on.',
       ),
       findsOneWidget,
     );

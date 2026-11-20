@@ -145,7 +145,8 @@ that file, and `internal/tunnels` the tunnels.
 ### End-to-end and usability suites
 
 ```bash
-python3 scripts/e2e/run_e2e.py --base http://127.0.0.1:7700 --token TOK ...   # see scripts/e2e/README.md
+python3 scripts/e2e/run_e2e.py --base unix:<daemon dir>/web.sock ...   # see scripts/e2e/README.md
+python3 scripts/e2e/run_e2e.py --base http://127.0.0.1:PORT ...       # no token either way
 go test ./test/usability/... -run TestScripted -v -timeout 5m
 ```
 

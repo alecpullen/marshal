@@ -160,11 +160,6 @@ func requestHasBody(r *http.Request) bool {
 			return true
 		}
 	}
-	for _, v := range r.Header.Values("Transfer-Encoding") {
-		if strings.Contains(strings.ToLower(v), "chunked") {
-			return true
-		}
-	}
 	return false
 }
 

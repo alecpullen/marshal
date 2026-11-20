@@ -185,9 +185,12 @@ installed before hosts existed needs `marshal daemon install` again.
 live`, or `down` with the ssh error that stopped it.
 
 The studio itself is a browser surface at `http://127.0.0.1:7700` (the next
-section reaches it from another machine). A browser that lists the SSH hosts
-the daemon holds does not exist yet: it arrives with plan 3's forward for
-hosts.
+section reaches it from another machine). A browser now lists the SSH hosts the
+daemon holds: the page it was served from is that daemon's own host, and each
+host the daemon keeps a tunnel to is a second row reached through it. The page
+reads `GET /api/hosts` for those, and `/api/hosts/<name>/…` is forwarded down
+that host's tunnel socket, so a host's fleet screen opens in the studio without
+a second login or a second forward.
 
 ## Reaching studio from another machine
 
@@ -197,8 +200,16 @@ rebind.
 
 ```bash
 tailscale serve --bg --https=8443 7700     # https://<host>.<tailnet>.ts.net:8443/
+scripts/dev-studio.sh --install --public-url https://<host>.<tailnet>.ts.net:8443
 tailscale serve status                     # shows the 8443 entry beside whatever owns 443
 ```
+
+The second line is not optional: a forward publishes its own origin, so the
+forwarded request arrives addressed to that tailnet name, and the listener's
+guard refuses it until it is told that name (next paragraphs). `--public-url`
+writes it into the studio unit as `--public-url`; `WEBBRIDGE_PUBLIC_URL` does
+the same without the flag, and an empty value omits it — so an `--install`
+without one clears it, and re-running the line above is what puts it back.
 
 Port 443 may already belong to another service on the same host (this box
 serves `:8200` at the root), so pick a free `--https=` port. Tailscale issues
@@ -211,11 +222,22 @@ The proxy is now the only gate (D13). Marshal holds no bearer secret and checks
 no browser's identity: tailnet membership is the login, and a request that
 arrives at `:7700` is answered. What the listener does check for itself is what
 a browser sends on another site's behalf — the `Host` it is addressed to (only
-`localhost`, `127.0.0.1`, `::1` and `[daemon] web_url`'s host), a
+`localhost`, `127.0.0.1`, `::1` and the published origin's host), a
 state-changing request whose `Sec-Fetch-Site` or `Origin` is another site's,
-and an `/api/` body that is not JSON (`web/bridge/webguard.go`). So `web_url`
-has to name the address the proxy publishes, or the forwarded browser is
-refused before any route sees it.
+and an `/api/` body that is not JSON (`web/bridge/webguard.go`). So the
+published origin has to be named, or the forwarded browser is refused before
+any route sees it: `403 this daemon does not answer to host <name>; set
+[daemon] web_url to the address the proxy publishes`.
+
+That one value reaches a unit by two different roads, because `webbridge`
+reads no config and takes it only from a flag:
+
+- **The TUI's daemon** (`marshal-daemon.service`) gets it from `marshal daemon
+  install`, which writes `[daemon] web_url` into the unit as `--public-url`. A
+  changed `web_url` therefore needs another `marshal daemon install`.
+- **The studio** (`marshal-studio.service`) is the unit `scripts/dev-studio.sh`
+  writes, so the value is `--public-url` on that script's `--install` — above.
+  There is no `EnvironmentFile` in it to carry one.
 
 `tailscale serve` is tailnet-only, so it is not the LAN answer: the LAN needs
 its own TLS front — any reverse proxy with a certificate pointed at

@@ -44,7 +44,7 @@ GROUPS = {
     "F": ("secrets", checks_secrets),
     "G": ("forge", checks_forge),
     "H": ("errors", checks_errors),
-    "I": ("spa and auth", checks_spa),
+    "I": ("studio shell", checks_spa),
 }
 
 

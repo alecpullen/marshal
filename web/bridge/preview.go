@@ -241,7 +241,7 @@ func (s *Server) issuePreview(w http.ResponseWriter, r *http.Request) {
 func (s *Server) SetPreviewPort(port int) { s.previewPort.Store(int32(port)) }
 
 // CheckPreviewURL refuses a base that is not an http or https origin: a host,
-// and no path beyond "/", no query and no fragment.
+// and no userinfo, no path beyond "/", no query and no fragment.
 func CheckPreviewURL(base string) error {
 	u, err := url.Parse(base)
 	if err != nil {
@@ -252,6 +252,11 @@ func CheckPreviewURL(base string) error {
 	}
 	if u.Host == "" {
 		return fmt.Errorf("preview URL %q: no host", base)
+	}
+	if u.User != nil {
+		// An origin's host is all a browser sends: userinfo is discarded, so
+		// a link that carried it would not be the origin it names.
+		return fmt.Errorf("preview URL %q: an origin carries no userinfo", base)
 	}
 	if u.Path != "" && u.Path != "/" {
 		return fmt.Errorf("preview URL %q: an origin carries no path", base)

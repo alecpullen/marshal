@@ -73,8 +73,8 @@ func (u UnitSpec) Args() []string {
 		"--egress", egress,
 	)
 	// The web listener and the origins it advertises are values the user
-	// sets, so each is written only when the unit holds one (D3). Nothing
-	// sets them yet, so an installed unit keeps the argv it had.
+	// sets, so each is written only when the unit holds one (D3):
+	// daemonUnitSpec fills them from the user config at install time.
 	for _, flag := range []struct{ name, value string }{
 		{"--web-listen", u.WebListen},
 		{"--web-group", u.WebGroup},

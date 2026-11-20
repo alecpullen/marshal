@@ -38,6 +38,10 @@
 #   scripts/dev-studio.sh --agent-image   # also rebuild the container agent image (slow)
 #
 #   --timeout SECS   how long to wait for the studio to answer (default 30)
+#   --public-url URL the origin a proxy publishes this studio on, written into
+#                    the unit as --public-url (also WEBBRIDGE_PUBLIC_URL; empty
+#                    omits the flag). Without it the guard admits only
+#                    localhost/127.0.0.1/::1, so a forwarded browser is refused
 #   --force          install even though a location variable points outside $HOME
 #   -h, --help       this text
 #
@@ -47,10 +51,16 @@
 #
 # The unit binds 127.0.0.1:7700, so another machine reaches studio only
 # through a forward (see "Reaching studio from another machine" in
-# docs/dev-loop.md). --status prints every `tailscale serve` origin that
-# proxies to that loopback port, because the printed loopback URL is not
-# what a remote browser types and the tailnet root may belong to another
-# service.
+# docs/dev-loop.md). A forward publishes its own origin, so the forwarded
+# request is addressed to the tailnet name rather than to loopback, and the
+# web listener's guard answers 403 until that origin is named: --public-url
+# is that name, and `marshal daemon install`'s `[daemon] web_url` is the same
+# value for the TUI's daemon (webbridge reads no config, so a unit only gets
+# one from the install that wrote it — pass --public-url again after a
+# --install that omits it, which clears it). --status prints every
+# `tailscale serve` origin that proxies to that loopback port, because the
+# printed loopback URL is not what a remote browser types and the tailnet root
+# may belong to another service.
 #
 # Agents the studio spawns run in containers: the studio's projects have a
 # workspace, and a daemon containerises an agent that has one whenever a
@@ -106,6 +116,12 @@ agent_image=0
 dev_image=0
 timeout=30
 
+# public_url is the origin a proxy publishes this studio on, empty when none is
+# named: it reaches the unit as --public-url, and the web listener's guard
+# admits only localhost and this host (web/bridge/webguard.go). The environment
+# form is webbridge's own flag's, so the script and a hand-run bridge agree.
+public_url=${WEBBRIDGE_PUBLIC_URL:-}
+
 base=http://127.0.0.1:7700
 
 # agent_image_ref is the tag the bridge resolves for a source build: a dev
@@ -149,6 +165,14 @@ while [ $# -gt 0 ]; do
 			;;
 		esac
 		timeout=$1
+		;;
+	--public-url)
+		shift
+		if [ $# -eq 0 ]; then
+			echo "dev-studio.sh: --public-url wants a URL; pass '' to clear it" >&2
+			exit 2
+		fi
+		public_url=$1
 		;;
 	-h | --help)
 		usage
@@ -222,6 +246,12 @@ check_location_env() {
 # as the studio's first project (a daemon given none registers no working
 # directory project).
 write_unit() {
+	local public_flag=""
+	if [ -n "$public_url" ]; then
+		# webbridge reads no config, so the flag in ExecStart is the only way
+		# the unit learns the origin the proxy publishes it on.
+		public_flag=" \"--public-url\" \"$public_url\""
+	fi
 	mkdir -p "$(dirname "$unit_path")" "$state_dir"
 	cat >"$unit_path" <<EOF
 [Unit]
@@ -229,7 +259,7 @@ Description=Marshal studio (webbridge)
 
 [Service]
 WorkingDirectory=$repo_root
-ExecStart="$repo_root/webbridge" "--socket" "$studio_dir/marshal.sock" "--web-listen" "127.0.0.1:7700" "--state-dir" "$state_dir" "--egress" "on" "--workspace" "$studio_dir/fleet.json" "--cwd-root" "$repo_root" "--marshal-bin" "$repo_root/marshal"
+ExecStart="$repo_root/webbridge" "--socket" "$studio_dir/marshal.sock" "--web-listen" "127.0.0.1:7700" "--state-dir" "$state_dir" "--egress" "on" "--workspace" "$studio_dir/fleet.json" "--cwd-root" "$repo_root" "--marshal-bin" "$repo_root/marshal"$public_flag
 Environment="PATH=$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="SHELL=/bin/bash"
 Restart=on-failure
@@ -274,8 +304,16 @@ remote_urls() {
 	' || true
 }
 
+# unit_public_url prints the --public-url the installed unit holds, if any. The
+# unit is a file, and a hand edit or an older run of this script can be what the
+# service is running with, so the file — not this run's environment — is what
+# --status reports.
+unit_public_url() {
+	sed -n 's/.*"--public-url" "\([^"]*\)".*/\1/p' "$unit_path" 2>/dev/null | head -n1
+}
+
 print_status() {
-	local state pid started version runtime img_epoch bin_epoch remotes
+	local state pid started version runtime img_epoch bin_epoch remotes public
 	state=$(systemctl --user is-active marshal-studio.service 2>/dev/null || true)
 	pid=$(systemctl --user show -p MainPID --value marshal-studio.service 2>/dev/null || true)
 	started=$(systemctl --user show -p ActiveEnterTimestamp --value marshal-studio.service 2>/dev/null || true)
@@ -283,6 +321,10 @@ print_status() {
 	printf 'unit:    %s (marshal-studio.service)\n' "${state:-unknown}"
 	printf 'unit:    %s\n' "$unit_path"
 	printf 'state:   %s\n' "$state_dir"
+	public=$(unit_public_url)
+	if [ -n "$public" ]; then
+		printf 'public:  %s\n' "$public"
+	fi
 	if curl -fsS -m 2 "$base/api/projects" >/dev/null 2>&1; then
 		printf 'studio:  %s  pid=%s  started %s\n' \
 			"${version#webbridge }" "$pid" "${started:-?}"
@@ -292,6 +334,13 @@ print_status() {
 			while IFS= read -r remote; do
 				printf 'remote:  %s/\n' "$remote"
 			done <<<"$remotes"
+			# A forwarded browser arrives addressed to the proxy's origin,
+			# and the guard admits only localhost and the --public-url
+			# host, so an origin the unit was not told about is refused.
+			if [ -z "$public" ]; then
+				printf 'note:    no --public-url in the unit, so these origins answer 403\n'
+				printf 'note:    scripts/dev-studio.sh --install --public-url <origin above>\n'
+			fi
 		else
 			printf 'note:    loopback only; another machine needs a forward to :%s\n' "${base##*:}"
 			printf 'note:    tailscale serve --bg --https=8443 %s\n' "${base##*:}"

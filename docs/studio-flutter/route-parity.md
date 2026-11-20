@@ -142,7 +142,6 @@ issues, and so does a route the client issues that has no row.
 | PUT | `/api/recipes/X` | saveRecipe |  |
 | POST | `/api/recipes/X/copy` | copyRecipe |  |
 | POST | `/api/recipes/X/run` | runRecipe |  |
-| POST | `/api/relay/join` | — | dropped: a daemon joins; the Studio never does |
 | GET | `/api/repos` | repos |  |
 | POST | `/api/repos` | registerRepo |  |
 | DELETE | `/api/repos/X` | removeRepo |  |

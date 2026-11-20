@@ -93,6 +93,33 @@ func TestStudioOpensTheWebURLWithoutAnApp(t *testing.T) {
 	}
 }
 
+// TestStudioWarnsWhenTheAppWillNotOpen: an opener failure that is not the
+// absent-app answer is a warning, not a dead end. The web Studio is tried
+// anyway, so it is opened and its address printed.
+func TestStudioWarnsWhenTheAppWillNotOpen(t *testing.T) {
+	home := daemonTestEnv(t)
+	studioReplaceApp(t, func(context.Context) error {
+		return errors.New("open the Marshal app: launchd refused")
+	})
+	url := studioReplaceURL(t)
+	daemonWriteUserConfig(t, home, "[daemon]\nweb_url = \"https://box.example.com\"\n")
+	fakeDaemonSocket(t, fakeDaemonClient{info: daemon.Info{WebListen: "127.0.0.1:7788"}})
+
+	stdout, stderr, err := runStudioCommand(t)
+	if err != nil {
+		t.Fatalf("runStudio: %v\nstderr: %s", err, stderr)
+	}
+	if want := "marshal studio: could not open the Marshal app (open the Marshal app: launchd refused)\n"; stderr != want {
+		t.Errorf("stderr = %q, want the warning %q", stderr, want)
+	}
+	if want := "https://box.example.com"; *url != want {
+		t.Errorf("opened %q, want %q after the app failed", *url, want)
+	}
+	if want := "studio: https://box.example.com\n"; stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+}
+
 // TestStudioPrintsTheWebURL: --print answers the address a script needs, so
 // neither the app nor the browser is opened for it.
 func TestStudioPrintsTheWebURL(t *testing.T) {

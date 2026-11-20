@@ -162,10 +162,14 @@ func mcpSend(ctx context.Context, poster mcpPoster, credential, line string, out
 	case status == http.StatusAccepted || status == http.StatusNoContent:
 		// A notification, or a request the endpoint answered without a body:
 		// there is nothing to relay.
-	case len(bytes.TrimSpace(answer)) == 0:
-		// Same, for a 200 that carried no message.
 	case status != http.StatusOK:
+		// A non-2xx answer is a failure even when it carried no body: a
+		// panicked /mcp handler is answered by net/http with a bodyless 500,
+		// and dropping it would leave a request carrying an id unanswered
+		// for good.
 		out.fail(line, fmt.Sprintf("marshal mcp: the daemon answered %d: %s", status, mcpDaemonDetail(answer)))
+	case len(bytes.TrimSpace(answer)) == 0:
+		// A 200 that carried no message.
 	default:
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, answer); err != nil {

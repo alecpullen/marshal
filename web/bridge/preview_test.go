@@ -412,6 +412,9 @@ func TestCheckPreviewURLRefusesAPath(t *testing.T) {
 		"https://preview.example.com/x",
 		"https://preview.example.com/?x=1",
 		"ftp://preview.example.com",
+		// A browser discards userinfo, so a link carrying it names an origin
+		// the page would not be served from.
+		"https://u@preview.example.com",
 	} {
 		if err := CheckPreviewURL(base); err == nil {
 			t.Errorf("CheckPreviewURL(%q) accepted", base)

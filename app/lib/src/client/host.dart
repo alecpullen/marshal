@@ -31,7 +31,7 @@ class HostSpec {
   final HostKind kind;
   final BridgeClient client;
 
-  /// The relay's host name this host is reached through, or null.
+  /// The daemon this host is reached through, or null.
   final String? via;
 
   /// The SSH destination this host is reached over, or null.
@@ -63,7 +63,7 @@ class Host extends ChangeNotifier {
   final HostKind kind;
   final BridgeClient client;
 
-  /// The relay's host name this host is reached through, or null.
+  /// The daemon this host is reached through, or null.
   final String? via;
 
   /// The SSH destination this host is reached over, or null.
@@ -177,21 +177,6 @@ class HostRegistry extends ChangeNotifier {
     final host = _hosts.removeAt(at);
     host.dispose();
     notifyListeners();
-  }
-
-  /// Stops [name]'s stream and starts it again, after its token changed.
-  ///
-  /// A refused token is terminal (decision 6): the stream is stopped rather
-  /// than retried, so a host that has just been signed in to is asked to try
-  /// once more instead of waited on. A name this fleet does not list does
-  /// nothing.
-  void retry(String name) {
-    for (final host in _hosts) {
-      if (host.name != name) continue;
-      host.stop();
-      host.start();
-      return;
-    }
   }
 
   @override

@@ -112,11 +112,21 @@ func TestAnOriginFromAnotherSiteIsRefused(t *testing.T) {
 func TestARequestWithNeitherHeaderPasses(t *testing.T) {
 	s := newWebListener(t)
 	// curl, a CLI and the e2e suite send neither header: they are not a
-	// browser acting for another site.
-	rec := webRequest(t, s, http.MethodPost, "/api/agents", `{}`, "studio.example.com",
-		map[string]string{"Content-Type": "application/json"})
-	if rec.Code == http.StatusForbidden || rec.Code == http.StatusUnsupportedMediaType {
-		t.Fatalf("no browser headers = %d %s", rec.Code, rec.Body)
+	// browser acting for another site. "none" is a navigation the user
+	// started, which the plan allows for the same reason.
+	for _, headers := range []map[string]string{
+		{"Content-Type": "application/json"},
+		{"Content-Type": "application/json", "Sec-Fetch-Site": "none"},
+	} {
+		rec := webRequest(t, s, http.MethodPost, "/api/agents", `{}`, "studio.example.com", headers)
+		if rec.Code == http.StatusForbidden || rec.Code == http.StatusUnsupportedMediaType {
+			t.Fatalf("headers %v = %d %s", headers, rec.Code, rec.Body)
+		}
+		// The guard let it through, so the route answered: a spawn with no
+		// project is the route's own refusal.
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("headers %v reached no route: %d %s", headers, rec.Code, rec.Body)
+		}
 	}
 }
 
@@ -136,13 +146,27 @@ func TestAnAPIBodyMustBeJSON(t *testing.T) {
 
 func TestHooksStatusAndMCPAreExempt(t *testing.T) {
 	s := newWebListener(t)
-	for _, path := range []string{hooksPrefix + "r1", statusPrefix + "tok", "/mcp"} {
-		rec := webRequest(t, s, http.MethodPost, path, "", "studio.example.com",
+	// Each of these carries its own credential and checks its own caller, so
+	// the guard stays out of its way: what answers a cross-site request is the
+	// route's own refusal, in the route's own words.
+	for _, tc := range []struct {
+		path   string
+		status int
+		body   string
+	}{
+		// No secret is configured for the repo, so the delivery is refused as
+		// an unverifiable signature.
+		{hooksPrefix + "r1", http.StatusUnauthorized, "invalid signature"},
+		// A status link is a read of its own token, and a POST is not one.
+		{statusPrefix + "tok", http.StatusNotFound, "not found"},
+		// No bearer token, so /mcp's own authentication answers.
+		{"/mcp", http.StatusUnauthorized, "unauthorized"},
+	} {
+		rec := webRequest(t, s, http.MethodPost, tc.path, "", "studio.example.com",
 			map[string]string{"Sec-Fetch-Site": "cross-site"})
-		// Each carries its own credential, so the guard stays out of its way;
-		// whatever the route itself answers is its own decision.
-		if strings.Contains(rec.Body.String(), "cross-site request refused") {
-			t.Fatalf("%s was guarded: %d %s", path, rec.Code, rec.Body)
+		if rec.Code != tc.status || !strings.Contains(rec.Body.String(), tc.body) {
+			t.Fatalf("cross-site POST %s = %d %s, want the route's own %d and %q",
+				tc.path, rec.Code, rec.Body, tc.status, tc.body)
 		}
 	}
 }

@@ -213,6 +213,59 @@ func TestMCPAnswersAFailureWithAnError(t *testing.T) {
 	})
 }
 
+// TestMCPAnswersABodylessFailure: a non-2xx answer with no body is still a
+// failure. net/http answers a panicked /mcp handler with exactly that — a
+// bodyless 500 — so dropping it would leave a request carrying an id
+// unanswered for good.
+func TestMCPAnswersABodylessFailure(t *testing.T) {
+	poster := func() *scriptedMCPPoster {
+		return &scriptedMCPPoster{answer: func(context.Context, string, []byte) (int, []byte, error) {
+			return http.StatusInternalServerError, nil, nil
+		}}
+	}
+
+	t.Run("a request", func(t *testing.T) {
+		var stdout bytes.Buffer
+		stderr, err := mcpRun(t, poster(), `{"jsonrpc":"2.0","id":5,"method":"tools/list"}`+"\n", &stdout)
+		if err != nil {
+			t.Fatalf("runMCP: %v\nstderr: %s", err, stderr)
+		}
+		if stderr != "" {
+			t.Errorf("stderr = %q, want nothing: a request is answered on stdout", stderr)
+		}
+		var answer struct {
+			ID    int `json:"id"`
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {
+			t.Fatalf("decode answer %q: %v", stdout.String(), err)
+		}
+		if answer.ID != 5 || answer.Error.Code != -32603 {
+			t.Errorf("answer = %+v, want the request's id and -32603", answer)
+		}
+		if !strings.Contains(answer.Error.Message, "the daemon answered 500") {
+			t.Errorf("message = %q, want it to name the status", answer.Error.Message)
+		}
+	})
+
+	t.Run("a notification", func(t *testing.T) {
+		var stdout bytes.Buffer
+		stderr, err := mcpRun(t, poster(), `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n", &stdout)
+		if err != nil {
+			t.Fatalf("runMCP: %v", err)
+		}
+		if stdout.Len() != 0 {
+			t.Errorf("stdout = %q, want nothing: a notification has no id to answer", stdout.String())
+		}
+		if !strings.Contains(stderr, "the daemon answered 500") {
+			t.Errorf("stderr = %q, want the failure on it", stderr)
+		}
+	})
+}
+
 // TestMCPNeedsAPrivateCredentialFile: the flag is required, the file must be
 // 0600, and an empty file is not a credential.
 func TestMCPNeedsAPrivateCredentialFile(t *testing.T) {

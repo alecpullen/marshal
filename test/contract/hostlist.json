@@ -1,0 +1,13 @@
+{
+  "HostList": {
+    "hosts": [
+      {
+        "name": "box",
+        "ssh": "me@box",
+        "state": "live",
+        "socket": "/home/u/.local/share/marshal/daemon/hosts/box.sock",
+        "since": 1763300000000
+      }
+    ]
+  }
+}

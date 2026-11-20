@@ -24,6 +24,7 @@ var fixtureFiles = []string{
 	"factory.json",
 	"files.json",
 	"finish.json",
+	"hostlist.json",
 	"inbox.json",
 	"inspect.json",
 	"intake.json",
@@ -58,6 +59,8 @@ var fixtureFiles = []string{
 // neither this map nor a fixture goes unnoticed; see the implementation
 // record in docs/studio-flutter/f1-client.md.
 var fixtureTypes = map[string]reflect.Type{
+	// hostlist.json — the hosts this daemon keeps a tunnel to (one-daemon D10).
+	"HostList": reflect.TypeOf(HostList{}),
 	// files.go — the read-only file browser.
 	"FileContent": reflect.TypeOf(FileContent{}),
 	"FileEntry":   reflect.TypeOf(FileEntry{}),

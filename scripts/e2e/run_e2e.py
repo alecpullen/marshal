@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Marshal web-bridge end-to-end suite.
+"""Marshal web listener end-to-end suite.
 
-Drives the live bridge over HTTP the way the SPA does, across every
+Drives the live bridge over HTTP the way the Studio does, across every
 route group, and reports defects with the request that produced them.
 
     python3 scripts/e2e/run_e2e.py \
-        --base http://127.0.0.1:7700 --token TOK \
+        --base unix:/run/user/1000/marshal/daemon/web.sock \
         --project /tmp/w5proj --project2 /tmp/w5proj2 \
         --repo w5forge --workspace w5prev
 
@@ -50,8 +50,11 @@ GROUPS = {
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--base", default=os.environ.get("E2E_BASE", "http://127.0.0.1:7700"))
-    p.add_argument("--token", default=os.environ.get("E2E_TOKEN", ""))
+    p.add_argument(
+        "--base",
+        default=os.environ.get("E2E_BASE", "http://127.0.0.1:7700"),
+        help="the daemon's web listener: unix:/path/web.sock or http://127.0.0.1:PORT",
+    )
     p.add_argument("--project", default=os.environ.get("E2E_PROJECT", "/tmp/w5proj"))
     p.add_argument("--project2", default=os.environ.get("E2E_PROJECT2", "/tmp/w5proj2"))
     p.add_argument("--repo", default=os.environ.get("E2E_REPO", "w5forge"))
@@ -73,13 +76,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    if not args.token:
-        print("error: --token (or E2E_TOKEN) is required", file=sys.stderr)
-        return 2
 
     env = Env(
         base=args.base,
-        token=args.token,
         project=args.project,
         project2=args.project2,
         repo_id=args.repo,
@@ -89,7 +88,7 @@ def main(argv: list[str]) -> int:
         provider=args.provider,
         model=args.model,
     )
-    client = Client(args.base, args.token, timeout=args.timeout)
+    client = Client(args.base, timeout=args.timeout)
     ctx = Ctx(client=client, env=env)
     suite = Suite(ctx, verbose=args.verbose)
 

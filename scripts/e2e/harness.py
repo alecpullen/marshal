@@ -6,7 +6,7 @@ failure, and prints a report grouped by area. Every failure is captured
 with the request that produced it so it can be triaged as a defect.
 
 Usage:
-    python3 scripts/e2e/run_e2e.py --base http://127.0.0.1:7700 --token TOK
+    python3 scripts/e2e/run_e2e.py --base unix:/run/user/1000/marshal/daemon/web.sock
 """
 
 from __future__ import annotations
@@ -89,7 +89,6 @@ class Env:
     """The live environment the suite is pointed at."""
 
     base: str
-    token: str
     project: str
     project2: str
     repo_id: str

@@ -3386,7 +3386,7 @@ func (m Model) promptReviewBodyHeight(controlRows int) int {
 // Callers must run it before querying a row budget.
 func (m *Model) syncPromptReviewHeights() {
 	if m.approvalModel != nil {
-		m.approvalModel.SetBodyHeight(m.promptReviewBodyHeight(approvalControlRows()))
+		m.approvalModel.SetBodyHeight(m.promptReviewBodyHeight(m.approvalControlRows()))
 	}
 	if m.sudoAuthModel != nil {
 		m.sudoAuthModel.SetBodyHeight(m.promptReviewBodyHeight(sudoControlRows()))
@@ -3407,9 +3407,20 @@ func (m Model) promptFits(controlRows int) bool {
 	return m.promptReviewBodyHeight(controlRows) >= 1
 }
 
+// approvalControlRows is how many pinned rows the approval prompt on screen
+// draws below its review body. The prompt offers one row per action, so the
+// count follows its candidate list; the fallback renderer (a pending request
+// with no prompt model) draws the same three actions on a single row.
+func (m Model) approvalControlRows() int {
+	if m.approvalModel != nil {
+		return m.approvalModel.controlRows()
+	}
+	return 3
+}
+
 // promptActionable reports whether the pending approval is on screen and can
 // accept a decision.
-func (m Model) promptActionable() bool { return m.promptFits(approvalControlRows()) }
+func (m Model) promptActionable() bool { return m.promptFits(m.approvalControlRows()) }
 
 // sudoActionable reports whether the pending privileged-auth prompt is on
 // screen and can accept a decision. A prompt the user cannot see must never

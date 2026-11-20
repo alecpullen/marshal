@@ -145,7 +145,7 @@ func TestFooterApprovalWording(t *testing.T) {
 		t.Fatalf("expected 'Esc twice deny', got %q", out)
 	}
 	// Navigation is unchanged: arrows still choose among the allowed actions.
-	if !strings.Contains(out, "←→ choose") {
+	if !strings.Contains(out, "↑↓ choose") {
 		t.Fatalf("approval footer lost the navigation hint: %q", out)
 	}
 }

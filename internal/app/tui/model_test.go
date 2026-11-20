@@ -878,12 +878,10 @@ func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 			t.Fatalf("View() missing approval item %q:\n%s", want, view)
 		}
 	}
-	// The selector shows one action at a time; deny and edit stay reachable.
-	for _, want := range []string{"deny", "edit"} {
-		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-		m = updated.(Model)
-		if got := stripANSI(m.View().Content); !strings.Contains(got, want) {
-			t.Fatalf("View() does not offer %q in the selector:\n%s", want, got)
+	// Every action is listed at once; the arrow keys only move the marker.
+	for _, want := range []string{"d deny", "e edit", "A always", "s session"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() does not offer %q while the prompt waits:\n%s", want, view)
 		}
 	}
 }

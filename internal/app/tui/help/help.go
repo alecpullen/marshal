@@ -123,7 +123,7 @@ func PromptKeys(h FooterHints) string {
 		// labels say so — a bare "Enter confirm" read as a single press that
 		// appeared to do nothing.
 		segs = append(segs,
-			pair("←→", "choose"),
+			pair("↑↓", "choose"),
 			pair("Enter", "twice confirm"),
 			pair("Esc", "twice deny"),
 		)

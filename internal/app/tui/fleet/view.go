@@ -833,7 +833,7 @@ func (m Model) footer(rows []agentRow) string {
 	switch m.state.Conn {
 	case acpclient.FleetConnected:
 		dot, col = glyph.Live, m.th.StatusSuccess
-	case acpclient.FleetDown, acpclient.FleetRejected:
+	case acpclient.FleetDown:
 		dot, col = glyph.Error, m.th.StatusError
 	}
 	muted := lipgloss.NewStyle().Foreground(m.th.FGMuted)

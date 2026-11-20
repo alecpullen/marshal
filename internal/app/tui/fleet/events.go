@@ -60,8 +60,6 @@ func (m *Model) addConnectionEvents(prev, next acpclient.FleetState) {
 		m.addEvent("reconnecting to " + next.Server)
 	case acpclient.FleetDown:
 		m.addEvent(next.Server + " is down: " + next.ConnErr)
-	case acpclient.FleetRejected:
-		m.addEvent("token rejected for " + next.Server)
 	default:
 		// FleetConnecting is before the first connect, which has no line.
 	}

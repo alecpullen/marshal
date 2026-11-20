@@ -275,14 +275,14 @@ func (am *approvalModel) Update(msg tea.Msg) (*approvalModel, tea.Cmd) {
 			}
 			am.submitPending = true
 			return am, nil
-		case "left", "h":
+		case "left", "h", "up", "k":
 			if am.selected > 0 {
 				am.selected--
 				am.choice = am.candidates[am.selected]
 				am.submitPending = false
 			}
 			return am, nil
-		case "right", "l":
+		case "right", "l", "down", "j":
 			if am.selected < len(am.candidates)-1 {
 				am.selected++
 				am.choice = am.candidates[am.selected]
@@ -327,15 +327,15 @@ func (am *approvalModel) Update(msg tea.Msg) (*approvalModel, tea.Cmd) {
 // the real budget on the first render.
 const defaultApprovalBodyHeight = 12
 
-// approvalControlRows is how many pinned rows an approval prompt renders below
-// its review body: the overflow hint, the compact action selector and the
-// arm/deny notice.
+// controlRows is how many pinned rows this prompt renders below its review
+// body: the overflow hint, one row per offered action and the arm/deny notice.
+// The candidate list is fixed for the life of the prompt, so the budget the
+// parent model reserves and the rows it draws cannot disagree.
 //
 // The hint row is reserved even when nothing is omitted (it then renders
 // blank) and the notice row is reserved even when empty, so paging, arming and
-// opening the deny window cannot change the prompt's height — and therefore
-// cannot make the row budget disagree with what is drawn.
-func approvalControlRows() int { return 3 }
+// opening the deny window cannot change the prompt's height.
+func (am *approvalModel) controlRows() int { return 2 + len(am.candidates) }
 
 // SetBodyHeight records how many review rows the frame can give this prompt.
 // Zero means the body does not fit: the prompt renders its pinned controls
@@ -428,29 +428,34 @@ func (am *approvalModel) overflowHintRow(total int) string {
 	return mutedStyle().Render("PgUp/PgDn to review the rest")
 }
 
-// selectorRow renders the selected action alone, with its position in the
-// list. Joining every label wraps in the console's column and clips the choice
-// the user is about to confirm; the arrows, h/l and the mnemonics still reach
-// every candidate.
-func (am *approvalModel) selectorRow() string {
-	if am.selected < 0 || am.selected >= len(am.candidates) {
-		return ""
-	}
-	ch := am.candidates[am.selected]
-	label := choiceLabels[ch]
-	if mk, ok := choiceMnemonic[ch]; ok {
-		label = mk + " " + label
-	}
-	head := "▸ " + label
-	counter := fmt.Sprintf("%d/%d", am.selected+1, len(am.candidates))
+// selectorRows renders every action the prompt offers, one per row, with the
+// selected one marked and its position in the list. Hiding the alternatives
+// behind the arrow keys made a prompt look like it offered only the option on
+// screen; the list is at most six short labels, so all of them fit one row
+// each, and no label has to be joined into a row that would wrap and clip it.
+func (am *approvalModel) selectorRows() []string {
 	width := am.contentWidth()
-	gap := width - ansi.StringWidth(head) - ansi.StringWidth(counter)
-	if gap < 1 {
-		head = ansi.Truncate(head, max(width-ansi.StringWidth(counter)-1, 1), "…")
-		gap = max(width-ansi.StringWidth(head)-ansi.StringWidth(counter), 1)
+	counter := fmt.Sprintf("%d/%d", am.selected+1, len(am.candidates))
+	rows := make([]string, 0, len(am.candidates))
+	for i, ch := range am.candidates {
+		label := choiceLabels[ch]
+		if mk, ok := choiceMnemonic[ch]; ok {
+			label = mk + " " + label
+		}
+		if i != am.selected {
+			rows = append(rows, mutedStyle().Render("  "+label))
+			continue
+		}
+		head := "▸ " + label
+		gap := width - ansi.StringWidth(head) - ansi.StringWidth(counter)
+		if gap < 1 {
+			head = ansi.Truncate(head, max(width-ansi.StringWidth(counter)-1, 1), "…")
+			gap = max(width-ansi.StringWidth(head)-ansi.StringWidth(counter), 1)
+		}
+		selected := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(head)
+		rows = append(rows, selected+strings.Repeat(" ", gap)+mutedStyle().Render(counter))
 	}
-	selected := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(head)
-	return selected + strings.Repeat(" ", gap) + mutedStyle().Render(counter)
+	return rows
 }
 
 // noticeRow is the pinned arm/deny notice. It is reserved even when empty so
@@ -475,7 +480,9 @@ func (am *approvalModel) View() string {
 	// nothing is omitted), the selected action, then the arm/deny notice.
 	// Reserving each of them keeps the prompt's height constant as the user
 	// pages, arms an action or opens the deny window.
-	lines = append(lines, am.overflowHintRow(len(rows)), am.selectorRow(), am.noticeRow())
+	lines = append(lines, am.overflowHintRow(len(rows)))
+	lines = append(lines, am.selectorRows()...)
+	lines = append(lines, am.noticeRow())
 
 	// No rail of its own: the console draws "│ … │" around this section, and
 	// the first rendered row carries the warning glyph so the prompt still
@@ -507,7 +514,7 @@ func approvalSummary(a acpwire.ApprovalRequest, sb acpwire.Sandbox, width int) s
 	text := lipgloss.NewStyle()
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(glyph.Warning + " Approval needed (←/→, enter to select)"))
+	b.WriteString(titleStyle.Render(glyph.Warning + " Approval needed (↑/↓, enter to select)"))
 	b.WriteString("\n")
 	if line := w.ownerLine(a); line != "" {
 		b.WriteString(muted.Render(line))

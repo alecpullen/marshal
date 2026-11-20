@@ -221,7 +221,7 @@ func TestPromptSectionsCarryLabelsAndKeys(t *testing.T) {
 		if !strings.HasPrefix(first, "╭─ ⚠ Approval") {
 			t.Fatalf("approval section header = %q", first)
 		}
-		if !strings.Contains(first, "←→ choose") {
+		if !strings.Contains(first, "↑↓ choose") {
 			t.Fatalf("approval header lost its keys: %q", first)
 		}
 	})

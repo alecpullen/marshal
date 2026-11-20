@@ -511,7 +511,7 @@ stops and click targets. (In P-C its rows in the box were click targets only.)
 
   | Prompt | Header label | Colour | Header right |
   |---|---|---|---|
-  | Approval | `⚠ Approval` | amber | its keys (`←→ choose · Enter confirm · Esc deny`, plus `Alt+Enter send now` when available) |
+  | Approval | `⚠ Approval` | amber | its keys (`↑↓ choose · Enter twice confirm · Esc twice deny`, plus `Alt+Enter send now` when available) |
   | Question | `? Question` | violet | `Enter answer · Esc skip` (plus send now) |
   | Skill gate | `? Skill gate` | violet | `↑↓ choose · 1-4 jump · Enter confirm` (plus send now) |
   | Sudo | `⚠ Sudo password` | amber | none; its own `[↵] authenticate  [Esc] deny` row stays |

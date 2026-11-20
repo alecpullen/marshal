@@ -246,8 +246,8 @@ func TestApprovalDialogLabelsContainFlatSelector(t *testing.T) {
 			t.Errorf("approval view missing %q:\n%s", want, view)
 		}
 	}
-	// The selector shows one action at a time, but every candidate stays
-	// reachable: walking it with the arrow keys lands on each label.
+	// Every candidate is listed at once and stays reachable: the marked row
+	// follows the arrow keys.
 	want := []string{"allow", "deny", "edit", "always", "session"}
 	for i, label := range want {
 		if am.selected != i {
@@ -265,44 +265,62 @@ func TestApprovalDialogLabelsContainFlatSelector(t *testing.T) {
 	}
 }
 
-func TestApprovalNavigatesHorizontally(t *testing.T) {
+// TestApprovalPromptShowsEveryChoiceAtOnce pins that the prompt lists the
+// actions it offers instead of showing only the selected one: a prompt that
+// hides its alternatives makes the user arrow through it to find out what it
+// can answer, and the ones it hides read as missing.
+func TestApprovalPromptShowsEveryChoiceAtOnce(t *testing.T) {
+	tc := &session.PendingToolCall{
+		ID:      "tc-choices",
+		Name:    "shell.run",
+		Args:    `{"command":"go test ./..."}`,
+		Command: "go test ./...",
+		Risk:    "low",
+	}
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	state.SetPendingApproval(tc)
+	m := testModelWith(t, service.Deps{State: state, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+		WithOpenBrowser(func(string) error { return nil }))
+	m, _ = press(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	if m.approvalModel == nil {
+		t.Fatal("setup: the pending approval has no prompt")
+	}
+	m.syncPromptReviewHeights()
+	frame := ansi.Strip(m.viewString())
+	for i, want := range []string{"▸ a allow", "d deny", "e edit", "A always", "s session"} {
+		if !strings.Contains(frame, want) {
+			t.Errorf("choice %d (%q) is not shown while the prompt waits for an answer:\n%s", i, want, frame)
+		}
+	}
+}
+
+func TestApprovalNavigatesTheChoiceList(t *testing.T) {
 	a := acpwire.ApprovalRequest{
 		Tool: "shell.run",
 		Args: `{"command":"ls"}`,
 	}
 	am := newApprovalModel(a, acpwire.Sandbox{}, false, 160)
 
-	// The choices render on one horizontal row, so ←/→ (and h/l) move the
-	// selection; ↑/↓/j/k must do nothing.
-	am, _ = am.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	if am.selected != 1 {
-		t.Fatalf("right should move selection to 1; got %d", am.selected)
-	}
-	am, _ = am.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	if am.selected != 2 {
-		t.Fatalf("second right should move selection to 2; got %d", am.selected)
-	}
-	am, _ = am.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
-	if am.selected != 1 {
-		t.Fatalf("left should move selection back to 1; got %d", am.selected)
-	}
-	am, _ = am.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
-	if am.selected != 2 {
-		t.Fatalf("l should move selection to 2; got %d", am.selected)
-	}
-	am, _ = am.Update(tea.KeyPressMsg{Code: 'h', Text: "h"})
-	if am.selected != 1 {
-		t.Fatalf("h should move selection back to 1; got %d", am.selected)
-	}
-	for _, vertical := range []tea.KeyPressMsg{
-		{Code: tea.KeyDown},
-		{Code: tea.KeyUp},
-		{Code: 'j', Text: "j"},
-		{Code: 'k', Text: "k"},
+	// One action per row, so ←/→ and ↑/↓ (and h/l, j/k) all walk the list and
+	// clamp at its ends.
+	for _, step := range []struct {
+		key  tea.KeyPressMsg
+		want int
+	}{
+		{tea.KeyPressMsg{Code: tea.KeyRight}, 1},
+		{tea.KeyPressMsg{Code: tea.KeyDown}, 2},
+		{tea.KeyPressMsg{Code: 'l', Text: "l"}, 3},
+		{tea.KeyPressMsg{Code: 'j', Text: "j"}, 4},
+		{tea.KeyPressMsg{Code: tea.KeyDown}, 4},
+		{tea.KeyPressMsg{Code: tea.KeyLeft}, 3},
+		{tea.KeyPressMsg{Code: tea.KeyUp}, 2},
+		{tea.KeyPressMsg{Code: 'h', Text: "h"}, 1},
+		{tea.KeyPressMsg{Code: 'k', Text: "k"}, 0},
+		{tea.KeyPressMsg{Code: tea.KeyUp}, 0},
 	} {
-		am, _ = am.Update(vertical)
-		if am.selected != 1 {
-			t.Fatalf("vertical key %q must not move a horizontal selector; got %d", vertical.String(), am.selected)
+		am, _ = am.Update(step.key)
+		if am.selected != step.want {
+			t.Fatalf("%q moved the selection to %d, want %d", step.key.String(), am.selected, step.want)
 		}
 	}
 }

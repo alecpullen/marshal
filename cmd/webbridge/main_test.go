@@ -182,6 +182,18 @@ func TestParseConfigReadsTheStudioDir(t *testing.T) {
 	} else if !strings.Contains(err.Error(), empty) || !strings.Contains(err.Error(), "index.html") {
 		t.Errorf("error %q does not name %s and the index.html it lacks", err, empty)
 	}
+
+	// Nor is one whose index.html is not a regular file: a directory of that
+	// name stats fine, and would be served as the Studio's front page.
+	notFile := t.TempDir()
+	if err := os.Mkdir(filepath.Join(notFile, "index.html"), 0o755); err != nil {
+		t.Fatalf("make index.html a directory: %v", err)
+	}
+	if _, err := parseConfig([]string{"--studio-dir", notFile}, io.Discard); err == nil {
+		t.Fatalf("--studio-dir %s accepted with a directory called index.html", notFile)
+	} else if !strings.Contains(err.Error(), notFile) || !strings.Contains(err.Error(), "index.html") {
+		t.Errorf("error %q does not name %s and the index.html it refuses", err, notFile)
+	}
 }
 
 // TestTheTokenAndTLSFlagsAreRefused: the token and TLS flags retired with the

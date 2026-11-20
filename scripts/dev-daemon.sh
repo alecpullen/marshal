@@ -86,6 +86,7 @@ studio=0
 restart=1
 install=0
 force=0
+status=0
 timeout=20
 agent_image=0
 dev_image=0
@@ -113,8 +114,12 @@ while [ $# -gt 0 ]; do
 	--no-restart) restart=0 ;;
 	--install) install=1 ;;
 	--status)
+		status=1
 		build=0
+		studio=0
 		restart=0
+		agent_image=0
+		dev_image=0
 		;;
 	--agent-image) agent_image=1 ;;
 	--dev-image) dev_image=1 ;;
@@ -144,6 +149,17 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
+
+# --status is a query, so it wins over the flags that ask for work whichever
+# order they were given in: `--status --dev-image` must not build an image any
+# more than `--dev-image --status` does.
+if [ "$status" -eq 1 ]; then
+	build=0
+	studio=0
+	restart=0
+	agent_image=0
+	dev_image=0
+fi
 
 case $(uname -s) in
 Linux)
@@ -308,10 +324,23 @@ build_dev_image() {
 	# tree's own artifacts, and .marshal/worktrees to the runtime; the image
 	# needs the one binary.
 	ctx=$(mktemp -d)
-	cp ./marshal "$ctx/marshal"
+	cp ./marshal "$ctx/marshal" || {
+		rm -rf "$ctx"
+		return 1
+	}
 	# The label records which ./marshal went in, so the status can tell a stale
-	# image from a current one by comparing integers.
-	stamp=$(stat -c %Y ./marshal)
+	# image from a current one by comparing integers. -c is GNU's spelling and
+	# -f is BSD's, and macOS has no -c: probing both keeps --dev-image from
+	# dying under `set -e` on a host this script supports. With neither, there
+	# is no mtime to record, so the label is 0 and the image always reads as
+	# one to rebuild.
+	stamp=$(stat -c %Y ./marshal 2>/dev/null || stat -f %m ./marshal 2>/dev/null || true)
+	case $stamp in
+	'' | *[!0-9]*)
+		echo "note:    cannot read ./marshal's mtime (neither stat -c nor stat -f); the image will always read as stale" >&2
+		stamp=0
+		;;
+	esac
 	echo "building the dev agent image from ./marshal on ${base}"
 	if ! "$runtime" build --build-arg "BASE_IMAGE=$base" \
 		--label "marshal.dev.bin-mtime=$stamp" \

@@ -92,10 +92,24 @@ archives:
     # The Studio rides beside the binaries: the daemon serves it from
     # <bin dir>/../share/marshal/studio, and the app bundles and Homebrew put it
     # in the same place. The release workflow downloads it before this runs.
+    #
+    # The Studio entry is the bare directory on purpose. These globs are
+    # matched with fileglob, whose `**` crosses separators, so `studio/**/*`
+    # reads as "studio/", then any characters, then a literal "/", then a
+    # segment: it matches everything *below* the directory and misses the
+    # zero-depth `share/marshal/studio/index.html`. An archive without the
+    # entry document is a directory no daemon counts — scripts/install.sh
+    # refuses it, Homebrew's pkgshare.install and both app bundles copy it
+    # anyway — and only a tagged release would show it. Naming the directory
+    # itself is what fileglob expands to the directory and everything inside it,
+    # at repo-root-relative paths. Do not "tidy" this back into `**/*`; the
+    # `The archive carries the Studio's index.html` step in
+    # .github/workflows/go-checks.yml packs a snapshot archive and reads that
+    # path back out of it, so a glob that misses it fails before a tag.
     files:
       - README.md
       - LICENSE
-      - share/marshal/studio/**/*
+      - share/marshal/studio
 
 checksum:
   name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'

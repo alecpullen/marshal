@@ -91,6 +91,10 @@ jobs:
         with:
           name: studio-web
           path: share/marshal/studio
+          # An empty Studio is a bundle and a Homebrew formula that copy a
+          # directory the daemon will not count, so fail here rather than three
+          # jobs later.
+          if-no-files-found: error
 
   # The app bundle carries the two binaries the release job just built, so it
   # cannot start until that release exists. Both jobs read the drafted release

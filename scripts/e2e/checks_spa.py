@@ -72,17 +72,31 @@ def register(s: Suite) -> None:
     s.area("I studio shell")
 
     def studio_dir_is_named(c) -> None:
-        """The daemon says which directory it serves the Studio from."""
+        """The daemon says which directory it serves the Studio from.
+
+        `studioDir` is `omitempty` on the wire, so a current daemon that found
+        no Studio files omits it exactly as a daemon that predates the field
+        does. Absence therefore cannot be read as "old daemon": a check that
+        skipped on it would skip a broken install too, and call a daemon
+        serving nothing old. `webListen` is the marker that separates them —
+        a daemon new enough to serve the Studio from a directory reports the
+        listener it serves it on, so `webListen` without `studioDir` is a
+        failure, and only a daemon without `webListen` skips.
+        """
         r = c.client.get("/api/daemon")
         body = s.expect_ok(r, request="GET /api/daemon")
         if not isinstance(body, dict):
             s.expect(False, "GET /api/daemon did not answer a JSON object", response=body)
-        if "studioDir" not in body:
-            raise Skip("this daemon does not report studioDir; it predates serving the Studio from a directory")
+        if "webListen" not in body:
+            raise Skip(
+                "this daemon reports no webListen, so it predates serving the "
+                "Studio from a directory at all"
+            )
         s.expect(
             bool(str(body.get("studioDir") or "").strip()),
-            "the daemon serves no Studio files: studioDir is empty, so GET / "
-            "answers the no-files page",
+            "the daemon serves no Studio files: it reports webListen "
+            f"({body.get('webListen')!r}) but no studioDir, so GET / answers "
+            "the page naming the directories it looked in",
             request="GET /api/daemon",
             response=body,
         )

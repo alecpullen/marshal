@@ -34,9 +34,17 @@ const studioSubdir = "share/marshal/studio"
 
 // FindStudioDir answers the Studio directory for the webbridge at exe:
 // <dir>/share/marshal/studio, then <dir>/../share/marshal/studio, the first
-// holding an index.html. exe's symlinks are resolved first. looked lists every
-// candidate, in order, for the no-files page and the log.
+// holding an index.html. exe is made absolute and its symlinks are resolved
+// first. looked lists every candidate, in order, for the no-files page and the
+// log.
 func FindStudioDir(exe string) (dir string, looked []string) {
+	// A relative exe would leave every candidate cwd-relative, and os.DirFS
+	// re-resolves a relative root on each request: the daemon would serve
+	// whatever the working directory leads to then, not the tree it found at
+	// startup.
+	if abs, err := filepath.Abs(exe); err == nil {
+		exe = abs
+	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
@@ -129,11 +137,16 @@ func writeNoStudio(w http.ResponseWriter, looked []string) {
 	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head><meta charset=\"utf-8\">")
 	b.WriteString("<title>Marshal's Studio files are not installed</title></head>\n<body>\n")
 	b.WriteString("<h1>Marshal's Studio files are not installed</h1>\n")
-	b.WriteString("<p>They were looked for in:</p>\n<ul>\n")
-	for _, dir := range looked {
-		b.WriteString("<li><code>" + html.EscapeString(dir) + "</code></li>\n")
+	// A server built without a search has no candidates to name: the sentence
+	// and its list would claim a search that never ran.
+	if len(looked) > 0 {
+		b.WriteString("<p>They were looked for in:</p>\n<ul>\n")
+		for _, dir := range looked {
+			b.WriteString("<li><code>" + html.EscapeString(dir) + "</code></li>\n")
+		}
+		b.WriteString("</ul>\n")
 	}
-	b.WriteString("</ul>\n<p>Build them with ")
+	b.WriteString("<p>Build them with ")
 	b.WriteString("<code>cd app &amp;&amp; flutter build web --base-href / --no-web-resources-cdn " +
 		"--output ../share/marshal/studio</code>, or reinstall Marshal.</p>\n")
 	b.WriteString("</body>\n</html>\n")
@@ -148,8 +161,17 @@ func serveFrom(w http.ResponseWriter, r *http.Request, root fs.FS, urlPath, miss
 		p = "index.html"
 	}
 	if f, err := root.Open(p); err == nil {
-		serveFile(w, r, p, f)
-		return
+		// A directory is not an asset. It opens, so the *os.File satisfies
+		// io.ReadSeeker and ServeContent would set a Content-Length from
+		// Seek(End) and then fail its first Read with EISDIR mid-copy: a 200
+		// whose body never arrives. It is a miss like any other unknown path,
+		// so the index answers below.
+		info, statErr := f.Stat()
+		if statErr == nil && info.Mode().IsRegular() {
+			serveFile(w, r, p, f)
+			return
+		}
+		f.Close()
 	}
 	f, err := root.Open("index.html")
 	if err != nil {

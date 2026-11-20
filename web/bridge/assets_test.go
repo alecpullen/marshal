@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeStudio writes a small Studio into a temporary directory and points a
@@ -172,6 +174,87 @@ func TestRootServesItsAssets(t *testing.T) {
 	}
 }
 
+// TestADirectoryInTheStudioIsAMiss pins that a directory opens but is not an
+// asset. Without the regular-file check, the opened *os.File satisfies
+// io.ReadSeeker, so http.ServeContent set a Content-Length from Seek(End) and
+// then failed its first Read with EISDIR mid-copy: the client got a 200 whose
+// body never arrived, where the embedded Studio answered a clean 500. It is a
+// miss, so the index answers.
+func TestADirectoryInTheStudioIsAMiss(t *testing.T) {
+	_, srv := writeStudio(t)
+	rec := serve(srv, "/assets")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /assets: status = %d, want the index's 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Marshal Studio") {
+		t.Fatalf("GET /assets: body is not the Studio's index; got %q", body)
+	}
+	// The request completed: the length promised is the body written. A
+	// directory served in place promises the directory's size and writes
+	// nothing.
+	if cl := rec.Header().Get("Content-Length"); cl != "" && cl != strconv.Itoa(len(body)) {
+		t.Errorf("GET /assets: Content-Length = %s, body is %d bytes", cl, len(body))
+	}
+}
+
+// TestAStudioFileAnswersIfModifiedSince pins the modtime http.ServeContent is
+// handed for a file served from the directory: a zero time would keep a client
+// from ever revalidating, and every other case here would still pass.
+func TestAStudioFileAnswersIfModifiedSince(t *testing.T) {
+	dir, srv := writeStudio(t)
+	const name = "main.dart.js"
+	when := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	if err := os.Chtimes(filepath.Join(dir, name), when, when); err != nil {
+		t.Fatalf("set %s's modtime: %v", name, err)
+	}
+
+	first := serve(srv, "/"+name)
+	if first.Code != http.StatusOK {
+		t.Fatalf("GET /%s: status = %d, want 200", name, first.Code)
+	}
+	lastMod := first.Header().Get("Last-Modified")
+	if lastMod == "" {
+		t.Fatalf("GET /%s: no Last-Modified header", name)
+	}
+	if want := when.Format(http.TimeFormat); lastMod != want {
+		t.Errorf("Last-Modified = %q, want the file's modtime %q", lastMod, want)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/"+name, nil)
+	req.Header.Set("If-Modified-Since", lastMod)
+	srv.studioHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("GET /%s if-modified-since: status = %d, want 304", name, rec.Code)
+	}
+	if body := rec.Body.String(); body != "" {
+		t.Errorf("a 304 carried a body: %q", body)
+	}
+}
+
+// TestTheRouteServesTheStudio pins the wiring, not only the handler: a request
+// that came through ServeHTTP — as the web listener's does — for a Studio file
+// reaches studioHandler. Calling studioHandler() directly, as the other tests
+// here do, would pass with route no longer calling it.
+func TestTheRouteServesTheStudio(t *testing.T) {
+	_, srv := writeStudio(t)
+	req := httptest.NewRequest(http.MethodGet, "/main.dart.js", nil)
+	req.Host = "localhost" // an address this daemon answers to
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /main.dart.js through ServeHTTP: status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); body != "// the engine" {
+		t.Errorf("GET /main.dart.js through ServeHTTP: body = %q, want the engine", body)
+	}
+}
+
 // TestNoAPIRouteIsShadowed pins the boundary: the bridge's API is the mux's,
 // and the Studio's handler must not answer for a path under /api/.
 func TestNoAPIRouteIsShadowed(t *testing.T) {
@@ -321,6 +404,48 @@ func TestFindStudioDirSkipsADirectoryWithoutAnIndex(t *testing.T) {
 	}
 }
 
+// TestFindStudioDirAnswersAnAbsoluteDirectoryForARelativeBinary pins that a
+// relative exe names an absolute directory: os.DirFS re-resolves a relative
+// root on each request, so a relative candidate would serve whatever the
+// working directory leads to then, not the tree the search found.
+func TestFindStudioDirAnswersAnAbsoluteDirectoryForARelativeBinary(t *testing.T) {
+	prefix := t.TempDir()
+	exe := filepath.Join(prefix, "bin", "webbridge")
+	if err := os.MkdirAll(filepath.Dir(exe), 0o755); err != nil {
+		t.Fatalf("make bin: %v", err)
+	}
+	if err := os.WriteFile(exe, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write webbridge: %v", err)
+	}
+	beside := writeStudioDir(t, filepath.Join(prefix, "bin", studioSubdir))
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	rel, err := filepath.Rel(cwd, exe)
+	if err != nil {
+		t.Skipf("no relative form of %s from %s: %v", exe, cwd, err)
+	}
+	if filepath.IsAbs(rel) {
+		t.Fatalf("%q is not relative to %q", rel, cwd)
+	}
+
+	dir, looked := FindStudioDir(rel)
+
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("FindStudioDir(%q) = %q, want an absolute directory", rel, dir)
+	}
+	if want := resolved(t, beside); dir != want {
+		t.Fatalf("FindStudioDir(%q) = %q, want %q", rel, dir, want)
+	}
+	for _, candidate := range looked {
+		if !filepath.IsAbs(candidate) {
+			t.Errorf("looked = %v: %q is relative", looked, candidate)
+		}
+	}
+}
+
 // TestTheStudioWithoutFilesNamesWhereItLooked pins the daemon that found no
 // files: it answers 503 with the page that says where it looked and how to
 // build them, and it does not cache it — a build fixes it without a restart.
@@ -361,6 +486,25 @@ func TestTheStudioWithoutFilesNamesWhereItLooked(t *testing.T) {
 	}
 	if !strings.Contains(body, "reinstall Marshal") {
 		t.Errorf("body does not offer a reinstall; got %q", body)
+	}
+
+	// A server built with no search has no candidates to name: the page must
+	// not claim a search that never ran.
+	bare := NewServer(testFleet(t))
+	bare.SetStudioDir("", nil)
+	rec = serve(bare, "/")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET / with no candidates: status = %d, want 503", rec.Code)
+	}
+	body = rec.Body.String()
+	if strings.Contains(body, "They were looked for in:") {
+		t.Errorf("the no-files page claims a search with no candidates; got %q", body)
+	}
+	if !strings.Contains(body, "flutter build web --base-href / --no-web-resources-cdn") {
+		t.Errorf("the page does not say how to build the Studio; got %q", body)
+	}
+	if !strings.Contains(body, "Marshal's Studio files are not installed") {
+		t.Errorf("body does not say the files are missing; got %q", body)
 	}
 }
 

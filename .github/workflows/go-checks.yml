@@ -131,10 +131,13 @@ jobs:
             exit 1
           fi
       # For inspecting what this job built. The release builds its own Studio,
-      # on the OS whose bundle it goes into, so it consumes no artifact.
+      # on the OS whose bundle it goes into, so it consumes no artifact, and
+      # this name is deliberately not `studio-web`: release.yaml calls this
+      # workflow and also uploads `studio-web` itself, and upload-artifact@v4
+      # refuses a duplicate name, which would fail whichever uploaded second.
       - uses: actions/upload-artifact@v4
         with:
-          name: studio-web
+          name: studio-web-appjob
           path: share/marshal/studio/
           if-no-files-found: error
       # `flutter test` on the VM skips a test marked `@TestOn('browser')`, so the
@@ -181,7 +184,9 @@ jobs:
   release-config:
     name: Installer and release config
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The install gate and `goreleaser check` are seconds; the snapshot archive
+    # below builds marshal for this runner, which links tree-sitter.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Shellcheck the installer
@@ -224,5 +229,39 @@ jobs:
           if [ -n "$unexpected" ]; then
             echo "goreleaser check: deprecations other than 'brews' are not accepted:" >&2
             printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+      # `check` validates the config's syntax, not what its archive globs
+      # actually match, and an archive is only packed at tag time — too late to
+      # learn it shipped a Studio directory without the document that makes it
+      # one. `studio/**/*` did exactly that: `**` crosses separators, so the
+      # pattern needed one more `/` than `studio/index.html` has, and every
+      # install and both app bundles would have carried a directory the daemon
+      # does not count. So this packs a real archive from a stand-in Studio and
+      # reads the entry document back out of it. It runs here, in the job this
+      # workflow already gives GoReleaser, because release.yaml only *calls*
+      # this workflow: it has no step of its own to hang this on, and this job
+      # runs on every pull request, which is the point.
+      - name: The archive carries the Studio's index.html
+        run: |
+          set -euo pipefail
+          # share/ and dist/ are gitignored, so the stand-in does not make the
+          # tree dirty, which GoReleaser refuses to release from. Both are
+          # removed again below, whatever happens.
+          trap 'rm -rf share/marshal/studio dist' EXIT
+          mkdir -p share/marshal/studio/assets
+          printf '<!doctype html><title>stand-in</title>\n' > share/marshal/studio/index.html
+          printf '{}\n' > share/marshal/studio/assets/AssetManifest.json
+          # --single-target keeps this to the runner's own platform: the darwin
+          # builds want osxcross, which a plain ubuntu runner has not, and the
+          # guard is about the glob, not the cross toolchain. Docker, Homebrew
+          # and publishing are the release job's business.
+          goreleaser release --snapshot --clean --single-target \
+            --skip=docker,homebrew,publish,validate
+          tarball="$(ls dist/*.tar.gz | head -1)"
+          echo "inspecting $tarball"
+          if ! tar -tzf "$tarball" | grep -qx 'share/marshal/studio/index.html'; then
+            echo "$tarball carries no share/marshal/studio/index.html: the archive's Studio glob in .goreleaser.yaml misses the zero-depth index.html, and a daemon does not count such a directory as a Studio. Name the directory (share/marshal/studio) rather than a /**/* pattern under it. What the archive holds under it:" >&2
+            tar -tzf "$tarball" | grep 'share/marshal/studio' >&2 || echo "  (nothing)" >&2
             exit 1
           fi

@@ -11,7 +11,7 @@ decisions 3, 5 and 6 (tokens) and 8 (discovery); the Studio's sign-in handover
 (`compose.yaml`, `build/Dockerfile.bridge`).
 Keeps: P7's rule that the client is the only place hosts are merged.
 Inventory of what changes: [`inventory.md`](inventory.md).
-Status: proposed 2026-11-20. Plan 1 approved 2026-11-20.
+Status: proposed 2026-11-20. Plans 1, 2 and 3 approved 2026-11-20.
 
 Anchors are relative to `main` at `bbdc4486`.
 
@@ -214,7 +214,11 @@ included.
 - a loopback address, for a proxy that cannot dial a unix socket.
 
 `[daemon] web_group` makes the socket `0660` in that group, for a proxy that
-runs as another user.
+runs as another user. It needs `web_listen` to be an absolute socket path: the
+daemon directory is `0700`, so the group could not reach `web.sock` there.
+`[daemon] web_url`, the proxy's public address, is also the daemon's public
+URL (`--public-url`), so notification links, approval links and the MCP
+origin check name it.
 
 What the web listener serves:
 - the Studio's files (D12);
@@ -238,7 +242,9 @@ The forward:
 opens on a free loopback port whenever the daemon runs workspace agents. It no
 longer depends on another listener being open (today it follows `--addr`,
 `main.go:1029`). It keeps its own origin and per-preview tokens. A proxy that
-publishes the web listener publishes previews on a second hostname.
+publishes the web listener publishes previews on a second hostname. For that,
+`[daemon] preview_listen` fixes the listener's loopback port, and `[daemon]
+preview_url` is the public origin preview links name.
 
 **D12. The daemon embeds no Studio.** `//go:embed static` goes
 (`assets.go:28`).
@@ -328,7 +334,8 @@ or similar.
    command, `marshal mcp --credential-file PATH`, that relays JSON-RPC to
    `/mcp` over the socket with the client's own credential. That keeps D2's
    per-client grants and avoids a listener. The alternative is to tell those
-   clients to set `web_listen` to a loopback address.
+   clients to set `web_listen` to a loopback address. Accepted on 2026-11-20:
+   plan 3 adds `marshal mcp`.
 3. **SSH agent reachability for a systemd user service.** If `SSH_AUTH_SOCK`
    is not in the user manager's environment, either `marshal daemon install`
    imports it or the documentation says to. Resolved while planning plan 2:
@@ -355,10 +362,18 @@ same change: [`inventory.md`](inventory.md) lists the files.
    discovery and Settings › Hosts. Delete the HTTPS transports, `fleet
    login`/`token`/`servers`, and `fleetprofile`'s token and TLS code. The
    browser keeps its relayed hosts until plan 3.
-3. **The web listener** (D2, D3, D10–D14). Add the opt-in listener and the
-   forward. Delete the TCP listener, `bearerAuth`, the sign-in handover, the
-   join, the browser's token stores and the embed. Move the e2e suite onto the
-   web listener. It does not depend on plan 2.
-4. **Retire the containerized daemon** (D5) and sweep the docs: `AGENTS.md`,
+3. **The web listener** (D2, D3, D10, D11, D13, D14):
+   [plans/2026-11-20-od-3-web-listener-plan.md](plans/2026-11-20-od-3-web-listener-plan.md).
+   Add the opt-in listener, the forward and `marshal mcp`. Delete the TCP
+   listener, `bearerAuth`, the sign-in handover, the relay, the join, the
+   browser's token stores and the fleet client's rejected state. Move the e2e
+   suite onto the web listener. It depends on plan 2, because the forward
+   dials plan 2's tunnel sockets.
+4. **The Studio as files** (D12), split out of plan 3 while planning it.
+   Delete the embed, serve the Studio from a directory beside the binaries,
+   ship that directory in the release archive, Homebrew, `install.sh` and both
+   app bundles, give its web build and CDN check a CI job of their own, and
+   delete `scripts/dev-studio.sh`.
+5. **Retire the containerized daemon** (D5) and sweep the docs: `AGENTS.md`,
    `cmd/webbridge/README.md`, `scripts/e2e/README.md`, P4, P5, P8,
    distribution and F1.

@@ -103,9 +103,11 @@ func (u UnitSpec) Args() []string {
 		"--marshal-bin", u.Marshal,
 		"--idle-session-timeout", u.IdleSessionTimeout.String(),
 		"--egress", egress,
-		// The installed daemon always supervises a refresh helper, so the
-		// flag is written rather than configured (decision 5). It comes
-		// last: it is the one argument that is not a value the user set.
+		// The installed daemon always supervises a refresh helper and a
+		// tunnel helper, so both flags are written rather than configured
+		// (decision 5). They come last: they are the arguments that are
+		// not values the user set.
 		"--oauth-refresh",
+		"--tunnels",
 	)
 }

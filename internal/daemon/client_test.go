@@ -218,6 +218,113 @@ func TestARefusedPinCarriesTheDaemonsSentence(t *testing.T) {
 	}
 }
 
+// TestReportHostsPutsTheWholeSet: a report is a PUT of every host the
+// tunnel helper keeps to the socket's hosts route, and 204 is the whole
+// answer.
+func TestReportHostsPutsTheWholeSet(t *testing.T) {
+	requests := make(chan *http.Request, 1)
+	bodies := make(chan string, 1)
+
+	socket := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		requests <- r
+		bodies <- string(raw)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	hosts := []HostInfo{
+		{
+			Name:   "build",
+			SSH:    "alec@build.lan",
+			State:  "live",
+			Socket: "/run/marshal/build.sock",
+			Since:  1700000000000,
+		},
+		{
+			Name:      "test",
+			SSH:       "alec@test.lan",
+			State:     "down",
+			Socket:    "/run/marshal/test.sock",
+			LastError: "ssh: connect to host test.lan: timed out",
+			Since:     1700000001000,
+		},
+	}
+	if err := NewClient(socket).ReportHosts(context.Background(), hosts); err != nil {
+		t.Fatalf("ReportHosts(): %v", err)
+	}
+
+	req := <-requests
+	if req.Method != http.MethodPut {
+		t.Errorf("method = %q, want PUT", req.Method)
+	}
+	if req.URL.Path != "/api/daemon/hosts" {
+		t.Errorf("path = %q, want /api/daemon/hosts", req.URL.Path)
+	}
+	if got := req.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+
+	raw := <-bodies
+	var body struct {
+		Hosts []HostInfo `json:"hosts"`
+	}
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		t.Fatalf("decode request body %q: %v", raw, err)
+	}
+	if len(body.Hosts) != len(hosts) {
+		t.Fatalf("body holds %d hosts, want %d: %s", len(body.Hosts), len(hosts), raw)
+	}
+	for i := range hosts {
+		if body.Hosts[i] != hosts[i] {
+			t.Errorf("hosts[%d] = %+v, want %+v", i, body.Hosts[i], hosts[i])
+		}
+	}
+}
+
+// TestReportHostsSendsAnEmptyListForNil: the report replaces the daemon's
+// last one, so "no tunnels" is an empty list rather than a missing field.
+func TestReportHostsSendsAnEmptyListForNil(t *testing.T) {
+	bodies := make(chan string, 1)
+
+	socket := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		bodies <- string(raw)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	if err := NewClient(socket).ReportHosts(context.Background(), nil); err != nil {
+		t.Fatalf("ReportHosts(nil): %v", err)
+	}
+
+	raw := <-bodies
+	if !strings.Contains(raw, `"hosts":[]`) {
+		t.Errorf("body = %s, want an empty hosts list, not null or absent", raw)
+	}
+}
+
+// TestARefusedReportCarriesTheDaemonsSentence: a report the daemon refuses
+// is an error carrying its own sentence, as a refused pin is.
+func TestARefusedReportCarriesTheDaemonsSentence(t *testing.T) {
+	const sentence = "the tunnel helper is not supervised"
+
+	socket := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": sentence})
+	}))
+
+	err := NewClient(socket).ReportHosts(context.Background(), nil)
+	if err == nil {
+		t.Fatalf("ReportHosts() returned no error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), sentence) {
+		t.Errorf("ReportHosts() error = %q, want it to carry %q", err, sentence)
+	}
+	if !strings.Contains(err.Error(), "409") {
+		t.Errorf("ReportHosts() error = %q, want it to name the status", err)
+	}
+}
+
 // shortSocket is a unix socket path under a short directory: a socket path
 // is capped at 104 bytes on macOS and t.TempDir can be longer than that.
 func shortSocket(t *testing.T) string {

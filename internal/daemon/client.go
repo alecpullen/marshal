@@ -29,6 +29,7 @@ const (
 	envWarningHeader  = "Marshal-Env-Warning"
 	pinPath           = "/api/projects/pin"
 	daemonRestartPath = "/api/daemon/restart"
+	daemonHostsPath   = "/api/daemon/hosts"
 )
 
 // ChildInfo is the contract's DaemonChild; see that declaration.
@@ -48,6 +49,9 @@ type Info = contract.DaemonInfo
 
 // PinState is the contract's PinState; see that declaration.
 type PinState = contract.PinState
+
+// HostInfo is the contract's DaemonHost; see that declaration.
+type HostInfo = contract.DaemonHost
 
 // RestartProgress is the contract's DaemonRestartProgress; see that
 // declaration.
@@ -314,6 +318,50 @@ func (c *Client) Pin(ctx context.Context, root string, pinned bool) (PinState, e
 		return PinState{}, fmt.Errorf("decode daemon answer: %w", err)
 	}
 	return state, nil
+}
+
+// ReportHosts replaces the daemon's hosts report with hosts.
+func (c *Client) ReportHosts(ctx context.Context, hosts []HostInfo) error {
+	// The report always carries the whole set, so a nil slice is an empty
+	// list rather than a missing one: "no tunnels" must replace "two".
+	if hosts == nil {
+		hosts = []HostInfo{}
+	}
+	body, err := json.Marshal(contract.DaemonHostsReport{Hosts: hosts})
+	if err != nil {
+		return fmt.Errorf("encode hosts report: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, "http://"+c.host+daemonHostsPath, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("daemon request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("daemon at %s: %w", c.socket, err)
+	}
+	defer resp.Body.Close()
+
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read daemon answer: %w", err)
+	}
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+
+	// The handler answers {"error": "..."} on a refusal; keep that text,
+	// since it says why better than the status does.
+	var refused struct {
+		Error string `json:"error"`
+	}
+	detail := strings.TrimSpace(string(answer))
+	if json.Unmarshal(answer, &refused) == nil && refused.Error != "" {
+		detail = refused.Error
+	}
+	return fmt.Errorf("daemon answered %s: %s", resp.Status, detail)
 }
 
 // Restart asks the daemon to restart, calling progress for each line. It

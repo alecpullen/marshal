@@ -638,7 +638,7 @@ func (f *Fleet) containerConfigWith(a Agent, runtime, runtimeName string, wiring
 		cfg.LocalMount = a.Project
 	}
 	if a.Workspace != nil {
-		mounts, env, err := f.workspaceRuntimeExtras(a, runtimeName)
+		mounts, env, err := f.workspaceRuntimeExtras(a)
 		if err != nil {
 			return cfg, err
 		}
@@ -1582,7 +1582,7 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 			cleanTree()
 			return "", f.needsRuntime()
 		}
-		ex, err := f.buildWorkspaceExtras(ctx, a, wsRes.Doc, wsRes.ImageName, rtName)
+		ex, err := f.buildWorkspaceExtras(ctx, a, wsRes.Doc, wsRes.ImageName)
 		if err != nil {
 			cleanTree()
 			return "", err

@@ -26,9 +26,11 @@ An agent with a workspace runs in a container (D4), which needs a rootless
 runtime: rootless Podman or rootless Docker, on the daemon user's `PATH`. A
 rootful runtime is refused rather than used, and the refusal names the fix:
 `docker runs as root, and a daemon on the host needs a rootless runtime on
-Linux (rootless Docker or Podman)`. Every other agent — a plain local agent,
-the control agent — is a host process on its project's child, and needs no
-runtime at all.
+Linux (rootless Docker or Podman)`. Every other agent is a host process and
+needs no runtime at all: a plain local agent runs on its project's child, and
+the control agent is the fleet's own child — a host process working from
+`<state>/control`, holding the sessions that are not tied to a running project
+agent.
 
 `marshal daemon status` names what the daemon serves: its `studio:` line is
 the directory the Studio is served from, and its `web:` line is where the web
@@ -110,9 +112,9 @@ Set `web_url` to exactly the address the proxy publishes. The web listener
 answers only that host and the loopback names, and refuses a state-changing
 request another site's page made. A misconfigured proxy is recognisable: a
 wrong `Host` is refused with `this daemon does not answer to host <host>; set
-[daemon] web_url to the address the proxy publishes`, a cross-site write with
-`cross-site request refused`, and an `/api/` body that is not JSON with `the
-API takes application/json`.
+[daemon] web_url to the address the proxy publishes (docs/one-daemon/design.md
+D13)`, a cross-site write with `cross-site request refused`, and an `/api/`
+body that is not JSON with `the API takes application/json`.
 
 Turn response buffering off for `/api/`: the event streams must flush as they
 are written. nginx spells it `proxy_buffering off;`, and Caddy

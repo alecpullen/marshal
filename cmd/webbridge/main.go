@@ -163,7 +163,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	// declared, and applyDaemonDefaults refuses them by name, because an
 	// installed unit or a hand-run container carries them and the parser's
 	// "flag provided but not defined" names no decision.
-	fs.String("state-volume", envOr("WEBBRIDGE_STATE_VOLUME", ""), "retired: the state dir is on the host")
+	fs.Func("state-volume", "retired: the state dir is on the host", func(string) error { return nil })
 	fs.Func("project-mount", "retired: the daemon runs on the host and reads --project", func(string) error { return nil })
 	// The duration flags read their variable through envOr like the rest,
 	// then hand the text to the parser: a variable that does not parse is
@@ -186,6 +186,15 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		return config{}, fmt.Errorf("WEBBRIDGE_TUNNELS: %w", err)
 	}
 	tunnels := fs.Bool("tunnels", tunnelsDefault, "run <marshal-bin> daemon tunnels alongside the bridge")
+	// A retired container flag with no value dies in the parser's "flag needs
+	// an argument", which names no decision, before the D5 refusal below can
+	// see it. Refuse that shape here, so `--state-volume` bare reaches the D5
+	// refusal like `--state-volume VALUE` does through given().
+	for _, name := range []string{"state-volume", "project-mount"} {
+		if flagGivenBare(args, name) {
+			return config{}, errRetiredContainerFlag(name)
+		}
+	}
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -267,6 +276,29 @@ func givenFrom(fs *flag.FlagSet) givenSettings {
 	return g
 }
 
+// flagGivenBare reports whether args carry the flag with no value at all —
+// the shape the parser refuses with "flag needs an argument", before any
+// decision can be named. A valued occurrence ("--flag=V", "--flag V") is
+// left to given(), which sees it after the parse.
+func flagGivenBare(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "-"+name || arg == "--"+name {
+			return true
+		}
+	}
+	return false
+}
+
+// errRetiredContainerFlag is the D5 refusal, kept in one place so a bare
+// flag (refused before the parser) and a valued one or its variable
+// (refused by applyDaemonDefaults) name the same decision.
+func errRetiredContainerFlag(name string) error {
+	return fmt.Errorf("--%s is retired: the daemon runs on the host and keeps its state in --state-dir; a server is a Linux machine with marshal daemon install (docs/one-daemon/design.md D5)", name)
+}
+
 // given reports whether a setting reached the command line or its
 // variable is set to something. A setting with no variable at all
 // reports only its flag. An empty variable means unset, as envOr
@@ -334,7 +366,7 @@ func applyDaemonDefaults(cfg *config, given givenSettings, profile string) error
 		{"project-mount", ""},
 	} {
 		if given.given(f.flag, f.env) {
-			return fmt.Errorf("--%s is retired: the daemon runs on the host and keeps its state in --state-dir; a server is a Linux machine with marshal daemon install (docs/one-daemon/design.md D5)", f.flag)
+			return errRetiredContainerFlag(f.flag)
 		}
 	}
 

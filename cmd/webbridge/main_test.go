@@ -240,8 +240,10 @@ func TestTheContainerFlagsAreRefused(t *testing.T) {
 		flag string
 	}{
 		{"state volume flag", []string{"--state-volume", "marshal-state"}, nil, "--state-volume"},
+		{"state volume flag bare", []string{"--state-volume"}, nil, "--state-volume"},
 		{"state volume variable", nil, map[string]string{"WEBBRIDGE_STATE_VOLUME": "marshal-state"}, "--state-volume"},
 		{"project mount flag", []string{"--project-mount", "/repo=/mnt/repo"}, nil, "--project-mount"},
+		{"project mount flag bare", []string{"--project-mount"}, nil, "--project-mount"},
 		{"project mounts repeated", []string{"--project-mount", "/a=/x", "--project-mount", "/b=/y"}, nil, "--project-mount"},
 	}
 	for _, tc := range cases {

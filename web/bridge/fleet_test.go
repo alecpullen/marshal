@@ -164,9 +164,24 @@ func TestAFleetBindsItsAgentsState(t *testing.T) {
 	}
 }
 
+// TestAZeroContainerConfigFailsLoudly: without a state dir every state mount
+// would be a relative source ("work/a1") that the runtime resolves wherever
+// it likes. Production always has one (NewFleet guarantees Fleet.stateDir),
+// so the empty case is pinned as a loud failure rather than a silent one.
+func TestAZeroContainerConfigFailsLoudly(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("a zero-value ContainerConfig rendered run args instead of failing")
+		}
+	}()
+	if args := newContainerTransport(ContainerConfig{}).buildRunArgs(); len(args) > 0 {
+		t.Errorf("a zero-value ContainerConfig rendered run args: %q", args)
+	}
+}
+
 func TestAFleetBindsTheSidecarsState(t *testing.T) {
 	stateDir := t.TempDir()
-	args := strings.Join(egressSidecarArgs("docker", stateDir, "marshal-egress:dev"), " ")
+	args := strings.Join(egressSidecarArgs(stateDir, "marshal-egress:dev"), " ")
 	want := "--mount type=bind,source=" + filepath.Join(stateDir, egressSubpath) + ",target=" + egressMountDir
 	if !strings.Contains(args, want) {
 		t.Fatalf("sidecar args lack %q:\n%s", want, args)

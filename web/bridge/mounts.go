@@ -21,6 +21,14 @@ func bindMount(source, target string, readonly bool) []string {
 // host directory, so every state mount is a bind of a path under it.
 //
 // readonly appends ",readonly", which both runtimes accept.
+//
+// An empty stateDir is refused rather than joined: filepath.Join("", "work/a1")
+// is a relative source, which the runtime would resolve wherever it likes.
+// Production always has one (NewFleet guarantees Fleet.stateDir), so this
+// catches the zero-value ContainerConfig instead of mounting the wrong tree.
 func stateMount(stateDir, target, subpath string, readonly bool) []string {
+	if stateDir == "" {
+		panic("bridge: state mount with an empty state dir; every state subpath binds under the fleet's state directory")
+	}
 	return bindMount(filepath.Join(stateDir, subpath), target, readonly)
 }

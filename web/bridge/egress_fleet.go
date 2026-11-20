@@ -144,7 +144,7 @@ func (f *Fleet) ensureSidecar(ctx context.Context, h *egressHost, rt string) err
 		}
 		_, _ = f.runRuntime(rt, "rm", "-f", egressContainer)
 	}
-	if out, err := f.runRuntime(rt, egressSidecarArgs(rt, f.stateDir, tag)...); err != nil {
+	if out, err := f.runRuntime(rt, egressSidecarArgs(f.stateDir, tag)...); err != nil {
 		return fmt.Errorf("start %s: %w (%s)", egressContainer, err, out)
 	}
 	// The sidecar needs a route out: attach it to the default network too.
@@ -206,7 +206,7 @@ func egressImageTag(version string) string {
 // egressSidecarArgs is the `run` invocation for the sidecar. It joins the
 // internal network only; ensureSidecar attaches the outside network
 // afterwards.
-func egressSidecarArgs(rtName, stateDir, image string) []string {
+func egressSidecarArgs(stateDir, image string) []string {
 	args := []string{"run", "-d", "--rm", "--name", egressContainer, "--network", egressNetwork,
 		// The preview listener is published on loopback only; the bridge
 		// reads the chosen host port with `port`.

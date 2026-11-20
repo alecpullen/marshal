@@ -119,6 +119,9 @@ func TestStartClearsAStaleViewerSocket(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", Image: "img", Name: "marshal-agent-stale",
 		WorkspaceDir: "/w", SocketDir: t.TempDir(),
+		// Every state mount binds under the state dir, so a config without
+		// one is invalid (stateMount refuses the empty case).
+		StateDir: t.TempDir(),
 	})
 	tr.dialTimeout = 50 * time.Millisecond // no socket will ever appear
 	sockets := []string{tr.socketPath(), tr.viewerSocketPath()}
@@ -336,6 +339,9 @@ func TestContainerKillsPartialStartOnDialFailure(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", Image: "img", Name: "marshal-agent-dead",
 		WorkspaceDir: "/w", SocketDir: t.TempDir(),
+		// A run vector needs a state dir to bind under; stateMount refuses
+		// an empty one rather than emitting a relative source.
+		StateDir: t.TempDir(),
 	})
 	tr.dialTimeout = 50 * time.Millisecond // no socket will ever appear
 	var killed bool

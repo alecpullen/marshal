@@ -92,7 +92,7 @@ func plainVolumeMount(volume, target string, readonly bool) []string {
 // workspaceMounts renders a doc's mounts and files as runtime arguments.
 // storeName is the Studio template whose file store holds the [files]
 // sources.
-func (f *Fleet) workspaceMounts(ctx context.Context, doc WSDoc, storeName, runtimeName string) ([]string, error) {
+func (f *Fleet) workspaceMounts(ctx context.Context, doc WSDoc, storeName string) ([]string, error) {
 	var args []string
 	seen := map[string]bool{}
 	claim := func(target string) error {
@@ -182,8 +182,8 @@ func (f *Fleet) AgentWorkspaceDoc(ctx context.Context, a Agent) (name string, do
 }
 
 // buildWorkspaceExtras renders everything a workspace adds to a container.
-func (f *Fleet) buildWorkspaceExtras(ctx context.Context, a Agent, doc WSDoc, storeName, runtimeName string) (wsExtras, error) {
-	mounts, err := f.workspaceMounts(ctx, doc, storeName, runtimeName)
+func (f *Fleet) buildWorkspaceExtras(ctx context.Context, a Agent, doc WSDoc, storeName string) (wsExtras, error) {
+	mounts, err := f.workspaceMounts(ctx, doc, storeName)
 	if err != nil {
 		return wsExtras{}, err
 	}
@@ -209,7 +209,7 @@ func (f *Fleet) buildWorkspaceExtras(ctx context.Context, a Agent, doc WSDoc, st
 // workspaceRuntimeExtras is the container config's source for a
 // workspace's mounts and env: the spawn's own resolution while it is in
 // flight, a fresh resolution when a runtime restarts later.
-func (f *Fleet) workspaceRuntimeExtras(a Agent, runtimeName string) ([]string, map[string]string, error) {
+func (f *Fleet) workspaceRuntimeExtras(a Agent) ([]string, map[string]string, error) {
 	f.wsMu.Lock()
 	ex, ok := f.wsExtras[a.ID]
 	f.wsMu.Unlock()
@@ -223,7 +223,7 @@ func (f *Fleet) workspaceRuntimeExtras(a Agent, runtimeName string) ([]string, m
 	if err != nil {
 		return nil, nil, err
 	}
-	ex, err = f.buildWorkspaceExtras(ctx, a, res.Doc, res.ImageName, runtimeName)
+	ex, err = f.buildWorkspaceExtras(ctx, a, res.Doc, res.ImageName)
 	if err != nil {
 		return nil, nil, err
 	}

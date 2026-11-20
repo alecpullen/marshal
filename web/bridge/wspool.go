@@ -202,7 +202,7 @@ func (p *poolManager) start(name string, n, k int, image string) (poolEntry, err
 		f.dropPoolEgress(pseudo.ID)
 		return poolEntry{}, err
 	}
-	ex, err := f.buildWorkspaceExtras(lctx, pseudo, doc, name, rtName)
+	ex, err := f.buildWorkspaceExtras(lctx, pseudo, doc, name)
 	if err != nil {
 		f.dropPoolEgress(pseudo.ID)
 		return poolEntry{}, err

@@ -20,57 +20,35 @@ func TestBindMountSpellsTheSourceAndTarget(t *testing.T) {
 
 func TestStateMountBindsUnderTheStateDir(t *testing.T) {
 	const stateDir = "/host/state"
-	got := strings.Join(stateMount("docker", "marshal-state", stateDir, "/work", "work/a1", false), " ")
-	if !strings.Contains(got, "type=bind") || !strings.Contains(got, "source="+filepath.Join(stateDir, "work/a1")) {
-		t.Fatalf("got %q", got)
+	got := strings.Join(stateMount(stateDir, "/work", "work/a1", false), " ")
+	want := "type=bind,source=" + filepath.Join(stateDir, "work/a1") + ",target=/work"
+	if !strings.Contains(got, want) {
+		t.Fatalf("got %q, want it to carry %q", got, want)
 	}
-	if strings.Contains(got, "marshal-state") {
-		t.Fatalf("the volume name survived a host state dir: %q", got)
-	}
-}
-
-func TestStateMountFallsBackToTheVolume(t *testing.T) {
-	for _, runtime := range []string{"docker", "podman"} {
-		got := strings.Join(stateMount(runtime, "marshal-state", "", "/work", "work/a1", true), " ")
-		want := strings.Join(volumeMount(runtime, "marshal-state", "/work", "work/a1", true), " ")
-		if got != want {
-			t.Errorf("%s: got %q, want %q", runtime, got, want)
-		}
+	if strings.Contains(got, "type=volume") {
+		t.Fatalf("a state mount named a volume: %q", got)
 	}
 }
 
-func TestVolumeMountUsesDockerSyntax(t *testing.T) {
-	got := strings.Join(volumeMount("docker", "marshal-state", "/work", "work/a1", false), " ")
-	if !strings.Contains(got, "type=volume") || !strings.Contains(got, "source=marshal-state") {
-		t.Fatalf("got %q", got)
-	}
-	if !strings.Contains(got, "volume-subpath=work/a1") {
-		t.Fatalf("docker spells it volume-subpath=; got %q", got)
+func TestStateMountIsReadOnlyWhenAsked(t *testing.T) {
+	got := strings.Join(stateMount("/host/state", "/marshal/config", "home/config", true), " ")
+	if !strings.HasSuffix(got, ",readonly") {
+		t.Fatalf("a readonly state mount lacks the suffix: %q", got)
 	}
 }
 
-// Podman documents the same feature as `subpath=` (podman-run(1)).
-func TestVolumeMountUsesPodmanSyntax(t *testing.T) {
-	got := strings.Join(volumeMount("podman", "marshal-state", "/work", "work/a1", false), " ")
-	if !strings.Contains(got, "subpath=work/a1") {
-		t.Fatalf("podman spells it subpath=; got %q", got)
-	}
-	if strings.Contains(got, "volume-subpath=") {
-		t.Fatalf("docker syntax leaked into the podman path: %q", got)
-	}
-}
-
-func TestBuildRunArgsUsesVolumesNotBindMounts(t *testing.T) {
+func TestBuildRunArgsBindsTheState(t *testing.T) {
+	const stateDir = "/host/state"
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
-		StateVolume: "marshal-state", WorkSubpath: "work/a1", SocketSubpath: "sockets/a1",
+		StateDir: stateDir, WorkSubpath: "work/a1", SocketSubpath: "sockets/a1",
 	})
 	joined := strings.Join(tr.buildRunArgs(), " ")
 
-	if strings.Contains(joined, "-v /") {
-		t.Fatalf("a host bind mount survived; a containerized bridge cannot use one:\n%s", joined)
-	}
-	for _, want := range []string{"volume-subpath=work/a1", "volume-subpath=sockets/a1"} {
+	for _, want := range []string{
+		"type=bind,source=" + filepath.Join(stateDir, "work/a1") + ",target=" + containerWorkDir,
+		"type=bind,source=" + filepath.Join(stateDir, "sockets/a1") + ",target=" + containerSocketDir,
+	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in:\n%s", want, joined)
 		}
@@ -79,47 +57,18 @@ func TestBuildRunArgsUsesVolumesNotBindMounts(t *testing.T) {
 
 // The isolation property that replaces filesystem separation.
 func TestAgentSubpathsAreDistinct(t *testing.T) {
-	a := strings.Join(volumeMount("docker", "v", "/work", "work/a1", false), " ")
-	b := strings.Join(volumeMount("docker", "v", "/work", "work/a2", false), " ")
+	a := strings.Join(stateMount("/host/state", "/work", "work/a1", false), " ")
+	b := strings.Join(stateMount("/host/state", "/work", "work/a2", false), " ")
 	if a == b {
 		t.Fatal("two agents produced identical mount arguments")
 	}
 }
 
-func TestTranslateToHostMapsADeclaredRoot(t *testing.T) {
-	m := []ProjectMount{{Host: "/Users/you/code", Container: "/host-projects"}}
-	got, err := TranslateToHost(m, "/host-projects/marshal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "/Users/you/code/marshal" {
-		t.Fatalf("got %q, want the HOST path", got)
-	}
-}
-
-func TestTranslateToHostRefusesAnUndeclaredPath(t *testing.T) {
-	m := []ProjectMount{{Host: "/Users/you/code", Container: "/host-projects"}}
-	_, err := TranslateToHost(m, "/somewhere/else")
-	if err == nil {
-		t.Fatal("an undeclared path was accepted; the spawn would fail later with mounts denied")
-	}
-	if !strings.Contains(err.Error(), "project-mount") {
-		t.Errorf("the error does not say how to fix it: %v", err)
-	}
-}
-
-// A prefix match must respect path boundaries.
-func TestTranslateToHostDoesNotMatchAPartialSegment(t *testing.T) {
-	m := []ProjectMount{{Host: "/h", Container: "/host-projects"}}
-	if _, err := TranslateToHost(m, "/host-projects-evil/x"); err == nil {
-		t.Fatal("matched a path that merely shares a prefix with the declared root")
-	}
-}
-
 func TestLocalPathAgentBindMountsTheHostPath(t *testing.T) {
+	stateDir := t.TempDir()
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
-		StateVolume: "marshal-state", SocketSubpath: "sockets/a1",
+		StateDir: stateDir, SocketSubpath: "sockets/a1",
 		LocalMount: "/Users/you/code/marshal",
 	})
 	joined := strings.Join(tr.buildRunArgs(), " ")
@@ -127,20 +76,21 @@ func TestLocalPathAgentBindMountsTheHostPath(t *testing.T) {
 	if !strings.Contains(joined, "-v /Users/you/code/marshal:"+containerWorkDir) {
 		t.Fatalf("the host checkout was not bind-mounted at /work:\n%s", joined)
 	}
-	// The socket still comes from the volume even for a local agent.
-	if !strings.Contains(joined, "volume-subpath=sockets/a1") {
+	// The socket still comes from the state dir even for a local agent.
+	if !strings.Contains(joined, "source="+filepath.Join(stateDir, "sockets/a1")) {
 		t.Fatalf("the socket subpath is missing:\n%s", joined)
 	}
 	// And no workspace subpath: a local agent works on the checkout.
-	if strings.Contains(joined, "volume-subpath=work/") {
+	if strings.Contains(joined, "source="+filepath.Join(stateDir, "work/")) {
 		t.Fatalf("a local agent was given a workspace subpath as well:\n%s", joined)
 	}
 }
 
 func TestLocalAndGitAgentsDifferOnlyInTheWorkspaceMount(t *testing.T) {
+	stateDir := t.TempDir()
 	base := ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
-		StateVolume: "marshal-state", SocketSubpath: "sockets/a1",
+		StateDir: stateDir, SocketSubpath: "sockets/a1",
 	}
 	gitCfg := base
 	gitCfg.WorkSubpath = "work/a1"
@@ -150,14 +100,14 @@ func TestLocalAndGitAgentsDifferOnlyInTheWorkspaceMount(t *testing.T) {
 	gitArgs := strings.Join(newContainerTransport(gitCfg).buildRunArgs(), " ")
 	localArgs := strings.Join(newContainerTransport(localCfg).buildRunArgs(), " ")
 
-	for _, shared := range []string{"--name n", "volume-subpath=sockets/a1", "img"} {
+	for _, shared := range []string{"--name n", "source=" + filepath.Join(stateDir, "sockets/a1"), "img"} {
 		if !strings.Contains(gitArgs, shared) || !strings.Contains(localArgs, shared) {
 			t.Errorf("%q should appear in both argument vectors", shared)
 		}
 	}
 	// The differentiator: the git agent mounts a workspace subpath, the
 	// local agent bind-mounts the host checkout.
-	if !strings.Contains(gitArgs, "volume-subpath=work/a1") {
+	if !strings.Contains(gitArgs, "source="+filepath.Join(stateDir, "work/a1")) {
 		t.Errorf("git agent missing workspace subpath: %s", gitArgs)
 	}
 	if !strings.Contains(localArgs, "-v /host/checkout:"+containerWorkDir) {

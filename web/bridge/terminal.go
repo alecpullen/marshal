@@ -885,7 +885,7 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 		ID: shellID, Profile: DefaultRuntimeProfile(),
 		Workspace: &AgentWorkspace{Name: res.Name, Version: res.Version, Source: contract.WorkspaceSource(res.Source)},
 	}
-	extras, err := f.buildWorkspaceExtras(ctx, pseudo, res.Doc, res.ImageName, rtName)
+	extras, err := f.buildWorkspaceExtras(ctx, pseudo, res.Doc, res.ImageName)
 	if err != nil {
 		return "", err
 	}
@@ -909,7 +909,7 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 	}
 	args = append(args, extras.mounts...)
 	for _, v := range wiring.Volumes {
-		args = append(args, f.stateMount(rtName, v.Target, v.Subpath, v.ReadOnly)...)
+		args = append(args, stateMount(f.stateDir, v.Target, v.Subpath, v.ReadOnly)...)
 	}
 	env := map[string]string{"TERM": "xterm-256color"}
 	for k, v := range extras.env {

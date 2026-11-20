@@ -48,7 +48,7 @@ func projectFleetWith(t *testing.T, configure func(*fakeProjectChild)) (*Fleet, 
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, shortStateDir(t), Limits{}, "", nil, "marshal-state")
+	f := NewFleet(ws, "unused", nil, shortStateDir(t), Limits{}, "")
 	t.Cleanup(f.Close)
 
 	var mu sync.Mutex
@@ -207,7 +207,7 @@ func TestTheChildRunsInTheRootWithItsSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := shortStateDir(t)
-	f := NewFleet(ws, "marshal-test-bin", nil, state, Limits{}, "", nil, "marshal-state")
+	f := NewFleet(ws, "marshal-test-bin", nil, state, Limits{}, "")
 	t.Cleanup(f.Close)
 	root := t.TempDir()
 

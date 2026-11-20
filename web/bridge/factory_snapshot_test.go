@@ -104,7 +104,7 @@ func newSeedFixtureOn(t *testing.T, work, origin, stateDir string) *seedFixture 
 	if err := ws.PutRepo(Repo{ID: "repo", URL: origin, Branch: "main", OwnerID: DefaultOwnerID}); err != nil {
 		t.Fatal(err)
 	}
-	fleet := NewFleet(ws, "", nil, stateDir, Limits{}, "", nil, "")
+	fleet := NewFleet(ws, "", nil, stateDir, Limits{}, "")
 	f := &seedFixture{t: t, fleet: fleet, ws: ws, work: work, stateDir: stateDir, g: newFactoryGit(fleet)}
 	f.base = gitText(t, work, "rev-parse", "HEAD")
 	return f

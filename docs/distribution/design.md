@@ -94,7 +94,7 @@ The three products named in the plan map to what already exists:
 | Product | Today |
 |---|---|
 | daemon, bundled with the TUI | Already true: the unit runs `webbridge`, found beside `marshal` (`daemon.FindWebbridge`) |
-| Studio, pointed at any daemon | `webbridge --server`, `marshal fleet --server`, the Svelte SPA |
+| Studio, pointed at any daemon | `webbridge` behind a proxy (`web_listen`), and the native Studio over the daemon's tunnels (one-daemon D9, D10) |
 | native apps, optionally installing the daemon | New: D3 |
 
 ## Cross-phase decisions

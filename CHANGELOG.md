@@ -28,6 +28,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tui.depth = "raised"` now parses as `flat`, and the setting offers `flat`
   and `full`.
 
+**One daemon**
+
+- Every machine runs the same daemon: `webbridge` has one shape, and
+  `--profile` is accepted and ignored. Run `marshal daemon install` after
+  upgrading so your unit is rewritten.
+- An agent with a workspace runs in a container, out of the host's own state
+  directory, and every other agent is a host process. Linux needs a rootless
+  Podman or Docker; install one before you use a workspace agent.
+- The egress proxy is off. Set `[daemon] egress = true` and reinstall the
+  daemon to give your container agents one.
+- `fleet.toml` holds hosts, not servers: a `[servers.NAME]` table is refused.
+  Replace it with `[hosts.NAME] ssh = "…"`, and use `marshal fleet add NAME
+  DEST` to write one. `marshal fleet login`, `marshal fleet token` and
+  `marshal fleet servers` are gone, and `--server` is now `--host`.
+- The web Studio needs `[daemon] web_listen` and a proxy in front of it that
+  authenticates its own users. The bearer token, `marshal daemon token`, and
+  the token sign-in link are gone; remove your proxy's bearer check.
+- The relay is gone: `--relay-join`, `--join` and `marshal daemon join-token`
+  no longer exist. A machine you used to reach through a relay is now a host —
+  add it with `marshal fleet add`.
+- A local MCP client runs `marshal mcp --credential-file PATH`, pointing at its
+  own `0600` credential file.
+- `marshal studio` opens the Studio: the app when it is installed, otherwise
+  `[daemon] web_url`. Point it at your proxy's address.
+- The Studio's files now ship in `share/marshal/studio`. In a checkout, build
+  them with `scripts/dev-daemon.sh --studio`.
+- The containerized bridge is gone: `compose.yaml`, the `webbridge` image,
+  `--state-volume` and `--project-mount` are removed, and a bridge given either
+  flag refuses it. Follow `docs/DEPLOYMENT.md` to run the daemon instead.
+
 ## [0.0.4-alpha] - 2026-10-25
 
 ### Added

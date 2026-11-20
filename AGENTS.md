@@ -79,13 +79,13 @@ Dart module, `app/lib/src/client/contract.g.dart`: regenerate with
 That currency test fails on a contract change that is not regenerated.
 
 `[daemon] web_listen` (`unix`, an absolute socket path, or a loopback address)
-opens the daemon's web listener: the Studio and the API, with no bearer check,
-behind the operator's proxy, which authenticates the browser (one-daemon D10,
-D13). `GET /api/hosts` and `/api/hosts/<name>/…` forward to each host's tunnel,
-and the socket-only routes — the project and agent attach, pin, restart, the
-hosts report and enrollment — are not served there. The listener answers only
-`localhost`, the loopback addresses and `web_url`'s host, and refuses a
-cross-site state-changing request and a non-JSON `/api/` body
+opens the daemon's web listener: the Studio and the API, with no authentication
+of its own, behind the operator's proxy, which authenticates the browser
+(one-daemon D10, D13). `GET /api/hosts` and `/api/hosts/<name>/…` forward to
+each host's tunnel, and the socket-only routes — the project and agent attach,
+pin, restart, the hosts report and enrollment — are not served there. The
+listener answers only `localhost`, the loopback addresses and `web_url`'s host,
+and refuses a cross-site state-changing request and a non-JSON `/api/` body
 (`web/bridge/webguard.go`). `POST /api/hosts` and `DELETE /api/hosts/<name>`
 run `marshal fleet add` and `remove` on the daemon's machine, so the Studio
 adds hosts in either build.
@@ -261,8 +261,7 @@ Tools & safety
 
 Web control plane
   cmd/webbridge/           HTTP + SSE server supervising `marshal acp` children
-  web/bridge/              bridge subsystems (see the boundary rule below);
-                           `static/` is the embedded Studio build
+  web/bridge/              bridge subsystems (see the boundary rule below)
 
 Native app
   app/                     Flutter app (3.50; Material and Cupertino from the

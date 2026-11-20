@@ -177,7 +177,7 @@ func TestCredentialsSurviveReloadAndMigrate(t *testing.T) {
 	if got := ws2.Credentials(); len(got) != 1 || got[0].Ref != "vault:git/x" {
 		t.Fatalf("reloaded = %+v", got)
 	}
-	f := NewFleet(ws2, "unused", nil, t.TempDir(), Limits{}, "", nil, "")
+	f := NewFleet(ws2, "unused", nil, t.TempDir(), Limits{}, "")
 	t.Cleanup(f.Close)
 	if _, ok := f.creds.Get("v"); !ok {
 		t.Fatal("NewFleet did not load persisted credentials")

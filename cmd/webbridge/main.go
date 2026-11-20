@@ -44,11 +44,6 @@ func daemonVersion() string {
 	return buildinfo.Version(version)
 }
 
-// defaultStateDir is the in-container mount point for the state volume.
-// When running as a host process (no container runtime), the state dir
-// defaults to beside the workspace file instead.
-const defaultStateDir = "/state"
-
 // stringList collects repeatable project flags.
 type stringList []string
 
@@ -69,23 +64,19 @@ type config struct {
 	previewAddr string
 	// previewURL is the public origin preview links name, for a proxy that
 	// publishes previews.
-	previewURL  string
-	marshalBin  string
-	cwdRoot     string
-	projects    []string
-	workspace   string
-	stateDir    string
-	stateVolume string
-	agentEnv    stringList
+	previewURL string
+	marshalBin string
+	cwdRoot    string
+	projects   []string
+	workspace  string
+	stateDir   string
+	agentEnv   stringList
 	// maxConcurrent bounds concurrent agents (0 = default 4).
 	maxConcurrent int
 	// maxDiskMB bounds the state directory size in MB (0 = unlimited).
 	maxDiskMB int64
 	// maxCloneMB bounds a single clone size in MB (0 = unlimited).
 	maxCloneMB int64
-	// projectMounts maps host paths to the bridge's in-container view,
-	// for translating LocalPath agent workspace mounts.
-	projectMounts []bridge.ProjectMount
 	// secrets selects the secret backend: env (default), local or openbao.
 	secrets         string
 	secretsKeyFile  string
@@ -140,12 +131,8 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	cwdRoot := fs.String("cwd-root", envOr("WEBBRIDGE_CWD_ROOT", ""), "default cwd for session list/load (defaults to the working directory)")
 	var projects stringList
 	fs.Var(&projects, "project", "project root to manage (repeatable)")
-	var projectMounts stringList
-	fs.Var(&projectMounts, "project-mount", "host:container path mapping for local project mounts (repeatable)")
 	workspace := fs.String("workspace", envOr("WEBBRIDGE_WORKSPACE", ""), "fleet workspace path")
-	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", defaultStateDir), "directory for repo mirrors and agent workspaces (defaults to /state)")
-	stateVolume := fs.String("state-volume", envOr("WEBBRIDGE_STATE_VOLUME", ""),
-		"named volume holding the state, for a containerized bridge (default: state on the host)")
+	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", ""), "directory for repo mirrors and agent workspaces (default: beside the daemon's socket)")
 	var agentEnv stringList
 	fs.Var(&agentEnv, "agent-env", "KEY=VALUE handed to every agent container (repeatable)")
 	maxConcurrent := fs.Int("max-concurrent", 0, "max concurrent agents (0 = default 4)")
@@ -171,6 +158,13 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	for _, f := range []string{"join", "join-name", "join-token-file", "join-ca-file"} {
 		fs.String(f, "", "retired; ignored")
 	}
+	// The container's state volume and project mounts are retired (D5): the
+	// daemon runs on the host and keeps its state in --state-dir. Both stay
+	// declared, and applyDaemonDefaults refuses them by name, because an
+	// installed unit or a hand-run container carries them and the parser's
+	// "flag provided but not defined" names no decision.
+	fs.Func("state-volume", "retired: the state dir is on the host", func(string) error { return nil })
+	fs.Func("project-mount", "retired: the daemon runs on the host and reads --project", func(string) error { return nil })
 	// The duration flags read their variable through envOr like the rest,
 	// then hand the text to the parser: a variable that does not parse is
 	// a configuration error rather than a silent fallback.
@@ -192,21 +186,25 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		return config{}, fmt.Errorf("WEBBRIDGE_TUNNELS: %w", err)
 	}
 	tunnels := fs.Bool("tunnels", tunnelsDefault, "run <marshal-bin> daemon tunnels alongside the bridge")
+	// A retired container flag with no value dies in the parser's "flag needs
+	// an argument", which names no decision, before the D5 refusal below can
+	// see it. Refuse that shape here, so `--state-volume` bare reaches the D5
+	// refusal like `--state-volume VALUE` does through given().
+	for _, name := range []string{"state-volume", "project-mount"} {
+		if flagGivenBare(args, name) {
+			return config{}, errRetiredContainerFlag(name)
+		}
+	}
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{socket: *socket, webListen: *webListen, webGroup: *webGroup, previewAddr: *previewAddr, previewURL: *previewURL, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
+	cfg := config{socket: *socket, webListen: *webListen, webGroup: *webGroup, previewAddr: *previewAddr, previewURL: *previewURL, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
 		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL,
 		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh, tunnels: *tunnels, studioDir: *studioDir}
-	pm, err := parseProjectMounts(projectMounts)
-	if err != nil {
-		return config{}, err
-	}
-	cfg.projectMounts = pm
 	given := givenFrom(fs)
 	if err := applyDaemonDefaults(&cfg, given, *profile); err != nil {
 		return config{}, err
@@ -278,15 +276,39 @@ func givenFrom(fs *flag.FlagSet) givenSettings {
 	return g
 }
 
+// flagGivenBare reports whether args carry the flag with no value at all —
+// the shape the parser refuses with "flag needs an argument", before any
+// decision can be named. A valued occurrence ("--flag=V", "--flag V") is
+// left to given(), which sees it after the parse.
+func flagGivenBare(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "-"+name || arg == "--"+name {
+			return true
+		}
+	}
+	return false
+}
+
+// errRetiredContainerFlag is the D5 refusal, kept in one place so a bare
+// flag (refused before the parser) and a valued one or its variable
+// (refused by applyDaemonDefaults) name the same decision.
+func errRetiredContainerFlag(name string) error {
+	return fmt.Errorf("--%s is retired: the daemon runs on the host and keeps its state in --state-dir; a server is a Linux machine with marshal daemon install (docs/one-daemon/design.md D5)", name)
+}
+
 // given reports whether a setting reached the command line or its
-// variable is set to something. An empty variable means unset, as envOr
+// variable is set to something. A setting with no variable at all
+// reports only its flag. An empty variable means unset, as envOr
 // treats it: os.Getenv cannot tell unset from set-and-blank, and this
 // file has always read them the same way.
 func (g givenSettings) given(flagName, env string) bool {
 	if g.flags[flagName] {
 		return true
 	}
-	return os.Getenv(env) != ""
+	return env != "" && os.Getenv(env) != ""
 }
 
 // set is given plus "and not empty": an empty value means unset, as
@@ -332,6 +354,19 @@ func applyDaemonDefaults(cfg *config, given givenSettings, profile string) error
 	} {
 		if given.given(f.flag, f.env) {
 			return fmt.Errorf("--%s is retired: the daemon holds no token and serves no TLS; put a proxy in front of --web-listen (docs/one-daemon/design.md D2, D3)", f.flag)
+		}
+	}
+
+	// The container's state volume and project mounts are retired (D5): the
+	// daemon runs on the host, so there is no volume to mount and no mount
+	// to hand an agent. Refused rather than ignored, because a unit that
+	// carries one asked for a container this daemon no longer starts.
+	for _, f := range []struct{ flag, env string }{
+		{"state-volume", "WEBBRIDGE_STATE_VOLUME"},
+		{"project-mount", ""},
+	} {
+		if given.given(f.flag, f.env) {
+			return errRetiredContainerFlag(f.flag)
 		}
 	}
 
@@ -443,23 +478,6 @@ func localProjectEnv() (*bridge.ProjectEnv, error) {
 		exe = resolved
 	}
 	return bridge.NewProjectEnv([]string{exe, "print-env"}), nil
-}
-
-// parseProjectMounts parses repeatable --project-mount HOST:CONTAINER
-// flags into ProjectMount entries.
-func parseProjectMounts(specs []string) ([]bridge.ProjectMount, error) {
-	var mounts []bridge.ProjectMount
-	for _, s := range specs {
-		parts := strings.SplitN(s, ":", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return nil, fmt.Errorf("--project-mount %q: expected HOST:CONTAINER", s)
-		}
-		mounts = append(mounts, bridge.ProjectMount{
-			Host:      filepath.Clean(parts[0]),
-			Container: filepath.Clean(parts[1]),
-		})
-	}
-	return mounts, nil
 }
 
 // askpassResponse answers one git credential prompt. Git asks for a
@@ -607,22 +625,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		MaxConcurrent: cfg.maxConcurrent,
 		MaxDiskMB:     cfg.maxDiskMB,
 		MaxCloneMB:    cfg.maxCloneMB,
-	}, daemonVersion(), cfg.projectMounts, cfg.stateVolume)
+	}, daemonVersion())
 
-	// The daemon's state is on the host unless a named volume was given: the
-	// fleet then binds its state directory into the mounts it hands out,
-	// instead of naming a volume. This must precede every start below —
-	// egress, reattach, the poller and the scheduler — so no agent or probe
-	// starts with the other answer.
-	if cfg.stateVolume == "" {
-		stateOnHost := ""
-		if home, herr := os.UserHomeDir(); herr != nil {
-			slog.Default().Warn("webbridge: no home directory for container agents' config; using the state subpath", "err", herr)
-		} else {
-			stateOnHost = appconfig.UserDir(home)
-		}
-		fleet.SetStateOnHost(stateOnHost)
+	// A container agent's config home is the user's own, bound read-only, so
+	// a sign-in made once serves every agent. The fleet's state is always on
+	// the host, so this must precede every start below — egress, reattach,
+	// the poller and the scheduler — and no probe may run before it.
+	configHome := ""
+	if home, herr := os.UserHomeDir(); herr != nil {
+		slog.Default().Warn("webbridge: no home directory for container agents' config; using the state subpath", "err", herr)
+	} else {
+		configHome = appconfig.UserDir(home)
 	}
+	fleet.SetConfigHome(configHome)
 
 	// A project child starts with its project's environment (decision 7). A
 	// bridge that cannot name its own binary leaves children inheriting the

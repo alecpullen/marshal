@@ -998,6 +998,8 @@ first, then the alternative it was weighed against.
 
 ### F7. Server profiles
 
+> Superseded by one-daemon D6–D9 (docs/one-daemon/design.md, 2026-11-20): a remote daemon is a host reached over SSH.
+
 - **The file** is `fleet.toml` in the user's config directory: `MARSHAL_CONFIG_DIR`, else
   `$XDG_CONFIG_HOME/marshal`, else `~/.config/marshal`.
   - It holds a `servers` table of named profiles. Each profile has:

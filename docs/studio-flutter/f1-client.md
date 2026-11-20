@@ -79,6 +79,7 @@ writes.
      token.
    A conditional import picks the file; nothing outside `client/` knows
    which is in use.
+   > Superseded by one-daemon D2, D13 (docs/one-daemon/design.md, 2026-11-20): no client holds a token; a 401 is the proxy's.
 4. **Finding the local socket.** The native app asks
    `marshal daemon status --json`, which the tray already runs, and reads
    the socket path from the daemon document. It does not compute the path
@@ -91,9 +92,11 @@ writes.
    subcommand, `marshal fleet servers --json`. In the browser the token is
    typed once and kept in the browser's storage, normalised as `api.ts`
    normalises a pasted header.
+   > Superseded by one-daemon D2, D13 (docs/one-daemon/design.md, 2026-11-20): no client holds a token; a 401 is the proxy's.
 6. **Unauthorised is terminal.** A 401 stops requests and the stream for
    that host until the user supplies a different token. It is never retried
    on a timer.
+   > Superseded by one-daemon D2, D13 (docs/one-daemon/design.md, 2026-11-20): no client holds a token; a 401 is the proxy's.
 7. **The stream.** `event_stream.dart` is pure Dart: it parses server-sent
    events from lines, remembers the last event id per stream, reconnects
    with capped exponential backoff and jitter, and resumes with
@@ -104,6 +107,7 @@ writes.
    server), its transport, and its connection state. A registry holds
    several. A host that cannot be reached is kept and marked unreachable
    with the time of last contact; it is never removed for being down.
+   > Superseded by one-daemon D9 (docs/one-daemon/design.md, 2026-11-20): native discovery is the local daemon and its hosts.
 9. **Typed calls.** `bridge_client.dart` wraps the transport with one method
    per route F2 needs: the daemon document, agents, projects, inbox,
    pending requests and their answers, budgets, recent prompts, disk, and

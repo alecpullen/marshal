@@ -12,6 +12,7 @@ import (
 )
 
 func TestContainerRunArgsCarryIsolationSettings(t *testing.T) {
+	const stateDir = "/srv/state"
 	tr := newContainerTransport(ContainerConfig{
 		Runtime:       "/usr/bin/docker",
 		RuntimeName:   "docker",
@@ -19,7 +20,7 @@ func TestContainerRunArgsCarryIsolationSettings(t *testing.T) {
 		Name:          "marshal-agent-7f3a",
 		WorkspaceDir:  "/srv/work/7f3a",
 		SocketDir:     "/srv/sock/7f3a",
-		StateVolume:   "marshal-state",
+		StateDir:      stateDir,
 		WorkSubpath:   "work/7f3a",
 		SocketSubpath: "sockets/7f3a",
 		CPUs:          2,
@@ -32,8 +33,8 @@ func TestContainerRunArgsCarryIsolationSettings(t *testing.T) {
 		"--name marshal-agent-7f3a",
 		"--cpus 2",
 		"--memory 4096m",
-		"volume-subpath=work/7f3a",
-		"volume-subpath=sockets/7f3a",
+		"source=" + stateDir + "/work/7f3a",
+		"source=" + stateDir + "/sockets/7f3a",
 		"marshal/agent:latest",
 		"--listen unix:///run/marshal/agent.sock",
 	} {
@@ -49,8 +50,8 @@ func TestContainerRunArgsCarryIsolationSettings(t *testing.T) {
 func TestTheAgentsRunVectorNamesTheViewerSocket(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
-		SocketDir:   "/srv/sock/n",
-		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+		SocketDir: "/srv/sock/n",
+		StateDir:  t.TempDir(), WorkSubpath: "work/n", SocketSubpath: "sockets/n",
 		// A spawn record may set either env map: neither may move the viewer
 		// socket, so the run vector's own assignment is written last and wins.
 		Env:      map[string]string{containerViewersEnv: "unix:///marshal/data/env.sock"},
@@ -100,8 +101,8 @@ func TestTheAgentsRunVectorNamesTheViewerSocket(t *testing.T) {
 func TestTheSetupVectorHasNoViewerSocket(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "marshal-agent-n",
-		SocketDir:   "/srv/sock/n",
-		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+		SocketDir: "/srv/sock/n",
+		StateDir:  t.TempDir(), WorkSubpath: "work/n", SocketSubpath: "sockets/n",
 	})
 	joined := strings.Join(tr.buildSetupArgs("make test"), " ")
 	if strings.Contains(joined, containerViewersEnv) {
@@ -118,6 +119,9 @@ func TestStartClearsAStaleViewerSocket(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", Image: "img", Name: "marshal-agent-stale",
 		WorkspaceDir: "/w", SocketDir: t.TempDir(),
+		// Every state mount binds under the state dir, so a config without
+		// one is invalid (stateMount refuses the empty case).
+		StateDir: t.TempDir(),
 	})
 	tr.dialTimeout = 50 * time.Millisecond // no socket will ever appear
 	sockets := []string{tr.socketPath(), tr.viewerSocketPath()}
@@ -154,21 +158,22 @@ func TestStartClearsAStaleViewerSocket(t *testing.T) {
 }
 
 func TestBuildRunArgsUsesBindMountForLocalPath(t *testing.T) {
+	stateDir := t.TempDir()
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
-		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+		StateDir: stateDir, WorkSubpath: "work/n", SocketSubpath: "sockets/n",
 		LocalMount: "/host/path/to/project",
 	})
 	joined := strings.Join(tr.buildRunArgs(), " ")
 	if !strings.Contains(joined, "-v /host/path/to/project:/work") {
 		t.Fatalf("local mount should use a bind mount; got: %s", joined)
 	}
-	if strings.Contains(joined, "volume-subpath=work/") {
-		t.Fatalf("local mount should not use a volume subpath for /work; got: %s", joined)
+	if strings.Contains(joined, "source="+filepath.Join(stateDir, "work")) {
+		t.Fatalf("local mount should not use a state subpath for /work; got: %s", joined)
 	}
-	// The socket mount is still a volume subpath even for local-path agents.
-	if !strings.Contains(joined, "volume-subpath=sockets/n") {
-		t.Errorf("socket volume subpath missing for local-path agent; got: %s", joined)
+	// The socket mount is still a state subpath even for local-path agents.
+	if !strings.Contains(joined, "source="+filepath.Join(stateDir, "sockets/n")) {
+		t.Errorf("socket state subpath missing for local-path agent; got: %s", joined)
 	}
 }
 
@@ -176,7 +181,7 @@ func TestContainerRunArgsRefuseHostEscapes(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
 		WorkspaceDir: "/w", SocketDir: "/s",
-		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+		StateDir: t.TempDir(), WorkSubpath: "work/n", SocketSubpath: "sockets/n",
 	})
 	joined := strings.Join(tr.buildRunArgs(), " ")
 
@@ -196,7 +201,7 @@ func TestContainerEnvIsExplicitNotInherited(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
 		WorkspaceDir: "/w", SocketDir: "/s",
-		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+		StateDir: t.TempDir(), WorkSubpath: "work/n", SocketSubpath: "sockets/n",
 		Env: map[string]string{"MARSHAL_ROLE": "agent"},
 	})
 	joined := strings.Join(tr.buildRunArgs(), " ")
@@ -334,6 +339,9 @@ func TestContainerKillsPartialStartOnDialFailure(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", Image: "img", Name: "marshal-agent-dead",
 		WorkspaceDir: "/w", SocketDir: t.TempDir(),
+		// A run vector needs a state dir to bind under; stateMount refuses
+		// an empty one rather than emitting a relative source.
+		StateDir: t.TempDir(),
 	})
 	tr.dialTimeout = 50 * time.Millisecond // no socket will ever appear
 	var killed bool
@@ -395,23 +403,23 @@ func TestBuildRunArgsMountsSharedHomes(t *testing.T) {
 		{"agent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
 			tr := newContainerTransport(ContainerConfig{
 				Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
-				StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+				StateDir: stateDir, WorkSubpath: "work/n", SocketSubpath: "sockets/n",
 				HomeConfigSubpath: "home/config", HomeDataSubpath: "home/data",
 				Env: map[string]string{"A": "1"},
 			})
 			args := tr.buildRunArgs()
 			joined := strings.Join(args, " ")
-			if !strings.Contains(joined, "target=/marshal/config,volume-subpath=home/config,readonly") {
-				t.Errorf("config mount must be read-only:\n%s", joined)
+			configMount := "source=" + filepath.Join(stateDir, "home/config") + ",target=/marshal/config,readonly"
+			if !strings.Contains(joined, configMount) {
+				t.Errorf("config mount must be a read-only bind of the state dir:\n%s", joined)
 			}
-			if strings.Contains(joined, "target=/marshal/config,volume-subpath=home/config ") {
-				t.Errorf("the config home was mounted writable:\n%s", joined)
-			}
-			if !strings.Contains(joined, "target=/marshal/data,volume-subpath=home/data") ||
-				strings.Contains(joined, "home/data,readonly") {
-				t.Errorf("data mount must be read-write:\n%s", joined)
+			dataMount := "source=" + filepath.Join(stateDir, "home/data") + ",target=/marshal/data"
+			if !strings.Contains(joined, dataMount) ||
+				strings.Contains(joined, dataMount+",readonly") {
+				t.Errorf("data mount must be a read-write bind of the state dir:\n%s", joined)
 			}
 			for _, want := range []string{"XDG_CONFIG_HOME=/marshal/config", "MARSHAL_DATA_DIR=/marshal/data", "A=1"} {
 				if !strings.Contains(joined, "-e "+want) {
@@ -435,7 +443,7 @@ func TestBuildRunArgsMountsSharedHomes(t *testing.T) {
 func TestBuildRunArgsWithoutHomesOmitsThem(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
-		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+		StateDir: t.TempDir(), WorkSubpath: "work/n", SocketSubpath: "sockets/n",
 	})
 	joined := strings.Join(tr.buildRunArgs(), " ")
 	if strings.Contains(joined, "/marshal/config") || strings.Contains(joined, "XDG_CONFIG_HOME") {
@@ -447,7 +455,8 @@ func TestContainerExtraMountsAndEnv(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "marshal-agent-n",
 		WorkspaceDir: "/w", SocketDir: "/s",
-		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+		StateDir:    t.TempDir(),
+		WorkSubpath: "work/n", SocketSubpath: "sockets/n",
 		Env:         map[string]string{"A": "base", "B": "base"},
 		ExtraEnv:    map[string]string{"B": "extra", "C": "extra"},
 		ExtraMounts: []string{"--mount", "type=volume,source=cache,target=/cache"},
@@ -479,7 +488,7 @@ func TestAHostStateContainerBindsEveryStateMount(t *testing.T) {
 	const stateDir = "/host/state"
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
-		StateVolume: "marshal-state", StateDir: stateDir,
+		StateDir:    stateDir,
 		WorkSubpath: "work/a1", SocketSubpath: "sockets/a1",
 		HomeConfigSubpath: "home/config", HomeDataSubpath: "home/data",
 		ExtraVolumes: []VolumeSubpath{{Subpath: "cache/lib", Target: "/cache", ReadOnly: true}},
@@ -502,7 +511,7 @@ func TestTheConfigHomeBindsTheUsersDirectoryReadOnly(t *testing.T) {
 	const configHome = "/Users/you/.config/marshal"
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
-		StateVolume: "marshal-state", StateDir: stateDir,
+		StateDir:    stateDir,
 		WorkSubpath: "work/a1", SocketSubpath: "sockets/a1",
 		HomeConfigSubpath: "home/config", HomeDataSubpath: "home/data",
 		HomeConfigDir: configHome,

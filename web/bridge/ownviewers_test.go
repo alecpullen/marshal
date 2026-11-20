@@ -19,7 +19,7 @@ func ownChildFleet(t *testing.T) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "marshal-test-bin", nil, shortStateDir(t), Limits{}, "", nil, "marshal-state")
+	f := NewFleet(ws, "marshal-test-bin", nil, shortStateDir(t), Limits{}, "")
 	f.probe = func() (path, name string, ok bool) { return "", "", false }
 	t.Cleanup(f.Close)
 	return f

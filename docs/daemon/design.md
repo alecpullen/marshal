@@ -1,5 +1,7 @@
 # Marshal daemon and detached TUI — design
 
+> Parts of this design are superseded by docs/one-daemon/design.md (2026-11-20): the profiles, the bearer token, server profiles and the relay.
+
 Status: direction agreed 2026-10-19. P0 to P4 are specified and implemented,
 each spec with its own implementation record: P0 in §5,
 [`p1-project-host.md`](p1-project-host.md),

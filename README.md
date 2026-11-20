@@ -229,7 +229,7 @@ narration as their reason.
 agents across many projects and repos.
 
 ```bash
-webbridge --project /path/to/repo --addr 127.0.0.1:7700
+webbridge --project /path/to/repo --web-listen 127.0.0.1:7700
 ```
 
 ![The Web Studio fleet dashboard](docs/ui/web-fleet.png)

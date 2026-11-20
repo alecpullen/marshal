@@ -75,7 +75,7 @@ func newDaemonHarness(t *testing.T) *daemonHarness {
 			t.Fatalf("find this test binary: %v", err)
 		}
 	}
-	fleet := bridge.NewFleet(ws, bin, nil, stateDir, bridge.Limits{}, "test", nil, "")
+	fleet := bridge.NewFleet(ws, bin, nil, stateDir, bridge.Limits{}, "test")
 
 	socket := filepath.Join(dir, "daemon.sock")
 	api := bridge.NewServer(fleet)

@@ -227,6 +227,46 @@ func TestTheTokenAndTLSFlagsAreRefused(t *testing.T) {
 	}
 }
 
+// TestTheContainerFlagsAreRefused: the container's state volume and project
+// mounts retired with it, since the daemon runs on the host and keeps its
+// state in --state-dir. A unit or a hand-run container that still carries
+// them is refused by name, naming D5, rather than by the parser's "flag
+// provided but not defined".
+func TestTheContainerFlagsAreRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		env  map[string]string
+		flag string
+	}{
+		{"state volume flag", []string{"--state-volume", "marshal-state"}, nil, "--state-volume"},
+		{"state volume variable", nil, map[string]string{"WEBBRIDGE_STATE_VOLUME": "marshal-state"}, "--state-volume"},
+		{"project mount flag", []string{"--project-mount", "/repo=/mnt/repo"}, nil, "--project-mount"},
+		{"project mounts repeated", []string{"--project-mount", "/a=/x", "--project-mount", "/b=/y"}, nil, "--project-mount"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateWebbridgeEnv(t)
+			t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+			// The variable is set by the case that uses it and blanked for
+			// the others, so a host that exports it cannot decide this test.
+			t.Setenv("WEBBRIDGE_STATE_VOLUME", "")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			_, err := parseConfig(tc.args, io.Discard)
+			if err == nil {
+				t.Fatalf("parseConfig(%v) accepted a retired container flag", tc.args)
+			}
+			for _, want := range []string{tc.flag, "is retired", "--state-dir", "D5"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %s", err, want)
+				}
+			}
+		})
+	}
+}
+
 // TestAPreviewAddrMustBeLoopback: previews are a loopback origin of their
 // own, so an address that binds every interface is refused, and a loopback
 // one (or "off") is not.

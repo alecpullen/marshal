@@ -44,11 +44,6 @@ func daemonVersion() string {
 	return buildinfo.Version(version)
 }
 
-// defaultStateDir is the in-container mount point for the state volume.
-// When running as a host process (no container runtime), the state dir
-// defaults to beside the workspace file instead.
-const defaultStateDir = "/state"
-
 // stringList collects repeatable project flags.
 type stringList []string
 
@@ -137,7 +132,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	var projects stringList
 	fs.Var(&projects, "project", "project root to manage (repeatable)")
 	workspace := fs.String("workspace", envOr("WEBBRIDGE_WORKSPACE", ""), "fleet workspace path")
-	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", defaultStateDir), "directory for repo mirrors and agent workspaces (defaults to /state)")
+	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", ""), "directory for repo mirrors and agent workspaces (default: beside the daemon's socket)")
 	var agentEnv stringList
 	fs.Var(&agentEnv, "agent-env", "KEY=VALUE handed to every agent container (repeatable)")
 	maxConcurrent := fs.Int("max-concurrent", 0, "max concurrent agents (0 = default 4)")
@@ -163,6 +158,13 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	for _, f := range []string{"join", "join-name", "join-token-file", "join-ca-file"} {
 		fs.String(f, "", "retired; ignored")
 	}
+	// The container's state volume and project mounts are retired (D5): the
+	// daemon runs on the host and keeps its state in --state-dir. Both stay
+	// declared, and applyDaemonDefaults refuses them by name, because an
+	// installed unit or a hand-run container carries them and the parser's
+	// "flag provided but not defined" names no decision.
+	fs.String("state-volume", envOr("WEBBRIDGE_STATE_VOLUME", ""), "retired: the state dir is on the host")
+	fs.Func("project-mount", "retired: the daemon runs on the host and reads --project", func(string) error { return nil })
 	// The duration flags read their variable through envOr like the rest,
 	// then hand the text to the parser: a variable that does not parse is
 	// a configuration error rather than a silent fallback.
@@ -266,14 +268,15 @@ func givenFrom(fs *flag.FlagSet) givenSettings {
 }
 
 // given reports whether a setting reached the command line or its
-// variable is set to something. An empty variable means unset, as envOr
+// variable is set to something. A setting with no variable at all
+// reports only its flag. An empty variable means unset, as envOr
 // treats it: os.Getenv cannot tell unset from set-and-blank, and this
 // file has always read them the same way.
 func (g givenSettings) given(flagName, env string) bool {
 	if g.flags[flagName] {
 		return true
 	}
-	return os.Getenv(env) != ""
+	return env != "" && os.Getenv(env) != ""
 }
 
 // set is given plus "and not empty": an empty value means unset, as
@@ -319,6 +322,19 @@ func applyDaemonDefaults(cfg *config, given givenSettings, profile string) error
 	} {
 		if given.given(f.flag, f.env) {
 			return fmt.Errorf("--%s is retired: the daemon holds no token and serves no TLS; put a proxy in front of --web-listen (docs/one-daemon/design.md D2, D3)", f.flag)
+		}
+	}
+
+	// The container's state volume and project mounts are retired (D5): the
+	// daemon runs on the host, so there is no volume to mount and no mount
+	// to hand an agent. Refused rather than ignored, because a unit that
+	// carries one asked for a container this daemon no longer starts.
+	for _, f := range []struct{ flag, env string }{
+		{"state-volume", "WEBBRIDGE_STATE_VOLUME"},
+		{"project-mount", ""},
+	} {
+		if given.given(f.flag, f.env) {
+			return fmt.Errorf("--%s is retired: the daemon runs on the host and keeps its state in --state-dir; a server is a Linux machine with marshal daemon install (docs/one-daemon/design.md D5)", f.flag)
 		}
 	}
 

@@ -32,6 +32,7 @@ func isolateWebbridgeEnv(t *testing.T) {
 		"WEBBRIDGE_CWD_ROOT", "WEBBRIDGE_STATE_DIR", "WEBBRIDGE_WORKSPACE",
 		"WEBBRIDGE_EGRESS", "WEBBRIDGE_SECRETS", "WEBBRIDGE_SECRETS_KEY_FILE",
 		"WEBBRIDGE_IDLE_SESSION_TIMEOUT", "WEBBRIDGE_OAUTH_REFRESH", "WEBBRIDGE_TUNNELS",
+		"WEBBRIDGE_STUDIO_DIR",
 		"WEBBRIDGE_RELAY_JOIN", "WEBBRIDGE_JOIN", "WEBBRIDGE_JOIN_NAME",
 		"WEBBRIDGE_JOIN_TOKEN_FILE", "WEBBRIDGE_JOIN_CA_FILE",
 	} {
@@ -846,5 +847,110 @@ func TestASecondLocalDaemonRefusesToStart(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the first daemon did not stop within 5s")
+	}
+}
+
+// TestTheDaemonReportsItsStudioDir: --studio-dir points the daemon at the
+// Studio's files, GET /api/daemon reports that directory, and the socket
+// answers its index at / — the socket and the web listener share one Server,
+// so both serve the Studio (D12).
+func TestTheDaemonReportsItsStudioDir(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+	studio := writeStudioIndex(t, t.TempDir())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{"--socket", socket, "--studio-dir", studio}, io.Discard, io.Discard)
+	}()
+
+	client := socketClient(socket)
+	info := waitForDaemon(t, client)
+	if info.StudioDir != studio {
+		t.Errorf("studioDir = %q, want %q", info.StudioDir, studio)
+	}
+
+	resp, err := client.Get("http://daemon/")
+	if err != nil {
+		t.Fatalf("GET / over the socket: %v", err)
+	}
+	body, rerr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if rerr != nil {
+		t.Fatalf("read the Studio's index: %v", rerr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200 from the given Studio directory", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "Marshal Studio") {
+		t.Fatalf("GET / answered %q, want the Studio's index.html", string(body))
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
+	}
+}
+
+// TestTheDaemonRunsWithoutStudioFiles: a daemon that finds no Studio files —
+// ownExecutable naming a binary in an empty directory — starts anyway,
+// reports no studioDir, and answers / with the 503 page that says where it
+// looked (D12).
+func TestTheDaemonRunsWithoutStudioFiles(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+	// The search runs on ownExecutable, which is the seam: a binary in an
+	// empty directory has no Studio beside or above it.
+	exeDir := t.TempDir()
+	oldOwn := ownExecutable
+	ownExecutable = func() (string, error) { return filepath.Join(exeDir, "webbridge"), nil }
+	t.Cleanup(func() { ownExecutable = oldOwn })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, []string{"--socket", socket}, io.Discard, io.Discard) }()
+
+	client := socketClient(socket)
+	info := waitForDaemon(t, client)
+	if info.StudioDir != "" {
+		t.Errorf("studioDir = %q, want empty: no Studio files were found", info.StudioDir)
+	}
+
+	resp, err := client.Get("http://daemon/")
+	if err != nil {
+		t.Fatalf("GET / over the socket: %v", err)
+	}
+	body, rerr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if rerr != nil {
+		t.Fatalf("read the no-files page: %v", rerr)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET / = %d, want 503 with no Studio files", resp.StatusCode)
+	}
+	// The page names where the search looked, so a user can put the files
+	// there or point --studio-dir at them.
+	if want := filepath.Join(exeDir, "share", "marshal", "studio"); !strings.Contains(string(body), want) {
+		t.Fatalf("GET / answered %q, want the page naming %s", string(body), want)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
 	}
 }

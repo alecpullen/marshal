@@ -171,6 +171,16 @@ func (t *toolSet) runSetupHooks(ctx context.Context, dir string, plan worktree.S
 	if len(plan.Hooks) == 0 {
 		return nil
 	}
+	// Every hook runs in the fresh worktree, so the plan as a whole holds one
+	// shared root-use lease for it: a lifecycle mutation at that root refuses
+	// while setup is still establishing the tree, and the lease is released when
+	// the last hook has settled. A registration with no lease callback (a test
+	// or non-git fixture) acquires nothing.
+	release, err := t.holdRootUse(ctx, dir, worktree.UseKindTool)
+	if err != nil {
+		return []string{"setup hooks: " + err.Error()}
+	}
+	defer release()
 	warnings, err := RunSetupPlan(ctx, plan, t.registry, t.setupAuthorizer, t.jobManager)
 	if err != nil {
 		warnings = append(warnings, "setup hooks: "+err.Error())

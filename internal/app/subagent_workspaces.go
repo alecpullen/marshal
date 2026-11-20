@@ -159,6 +159,18 @@ func bindSubagentWorkspace(parent, child *session.State, req agent.SubagentReque
 	opts.WorkspaceRoot = root
 	opts.CommandDir = root
 	opts.AccessRequests = false
+	// Every direct operation and managed command of this child participates in
+	// the shared root-use protocol for the repository its dispatcher recorded,
+	// so an owned-child lifecycle mutation at that repository refuses while the
+	// child is working. The repository comes from the binding, never from the
+	// parent's current checkout.
+	if strings.TrimSpace(binding.Repository) != "" {
+		owner := ""
+		if parent != nil {
+			owner = parent.SessionID()
+		}
+		opts.WorkspaceUse = workspaceUseForRepository(binding.Repository, owner)
+	}
 
 	opts.BackupState = nil
 	switch binding.Mode {

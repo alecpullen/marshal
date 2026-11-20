@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"marshal/internal/app/session"
@@ -14,7 +15,30 @@ import (
 	"marshal/internal/subagentwork"
 	"marshal/internal/tools/registry"
 	"marshal/internal/watch/watchctx"
+	"marshal/internal/worktree"
 )
+
+// acquireChildWorkspaceUse takes the shared root-use lease a child holds for its
+// whole model lifetime: an owned-child lifecycle mutation at the child's root
+// must see a live child even between its tool calls, and because the lease is
+// published per repository and root, a shared-mode child in another runtime is
+// covered by exactly the same record.
+//
+// A child with no recorded repository (an explicit non-git fixture) acquires
+// nothing: there is no cross-process participant to coordinate with.
+func acquireChildWorkspaceUse(ctx context.Context, record subagentwork.Record, executionID string) (*worktree.UseLease, error) {
+	repository := strings.TrimSpace(record.Binding.Repository)
+	root := strings.TrimSpace(record.Binding.Root)
+	if repository == "" || root == "" {
+		return nil, nil
+	}
+	return worktree.AcquireWorkspaceUse(ctx, repository, root, worktree.UseIdentity{
+		OwnerSessionID: record.OwnerSessionID,
+		ActorID:        record.TaskKey,
+		ExecutionID:    executionID,
+		Kind:           worktree.UseKindChild,
+	})
+}
 
 // ownedExecutionControl is the ExecutionControl a synthetic child owns when it
 // has a stop group of its own rather than inheriting a parent operation's: an
@@ -546,8 +570,26 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			}
 			state.AddSubagentTokens(view.ID, u.PromptTokens+u.CompletionTokens)
 		}
+		// Lease the child's workspace before the goroutine starts, so an admitted
+		// child is visible to a lifecycle mutation from its first moment — not
+		// only while one of its tool calls happens to run. A refusal here means
+		// the workspace is already being rewritten, which is exactly the case the
+		// protocol exists to refuse.
+		childUse, useErr := acquireChildWorkspaceUse(childCtx, record, string(workID))
+		if useErr != nil {
+			cancel()
+			state.ExitSubagentWork(workID)
+			cfg.workspaces.complete(ctx, state, record, subagentwork.OutcomeFailed, 0)
+			return registry.ToolResult{}, fmt.Errorf("agent.run: lease the child workspace: %w", useErr)
+		}
 		go func() {
 			defer cancel()
+			if childUse != nil {
+				// Registered first so it runs LAST: the lease covers the child's
+				// whole model lifetime, including the record, report and stop-group
+				// settlement below.
+				defer func() { _ = childUse.Release(true) }()
+			}
 			// The completion path re-observes and settles its own copy of the
 			// record: the dispatch receipt below was built from the record as
 			// it stood at allocation, and sharing the variable would race the

@@ -373,6 +373,15 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, toolName, c
 	}
 
 	operation, _ := session.OperationFromContext(ctx)
+	// The command's root-use leases are taken before admission and handed to the
+	// service with the launch. The service owns them from insertion until
+	// terminal settlement — not until this call returns, and not until it
+	// detaches — so a command that outlives its caller keeps its workspace busy
+	// for exactly as long as it runs. A failed launch gets them back here.
+	uses, err := t.acquireCommandWorkspaceUses(ctx, accepted.Dir, accepted.WorkspaceRoot)
+	if err != nil {
+		return registry.ToolResult{}, err
+	}
 	// Command, Dir and Environment come from the accepted attempt, never from a
 	// fresh root read: a workspace or config change between preparation and
 	// insertion must not move the directory or the environment of a command that
@@ -391,8 +400,10 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, toolName, c
 		Wait:           wait,
 		Progress:       progressCfg,
 		Admit:          admit,
+		WorkspaceUses:  uses,
 	})
 	if err != nil {
+		releaseWorkspaceUses(uses)
 		return registry.ToolResult{}, err
 	}
 	if background {

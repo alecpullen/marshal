@@ -89,9 +89,13 @@ archives:
       {{- .Version }}_
       {{- .Os }}_
       {{- .Arch }}
+    # The Studio rides beside the binaries: the daemon serves it from
+    # <bin dir>/../share/marshal/studio, and the app bundles and Homebrew put it
+    # in the same place. The release workflow downloads it before this runs.
     files:
       - README.md
       - LICENSE
+      - share/marshal/studio/**/*
 
 checksum:
   name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
@@ -125,6 +129,9 @@ brews:
     skip_upload: auto
     install: |
       bin.install "marshal", "webbridge"
+      # pkgshare is <prefix>/share/marshal, so the daemon finds the Studio at
+      # <bin dir>/../share/marshal/studio.
+      pkgshare.install "share/marshal/studio"
     caveats: |
       Run `marshal daemon install` to install and start the background daemon.
       Do not use `brew services`: the daemon writes its own launchd agent or
@@ -207,7 +214,8 @@ release:
     ```
 
     Both install `marshal` and `webbridge` and run `marshal daemon install`.
-    The archives below are the same two binaries.
+    The archives below are the same two binaries, with the Studio beside them
+    at `share/marshal/studio`.
 
     macOS builds are signed and notarized. A release cut without the signing
     secrets is not: if macOS refuses a quarantined download, remove the

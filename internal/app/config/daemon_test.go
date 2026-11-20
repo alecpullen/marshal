@@ -94,3 +94,54 @@ func TestTheIdleTimeoutRoundTripsThroughASave(t *testing.T) {
 		t.Fatalf("Daemon.IdleSessionTimeout = %v after round trip, want 90m", loaded.Daemon.IdleSessionTimeout)
 	}
 }
+
+// TestDaemonEgressIsReadFromTheUserConfig pins [daemon] egress, which turns
+// the egress proxy sidecar on for container agents: off unless the user says
+// so, and an explicit false stays false.
+func TestDaemonEgressIsReadFromTheUserConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "on", raw: "true", want: true},
+		{name: "off", raw: "false", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			work := t.TempDir()
+			writeFile(t, filepath.Join(home, ".config", "marshal", "config.toml"),
+				"[daemon]\negress = "+tc.raw+"\n")
+
+			cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Daemon.Egress != tc.want {
+				t.Fatalf("Daemon.Egress = %v, want %v", cfg.Daemon.Egress, tc.want)
+			}
+		})
+	}
+}
+
+// TestDaemonEgressRoundTripsThroughASave pins that a non-default value
+// written by writeSections is read back by the next load.
+func TestDaemonEgressRoundTripsThroughASave(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.Daemon.Egress = true
+
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{WorkingDir: dir, HomeDir: filepath.Join(dir, "home")})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !loaded.Daemon.Egress {
+		t.Fatalf("Daemon.Egress = %v after round trip, want true", loaded.Daemon.Egress)
+	}
+}

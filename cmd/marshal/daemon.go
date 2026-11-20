@@ -298,6 +298,7 @@ func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 		Paths:              paths,
 		Env:                daemonEnv(),
 		IdleSessionTimeout: cfg.Daemon.IdleSessionTimeout,
+		Egress:             cfg.Daemon.Egress,
 		StudioAddr:         studioAddr,
 		Join:               join,
 	}, nil

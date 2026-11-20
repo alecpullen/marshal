@@ -411,6 +411,7 @@ func merge(cfg *Config, file configFile) error {
 			}
 			cfg.Daemon.IdleSessionTimeout = d
 		}
+		set(&cfg.Daemon.Egress, file.Daemon.Egress)
 		if file.Daemon.StudioAddr != nil && *file.Daemon.StudioAddr != "" {
 			cfg.Daemon.StudioAddr = *file.Daemon.StudioAddr
 		}

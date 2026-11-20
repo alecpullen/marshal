@@ -72,6 +72,15 @@ func TestThePlistNamesEverything(t *testing.T) {
 		}
 	}
 
+	// The egress proxy is always written into the unit, and one daemon now
+	// serves every profile, so the retired --profile is written nowhere.
+	if strings.Contains(plist, "--profile") {
+		t.Errorf("the plist still carries --profile:\n%s", plist)
+	}
+	if want := "<string>--egress</string>\n\t\t<string>off</string>"; !strings.Contains(plist, want) {
+		t.Errorf("the plist does not carry %q:\n%s", want, plist)
+	}
+
 	// --oauth-refresh closes the argument list: the installed daemon
 	// always supervises the refresh helper (decision 5), so the flag is
 	// written and is the last element of the array.
@@ -135,16 +144,22 @@ func TestTheSystemdUnitNamesEverything(t *testing.T) {
 	// ExecStart holds webbridge and every argument, in decision 10's
 	// order, each double-quoted and escaped for systemd.
 	wantExec := `ExecStart="/opt/my marshal/bin/webbridge"` +
-		` "--profile" "local"` +
 		` "--socket" "/data/a & b/daemon/marshal.sock"` +
 		` "--state-dir" "/data/a & b/daemon/state 50%%"` +
 		` "--workspace" "/data/a & b/daemon/fleet.json"` +
 		` "--addr" "off"` +
 		` "--marshal-bin" "/opt/ma%%rshal's \"marshal\" & co/bin/marshal"` +
 		` "--idle-session-timeout" "45m0s"` +
+		` "--egress" "off"` +
 		` "--oauth-refresh"`
 	if !strings.Contains(unit, wantExec) {
 		t.Errorf("ExecStart line missing or mis-escaped:\nwant: %s\ngot:\n%s", wantExec, unit)
+	}
+
+	// One daemon serves every profile, so the retired --profile is not
+	// written at all.
+	if strings.Contains(unit, "--profile") {
+		t.Errorf("the unit still carries --profile:\n%s", unit)
 	}
 
 	// --oauth-refresh is the last word of ExecStart: the installed daemon
@@ -189,6 +204,26 @@ func TestTheSystemdUnitNamesEverything(t *testing.T) {
 	again := string(SystemdUnit(awkwardSpec()))
 	if again != unit {
 		t.Errorf("two renders of one spec differ")
+	}
+}
+
+// TestTheUnitTurnsEgressOn pins [daemon] egress: the flag is written either
+// way, so the unit states whether its container agents get an egress proxy.
+func TestTheUnitTurnsEgressOn(t *testing.T) {
+	spec := awkwardSpec()
+	spec.Egress = true
+
+	unit := string(SystemdUnit(spec))
+	if want := ` "--egress" "on"`; !strings.Contains(unit, want) {
+		t.Errorf("the unit does not carry %q:\n%s", want, unit)
+	}
+	if strings.Contains(unit, ` "--egress" "off"`) {
+		t.Errorf("the unit with egress on still writes --egress off:\n%s", unit)
+	}
+
+	plist := string(LaunchdPlist(spec))
+	if want := "<string>--egress</string>\n\t\t<string>on</string>"; !strings.Contains(plist, want) {
+		t.Errorf("the plist does not carry %q:\n%s", want, plist)
 	}
 }
 

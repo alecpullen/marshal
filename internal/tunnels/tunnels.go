@@ -227,8 +227,8 @@ func (r *runner) newTunnel(ctx context.Context, name string, h fleetprofile.Host
 	}
 	hostCtx, cancel := context.WithCancel(ctx)
 	return &tunnel{
-		name:   name,
-		host:   h,
+		name: name,
+		host: h,
 		state: contract.DaemonHost{
 			Name:   name,
 			SSH:    h.SSH,

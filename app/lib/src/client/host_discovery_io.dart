@@ -37,7 +37,16 @@ Future<List<HostSpec>> discoverHosts({DaemonCli? cli}) async {
           name: host.name,
           kind: HostKind.server,
           destination: host.ssh,
-          client: BridgeClient(unixTransport(host.socket)),
+          // A preview of work on this host is opened through the loopback
+          // port the daemon forwards to the host's preview listener, so the
+          // request names that way there; a host serving no previews names
+          // none, as the local host does not.
+          client: BridgeClient(
+            unixTransport(host.socket),
+            previewOrigin: host.previewPort > 0
+                ? 'http://localhost:${host.previewPort}'
+                : null,
+          ),
         ),
   ];
 }

@@ -4,15 +4,26 @@ import 'contract.g.dart';
 import 'event_stream.dart';
 import 'transport.dart';
 
+/// The header a preview request names this client's way to the host's
+/// preview listener in (contract.PreviewOriginHeader).
+const previewOriginHeader = 'X-Marshal-Preview-Origin';
+
 /// The bridge's typed routes: one method per route F2 needs, each returning a
 /// generated type and failing with a [BridgeFailure] when the bridge refuses.
 ///
 /// A bridge client carries no policy and holds no state: the host and the
 /// screens above it decide what to do with an answer.
 class BridgeClient {
-  BridgeClient(this._transport);
+  BridgeClient(this._transport, {this.previewOrigin});
 
   final Transport _transport;
+
+  /// The origin this client reaches the host's preview listener through, sent
+  /// with every preview request; null sends none.
+  ///
+  /// A link the bridge answers with has to open on this machine, so the name
+  /// of the way there travels beside the request rather than being assumed.
+  final String? previewOrigin;
 
   /// GET /api/daemon: what the local daemon reports about itself.
   Future<DaemonInfo> daemon() => _objectOf('/api/daemon', DaemonInfo.fromJson);
@@ -1102,11 +1113,16 @@ class BridgeClient {
 
   /// POST /api/agents/{id}/preview/{port}: the URL the agent's app is served
   /// at, for a port its workspace declares under `[preview]`.
+  ///
+  /// The request names this client's [previewOrigin] when it has one, so the
+  /// bridge answers a link that opens on this machine rather than on the host
+  /// the agent runs on. It is the one call that sends the header.
   Future<String> preview(String agentId, int port) async {
     final response = await _send(
       Request(
         method: 'POST',
         path: '/api/agents/${Uri.encodeComponent(agentId)}/preview/$port',
+        headers: {previewOriginHeader: ?previewOrigin},
       ),
     );
     final json = _object(response);

@@ -11,7 +11,7 @@ decisions 3, 5 and 6 (tokens) and 8 (discovery); the Studio's sign-in handover
 (`compose.yaml`, `build/Dockerfile.bridge`).
 Keeps: P7's rule that the client is the only place hosts are merged.
 Inventory of what changes: [`inventory.md`](inventory.md).
-Status: proposed 2026-11-20. Plans 1–7 approved 2026-11-20.
+Status: proposed 2026-11-20. Plans 1–8 approved 2026-11-20.
 
 Anchors are relative to `main` at `bbdc4486`.
 
@@ -250,7 +250,14 @@ longer depends on another listener being open (today it follows `--addr`,
 `main.go:1029`). It keeps its own origin and per-preview tokens. A proxy that
 publishes the web listener publishes previews on a second hostname. For that,
 `[daemon] preview_listen` fixes the listener's loopback port, and `[daemon]
-preview_url` is the public origin preview links name.
+preview_url` is the public origin preview links name. Plan 8 extends this:
+- `preview_url` may be a template, `https://p{token}.preview.example.com`.
+  With a proxy that serves wildcard hostnames, each preview gets an origin of
+  its own. A plain `preview_url` keeps one shared preview origin, which is
+  never the Studio's.
+- The preview listener relays a forwarded host's previews for a browser behind
+  the proxy, over that host's tunnel (plan 6's preview forward). So a proxied
+  browser opens every host's previews.
 
 **D12. The daemon embeds no Studio.** `//go:embed static` goes
 (`assets.go:28`).
@@ -363,7 +370,9 @@ or similar.
      `X-Marshal-Preview-Origin`, set by the native Studio for a tunnel it
      dials and by the forward for a host it forwards to;
    - a browser that reaches the daemon from another machine still cannot open
-     a forwarded host's preview.
+     a forwarded host's preview. Plan 8 closes that: the forward names this
+     daemon's own `preview_url` for a proxied caller, and the preview listener
+     relays the link it issued over the host's tunnel.
 2. **Local MCP clients without the loopback listener.** Today a client on the
    laptop reaches `/mcp` over `127.0.0.1:7788`. Recommendation: add a stdio
    command, `marshal mcp --credential-file PATH`, that relays JSON-RPC to
@@ -430,3 +439,8 @@ same change: [`inventory.md`](inventory.md) lists the files.
    `POST /api/hosts` and `DELETE /api/hosts/<name>` run `marshal fleet` on
    the daemon's machine, both builds use them, and the tunnel's `ssh` is
    hardened. It needs plans 2 and 3 (with plan 3's guard).
+8. **Previews in a browser** (D11, open question 1):
+   [plans/2026-11-20-od-8-browser-previews-plan.md](plans/2026-11-20-od-8-browser-previews-plan.md).
+   `preview_url` takes a `{token}` template, the forward picks the preview
+   origin by who is asking, and the preview listener relays a forwarded
+   host's previews. It needs plans 3 and 6, and both ends need it.

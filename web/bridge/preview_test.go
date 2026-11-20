@@ -315,6 +315,89 @@ func TestPreviewOriginCarriesTheTokenOnLocalhost(t *testing.T) {
 	}
 }
 
+// issueURL is the whole URL an issue request answers with, whatever origin
+// it names.
+func (p *previewEnv) issueURL(t *testing.T) string {
+	t.Helper()
+	rec := p.do("POST", "/api/agents/"+p.id+"/preview/"+strconv.Itoa(p.port), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("issue = %d %s", rec.Code, rec.Body)
+	}
+	var out struct{ URL string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body %s: %v", rec.Body, err)
+	}
+	return out.URL
+}
+
+func TestAPreviewURLNamesTheOrigin(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	if err := p.srv.SetPreviewURL("https://preview.example.com/"); err != nil {
+		t.Fatal(err)
+	}
+	raw := p.issueURL(t)
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Scheme != "https" || u.Host != "preview.example.com" {
+		t.Fatalf("issued URL %q does not name the configured origin", raw)
+	}
+	if want := "/preview/" + p.id + "/3000/"; !strings.HasPrefix(u.Path, want) {
+		t.Fatalf("issued URL %q is not a preview of this agent", raw)
+	}
+}
+
+func TestAPreviewURLKeepsTheToken(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	// The configured origin cannot carry the token in its host name, as a
+	// localhost one would, so the link keeps its ?t=.
+	if err := p.srv.SetPreviewURL("https://preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	rec := p.do("POST", "/api/agents/"+p.id+"/preview/3000", func(r *http.Request) {
+		r.Host = "localhost:7700"
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("issue = %d %s", rec.Code, rec.Body)
+	}
+	var out struct{ URL string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(out.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Host != "preview.example.com" {
+		t.Fatalf("issued URL %q does not name the configured origin", out.URL)
+	}
+	if tok := u.Query().Get("t"); len(tok) < 30 {
+		t.Fatalf("issued URL %q carries no token", out.URL)
+	}
+}
+
+func TestCheckPreviewURLRefusesAPath(t *testing.T) {
+	for _, base := range []string{
+		"https://preview.example.com/x",
+		"https://preview.example.com/?x=1",
+		"ftp://preview.example.com",
+	} {
+		if err := CheckPreviewURL(base); err == nil {
+			t.Errorf("CheckPreviewURL(%q) accepted", base)
+		}
+	}
+	for _, base := range []string{
+		"https://preview.example.com",
+		"https://preview.example.com/",
+		"http://127.0.0.1:9911",
+	} {
+		if err := CheckPreviewURL(base); err != nil {
+			t.Errorf("CheckPreviewURL(%q) = %v", base, err)
+		}
+	}
+}
+
 func TestPreviewOnLocalhostNeedsNoCookie(t *testing.T) {
 	p := newPreviewEnv(t, 3000)
 	var got []string

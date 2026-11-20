@@ -239,6 +239,42 @@ func (s *Server) issuePreview(w http.ResponseWriter, r *http.Request) {
 // URLs point at that origin rather than the API's.
 func (s *Server) SetPreviewPort(port int) { s.previewPort.Store(int32(port)) }
 
+// CheckPreviewURL refuses a base that is not an http or https origin: a host,
+// and no path beyond "/", no query and no fragment.
+func CheckPreviewURL(base string) error {
+	u, err := url.Parse(base)
+	if err != nil {
+		return fmt.Errorf("preview URL %q: %w", base, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("preview URL %q: scheme is not http or https", base)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("preview URL %q: no host", base)
+	}
+	if u.Path != "" && u.Path != "/" {
+		return fmt.Errorf("preview URL %q: an origin carries no path", base)
+	}
+	if u.RawQuery != "" {
+		return fmt.Errorf("preview URL %q: an origin carries no query", base)
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("preview URL %q: an origin carries no fragment", base)
+	}
+	return nil
+}
+
+// SetPreviewURL makes issued preview links name base, after CheckPreviewURL,
+// in place of the request's host and the preview port.
+func (s *Server) SetPreviewURL(base string) error {
+	base = strings.TrimSuffix(base, "/")
+	if err := CheckPreviewURL(base); err != nil {
+		return err
+	}
+	s.previewURL = base
+	return nil
+}
+
 // PreviewHandler serves only /preview/…, for a listener of its own. The
 // browser treats that port as a different origin from the API and UI, so a
 // page an agent serves cannot read the UI's sessionStorage (which holds the
@@ -266,7 +302,13 @@ func (s *Server) PreviewHandler() http.Handler {
 // embedded frame. tokenInHost reports that. Any other host cannot be
 // subdivided without wildcard DNS, so previews share its origin and use the
 // ?t= token and cookie.
+//
+// A configured public origin (SetPreviewURL) is answered first: the link
+// names it whatever host the caller used, and carries the ?t= token.
 func (s *Server) previewOrigin(r *http.Request, port int, tok string) (origin string, tokenInHost bool) {
+	if s.previewURL != "" {
+		return s.previewURL, false
+	}
 	scheme, host := "http", r.Host
 	if r.TLS != nil {
 		scheme = "https"

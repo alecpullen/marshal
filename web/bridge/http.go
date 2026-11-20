@@ -50,6 +50,10 @@ type Server struct {
 	// previewPort is the port of the separate preview listener, 0 until
 	// the host has started one (see SetPreviewPort).
 	previewPort atomic.Int32
+	// previewURL, when set, is the public origin issued preview links
+	// name in place of the request's host and the preview port (see
+	// SetPreviewURL).
+	previewURL string
 	// daemonInfo, when set, is what GET /api/daemon answers. Nil on a
 	// server that is not a daemon, which answers 404 (decision 8).
 	daemonInfo *DaemonInfo

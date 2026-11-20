@@ -270,7 +270,6 @@ func TestRecipeRunMaxUSDSetsAPausingCapForTheRun(t *testing.T) {
 
 func TestRecipeRunMaxMinutesArmsADeadlineThatPauses(t *testing.T) {
 	release := make(chan struct{})
-	defer close(release)
 	f, _ := recipeFleet(t, blockPrompt(release))
 	var mu sync.Mutex
 	var armed time.Duration
@@ -284,7 +283,10 @@ func TestRecipeRunMaxMinutesArmsADeadlineThatPauses(t *testing.T) {
 	if err := f.recipes.Put(Recipe{Name: "timed", Kind: RecipePrompt, Prompt: "Go.", Limits: &RecipeLimits{MaxMinutes: 30}}); err != nil {
 		t.Fatal(err)
 	}
-	id, err := f.RunRecipe(t.Context(), "timed", RecipeRunRequest{Project: t.TempDir()})
+	finished := make(chan RecipeResult, 1)
+	id, err := f.RunRecipe(t.Context(), "timed", RecipeRunRequest{
+		Project: t.TempDir(), OnDone: func(r RecipeResult) { finished <- r },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,6 +296,14 @@ func TestRecipeRunMaxMinutesArmsADeadlineThatPauses(t *testing.T) {
 	if d != 30*time.Minute || fn == nil {
 		t.Fatalf("deadline = %v", d)
 	}
+	// End the turn before the deadline fires. The deadline pauses the agent,
+	// which closes its session, and the fake agent answers nothing while it
+	// is still blocked in session/prompt: firing mid-turn would wait out the
+	// close timeout instead of reaching the pause. A finished run leaves no
+	// turn in flight, and a recipe's completion does not release its agent,
+	// so the runtime is still there for the pause and the audit.
+	close(release)
+	waitResult(t, finished)
 	fn()
 	if _, err := f.runtimeForAgent(id); err == nil {
 		t.Error("agent still running after its deadline")

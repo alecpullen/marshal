@@ -257,10 +257,7 @@ void main() {
     // Nothing is removed until the confirmation says what is lost.
     expect(runner.calls, isEmpty);
     expect(find.textContaining('stops showing it'), findsOneWidget);
-    expect(
-      find.textContaining('Its own daemon keeps running'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('Its own daemon keeps running'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(Btn, 'Remove'));
     await tester.pumpAndSettle();

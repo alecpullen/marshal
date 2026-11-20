@@ -177,7 +177,7 @@ func TestPoolShrinkKeepsTheRest(t *testing.T) {
 func TestPoolDeleteDropsIdleContainers(t *testing.T) {
 	e := newWSSpawnEnv(t)
 	pooledTemplate(t, e, 1)
-	s := NewServer(e.f, "")
+	s := NewServer(e.f)
 	if rec := doReq(t, s, "DELETE", "/api/workspaces/svc", nil, nil); rec.Code != 204 {
 		t.Fatalf("delete = %d", rec.Code)
 	}

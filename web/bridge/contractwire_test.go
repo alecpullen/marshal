@@ -171,7 +171,7 @@ func pendingListRecording(t *testing.T) []byte {
 	if err := f.ws.PutPending(PendingSpawn{ID: "p-minimal"}); err != nil {
 		t.Fatalf("PutPending: %v", err)
 	}
-	rec := doReq(t, NewServer(f, ""), http.MethodGet, "/api/pending", nil, nil)
+	rec := doReq(t, NewServer(f), http.MethodGet, "/api/pending", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/pending = %d %s", rec.Code, rec.Body)
 	}
@@ -184,7 +184,7 @@ func pendingDenyRecording(t *testing.T) []byte {
 	if err := f.ws.PutPending(PendingSpawn{ID: "p-1", Title: "x", RepoID: "r1"}); err != nil {
 		t.Fatalf("PutPending: %v", err)
 	}
-	rec := doReq(t, NewServer(f, ""), http.MethodPost, "/api/pending/p-1/deny", nil, nil)
+	rec := doReq(t, NewServer(f), http.MethodPost, "/api/pending/p-1/deny", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("deny = %d %s", rec.Code, rec.Body)
 	}
@@ -235,7 +235,7 @@ func pendingApproveRecording(t *testing.T) []byte {
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-	rec := doReq(t, NewServer(f, ""), http.MethodPost, "/api/pending/"+res.PendingID+"/approve", nil, nil)
+	rec := doReq(t, NewServer(f), http.MethodPost, "/api/pending/"+res.PendingID+"/approve", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("approve = %d %s", rec.Code, rec.Body)
 	}

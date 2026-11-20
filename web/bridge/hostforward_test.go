@@ -126,7 +126,7 @@ func liveHost(name, socket string) contract.DaemonHost {
 // TestTheHostsRouteListsTheReport: GET /api/hosts answers the hosts the tunnel
 // helper last reported, sorted by name (D10).
 func TestTheHostsRouteListsTheReport(t *testing.T) {
-	s := NewServer(testFleet(t), "")
+	s := NewServer(testFleet(t))
 	reportHosts(t, s,
 		contract.DaemonHost{Name: "workshop", SSH: "me@workshop", State: contract.HostDown, Socket: "/tmp/workshop.sock", LastError: "ssh: connect: refused"},
 		liveHost("box", "/tmp/box.sock"),
@@ -157,7 +157,7 @@ func TestTheHostsRouteListsTheReport(t *testing.T) {
 // TestTheHostsRouteIsEmptyWithoutAReport: a daemon whose helper has said
 // nothing lists no host, and says so as an empty list rather than null (D10).
 func TestTheHostsRouteIsEmptyWithoutAReport(t *testing.T) {
-	s := NewServer(testFleet(t), "")
+	s := NewServer(testFleet(t))
 	rec := doReq(t, s, http.MethodGet, hostsPath, nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("%s = %d, body = %s, want 200", hostsPath, rec.Code, rec.Body.String())
@@ -177,7 +177,7 @@ func trimJSON(body string) string {
 // host's tunnel socket as /api/agents?x=1, and the host's answer comes back
 // unchanged (D10).
 func TestAForwardReachesTheHostsSocket(t *testing.T) {
-	s := NewServer(testFleet(t), "")
+	s := NewServer(testFleet(t))
 	tunnel := newFakeTunnel(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusTeapot, map[string]string{"from": "box"})
 	}))
@@ -199,7 +199,7 @@ func TestAForwardReachesTheHostsSocket(t *testing.T) {
 // TestAForwardToAnUnknownHostIs404: a name the helper does not report is no
 // host this daemon reaches, and is named as such (D10).
 func TestAForwardToAnUnknownHostIs404(t *testing.T) {
-	s := NewServer(testFleet(t), "")
+	s := NewServer(testFleet(t))
 	rec := doReq(t, s, http.MethodGet, hostForwardPrefix+"gamma/api/agents", nil, nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("a forward to gamma = %d, body = %s, want 404", rec.Code, rec.Body.String())
@@ -217,7 +217,7 @@ func TestAForwardToAnUnknownHostIs404(t *testing.T) {
 // carry the request, and the answer names its state and why it last failed
 // (D10).
 func TestAForwardToAHostThatIsDownIs503(t *testing.T) {
-	s := NewServer(testFleet(t), "")
+	s := NewServer(testFleet(t))
 	reportHosts(t, s, contract.DaemonHost{
 		Name:      "box",
 		SSH:       "me@box",
@@ -244,7 +244,7 @@ func TestAForwardToAHostThatIsDownIs503(t *testing.T) {
 // TestAForwardRefusesTheSocketOnlyRoutes: a route only the socket serves is not
 // reached through a tunnel either, and the host is sent nothing (D10).
 func TestAForwardRefusesTheSocketOnlyRoutes(t *testing.T) {
-	s := NewServer(testFleet(t), "")
+	s := NewServer(testFleet(t))
 	tunnel := newFakeTunnel(t, okTunnel())
 	reportHosts(t, s, liveHost("box", tunnel.socket))
 
@@ -267,7 +267,7 @@ func TestAForwardRefusesTheSocketOnlyRoutes(t *testing.T) {
 // TestAForwardDoesNotChain: a forward carries the host's API and never the
 // hosts route, so /api/hosts/x/api/hosts/... is not a route at all (D10).
 func TestAForwardDoesNotChain(t *testing.T) {
-	s := NewServer(testFleet(t), "")
+	s := NewServer(testFleet(t))
 	tunnel := newFakeTunnel(t, okTunnel())
 	reportHosts(t, s, liveHost("box", tunnel.socket))
 
@@ -288,7 +288,7 @@ func TestAForwardDoesNotChain(t *testing.T) {
 // TestAForwardDropsTheCallersCredentials: the caller's bearer value and cookie
 // stop at this daemon; the host's own socket needs neither (D10).
 func TestAForwardDropsTheCallersCredentials(t *testing.T) {
-	s := NewServer(testFleet(t), "")
+	s := NewServer(testFleet(t))
 	tunnel := newFakeTunnel(t, okTunnel())
 	reportHosts(t, s, liveHost("box", tunnel.socket))
 
@@ -311,7 +311,7 @@ func TestAForwardDropsTheCallersCredentials(t *testing.T) {
 // TestAForwardStreams: an event reaches the caller as the host writes it, not
 // when the host's handler returns (D10).
 func TestAForwardStreams(t *testing.T) {
-	s := NewServer(testFleet(t), "")
+	s := NewServer(testFleet(t))
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	tunnel := newFakeTunnel(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

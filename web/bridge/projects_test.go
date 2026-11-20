@@ -22,7 +22,7 @@ func projectEnv(t *testing.T) (*wsSpawnEnv, *Server, string) {
 	if err := e.f.ws.AddProject(root); err != nil {
 		t.Fatal(err)
 	}
-	return e, NewServer(e.f, ""), root
+	return e, NewServer(e.f), root
 }
 
 func putSettings(t *testing.T, s *Server, root string, body any) int {

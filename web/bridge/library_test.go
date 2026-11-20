@@ -11,7 +11,7 @@ func libraryServer(t *testing.T) (*Server, *Fleet, *fakeAgent) {
 	t.Helper()
 	agent := newFakeAgent()
 	f := ctlFleet(t, agent)
-	return NewServer(f, ""), f, agent
+	return NewServer(f), f, agent
 }
 
 func TestLibraryListUsesTheRightSession(t *testing.T) {

@@ -381,7 +381,7 @@ func TestFactoryHTTP(t *testing.T) {
 	defer store.Close()
 	fleet := NewFleet(NewWorkspace(t.TempDir()), "", nil, t.TempDir(), Limits{}, "", nil, "")
 	defer fleet.Close()
-	srv := NewServer(fleet, "secret")
+	srv := NewServer(fleet)
 	srv.factoryRoutes(NewFactoryAPI(store, nil, fleet))
 	request := func(method, path, body, token string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -395,9 +395,6 @@ func TestFactoryHTTP(t *testing.T) {
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, r)
 		return w
-	}
-	if got := request("GET", "/api/factory/items", "", ""); got.Code != http.StatusUnauthorized {
-		t.Fatalf("auth %d", got.Code)
 	}
 	if got := request("POST", "/api/factory/items", `{"title":"x"}`, "secret"); got.Code != http.StatusBadRequest {
 		t.Fatalf("identity %d: %s", got.Code, got.Body.String())
@@ -436,7 +433,7 @@ func TestFactoryHTTPCreateApprovalAndReplay(t *testing.T) {
 	}
 	defer store.Close()
 	controller := NewFactoryController(store, nil, nil)
-	srv := NewServer(fleet, "secret", "", NewFactoryAPI(store, controller, fleet))
+	srv := NewServer(fleet, "", NewFactoryAPI(store, controller, fleet))
 	req := FactoryCreate{RequestID: "create-1", Title: "Task", Plan: "build", Config: FactoryConfig{RepoID: "repo", ProjectRoot: root, TargetBranch: "main", Native: true, ImplementerRouting: json.RawMessage(`{"profile":"chosen"}`), ReviewerRouting: json.RawMessage(`{"profile":"chosen"}`)}}
 	post := func(v any, path string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -1117,7 +1114,7 @@ func newFactoryCompletionHTTP(t *testing.T, base Forge, factory FactoryForge) *f
 	}
 	t.Cleanup(func() { store.Close() })
 	controller := batchController(store, base, factory, nil)
-	srv := NewServer(fleet, "secret")
+	srv := NewServer(fleet)
 	srv.factoryRoutes(NewFactoryAPI(store, controller, fleet))
 	return &factoryCompletionHTTP{fleet: fleet, store: store, controller: controller, srv: srv, root: root, projectID: projectID}
 }

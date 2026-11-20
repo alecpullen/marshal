@@ -176,7 +176,7 @@ func TestHooksOnlyAcceptPostAndBoundTheBody(t *testing.T) {
 
 func TestHooksBypassTheBearerToken(t *testing.T) {
 	e, prs, _ := hookEnv(t)
-	secured := NewServer(e.f, "tok")
+	secured := NewServer(e.f)
 	body := `{"action":"opened","number":1,"pull_request":{"head":{"sha":"a"}}}`
 	if rec := postHook(secured, "r1", body, githubHeaders("pull_request", "s3cret", body)); rec.Code != http.StatusAccepted {
 		t.Fatalf("code = %d: the signature is the credential, not the bearer token", rec.Code)

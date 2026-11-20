@@ -112,7 +112,7 @@ func newWorkingDraftHTTPEnv(t *testing.T) *workingDraftHTTPEnv {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	conv := &fakeWorkingDraftConversion{store: store}
-	srv := NewServer(fleet, workingDraftHTTPToken)
+	srv := NewServer(fleet)
 	srv.workingDraftRoutes(store, conv, dir)
 	return &workingDraftHTTPEnv{t: t, fleet: fleet, srv: srv, store: store, dir: dir, conv: conv, root: root, other: other}
 }
@@ -174,22 +174,8 @@ func (e *workingDraftHTTPEnv) get(id string) *httptest.ResponseRecorder {
 	return e.authed(http.MethodGet, "/api/factory/working-drafts/"+id, nil)
 }
 
-func TestWorkingDraftHTTPAuthAndProjectScope(t *testing.T) {
+func TestWorkingDraftHTTPProjectScope(t *testing.T) {
 	env := newWorkingDraftHTTPEnv(t)
-	// Every working-draft route is behind the API's existing bearer check.
-	for _, route := range []struct{ method, path string }{
-		{http.MethodPost, "/api/factory/working-drafts"},
-		{http.MethodGet, "/api/factory/working-drafts?projectRoot=" + env.root},
-		{http.MethodGet, "/api/factory/working-drafts/installation"},
-		{http.MethodGet, "/api/factory/working-drafts/abc"},
-		{http.MethodPut, "/api/factory/working-drafts/abc"},
-		{http.MethodDelete, "/api/factory/working-drafts/abc"},
-		{http.MethodPost, "/api/factory/working-drafts/abc/convert"},
-	} {
-		if rec := env.do(route.method, route.path, `{}`, ""); rec.Code != http.StatusUnauthorized {
-			t.Fatalf("%s %s without token = %d, want 401", route.method, route.path, rec.Code)
-		}
-	}
 
 	// An unregistered project root cannot name a scope.
 	if rec := env.authed(http.MethodPost, "/api/factory/working-drafts", workingDraftCreateBody{
@@ -256,9 +242,6 @@ func TestWorkingDraftHTTPAuthAndProjectScope(t *testing.T) {
 
 func TestWorkingDraftHTTPInstallationIdentity(t *testing.T) {
 	env := newWorkingDraftHTTPEnv(t)
-	if rec := env.do(http.MethodGet, "/api/factory/working-drafts/installation", "", ""); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("installation without token = %d, want 401", rec.Code)
-	}
 	response := func(srv *Server) string {
 		t.Helper()
 		r := testRequest(http.MethodGet, "/api/factory/working-drafts/installation", nil)
@@ -296,7 +279,7 @@ func TestWorkingDraftHTTPInstallationIdentity(t *testing.T) {
 		t.Fatalf("installation id changed between reads: %q then %q", id, again)
 	}
 	// A restart over the same state directory keeps the identity.
-	restarted := NewServer(env.fleet, workingDraftHTTPToken)
+	restarted := NewServer(env.fleet)
 	restarted.workingDraftRoutes(env.store, env.conv, env.dir)
 	if reopened := response(restarted); reopened != id {
 		t.Fatalf("installation id changed across restart: %q then %q", id, reopened)
@@ -674,7 +657,7 @@ func TestWorkingDraftHTTPUnavailableStore(t *testing.T) {
 
 	// A store that could not be opened at startup registers the same routes,
 	// answering unavailable rather than 404.
-	bare := NewServer(env.fleet, workingDraftHTTPToken)
+	bare := NewServer(env.fleet)
 	bare.workingDraftRoutes(nil, nil, env.dir)
 	r := testRequest(http.MethodGet, "/api/factory/working-drafts?projectRoot="+env.root, nil)
 	r.Header.Set("Authorization", "Bearer "+workingDraftHTTPToken)

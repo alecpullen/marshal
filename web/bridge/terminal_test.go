@@ -583,7 +583,7 @@ func TestTestShellRunsTheBuiltImageWithMountsAndEnv(t *testing.T) {
 	e.builtTemplate(t, "svc", doc)
 	fs := &fakeStreamer{}
 	e.f.streamer = fs.start
-	srv := NewServer(e.f, "")
+	srv := NewServer(e.f)
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, testJSONRequest("POST", "/api/workspaces/svc/shell", `{"cols":90,"rows":20}`))
@@ -622,7 +622,7 @@ func TestTestShellOverridesTheAgentEntrypoint(t *testing.T) {
 	e.builtTemplate(t, "svc", sampleDoc("svc"))
 	fs := &fakeStreamer{}
 	e.f.streamer = fs.start
-	srv := NewServer(e.f, "")
+	srv := NewServer(e.f)
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, testRequest("POST", "/api/workspaces/svc/shell", nil))
@@ -645,7 +645,7 @@ func TestTestShellClosingKillsTheProcessAndRemovesTheContainer(t *testing.T) {
 	e.builtTemplate(t, "svc", sampleDoc("svc"))
 	fs := &fakeStreamer{}
 	e.f.streamer = fs.start
-	srv := NewServer(e.f, "")
+	srv := NewServer(e.f)
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, testRequest("POST", "/api/workspaces/svc/shell", nil))
@@ -691,7 +691,7 @@ func TestTestShellRefusesAnUnbuiltTemplate(t *testing.T) {
 	e := newWSSpawnEnv(t)
 	publishDoc(t, e.f, "raw", sampleDoc("raw"))
 	e.f.streamer = (&fakeStreamer{}).start
-	srv := NewServer(e.f, "")
+	srv := NewServer(e.f)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, testRequest("POST", "/api/workspaces/raw/shell", nil))
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "workspace_not_built") {
@@ -708,7 +708,7 @@ func TestTestShellIsLimitedToTwoPerWorkspace(t *testing.T) {
 	e := newWSSpawnEnv(t)
 	e.builtTemplate(t, "svc", sampleDoc("svc"))
 	e.f.streamer = (&fakeStreamer{}).start
-	srv := NewServer(e.f, "")
+	srv := NewServer(e.f)
 	for i, want := range []int{200, 200, 429} {
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, testRequest("POST", "/api/workspaces/svc/shell", nil))

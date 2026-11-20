@@ -23,7 +23,8 @@ import (
 const previewTokenTTL = 12 * time.Hour
 
 // previewPrefix is the path prefix of preview traffic. It sits outside
-// /api, so bearerAuth does not apply: the handler checks a token or cookie.
+// /api, so nothing in front of the mux guards it: the handler checks a token
+// or cookie.
 const previewPrefix = "/preview/"
 
 // previewAuthHeader carries the target agent's own proxy token from the

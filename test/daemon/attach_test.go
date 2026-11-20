@@ -78,7 +78,7 @@ func newDaemonHarness(t *testing.T) *daemonHarness {
 	fleet := bridge.NewFleet(ws, bin, nil, stateDir, bridge.Limits{}, "test", nil, "")
 
 	socket := filepath.Join(dir, "daemon.sock")
-	api := bridge.NewServer(fleet, "", "")
+	api := bridge.NewServer(fleet)
 	api.SetDaemonInfo(bridge.DaemonInfo{
 		Version:   "test",
 		Profile:   "local",

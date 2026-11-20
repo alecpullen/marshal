@@ -40,7 +40,7 @@ func TestReviewCommentIdleSendsPrompt(t *testing.T) {
 	f := testFleetScripted(t, tr)
 	f.audit = NewAuditLog(t.TempDir())
 	id := spawnGitAgent(t, f)
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 	rec := postBody(srv, "/api/agents/"+id+"/review/comments", goodComment)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create = %d %s", rec.Code, rec.Body)
@@ -68,7 +68,7 @@ func TestReviewCommentBusySteers(t *testing.T) {
 	rt.reg.mu.Lock()
 	rt.reg.sessions[rt.sessionID].Busy = true
 	rt.reg.mu.Unlock()
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 	if rec := postBody(srv, "/api/agents/"+id+"/review/comments", goodComment); rec.Code != http.StatusOK {
 		t.Fatalf("create = %d %s", rec.Code, rec.Body)
 	}
@@ -80,7 +80,7 @@ func TestReviewCommentBusySteers(t *testing.T) {
 func TestReviewCommentValidation(t *testing.T) {
 	f := testFleetScripted(t, &scriptedTransport{})
 	id := spawnGitAgent(t, f)
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 	for _, body := range []string{
 		`{"path":"","line":1,"side":"new","body":"x"}`,
 		`{"path":"a","line":1,"side":"new","body":""}`,
@@ -99,7 +99,7 @@ func TestReviewCommentValidation(t *testing.T) {
 func TestReviewCommentListResolveAndRemove(t *testing.T) {
 	f := testFleetScripted(t, &scriptedTransport{})
 	id := spawnGitAgent(t, f)
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 	first := `{"path":"a.go","line":1,"side":"old","body":"first"}`
 	for _, b := range []string{first, goodComment} {
 		if rec := postBody(srv, "/api/agents/"+id+"/review/comments", b); rec.Code != 200 {
@@ -174,7 +174,7 @@ func TestRecentPromptsDedupAndOrder(t *testing.T) {
 	if len(got) != 2 || got[0] != "fix bug" || got[1] != "add tests" {
 		t.Fatalf("prompts = %q", got)
 	}
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 	rec := get(srv, "GET", "/api/prompts/recent?project=%2Fp&limit=1")
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"fix bug"`) || strings.Contains(rec.Body.String(), "add tests") {
 		t.Fatalf("route = %d %s", rec.Code, rec.Body)
@@ -185,7 +185,7 @@ func TestReviewCommentStoredEvenWhenDeliveryFails(t *testing.T) {
 	tr := &scriptedTransport{errs: map[string]*rpcError{"session/prompt": {Code: -32000, Message: "boom"}}}
 	f := testFleetScripted(t, tr)
 	id := spawnGitAgent(t, f)
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 	if rec := postBody(srv, "/api/agents/"+id+"/review/comments", goodComment); rec.Code != http.StatusBadGateway {
 		t.Fatalf("create = %d %s, want 502", rec.Code, rec.Body)
 	}
@@ -203,7 +203,7 @@ func TestReviewCommentSteerFailureFallsBackToPrompt(t *testing.T) {
 	rt.reg.mu.Lock()
 	rt.reg.sessions[rt.sessionID].Busy = true
 	rt.reg.mu.Unlock()
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 	if rec := postBody(srv, "/api/agents/"+id+"/review/comments", goodComment); rec.Code != http.StatusOK {
 		t.Fatalf("create = %d %s", rec.Code, rec.Body)
 	}

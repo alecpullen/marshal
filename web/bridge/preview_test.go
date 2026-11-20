@@ -59,7 +59,7 @@ func newPreviewEnvAt(t *testing.T, port int, publicURL, host string) *previewEnv
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(e.f, "", publicURL)
+	srv := NewServer(e.f, publicURL)
 	srv.SetPreviewPort(9911)
 	pe := &previewEnv{wsSpawnEnv: e, srv: srv, id: id, port: port, now: time.Unix(1_800_000_000, 0), host: host}
 	e.f.clock = func() time.Time { return pe.now }
@@ -127,7 +127,7 @@ func TestPreviewAuthAgentWithoutAWorkspaceIs403(t *testing.T) {
 		t.Skipf("plain spawn unavailable: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	srv := NewServer(e.f, "")
+	srv := NewServer(e.f)
 	srv.SetPreviewPort(9911)
 	req := httptest.NewRequest("POST", "/api/agents/"+id+"/preview/3000", nil)
 	req.Host = "localhost"
@@ -292,7 +292,7 @@ func TestPreviewIsServedFromItsOwnOrigin(t *testing.T) {
 
 func TestPreviewIssueNeedsAPreviewListener(t *testing.T) {
 	e := newWSSpawnEnv(t)
-	srv := NewServer(e.f, "")
+	srv := NewServer(e.f)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/agents/a/preview/3000", nil)
 	req.Host = "localhost"

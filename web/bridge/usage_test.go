@@ -179,7 +179,7 @@ func TestUsagePRsShippedFromAuditAndAgents(t *testing.T) {
 
 func TestUsageRouteValidatesParams(t *testing.T) {
 	f, _ := usageFleet(t)
-	s := NewServer(f, "")
+	s := NewServer(f)
 	for path, want := range map[string]int{
 		"/api/usage":                    http.StatusOK,
 		"/api/usage?range=30d&by=model": http.StatusOK,

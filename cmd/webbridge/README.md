@@ -48,12 +48,12 @@ webbridge --socket ~/.local/share/marshal/daemon/marshal.sock --web-listen unix
   mode `0600`. An absolute socket path with `--web-group` shares it with a
   group (`0660`) instead. `--preview-addr off` disables the preview listener,
   which otherwise opens whether or not the web listener does.
-- The Studio listener's bind outcome is reported, not swallowed: `GET
-  /api/daemon` answers `studioAddr` (the address actually bound, so a
-  configured port `0` names its own) and `studioError` (why nothing bound). A
-  busy Studio port never stops the daemon — the socket is the daemon's real
-  interface — but the failure is logged at error level and repeated by
-  `marshal studio` by name, instead of surfacing as "nothing is serving".
+- The web listener's bind outcome is reported, not swallowed: `GET /api/daemon`
+  answers `webListen` (the address actually bound, so a configured port `0`
+  names its own) and `webError` (why nothing bound). A busy web port never
+  stops the daemon — the socket is the daemon's real interface — but the
+  failure is logged at error level and reported by name, instead of surfacing
+  as "nothing is serving".
 - The state directory defaults to `<data>/daemon/state` and the fleet registry
   to `<data>/daemon/fleet.json`, so a daemon and a bridge run by hand never
   share either.
@@ -68,20 +68,6 @@ webbridge --socket ~/.local/share/marshal/daemon/marshal.sock --web-listen unix
   child, beside the TUI's sessions; only plain local host agents move, and a
   git-sourced, workspace or containerized agent keeps a child each. Releasing
   an agent closes its session, never the child.
-
-### Studio sign-in
-
-The Studio is served on the `--addr` listener, and that listener's bearer token
-is long-lived. `marshal studio` never puts it in a URL: it mints a single-use
-code over the socket (`POST /api/studio/code`, socket only) and opens
-`http://<addr>/#code=<code>`. A fragment never leaves the browser, so the code
-reaches no request line and no access log. The page posts it once to `POST
-/api/studio/session` — the one `/api` route without a bearer token — and gets
-the token back in the response body. A code is deleted when redeemed and
-expires after two minutes, so one recovered from scrollback or history
-afterwards is worthless, and the exchange refuses a cross-origin caller. `GET
-/api/studio/hello` answers the daemon's identity without a secret, so the
-launcher can confirm a port belongs to this daemon before sending it anything.
 
 Two routes upgrade a marshal client onto a session and relay its frames: `POST
 /api/projects/attach` onto a project's child, and `POST

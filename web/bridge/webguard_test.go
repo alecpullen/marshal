@@ -12,7 +12,7 @@ import (
 // loopback are this daemon's, and every other name is another site's.
 func newWebListener(t *testing.T) *Server {
 	t.Helper()
-	return NewServer(testFleet(t), "", "https://studio.example.com")
+	return NewServer(testFleet(t), "https://studio.example.com")
 }
 
 // webRequest issues one request against the web listener from host, with

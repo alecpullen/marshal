@@ -69,10 +69,18 @@ func socketClient(path string) *http.Client {
 // waitForDaemon polls GET /api/daemon until the local daemon answers.
 func waitForDaemon(t *testing.T, client *http.Client) bridge.DaemonInfo {
 	t.Helper()
+	return waitForDaemonAt(t, client, "daemon")
+}
+
+// waitForDaemonAt polls GET /api/daemon at host. The daemon's own socket
+// answers any Host, its web listener only a host the daemon publishes (D13),
+// so a test waiting on web.sock names the published one.
+func waitForDaemonAt(t *testing.T, client *http.Client, host string) bridge.DaemonInfo {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	var last error
 	for time.Now().Before(deadline) {
-		resp, err := client.Get("http://daemon/api/daemon")
+		resp, err := client.Get("http://" + host + "/api/daemon")
 		if err != nil {
 			last = err
 		} else {
@@ -446,6 +454,11 @@ func TestTheLocalProfileServesItsSocket(t *testing.T) {
 // TestTheDaemonServesTheWebListener: --web-listen unix puts web.sock beside
 // the daemon's own socket, serving the API with no bearer check, while a
 // socket-only route stays 404 there (D3).
+//
+// The web listener is guarded: it answers only a host this daemon publishes
+// (D13), so the run is given --public-url http://web and the requests below
+// are addressed to that name, as a proxy in front of web.sock would address
+// it.
 func TestTheDaemonServesTheWebListener(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
@@ -456,11 +469,19 @@ func TestTheDaemonServesTheWebListener(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"--socket", socket, "--web-listen", "unix"}, io.Discard, io.Discard)
+		done <- run(ctx, []string{
+			"--socket", socket,
+			"--web-listen", "unix",
+			// The web listener answers only a host this daemon publishes
+			// (D13); "web" is the name the requests below put in the Host.
+			"--public-url", "http://web",
+		}, io.Discard, io.Discard)
 	}()
 
 	client := socketClient(web)
-	info := waitForDaemon(t, client)
+	// The web listener answers only a host the daemon publishes (D13), so
+	// it is polled at the name --public-url gave it.
+	info := waitForDaemonAt(t, client, "web")
 	if want := "unix:" + web; info.WebListen != want {
 		t.Errorf("webListen = %q, want %q", info.WebListen, want)
 	}

@@ -386,7 +386,7 @@ func TestLastJSONBlock(t *testing.T) {
 
 func TestRecipeRunRoute(t *testing.T) {
 	f, agentOf := recipeFleet(t, nil)
-	s := NewServer(f, "")
+	s := NewServer(f)
 	root := t.TempDir()
 
 	rec := doReq(t, s, http.MethodPost, "/api/recipes/summarize-changes/run",
@@ -422,7 +422,7 @@ func TestRecipeRunHonoursTheDailyBlock(t *testing.T) {
 	f.budgets.loaded = true
 	f.budgets.blockedDay = dayOf(f.now())
 	f.budgets.mu.Unlock()
-	s := NewServer(f, "")
+	s := NewServer(f)
 	rec := doReq(t, s, http.MethodPost, "/api/recipes/summarize-changes/run",
 		map[string]any{"project": t.TempDir(), "inputs": map[string]string{"since": "v1"}}, nil)
 	if rec.Code != http.StatusTooManyRequests {

@@ -1162,7 +1162,7 @@ func TestPendingSpawnRetainsCanonicalTuplePresence(t *testing.T) {
 	if !ok || p.Auto == nil || *p.Auto {
 		t.Fatalf("pending = %+v, want an explicit auto false", p)
 	}
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 	rec := doReq(t, srv, http.MethodGet, "/api/pending", nil, nil)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"auto":false`) {
 		t.Fatalf("pending output = %d %s", rec.Code, rec.Body.String())

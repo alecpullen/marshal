@@ -65,7 +65,7 @@ func TestWatchesListMergesStudioAndAgents(t *testing.T) {
 	agentOf(t, withWatch).results["session/watch_list"] = map[string]any{"watches": []map[string]any{{"id": "w9", "name": "ci"}}}
 	agentOf(t, withoutCap).results["session/watch_list"] = map[string]any{"watches": []map[string]any{{"id": "w5", "name": "never"}}}
 
-	rec := doReq(t, NewServer(f, ""), http.MethodGet, "/api/watches", nil, nil)
+	rec := doReq(t, NewServer(f), http.MethodGet, "/api/watches", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
 	}
@@ -92,7 +92,7 @@ func TestWatchesListToleratesAnUnsupportedControlAgent(t *testing.T) {
 		return nil, nil, false
 	}
 	f := ctlFleet(t, ctl)
-	rec := doReq(t, NewServer(f, ""), http.MethodGet, "/api/watches", nil, nil)
+	rec := doReq(t, NewServer(f), http.MethodGet, "/api/watches", nil, nil)
 	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
 		t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
 	}
@@ -102,7 +102,7 @@ func TestWatchesStartAndStopProxy(t *testing.T) {
 	ctl := newFakeAgent()
 	f := ctlFleet(t, ctl)
 	ctl.results["session/watch_start"] = map[string]any{"id": "w1", "name": "disk"}
-	s := NewServer(f, "")
+	s := NewServer(f)
 
 	rec := doReq(t, s, http.MethodPost, "/api/watches", map[string]any{
 		"spec": map[string]any{"name": "disk", "kind": "command", "command": "df"},
@@ -141,7 +141,7 @@ func TestWatchesStartOnAnAgentRoutesToItsSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentOf(id).results["session/watch_start"] = map[string]any{"id": "w3"}
-	s := NewServer(f, "")
+	s := NewServer(f)
 	rec := doReq(t, s, http.MethodPost, "/api/watches", map[string]any{
 		"agentId": id, "spec": map[string]any{"name": "x"},
 	}, nil)
@@ -162,7 +162,7 @@ func TestWatchesStartOnAnAgentRoutesToItsSession(t *testing.T) {
 func TestWatchesRerouteIsAllowedOnlyOnStudioWatches(t *testing.T) {
 	f, _, _ := agentFleet(t)
 	id, _ := f.Spawn(t.Context(), t.TempDir(), SpawnOptions{})
-	rec := doReq(t, NewServer(f, ""), http.MethodPost, "/api/watches", map[string]any{
+	rec := doReq(t, NewServer(f), http.MethodPost, "/api/watches", map[string]any{
 		"agentId": id, "spec": map[string]any{"name": "x"},
 		"onTrip": map[string]any{"reroute": map[string]any{"role": "implementer", "preset": "fast"}},
 	}, nil)
@@ -187,7 +187,7 @@ func newRoutingHarness(t *testing.T) *routingHarness {
 	t.Helper()
 	ctl := newFakeAgent()
 	f := ctlFleet(t, ctl)
-	h := &routingHarness{t: t, f: f, ctl: ctl, s: NewServer(f, ""), profiles: map[string]map[string]json.RawMessage{
+	h := &routingHarness{t: t, f: f, ctl: ctl, s: NewServer(f), profiles: map[string]map[string]json.RawMessage{
 		"main": {
 			"implementer": json.RawMessage(`{"preset":"slow"}`),
 			"reviewer":    json.RawMessage(`{"preset":"slow"}`),

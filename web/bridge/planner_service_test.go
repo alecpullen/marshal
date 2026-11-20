@@ -494,7 +494,7 @@ func TestPlannerSeparateWorkspaceDefault(t *testing.T) {
 		// — proof the route exists and that nothing is silently substituted.
 		t.Setenv(plannerAdapterEnv, "")
 		before := countWorkspaceDirs(t, env.stateDir)
-		srv := NewServer(env.fleet, "")
+		srv := NewServer(env.fleet)
 		r := testJSONRequest(http.MethodPost, "/api/planners", env.createBody(nil))
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, r)

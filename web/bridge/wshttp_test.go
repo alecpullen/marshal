@@ -15,7 +15,7 @@ import (
 func wsServer(t *testing.T) (*Server, *wsSpawnEnv) {
 	t.Helper()
 	e := newWSSpawnEnv(t)
-	return NewServer(e.f, ""), e
+	return NewServer(e.f), e
 }
 
 func TestWorkspacesHTTPLifecycle(t *testing.T) {

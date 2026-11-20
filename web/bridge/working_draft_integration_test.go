@@ -73,7 +73,7 @@ func newE2EService(t *testing.T) *e2eService {
 
 // open starts the bridge over the state directory: the store is opened from its
 // journal, the converter is built over it and the fake preflight, and the
-// working-draft routes go on a mux the test's server wraps in bearer auth.
+// working-draft routes go on a mux the test's server serves.
 func (s *e2eService) open() {
 	s.t.Helper()
 	store, err := OpenWorkingDraftStore(s.dir, workingDraftTestClock())
@@ -85,7 +85,7 @@ func (s *e2eService) open() {
 	srv := &Server{fleet: s.fleet, mux: mux}
 	srv.workingDraftRoutes(store, conversion, s.dir)
 	s.store, s.conversion = store, conversion
-	s.server = httptest.NewServer(bearerAuth(workingDraftHTTPToken, mux))
+	s.server = httptest.NewServer(mux)
 }
 
 // close stops the server and releases the store's ownership lock, so a restart

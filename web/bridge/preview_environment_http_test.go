@@ -17,7 +17,7 @@ func previewRouteFixture(t *testing.T, fixture previewForgeFixture) (*Server, *F
 	srv, requests := discoveryRecordingServer(t, fixture.handler(t))
 	repo := discoveryTestRepo("github", srv.URL)
 	fleet, ws := previewReportFleet(t, repo, ptrCredential(previewReportPAT()))
-	return NewServer(fleet, ""), fleet, ws, repo, requests
+	return NewServer(fleet), fleet, ws, repo, requests
 }
 
 // previewRoutePath is the route under test.
@@ -114,7 +114,7 @@ func TestPreviewRouteForwardsRefAndSHA(t *testing.T) {
 // server has no credential store, so the route reports the capability absent
 // rather than panicking.
 func TestPreviewRouteRequiresFleet(t *testing.T) {
-	s, _, _, _ := newTestServer(t, "")
+	s, _, _, _ := newTestServer(t)
 
 	rec := doReq(t, s, http.MethodGet, "/api/repos/repo-1/preview-environments", nil, nil)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -163,27 +163,6 @@ func TestPreviewRouteMethodMismatch(t *testing.T) {
 	}
 	if got := len(requests()); got != 0 {
 		t.Errorf("a POST made %d forge requests, want none", got)
-	}
-}
-
-// TestPreviewRouteHonoursBearerAuth pins that the route sits behind the shared
-// /api bearer check: it needs no auth code of its own and cannot be reached
-// unauthenticated when the server has a token.
-func TestPreviewRouteHonoursBearerAuth(t *testing.T) {
-	const token = "preview-route-token"
-	srv, _ := discoveryRecordingServer(t, previewForgeFixture{defaultBranch: "main"}.handler(t))
-	repo := discoveryTestRepo("github", srv.URL)
-	fleet, _ := previewReportFleet(t, repo, ptrCredential(previewReportPAT()))
-	s := NewServer(fleet, token)
-
-	if rec := doReq(t, s, http.MethodGet, previewRoutePath(repo), nil, nil); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated GET preview-environments = %d, want 401 (body %s)", rec.Code, rec.Body.String())
-	}
-	rec := doReq(t, s, http.MethodGet, previewRoutePath(repo), nil, map[string]string{
-		"Authorization": "Bearer " + token,
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("authenticated GET preview-environments = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -247,7 +226,7 @@ func TestPreviewRouteInternalFailureIs500(t *testing.T) {
 
 	fleet := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "", nil, "")
 	t.Cleanup(fleet.Close)
-	s := NewServer(fleet, "")
+	s := NewServer(fleet)
 
 	rec := doReq(t, s, http.MethodGet, "/api/repos/repo-unidentifiable/preview-environments", nil, nil)
 	if rec.Code == http.StatusBadGateway {

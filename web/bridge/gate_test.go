@@ -10,7 +10,7 @@ import (
 func serveAgent(t *testing.T, tr *scriptedTransport) (*Server, string, *Fleet) {
 	t.Helper()
 	f := testFleetScripted(t, tr)
-	return NewServer(f, ""), spawnGitAgent(t, f), f
+	return NewServer(f), spawnGitAgent(t, f), f
 }
 
 func get(srv *Server, method, path string) *httptest.ResponseRecorder {

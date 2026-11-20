@@ -123,7 +123,7 @@ func TestScheduleRunNowRoute(t *testing.T) {
 	f, _ := recipeFleet(t, blockPrompt(release))
 	scheduleRecipe(t, f)
 	putSchedule(t, f, Schedule{ID: "s1", Project: t.TempDir(), Cron: "@daily", Enabled: false})
-	s := NewServer(f, "")
+	s := NewServer(f)
 
 	rec := doReq(t, s, http.MethodPost, "/api/schedules/s1/run", nil, nil)
 	if rec.Code != http.StatusAccepted {
@@ -144,7 +144,7 @@ func TestScheduleRunNowRoute(t *testing.T) {
 func TestScheduleRoutesAndValidation(t *testing.T) {
 	f, _ := recipeFleet(t, nil)
 	scheduleRecipe(t, f)
-	s := NewServer(f, "")
+	s := NewServer(f)
 	root := t.TempDir()
 	good := map[string]any{"name": "Nightly", "recipe": "nightly", "project": root, "cron": "0 3 * * *",
 		"inputs": map[string]string{"since": "1d"}, "enabled": true}
@@ -218,7 +218,7 @@ func TestScheduleHistoryWritesDoNotUndoAConcurrentEdit(t *testing.T) {
 	scheduleRecipe(t, f)
 	root := t.TempDir()
 	putSchedule(t, f, Schedule{ID: "s1", Project: root, Cron: "@daily", Enabled: true})
-	s := NewServer(f, "")
+	s := NewServer(f)
 
 	stop := make(chan struct{})
 	done := make(chan struct{})

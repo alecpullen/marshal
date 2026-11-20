@@ -19,8 +19,8 @@ import (
 // newTestServer wires a registry-mode fake child through the whole
 // stack — Registry, EventLog, Attach — before Start (Attach documents
 // the hooks must be installed before traffic), then builds the HTTP
-// server. An empty token means unauthenticated.
-func newTestServer(t *testing.T, token string, transport ...agentTransport) (*Server, *Registry, *EventLog, *Child) {
+// server.
+func newTestServer(t *testing.T, transport ...agentTransport) (*Server, *Registry, *EventLog, *Child) {
 	t.Helper()
 	c := newTestChild(t, "registry")
 	if len(transport) > 0 {
@@ -38,7 +38,7 @@ func newTestServer(t *testing.T, token string, transport ...agentTransport) (*Se
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(c.Stop)
-	return NewServer(r, l, token), r, l, c
+	return NewServer(r, l), r, l, c
 }
 
 // doReq issues one request against the server and records the response.
@@ -102,7 +102,7 @@ func TestHTTPFleetSessionRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(f, "")
+	s := NewServer(f)
 
 	rec := doReq(t, s, http.MethodGet, "/api/sessions?cwd=/home/u/a", nil, nil)
 	if rec.Code != http.StatusOK {
@@ -126,7 +126,7 @@ func TestSessionStackRoute(t *testing.T) {
 		{"unsupported", "s-1", &rpcError{Code: -32601, Message: "method not found"}, http.StatusNotImplemented, `{"error":"stack_unsupported"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, reg, _, _ := newTestServer(t, "", &captureTransport{stackResult: json.RawMessage(testStackResult), stackError: tc.rpcErr})
+			s, reg, _, _ := newTestServer(t, &captureTransport{stackResult: json.RawMessage(testStackResult), stackError: tc.rpcErr})
 			reg.track("s-1", AgentPath("/tmp/work"))
 			rec := doReq(t, s, http.MethodGet, "/api/sessions/"+tc.id+"/stack", nil, nil)
 			if rec.Code != tc.status || strings.TrimSpace(rec.Body.String()) != tc.body {
@@ -139,26 +139,8 @@ func TestSessionStackRoute(t *testing.T) {
 	}
 }
 
-func TestHTTPServerAuth(t *testing.T) {
-	s, _, _, _ := newTestServer(t, "tok")
-
-	rec := doReq(t, s, http.MethodGet, "/api/sessions?cwd=/tmp", nil, nil)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no token: status = %d, want 401", rec.Code)
-	}
-	if strings.Contains(rec.Body.String(), "tok") {
-		t.Error("401 body leaks the token")
-	}
-
-	rec = doReq(t, s, http.MethodGet, "/api/sessions?cwd=/tmp", nil,
-		map[string]string{"Authorization": "Bearer tok"})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("valid token: status = %d, want 200", rec.Code)
-	}
-}
-
 func TestHTTPListSessions(t *testing.T) {
-	s, _, _, _ := newTestServer(t, "")
+	s, _, _, _ := newTestServer(t)
 
 	rec := doReq(t, s, http.MethodGet, "/api/sessions", nil, nil)
 	if rec.Code != http.StatusBadRequest {
@@ -180,7 +162,7 @@ func TestHTTPListSessions(t *testing.T) {
 }
 
 func TestHTTPNewSession(t *testing.T) {
-	s, r, _, _ := newTestServer(t, "")
+	s, r, _, _ := newTestServer(t)
 
 	rec := doReq(t, s, http.MethodPost, "/api/sessions", map[string]string{}, nil)
 	if rec.Code != http.StatusBadRequest {
@@ -211,7 +193,7 @@ func TestHTTPNewSession(t *testing.T) {
 }
 
 func TestHTTPSessionLifecycle(t *testing.T) {
-	s, r, l, c := newTestServer(t, "")
+	s, r, l, c := newTestServer(t)
 	ctx, cancel := testContext(t)
 	defer cancel()
 
@@ -292,7 +274,7 @@ func TestHTTPSessionLifecycle(t *testing.T) {
 }
 
 func TestHTTPLoadSession(t *testing.T) {
-	s, r, l, c := newTestServer(t, "")
+	s, r, l, c := newTestServer(t)
 	ctx, cancel := testContext(t)
 	defer cancel()
 
@@ -343,7 +325,7 @@ func TestHTTPLoadSession(t *testing.T) {
 }
 
 func TestHTTPConfig(t *testing.T) {
-	s, _, _, _ := newTestServer(t, "")
+	s, _, _, _ := newTestServer(t)
 	rec := doReq(t, s, http.MethodGet, "/api/config", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("config: status = %d, want 200", rec.Code)
@@ -360,23 +342,16 @@ func TestHTTPConfig(t *testing.T) {
 }
 
 func TestHTTPMethodMismatch(t *testing.T) {
-	s, _, _, _ := newTestServer(t, "")
+	s, _, _, _ := newTestServer(t)
 	// Go 1.22 mux method patterns reject the wrong verb with 405.
 	rec := doReq(t, s, http.MethodGet, "/api/sessions/s-1/prompt", nil, nil)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET on POST route: status = %d, want 405", rec.Code)
 	}
-	// Auth runs before method routing: with a token set, even a
-	// method-mismatched /api request must 401 without credentials.
-	s2, _, _, _ := newTestServer(t, "tok")
-	rec = doReq(t, s2, http.MethodGet, "/api/sessions/s-1/prompt", nil, nil)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("method mismatch without token: status = %d, want 401", rec.Code)
-	}
 }
 
 func TestHTTPChildErrorMaps502(t *testing.T) {
-	s, _, _, c := newTestServer(t, "")
+	s, _, _, c := newTestServer(t)
 	// Kill the child so requests fail at the transport layer; the
 	// writeErr default branch must map that to 502.
 	c.Stop()
@@ -387,7 +362,7 @@ func TestHTTPChildErrorMaps502(t *testing.T) {
 }
 
 func TestHTTPValidationRejections(t *testing.T) {
-	s, r, _, _ := newTestServer(t, "")
+	s, r, _, _ := newTestServer(t)
 	ctx, cancel := testContext(t)
 	defer cancel()
 	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
@@ -411,7 +386,7 @@ func TestHTTPValidationRejections(t *testing.T) {
 }
 
 func TestHTTPPromptBusyConflict(t *testing.T) {
-	s, r, _, _ := newTestServer(t, "")
+	s, r, _, _ := newTestServer(t)
 	ctx, cancel := testContext(t)
 	defer cancel()
 	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
@@ -454,7 +429,7 @@ func TestEventLogTailOrdering(t *testing.T) {
 }
 
 func TestHTTPResolvePermission(t *testing.T) {
-	s, r, _, c := newTestServer(t, "")
+	s, r, _, c := newTestServer(t)
 	ctx, cancel := testContext(t)
 	defer cancel()
 
@@ -495,7 +470,7 @@ func TestHTTPMergeRefusalMapsTo409(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, testJSONRequest("POST", "/api/agents/"+id+"/merge", `{}`))
@@ -517,7 +492,7 @@ func TestHTTPDiffRoutesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, testRequest("GET", "/api/agents/"+id+"/diff", nil))
@@ -529,7 +504,7 @@ func TestHTTPDiffRoutesThrough(t *testing.T) {
 func TestHTTPExitRoutesThrough(t *testing.T) {
 	f := testFleetWithGate(t, gateResult{OK: false, FailedCommand: "go test ./..."})
 	id := spawnGitAgent(t, f)
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, testJSONRequest("POST", "/api/agents/"+id+"/exit", `{"commitMessage":"work"}`))
@@ -546,7 +521,7 @@ func TestHTTPExitRoutesThrough(t *testing.T) {
 func TestHTTPPatchRoutesThrough(t *testing.T) {
 	f := testFleetWithGate(t, gateResult{OK: true})
 	id := spawnGitAgent(t, f)
-	srv := NewServer(f, "")
+	srv := NewServer(f)
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, testRequest("GET", "/api/agents/"+id+"/patch", nil))
@@ -559,7 +534,7 @@ func TestHTTPPatchRoutesThrough(t *testing.T) {
 }
 
 func TestHTTPResolveQuestion(t *testing.T) {
-	s, r, _, c := newTestServer(t, "")
+	s, r, _, c := newTestServer(t)
 	ctx, cancel := testContext(t)
 	defer cancel()
 
@@ -603,17 +578,6 @@ func TestCreateClientReturnsTheTokenExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestPendingEndpointsAreUnderAPIAuth(t *testing.T) {
-	s := testServerWithToken(t, "shared")
-	for _, path := range []string{"/api/pending", "/api/clients"} {
-		rec := httptest.NewRecorder()
-		s.ServeHTTP(rec, testRequest("GET", path, nil))
-		if rec.Code != http.StatusUnauthorized {
-			t.Errorf("%s answered %d without a token, want 401", path, rec.Code)
-		}
-	}
-}
-
 func postJSON(t *testing.T, s *Server, path, body string) map[string]any {
 	t.Helper()
 	req := testJSONRequest("POST", path, body)
@@ -642,16 +606,7 @@ func testServerWithAudit(t *testing.T) *Server {
 	t.Helper()
 	f := testFleet(t)
 	f.audit = NewAuditLog(t.TempDir())
-	return NewServer(f, "")
-}
-
-func TestAuditEndpointRequiresAuth(t *testing.T) {
-	s := testServerWithToken(t, "shared")
-	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, testRequest("GET", "/api/audit", nil))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status %d without a token, want 401", rec.Code)
-	}
+	return NewServer(f)
 }
 
 func TestAuditEndpointBoundsTheLimit(t *testing.T) {
@@ -680,7 +635,7 @@ func TestSessionProxyRoutes(t *testing.T) {
 	for _, rt := range routes {
 		t.Run(rt.feature, func(t *testing.T) {
 			const body = `{"ok":true}`
-			s, reg, _, _ := newTestServer(t, "", &captureTransport{results: map[string]json.RawMessage{rt.method: json.RawMessage(body)}})
+			s, reg, _, _ := newTestServer(t, &captureTransport{results: map[string]json.RawMessage{rt.method: json.RawMessage(body)}})
 			reg.track("s-1", AgentPath("/tmp/work"))
 			if rec := doReq(t, s, http.MethodGet, fmt.Sprintf(rt.path, "s-1"), nil, nil); rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != body {
 				t.Fatalf("ok: %d %s", rec.Code, rec.Body.String())
@@ -688,7 +643,7 @@ func TestSessionProxyRoutes(t *testing.T) {
 			if rec := doReq(t, s, http.MethodGet, fmt.Sprintf(rt.path, "nope"), nil, nil); rec.Code != http.StatusNotFound {
 				t.Fatalf("unknown: %d", rec.Code)
 			}
-			s, reg, _, _ = newTestServer(t, "", &captureTransport{errs: map[string]*rpcError{rt.method: {Code: -32601, Message: "method not found"}}})
+			s, reg, _, _ = newTestServer(t, &captureTransport{errs: map[string]*rpcError{rt.method: {Code: -32601, Message: "method not found"}}})
 			reg.track("s-1", AgentPath("/tmp/work"))
 			rec := doReq(t, s, http.MethodGet, fmt.Sprintf(rt.path, "s-1"), nil, nil)
 			if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), rt.feature+"_unsupported") {
@@ -700,7 +655,7 @@ func TestSessionProxyRoutes(t *testing.T) {
 
 func TestSessionNodeIDSurvivesRoundTrip(t *testing.T) {
 	tr := &captureTransport{results: map[string]json.RawMessage{"session/stack_node": json.RawMessage(`{}`)}}
-	s, reg, _, _ := newTestServer(t, "", tr)
+	s, reg, _, _ := newTestServer(t, tr)
 	reg.track("s-1", AgentPath("/tmp/work"))
 	doReq(t, s, http.MethodGet, "/api/sessions/s-1/nodes/tool%3A40%3Acall_1", nil, nil)
 	tr.mu.Lock()
@@ -712,7 +667,7 @@ func TestSessionNodeIDSurvivesRoundTrip(t *testing.T) {
 }
 
 func TestSessionStackBadSubagent(t *testing.T) {
-	s, reg, _, _ := newTestServer(t, "", &captureTransport{})
+	s, reg, _, _ := newTestServer(t, &captureTransport{})
 	reg.track("s-1", AgentPath("/tmp/work"))
 	if rec := doReq(t, s, http.MethodGet, "/api/sessions/s-1/stack?subagent=abc", nil, nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d", rec.Code)
@@ -738,7 +693,7 @@ func TestSessionRosterRoute(t *testing.T) {
 			if tc.rpcErr != nil {
 				ct.errs = map[string]*rpcError{"session/agents_roster": tc.rpcErr}
 			}
-			s, reg, _, _ := newTestServer(t, "", ct)
+			s, reg, _, _ := newTestServer(t, ct)
 			reg.track("s-1", AgentPath("/tmp/work"))
 			rec := doReq(t, s, http.MethodGet, "/api/sessions/"+tc.id+"/roster", nil, nil)
 			if rec.Code != tc.status || strings.TrimSpace(rec.Body.String()) != tc.body {
@@ -755,7 +710,7 @@ func TestAccessRouteReadsFullState(t *testing.T) {
 	tr := &captureTransport{results: map[string]json.RawMessage{
 		"session/access_state": json.RawMessage(`{"mode":"act","auto":true,"system_access":false,"access_revision":9}`),
 	}}
-	s, reg, _, _ := newTestServer(t, "", tr)
+	s, reg, _, _ := newTestServer(t, tr)
 	reg.track("s-1", AgentPath("/tmp/work"))
 
 	rec := doReq(t, s, http.MethodGet, "/api/sessions/s-1/access", nil, nil)
@@ -787,7 +742,7 @@ func TestAccessRouteForwardsPatch(t *testing.T) {
 	tr := &captureTransport{results: map[string]json.RawMessage{
 		"session/set_mode": json.RawMessage(`{"mode":"act","auto":false,"system_access":false,"access_revision":5}`),
 	}}
-	s, reg, _, _ := newTestServer(t, "", tr)
+	s, reg, _, _ := newTestServer(t, tr)
 	reg.track("s-1", AgentPath("/tmp/work"))
 
 	rec := doReq(t, s, http.MethodPatch, "/api/sessions/s-1/access", map[string]any{"auto": false}, nil)
@@ -825,7 +780,7 @@ func TestAccessRouteForwardsPatch(t *testing.T) {
 // client that misspells a field is never told its patch was applied.
 func TestAccessRouteRejectsNullPatch(t *testing.T) {
 	tr := &captureTransport{}
-	s, reg, _, _ := newTestServer(t, "", tr)
+	s, reg, _, _ := newTestServer(t, tr)
 	reg.track("s-1", AgentPath("/tmp/work"))
 
 	for _, tc := range []struct{ name, body string }{
@@ -917,7 +872,7 @@ func TestSubagentSteerRouteForwards(t *testing.T) {
 	tr := &captureTransport{results: map[string]json.RawMessage{
 		"session/subagent_steer": json.RawMessage(`{"requestId":"req-1","status":"accepted"}`),
 	}}
-	s, reg, _, _ := newTestServer(t, "", tr)
+	s, reg, _, _ := newTestServer(t, tr)
 	reg.track("s-1", AgentPath("/tmp/work"))
 
 	rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/subagents/7/steer",
@@ -963,7 +918,7 @@ func TestSubagentCancelRouteUsesTheExistingControl(t *testing.T) {
 	tr := &captureTransport{results: map[string]json.RawMessage{
 		"session/subagent_cancel": json.RawMessage(`{"cancelled":true}`),
 	}}
-	s, reg, _, _ := newTestServer(t, "", tr)
+	s, reg, _, _ := newTestServer(t, tr)
 	reg.track("s-1", AgentPath("/tmp/work"))
 
 	rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/subagents/3/cancel", nil, nil)
@@ -1008,7 +963,7 @@ func TestSubagentCancelRouteUsesTheExistingControl(t *testing.T) {
 // ID that is not a positive integer, or a body missing its request or text, is
 // refused here and never forwarded.
 func TestSubagentRoutesRejectMalformedIDs(t *testing.T) {
-	s, reg, _, _ := newTestServer(t, "", &captureTransport{})
+	s, reg, _, _ := newTestServer(t, &captureTransport{})
 	reg.track("s-1", AgentPath("/tmp/work"))
 
 	for _, tc := range []struct{ name, path, body, code string }{
@@ -1056,20 +1011,13 @@ func TestSubagentRoutesAreAuthorizedAndSessionScoped(t *testing.T) {
 		"session/subagent_steer":  json.RawMessage(`{"requestId":"r","status":"accepted"}`),
 		"session/subagent_cancel": json.RawMessage(`{"cancelled":true}`),
 	}}
-	s, reg, _, _ := newTestServer(t, "tok", tr)
+	s, reg, _, _ := newTestServer(t, tr)
 	reg.track("s-1", AgentPath("/tmp/one"))
 	reg.track("s-2", AgentPath("/tmp/two"))
 	auth := map[string]string{"Authorization": "Bearer tok"}
 
-	// No token: refused before the session is even resolved.
-	rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/subagents/1/steer",
-		map[string]any{"requestId": "r", "message": "hi"}, nil)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no token: status = %d, want 401", rec.Code)
-	}
-
 	// A session this bridge does not serve: 404, with nothing forwarded.
-	rec = doReq(t, s, http.MethodPost, "/api/sessions/nope/subagents/1/steer",
+	rec := doReq(t, s, http.MethodPost, "/api/sessions/nope/subagents/1/steer",
 		map[string]any{"requestId": "r", "message": "hi"}, auth)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown session: status = %d, want 404 (body %s)", rec.Code, rec.Body.String())
@@ -1119,7 +1067,7 @@ func TestSubagentSteerUnsupportedIsNotAConflict(t *testing.T) {
 	tr := &captureTransport{errs: map[string]*rpcError{
 		"session/subagent_steer": {Code: rpcMethodNotFound, Message: "method not found: session/subagent_steer"},
 	}}
-	s, reg, _, _ := newTestServer(t, "", tr)
+	s, reg, _, _ := newTestServer(t, tr)
 	reg.track("s-1", AgentPath("/tmp/work"))
 
 	rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/subagents/9/steer",
@@ -1181,7 +1129,7 @@ func TestSubagentSteerRefusalsAreDistinct(t *testing.T) {
 			tr := &captureTransport{errs: map[string]*rpcError{
 				"session/subagent_steer": {Code: rpcServerError, Message: tc.message},
 			}}
-			s, reg, _, _ := newTestServer(t, "", tr)
+			s, reg, _, _ := newTestServer(t, tr)
 			reg.track("s-1", AgentPath("/tmp/work"))
 
 			rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/subagents/9/steer",
@@ -1210,7 +1158,7 @@ func TestSubagentSteerRefusalsAreDistinct(t *testing.T) {
 func TestSubagentSteerLostReplyIsConnectionLoss(t *testing.T) {
 	var sent atomic.Int64
 	tr := silentTransport{captureTransport: &captureTransport{}, method: "session/subagent_steer", sent: &sent}
-	s, reg, _, _ := newTestServer(t, "", tr)
+	s, reg, _, _ := newTestServer(t, tr)
 	reg.track("s-1", AgentPath("/tmp/work"))
 
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
@@ -1241,7 +1189,7 @@ func TestSubagentSteerLostReplyIsConnectionLoss(t *testing.T) {
 // but carries no acceptance: it is not reported as one.
 func TestSubagentSteerWithoutAnAcceptanceIsNotSuccess(t *testing.T) {
 	// The fake child's default answer to an unknown method is an empty object.
-	s, reg, _, _ := newTestServer(t, "", &captureTransport{})
+	s, reg, _, _ := newTestServer(t, &captureTransport{})
 	reg.track("s-1", AgentPath("/tmp/work"))
 
 	rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/subagents/5/steer",

@@ -689,7 +689,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// Run due schedules. Fleet mode only: registry mode has no scheduler.
 	fleet.StartScheduler(nil)
 
-	api := bridge.NewServer(fleet, "", cfg.publicURL, bridge.NewFactoryAPI(factoryStore, factoryController, fleet))
+	api := bridge.NewServer(fleet, cfg.publicURL, bridge.NewFactoryAPI(factoryStore, factoryController, fleet))
 
 	// serveErr carries the first listener to stop serving. The socket and
 	// the web listener can both exist, so it holds two, and each goroutine

@@ -146,7 +146,7 @@ func TestNetLogRequestsAreTodaysNewestFirstAndCapped(t *testing.T) {
 
 func TestNetworkHTTPViews(t *testing.T) {
 	f := testFleetWithAudit(t)
-	s := NewServer(f, "")
+	s := NewServer(f)
 	f.netlog = NewNetLog(t.TempDir())
 	now := time.Now()
 	f.netlog.Append([]EgressRecord{
@@ -216,7 +216,7 @@ func TestNetworkHTTPDecisions(t *testing.T) {
 	if err := f.StartEgress(ctx); err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(f, "")
+	s := NewServer(f)
 	f.ws.PutAgent(Agent{ID: "a1", Project: "/p", OwnerID: DefaultOwnerID})
 	f.egress.register(ctx, "a1", "dev", EgressSpec{Mode: EgressModeAllowlist, Allow: []string{"example.com"}})
 	post := func(body map[string]string) (int, string) {
@@ -307,7 +307,7 @@ func TestNetworkPendingListsUndecidedBlocks(t *testing.T) {
 	if err := f.StartEgress(ctx); err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(f, "")
+	s := NewServer(f)
 	f.ws.PutAgent(Agent{ID: "a1", Project: "/p", OwnerID: DefaultOwnerID})
 	f.egress.register(ctx, "a1", "dev", EgressSpec{Mode: EgressModeAllowlist})
 	f.noteBlocked("a1", "evil.com")

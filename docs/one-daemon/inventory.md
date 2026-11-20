@@ -62,6 +62,8 @@ Plan: [plans/2026-11-20-od-1-one-daemon-plan.md](plans/2026-11-20-od-1-one-daemo
 
 ## Plan 2 — Hosts over SSH (D6–D9, D15)
 
+Plan: [plans/2026-11-20-od-2-hosts-over-ssh-plan.md](plans/2026-11-20-od-2-hosts-over-ssh-plan.md).
+
 ### Go
 
 | File | Lines | Action | What |
@@ -71,24 +73,26 @@ Plan: [plans/2026-11-20-od-1-one-daemon-plan.md](plans/2026-11-20-od-1-one-daemo
 | `internal/fleetprofile/profile.go` | 307 / 450 | Reshape | `[hosts.NAME]` with `ssh`, `marshal` and `notify`. Refuse `[servers.*]`, `url`, `ca_file`, `token_cmd` and `relay` (D6). `checkURL`, `checkRelay`, `checkURLOrRelay` and `isLoopbackHost` (`:211–287`) go. |
 | `internal/fleetprofile/edit.go` | 250 / 393 | Reshape | `AddServer` and `RemoveServer` write host tables. `deleteToken` (`:203`) goes. |
 | `internal/daemon/client.go` | 1,049 / 1,318 | Cut | `Remote` and `remoteTLSConfig` (`:105–184`, 80 lines), and the bearer headers at `:531`, `:817` and `:1012`. A remote host is `NewClient(<tunnel socket>)`. |
-| `internal/fleetclient/client.go` | 961 / 1,652 | Cut | The `HTTPS` transport (`:66–115`) and the bearer header in `authorize` (`:508–522`). The `Socket` transport covers every host. |
-| `internal/launch/fleet.go` | 139 | Reshape | `ServerFleet` (`:101–139`) becomes a host fleet over the tunnel socket. `withTokenStore` and `withTokenRunner` (`:27–38`) go. |
-| `internal/launch/launch.go` | — | Cut | The `tokenStore` and `tokenRunner` options (`:86–87`). |
-| `cmd/marshal/main.go` | — | Cut / Reshape | `fleet login`, `fleet token`, `fleetLoginStore`, `fleetTokenStore`, `fleetTokenRunner` (`:36–46`) and `readFleetToken` go. `add` loses `--ca-file` and `--relay` and gains `DEST` and `--marshal`. `--server` becomes `--host`. |
-| `cmd/marshal/daemon.go` | — | Cut | `join-token` (`:95`) and `token` (`:97`). |
-| `cmd/marshal/fleet_cli_test.go` | — / 469 | Reshape | Follows the subcommands. |
-| Tunnel helper | — | Add | `marshal daemon tunnels` (D7), started by the bridge as `bridge.Helper` beside the refresh helper (`cmd/webbridge/main.go:983`). It needs a socket-only route for its reports. |
-| `DaemonInfo.hosts` | — | Add | A field in `web/bridge/contract`, printed by `marshal daemon status`. Regenerate `contract.g.dart`. |
+| `internal/fleetclient/client.go` | 961 / 1,652 | Cut | The `HTTPS` transport (`:66–115`), `Transport.Token`, and the bearer header in `authorize` (`:508–522`). The `Socket` transport covers every host. The 401 handling and the rejected state stay until plan 3. |
+| `internal/launch/fleet.go` | 139 | Reshape | `ServerFleet` (`:101–139`) and `remoteTarget` go. `Fleet` takes `WithHost(name)` for a tunnel socket. `withTokenStore` and `withTokenRunner` (`:27–38`) go. |
+| `internal/launch/launch.go`, `daemon.go` | — | Cut | The `remote`, `tokenStore` and `tokenRunner` options (`:81–87`), and the `remote` branches in `daemon.go`. |
+| `cmd/marshal/main.go` | — | Cut / Reshape | `fleet login`, `fleet token`, `fleet servers`, `--json`, `fleetServerRunner`, `fleetLoginStore`, `fleetTokenStore`, `fleetTokenRunner` (`:32–46`), `FleetServers` and `readFleetToken` go. `add` loses `--ca-file` and `--relay` and gains `DEST` and `--marshal`. `--server` becomes `--host`. `fleetStdoutIsTerminal` stays: `marshal daemon token` uses it until plan 3. |
+| `cmd/marshal/fleet_cli_test.go`, `main_test.go` | — / 469, — | Reshape | Follow the subcommands. |
+| `internal/launch/fleet_test.go` | — | Reshape | The `TestAServerFleet…` tests (`:383–700`) become host tests. |
+| `test/daemon/server_profile_test.go` | — / 324 | Delete | Replaced by a host-fleet test over a second socket. |
+| `internal/tunnels` | — | Add | The helper body (D7): the ssh commands, the per-host supervisor, and the reporter. |
+| Tunnel helper | — | Add | `marshal daemon tunnels --socket PATH` (`cmd/marshal/daemon.go`), started by `webbridge --tunnels` as a `bridge.Helper` beside the refresh helper (`cmd/webbridge/main.go:983`). The unit writes `--tunnels`. It reports with a socket-only `PUT /api/daemon/hosts` (`web/bridge/daemonhosts.go`). |
+| `DaemonInfo.hosts` | — | Add | `DaemonHost` and `DaemonHostsReport` in `web/bridge/contract`, printed by `marshal daemon status`. Regenerate `contract.g.dart` and `test/contract/daemon-status.json`. |
 
 ### Dart
 
 | File | Lines | Action | What |
 |---|---:|---|---|
-| `app/lib/src/client/transport_io.dart` | 173 / 193 | Cut | `serverTransport`: HTTPS, the token callback and `caFile`. `unixTransport` stays. |
+| `app/lib/src/client/transport_io.dart`, `transport.dart`, `transport_stub.dart` | 173 / 193 | Cut | `serverTransport` and `TokenProvider`: HTTPS, the token callback and `caFile`. `unixTransport` stays. |
 | `app/lib/src/client/host_discovery_io.dart` | 151 / 110 | Reshape | Discovery is the local daemon, then each host in its status document. Running `fleet servers --json`, the server profiles and the relayed profiles all go. |
 | `app/lib/src/client/fleet_profiles.dart`, `_io.dart`, `_stub.dart` | 40, 99, 29 / 125 | Reshape | Add takes `NAME DEST`. There is no `login`. |
-| `app/lib/src/model/hosts_model.dart` | 217 / 244 | Reshape | `token`, `caFile`, `signIn`, `signOut`, `storeToken` and `clearToken` go. The SSH destination, the state and the last error come in. |
-| `app/lib/src/ui/settings/hosts_section.dart` | 483 | Reshape | D15's form and detail. The Sign in and Sign out rows go. |
+| `app/lib/src/model/hosts_model.dart` | 217 / 244 | Reshape | `HostDraft`'s `url`, `caFile` and `token`, the login after an add, and the native Sign in go. The SSH destination and each host's tunnel (state, last error, since) come in. The browser's `storeToken`, `clearToken`, `signIn` and `signOut` stay until plan 3. |
+| `app/lib/src/ui/settings/hosts_section.dart` | 483 | Reshape | D15's form and detail. Sign in shows only where the browser keeps a token, until plan 3. |
 | `app/test/ui/settings_test.dart`, `app/test/support/screens.dart` | — / 441, 2,295 | Reshape | The Hosts fixtures and their states. |
 
 ## Plan 3 — The web listener (D2, D3, D10–D14)
@@ -114,6 +118,8 @@ Plan: [plans/2026-11-20-od-1-one-daemon-plan.md](plans/2026-11-20-od-1-one-daemo
 | `internal/app/config` | — | Reshape | `studio_addr`, `join_url`, `join_name` and `join_ca_file` (27 references across `defaults.go`, `file_types.go`, `merge.go`, `save.go` and `types.go`) become `web_listen`, `web_group` and `web_url`. |
 | `web/bridge/contract` | — | Reshape | `DaemonInfo.studioAddr` and `studioError` become `webListen` and `webError`. `DaemonJoin` goes, and `RelayHosts` becomes `Hosts`. Regenerate `contract.g.dart`. |
 | `cmd/marshal/studio.go` | 154 / 131 | Reshape | D14. |
+| `cmd/marshal/daemon.go`, `main.go` | — | Cut | `marshal daemon join-token` (`daemon.go:95`) and `marshal daemon token` (`:97`), moved here from plan 2, and `fleetStdoutIsTerminal` (`main.go:51`), which only `daemon token` uses after plan 2. |
+| `internal/fleetclient`, `internal/acpclient/fleet.go`, `internal/app/tui/fleet` | — | Cut | The fleet client's 401 handling (`unauthorized`, `reject`), `acpclient.FleetRejected` and the fleet screen's two cases for it (`events.go:63`, `view.go:836`). Moved here from plan 2: after it, nothing the client dials answers 401. |
 | Web listener | — | Add | The unix socket or loopback listener, with its mode and group, refusing any other address (D3, D10). Also `GET /api/hosts`, and the preview listener's own setting (D11). |
 | `marshal mcp` | — | Add | Only if open question 2 is accepted. |
 
@@ -130,6 +136,7 @@ Plan: [plans/2026-11-20-od-1-one-daemon-plan.md](plans/2026-11-20-od-1-one-daemo
 | `app/lib/src/ui/kit/state_message.dart` | — | Reshape | The text of `StateMessage.unauthorized` (D13). The 21 screens that show it are unchanged. |
 | `app/lib/src/ui/debug/connection_check.dart` | 189 | Reshape | "token refused" (`:161`). |
 | `app/lib/main.dart` | 824 | Cut | The host-token wiring (`:11`, `:761–762`). |
+| `app/lib/src/model/hosts_model.dart`, `app/lib/src/ui/settings/hosts_section.dart` | — | Cut | The browser's `storeToken`, `clearToken`, `signIn`, `signOut` and `canSignOut`, and the detail's Token field, Sign in and Sign out. Plan 2 left them for relayed hosts. |
 
 ### Tests, CI and release
 

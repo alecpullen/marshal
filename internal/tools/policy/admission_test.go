@@ -9,6 +9,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/interaction"
 	"marshal/internal/permissions"
+	"marshal/internal/tools/registry"
 )
 
 type fakeLease struct{ released bool }
@@ -43,6 +44,88 @@ func admissionFixture(t *testing.T) (*Authorizer, *fakeAuthority) {
 		lease: &fakeLease{},
 	}
 	return NewAuthorizer(pe, auth), auth
+}
+
+// TestValidatedTargetsDecideNonShellScope pins that a caller's validated
+// targets — the ones the tool's own resolver accepted for this operation —
+// decide whether a non-shell write needs System. An approved additional write
+// root and a read-only reference are indistinguishable from the argument
+// spelling, and policy must not demand System for work the tool will do.
+func TestValidatedTargetsDecideNonShellScope(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.Deny.Patterns = nil
+	pe := NewEngine(&cfg, nil)
+	// The engine classifies a tool by its registered risk, so the tool under
+	// test must be registered as the workspace write it really is.
+	reg := registry.New()
+	if err := reg.Register(registry.Tool{
+		Name: "file.write",
+		Risk: registry.RiskWorkspaceWrite,
+		// The engine reads only the risk; the handler exists because a
+		// registrable tool must be dispatchable.
+		Handler: func(context.Context, registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register file.write: %v", err)
+	}
+	pe.WithRegistry(reg)
+	az := NewAuthorizer(pe, &fakeAuthority{
+		snap:  interaction.Snapshot{Access: interaction.State{Mode: interaction.ModeAct, Revision: 1}},
+		lease: &fakeLease{},
+	})
+
+	permitted := Call{
+		InvocationID: "inv-granted",
+		ToolName:     "file.write",
+		Args:         map[string]any{"path": "/elsewhere/granted.txt", "content": "x"},
+		Targets: []ShellTarget{{
+			Path:      "/elsewhere/granted.txt",
+			Effect:    ShellWrite,
+			Validated: true,
+		}},
+	}
+	if _, ev, err := az.Evaluate(context.Background(), permitted); err != nil {
+		t.Fatalf("Evaluate(permitted): %v", err)
+	} else if ev.Decision != DecisionAllow || ev.Required.System {
+		t.Fatalf("permitted write = %q (System=%v), want allow with no System", ev.Decision, ev.Required.System)
+	}
+
+	// The same argument spelling, but nothing proved the tool may write it: an
+	// unvalidated unknown target fails closed onto the System requirement.
+	unplaced := Call{
+		InvocationID: "inv-unknown",
+		ToolName:     "file.write",
+		Args:         map[string]any{"path": "/elsewhere/granted.txt", "content": "x"},
+		Targets:      []ShellTarget{{Path: "/elsewhere/granted.txt", Scope: ShellScopeUnknown, Effect: ShellWrite}},
+	}
+	if _, ev, err := az.Evaluate(context.Background(), unplaced); err != nil {
+		t.Fatalf("Evaluate(unplaced): %v", err)
+	} else if ev.Decision != DecisionConfirm || !ev.Required.System {
+		t.Fatalf("unplaced write = %q (System=%v), want confirm requiring System", ev.Decision, ev.Required.System)
+	}
+}
+
+// TestFingerprintBindsValidatedTargets pins that the targets an evaluation
+// bound cannot be retargeted between evaluation and admission.
+func TestFingerprintBindsValidatedTargets(t *testing.T) {
+	az, _ := admissionFixture(t)
+	call := Call{
+		InvocationID: "inv-1",
+		ToolName:     "file.write",
+		Args:         map[string]any{"path": "/elsewhere/a.txt", "content": "x"},
+		Targets:      []ShellTarget{{Path: "/elsewhere/a.txt", Effect: ShellWrite, Validated: true}},
+	}
+	proof, _, err := az.Evaluate(context.Background(), call)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	retargeted := call
+	retargeted.Targets = []ShellTarget{{Path: "/elsewhere/b.txt", Effect: ShellWrite, Validated: true}}
+	ctx := WithAuthorization(context.Background(), proof)
+	if _, err := az.BeginTool(ctx, retargeted); !errors.Is(err, ErrStaleAdmission) {
+		t.Fatalf("retargeted write = %v, want ErrStaleAdmission", err)
+	}
 }
 
 func TestAdmissionBindsExactInvocationCommandAndDirectory(t *testing.T) {

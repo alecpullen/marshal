@@ -1166,7 +1166,12 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		JobBroker:         jobBroker,
 		CommandAdmission:  rootAuthorizer.BeginCommand,
 		CommandAuthorizer: rootAuthorizer,
-		Images:            images,
+		// Setup hooks are admitted by the same live authority an ordinary
+		// shell.run is judged against, but through their own seam: the
+		// privileged CommandAuthorizer prompt must never be borrowed to admit
+		// one.
+		SetupAuthorizer: rootAuthorizer,
+		Images:          images,
 	}
 	if len(additionalDirs) > 0 {
 		nativeOpts.AdditionalRoots = additionalDirs
@@ -2096,6 +2101,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		planAuthorizer := policy.NewAuthorizer(childPol, childState.InteractionAuthority())
 		nativeOpts.CommandAdmission = planAuthorizer.BeginCommand
 		nativeOpts.CommandAuthorizer = planAuthorizer
+		nativeOpts.SetupAuthorizer = planAuthorizer
 		if err := native.RegisterAll(childReg, nativeOpts); err != nil {
 			return nil, fmt.Errorf("plan author registry: register: %w", err)
 		}
@@ -2208,6 +2214,7 @@ func makePipelineRegistryFactory(cfg config.Config, state *session.State, pol *p
 			childAuthorizer := policy.NewAuthorizer(childPol, childState.InteractionAuthority())
 			nativeOpts.CommandAdmission = childAuthorizer.BeginCommand
 			nativeOpts.CommandAuthorizer = childAuthorizer
+			nativeOpts.SetupAuthorizer = childAuthorizer
 		}
 		// When the pipeline runs in a worktree (WorkspaceRoot != RepoRoot),
 		// expose the project root so workers can read files outside the
@@ -2455,6 +2462,7 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 				childPol.WithRegistry(childReg)
 				childAuthorizer := policy.NewAuthorizer(childPol, childState.InteractionAuthority())
 				childOpts.CommandAdmission = childAuthorizer.BeginCommand
+				childOpts.SetupAuthorizer = childAuthorizer
 			}
 			if err := native.RegisterAll(childReg, childOpts); err != nil {
 				return nil, nil, fmt.Errorf("agent.run: child registry: %w", err)

@@ -217,16 +217,17 @@ func (t *toolSet) configuredTestCommand() string {
 // and the environment the analysis reads. Everything is resolved here, before
 // the authorizer evaluates the command, so a workspace or config change after
 // admission cannot redirect work that was already approved.
+//
+// A proof attached by dispatch already captured the shell facts it evaluated:
+// those are deep-copied and admitted as they are, so a later mutation through
+// either the proof or the launcher cannot retarget a command that was already
+// approved.
 func (t *toolSet) commandAttempt(ctx context.Context, toolName, invocationID, command string) policy.CommandAttempt {
-	// A proof attached by dispatch already captured the shell facts it
-	// evaluated: admit exactly those, under that proof's logical identity,
-	// rather than re-deriving a second description of the same command. The
-	// captured command bytes are the ones that were approved.
 	if input, ok := policy.ShellInputFromContext(ctx); ok {
 		attempt := policy.CommandAttempt{
 			InvocationID: policy.InvocationID(ctx),
 			ToolName:     toolName,
-			Input:        input,
+			Input:        cloneShellInput(input),
 		}
 		if attempt.InvocationID == "" {
 			attempt.InvocationID = invocationID
@@ -257,10 +258,29 @@ func (t *toolSet) commandAttempt(ctx context.Context, toolName, invocationID, co
 			Dir:           dir,
 			WorkspaceRoot: workspace,
 			HomeDir:       home,
-			ReadRoots:     append([]string(nil), t.additionalRoots...),
+			ReadRoots:     t.commandReadRoots(),
 			Env:           knownEnvironment(),
 		},
 	}
+}
+
+// cloneShellInput deep-copies prepared facts so that admitting them cannot
+// reach back into the proof (or the launcher's copy) through a shared slice or
+// map. The nil/non-nil distinction of Environment is preserved: an
+// intentionally empty captured environment stays empty, and nil keeps the
+// legacy "the runner decides" spelling.
+func cloneShellInput(in policy.ShellInput) policy.ShellInput {
+	out := in
+	out.ReadRoots = append([]string(nil), in.ReadRoots...)
+	if in.Env != nil {
+		env := make(map[string]string, len(in.Env))
+		for key, value := range in.Env {
+			env[key] = value
+		}
+		out.Env = env
+	}
+	out.Environment = cloneEnv(in.Environment)
+	return out
 }
 
 // knownEnvironment is the environment map the shell analysis expands against.
@@ -335,14 +355,32 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, toolName, c
 		return registry.ToolResult{}, fmt.Errorf("shell execution is unavailable: this registry has no command admission")
 	}
 	attempt := t.commandAttempt(ctx, toolName, callID, command)
+	// The bytes this call would run and the bytes its approval prepared must be
+	// the same bytes. A mismatch means two different commands are in play — an
+	// edited or stale proof — and neither may be launched on the other's
+	// approval.
+	accepted := attempt.Input
+	if strings.TrimSpace(accepted.Command) != command {
+		return registry.ToolResult{}, fmt.Errorf(
+			"%s: this call would run %q but its approval prepared %q; refusing to launch either",
+			toolName, command, strings.TrimSpace(accepted.Command))
+	}
+	if strings.TrimSpace(accepted.Dir) == "" {
+		return registry.ToolResult{}, fmt.Errorf("%s: the prepared command has no working directory", toolName)
+	}
 	admit := func(admitCtx context.Context) (*policy.Admission, error) {
 		return t.commandAdmission(admitCtx, attempt)
 	}
 
 	operation, _ := session.OperationFromContext(ctx)
+	// Command, Dir and Environment come from the accepted attempt, never from a
+	// fresh root read: a workspace or config change between preparation and
+	// insertion must not move the directory or the environment of a command that
+	// was already approved.
 	info, err := t.jobManager.Launch(ctx, LaunchSpec{
-		Command:        command,
-		Dir:            t.commandRoot(),
+		Command:        strings.TrimSpace(accepted.Command),
+		Dir:            accepted.Dir,
+		Environment:    accepted.Environment,
 		Runner:         t.runner,
 		MaxOutputBytes: t.maxOutputBytes,
 		Stdout:         t.activeCallWriter(callID),

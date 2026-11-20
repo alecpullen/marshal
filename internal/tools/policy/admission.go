@@ -250,7 +250,8 @@ func fingerprintCall(call Call) [32]byte {
 		ToolName     string
 		Shell        *ShellInput
 		Args         map[string]any
-	}{call.InvocationID, call.ToolName, call.Shell, call.Args}
+		Targets      []ShellTarget
+	}{call.InvocationID, call.ToolName, call.Shell, call.Args, call.Targets}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		// Unmarshalable arguments must not silently collapse two distinct

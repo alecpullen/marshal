@@ -6,17 +6,17 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/interaction"
+	"marshal/internal/tools/registry"
 )
 
 // ShellInput is everything the analyzer needs to resolve one command.
-type ShellInput struct {
-	Command       string
-	Dir           string
-	WorkspaceRoot string
-	HomeDir       string
-	ReadRoots     []string
-	Env           map[string]string
-}
+//
+// It is the registry's prepared CommandFacts rather than a second description
+// of the same command: native preparation, policy evaluation and launch must
+// judge one value, so a field added for preparation is a field the analyzer
+// reads. The captured Environment rides along for launch but is excluded from
+// the evaluation fingerprint (json:"-"); only the analyzed Env is bound.
+type ShellInput = registry.CommandFacts
 
 // ShellWord is one decoded shell word. Text is the printed form; Value is the
 // decoded literal when Known. SingleField reports whether the word expands to
@@ -69,6 +69,14 @@ type ShellTarget struct {
 	WorkspaceRoot  bool
 	EntireRootHome bool
 	RawDisk        bool
+	// Validated reports that the caller resolved this target with the tool's
+	// own path resolver (registry.Tool.ResolvePath), so Path is exactly the
+	// file the tool would touch and the operation is one the tool permits.
+	// Policy honors a validated target instead of re-deriving a scope from the
+	// argument spelling: an approved additional write root and a read-only
+	// reference are indistinguishable from the path text alone, and only the
+	// tool knows which of them it may write.
+	Validated bool
 }
 
 // ReasonCode is a stable policy reason identifier. Message wording never

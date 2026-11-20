@@ -347,3 +347,52 @@ func TestManagedCommandMissingAuthorityFailsClosed(t *testing.T) {
 		t.Fatalf("ActiveCount = %d, want 0", got)
 	}
 }
+
+// TestManagedCommandRejectsMismatchedProofBytes pins that the bytes a handler
+// would run must be the bytes its approval prepared. A proof attached for one
+// command cannot launch another: the two are different commands, and neither
+// may run on the other's consent.
+func TestManagedCommandRejectsMismatchedProofBytes(t *testing.T) {
+	root := t.TempDir()
+	runner := newFakeRunner(withResult(CommandResult{ExitCode: 0}))
+	jm := newTestCommandService(t, runner, root, nil, nil)
+	admission := newTestAdmission(t, true)
+	reg := registerManagedCommands(t, root, runner, jm, nil, admission.admit)
+	tool, ok := reg.Lookup("shell.run")
+	if !ok {
+		t.Fatal("shell.run is not registered")
+	}
+
+	prepared, err := tool.PrepareCommand(context.Background(), registry.ToolCall{
+		ID: "inv-1", Name: "shell.run", Args: []byte(`{"command":"echo approved"}`),
+	})
+	if err != nil {
+		t.Fatalf("PrepareCommand: %v", err)
+	}
+	proof, evaluation, err := admission.authorizer.Evaluate(context.Background(), policy.Call{
+		InvocationID: "inv-1", ToolName: "shell.run", Shell: &prepared,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if evaluation.Decision != policy.DecisionAllow {
+		t.Fatalf("decision = %q, want allow", evaluation.Decision)
+	}
+
+	ctx := policy.WithAuthorization(context.Background(), proof)
+	_, err = tool.Handler(ctx, registry.ToolCall{
+		ID: "inv-1", Name: "shell.run", Args: []byte(`{"command":"echo other"}`),
+	})
+	if err == nil {
+		t.Fatal("a handler ran bytes its approval never prepared")
+	}
+	if !strings.Contains(err.Error(), "refusing to launch") {
+		t.Fatalf("err = %v, want an explicit refusal of the mismatch", err)
+	}
+	if got := runner.countRuns(); got != 0 {
+		t.Fatalf("runner runs = %d, want 0: neither command may launch", got)
+	}
+	if got := jm.ActiveCount(); got != 0 {
+		t.Fatalf("ActiveCount = %d, want 0", got)
+	}
+}

@@ -143,6 +143,14 @@ type Options struct {
 	// nil authorizer fails closed.
 	CommandAuthorizer CommandAuthorizer
 
+	// SetupAuthorizer evaluates and admits a fresh worktree's setup hooks
+	// (RunSetupPlan). It is the bounded actor's own authorizer — the same live
+	// authority and configuration an ordinary shell.run is judged against — and
+	// is deliberately separate from CommandAuthorizer, whose prompt collects
+	// privileged consent and must never be borrowed to admit a hook. A nil
+	// authorizer refuses every hook: setup never launches an unadmitted command.
+	SetupAuthorizer *policy.Authorizer
+
 	// Symbols answers symbol-name lookups for the `symbols` tool: through a
 	// language server when one is ready, else through the symbol index. Set
 	// unconditionally; the query tolerates a nil language-server handle.
@@ -288,6 +296,10 @@ type toolSet struct {
 	// shell.sudo's combined password prompt collects the command consent. nil
 	// fails closed.
 	commandAuthorizer CommandAuthorizer
+
+	// setupAuthorizer admits a fresh worktree's setup hooks. nil refuses every
+	// hook rather than launching an unadmitted command.
+	setupAuthorizer *policy.Authorizer
 
 	config config.Config
 
@@ -547,6 +559,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 
 		commandAdmission:       opts.CommandAdmission,
 		commandAuthorizer:      opts.CommandAuthorizer,
+		setupAuthorizer:        opts.SetupAuthorizer,
 		webEnabled:             opts.Config.Web.Enabled,
 		webFetchTimeout:        opts.Config.Web.FetchTimeout,
 		webSearchURL:           opts.Config.Web.SearchURL,

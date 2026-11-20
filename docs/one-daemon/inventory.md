@@ -123,6 +123,8 @@ D12 (the Studio served from files) was split out into plan 4 while planning.
 | `internal/fleetclient`, `internal/acpclient/fleet.go`, `internal/app/tui/fleet` | — | Cut | The fleet client's 401 handling (`unauthorized`, `reject`), `acpclient.FleetRejected` and the fleet screen's two cases for it (`events.go:63`, `view.go:836`). Moved here from plan 2: after it, nothing the client dials answers 401. |
 | Web listener | — | Add | The unix socket or loopback listener, with its mode and group, refusing any other address (D3, D10). Also `GET /api/hosts`, and the preview listener's own setting (D11). |
 | `marshal mcp` | — | Add | Open question 2, accepted: `cmd/marshal/mcp.go` and `daemon.Client.PostMCP`. |
+| `web/bridge/webguard.go` | — | Add | The web listener's guard: the `Host` allow-list, the cross-site refusal and the JSON-only API body (D13, added after approval). |
+| `scripts/studio-smoke.sh` | — | Add (plan 4) | CI serves the Studio build from a real daemon and checks the guard. Plan 4's CI task also runs the browser tests in Chrome. |
 | `web/bridge/weblisten.go`, `hostforward.go` | — | Add | `ParseWebListen`, `ListenWeb` and `CheckLoopback`; `GET /api/hosts` and the forward to the tunnel sockets, refusing socket-only routes. |
 | `web/bridge/preview.go` | — | Reshape | `SetPreviewURL`, for a proxy that publishes previews on a hostname of their own. The preview listener opens whether or not the web listener does. |
 

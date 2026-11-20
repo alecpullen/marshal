@@ -1,6 +1,7 @@
 # One daemon plan 5: retire the containerized daemon, and sweep the docs — implementation plan
 
-Date: 2026-11-20. Status: approved 2026-11-20.
+Date: 2026-11-20. Status: approved 2026-11-20. Amended 2026-11-20: Task 4's
+browser section also covers the guard, streaming and sign-out through a proxy.
 
 Base: `main` at `bbdc4486`, with plans [1](2026-11-20-od-1-one-daemon-plan.md)
 to [4](2026-11-20-od-4-studio-as-files-plan.md) applied first. Every anchor
@@ -270,7 +271,18 @@ block:
      authenticates. Give one short example each for Tailscale Serve and Caddy;
    - let `/hooks/`, `/status/` and `/mcp` through without the proxy's login;
    - publish previews on a second hostname with `preview_listen` and
-     `preview_url` (D11).
+     `preview_url` (D11);
+   - set `web_url` to exactly the address the proxy publishes. The web
+     listener answers only that host and the loopback names, and refuses a
+     cross-site state-changing request (plan 3's guard). Say what the refusal
+     reads, so a misconfigured proxy is recognisable;
+   - turn off response buffering for `/api/`, because the event streams must
+     flush as they are written: `proxy_buffering off;` in nginx, and
+     `flush_interval -1` in Caddy;
+   - keep the proxy's idle timeout above 30 s, because the streams send a
+     heartbeat every 25 s;
+   - a proxy that answers an expired session with a redirect to its login page
+     is read by the Studio as "signed out", and a reload signs in again.
 5. **MCP clients:** `marshal mcp --credential-file` on the server, or over
    SSH: `ssh box marshal mcp --credential-file …` as the client's command.
 6. **The agent image:** unchanged, link to `docs/AGENT-IMAGE.md`.

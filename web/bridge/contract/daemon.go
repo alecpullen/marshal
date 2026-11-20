@@ -85,6 +85,14 @@ type HostList struct {
 	Hosts []DaemonHost `json:"hosts"`
 }
 
+// HostAdd is POST /api/hosts's body: a host to add to fleet.toml on this
+// daemon's machine (one-daemon D15, plan 7).
+type HostAdd struct {
+	Name    string `json:"name"`
+	SSH     string `json:"ssh"`
+	Marshal string `json:"marshal,omitempty"`
+}
+
 // DaemonChild is one project child as GET /api/daemon reports it.
 type DaemonChild struct {
 	Root       string          `json:"root"`

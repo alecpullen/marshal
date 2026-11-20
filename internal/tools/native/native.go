@@ -335,9 +335,11 @@ type toolSet struct {
 
 	// repositoryMu guards repositories, the per-root cache of canonical
 	// repository identities. An empty entry records a root that is not a git
-	// checkout, so the failed lookup is paid once rather than on every call.
-	repositoryMu sync.Mutex
-	repositories map[string]string
+	// checkout, so the failed lookup is paid once rather than on every call,
+	// and only for repositoryMissTTL: a failure is not an identity.
+	repositoryMu     sync.Mutex
+	repositories     map[string]string
+	repositoryMisses map[string]time.Time
 
 	config config.Config
 
@@ -520,12 +522,22 @@ type repositoryIdentifier interface {
 	RepositoryID(dir string) (string, error)
 }
 
+// repositoryMissTTL is how long a failed repository-identity lookup for one root
+// is trusted as "this is not a git checkout". It bounds both costs: a transient
+// git failure cannot be cached as an identity for the life of the process, and a
+// genuinely non-git workspace pays one git subprocess per TTL rather than one
+// per operation.
+var repositoryMissTTL = 5 * time.Second
+
 // repositoryFor returns the canonical repository identity of root, or "" when
 // this registration cannot identify one. An empty identity means the root is
 // not a git checkout (or the seam is a test fake with no repository), and the
 // caller takes no cross-process lease rather than claiming one it cannot
-// publish. The answer is cached per root: it cannot change for the life of a
-// checkout, and the lookup shells out to git.
+// publish. A successful answer is cached per root: it cannot change for the life
+// of a checkout, and the lookup shells out to git. A FAILED lookup is remembered
+// for repositoryMissTTL only, because caching a transient failure as "" would
+// claim the root is not a checkout and drop the cross-process lease for the life
+// of the process.
 func (t *toolSet) repositoryFor(root string) string {
 	if t == nil || t.gitOps == nil {
 		return ""
@@ -540,6 +552,10 @@ func (t *toolSet) repositoryFor(root string) string {
 		t.repositoryMu.Unlock()
 		return repository
 	}
+	if at, ok := t.repositoryMisses[key]; ok && time.Since(at) < repositoryMissTTL {
+		t.repositoryMu.Unlock()
+		return ""
+	}
 	t.repositoryMu.Unlock()
 
 	identifier, ok := t.gitOps.(repositoryIdentifier)
@@ -547,12 +563,17 @@ func (t *toolSet) repositoryFor(root string) string {
 		return ""
 	}
 	repository, err := identifier.RepositoryID(root)
-	if err != nil {
-		repository = ""
-	}
 	t.repositoryMu.Lock()
+	defer t.repositoryMu.Unlock()
+	if err != nil {
+		if t.repositoryMisses == nil {
+			t.repositoryMisses = make(map[string]time.Time)
+		}
+		t.repositoryMisses[key] = time.Now()
+		return ""
+	}
+	delete(t.repositoryMisses, key)
 	t.repositories[key] = repository
-	t.repositoryMu.Unlock()
 	return repository
 }
 

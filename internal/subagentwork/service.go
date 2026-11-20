@@ -2,6 +2,7 @@ package subagentwork
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,11 @@ import (
 // owned child branch is derived from it plus the stable task key, so a repeated
 // admission derives the same branch and can never mint a second one.
 const subagentBranchPrefix = "marshal/subagent/"
+
+// completionAttempts bounds the completion write's retries. Each attempt costs
+// one store read and one workspace observation, and a stale revision is only
+// ever taken by another observation of the same record, so a handful is ample.
+const completionAttempts = 3
 
 // Git is the git seam the service needs: the existing worktree seam plus the
 // identity and history reads a durable record requires. Every method takes the
@@ -347,25 +353,37 @@ func (s *Service) Complete(ctx context.Context, ownerSessionID, taskKey string, 
 	if !validOutcome(outcome) {
 		return Record{}, fmt.Errorf("subagentwork: unknown execution outcome %q", outcome)
 	}
-	rec, err := s.store.Get(ctx, ownerSessionID, taskKey)
-	if err != nil {
-		return Record{}, err
-	}
-	rec.Outcome = outcome
-	if completion.ReportMessageID > 0 {
-		rec.ReportMessageID = completion.ReportMessageID
-	}
-	if completion.Verification != nil {
-		rec.Verification = cloneVerification(completion.Verification)
-	}
-	rec = s.observe(rec)
+	// A concurrent observation of this same record (agent.await's task-key
+	// lookup, a repeated agent.run) can take the revision between this read and
+	// the write. A lost CAS must not lose the completion: the record would go on
+	// saying "running" and the retained report id would be gone with it, so
+	// re-read, re-apply and try again on a stale revision.
+	var lastErr error
+	for attempt := 0; attempt < completionAttempts; attempt++ {
+		rec, err := s.store.Get(ctx, ownerSessionID, taskKey)
+		if err != nil {
+			return Record{}, err
+		}
+		rec.Outcome = outcome
+		if completion.ReportMessageID > 0 {
+			rec.ReportMessageID = completion.ReportMessageID
+		}
+		if completion.Verification != nil {
+			rec.Verification = cloneVerification(completion.Verification)
+		}
+		rec = s.observe(rec)
 
-	written, err := s.store.CompareAndSwap(ctx, rec, rec.Revision)
-	if err != nil {
-		return Record{}, fmt.Errorf("subagentwork: record completion: %w", err)
+		written, err := s.store.CompareAndSwap(ctx, rec, rec.Revision)
+		if err == nil {
+			s.publish(written)
+			return written, nil
+		}
+		if !errors.Is(err, ErrStaleRecord) {
+			return Record{}, fmt.Errorf("subagentwork: record completion: %w", err)
+		}
+		lastErr = err
 	}
-	s.publish(written)
-	return written, nil
+	return Record{}, fmt.Errorf("subagentwork: record completion: %w", lastErr)
 }
 
 // observe fills the record's evidence from the workspace as it actually is now.

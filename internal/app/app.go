@@ -1331,9 +1331,13 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	isolatedSupported := native.SupportsLinkedWorktrees(commandRunner)
 	// A conversation owner reconciles what a PREVIOUS process left active. A
 	// rebuild borrows the live service and its records, so it skips this and
-	// never mistakes a config reload for a restart.
+	// never mistakes a config reload for a restart. The gate is passed so the
+	// reconciliation takes the same root leases a mutation would; on a target
+	// another process holds it observes nothing rather than guessing.
 	if owned {
-		reconcileRestoredSubagentWorkspaces(ctx, commandService.subagentWorkspaceStore(database), state)
+		reconcileRestoredSubagentWorkspaces(ctx, workspaceService,
+			commandService.subagentWorkspaceStore(database),
+			workspaceGate.lifecycleMutationDeps(commandService), state)
 	}
 	// The parent-only lifecycle tools. They are registered in the ordinary
 	// parent registry — the same one every other runtime tool lands in — and the

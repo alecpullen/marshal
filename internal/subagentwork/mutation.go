@@ -233,6 +233,26 @@ func (s *Service) attemptIntegration(ctx context.Context, git MutationGit, deps 
 	if err := s.requireCleanSource(git, prepared.SourceRoot); err != nil {
 		return s.refuse(ctx, rec, KindIntegrate, m, err, "")
 	}
+	// A previous attempt may have died between journalling its intent and
+	// aborting a conflicting merge, leaving the target mid-merge. That merge is
+	// this record's own, and only an admission — which this retry carries — can
+	// settle it, so prove and restore it here rather than refuse a target this
+	// operation wedged. The facts are re-read afterwards: the restored target is
+	// what the rest of the attempt must judge.
+	settled, err := s.settleOwnInterruptedMerge(git, rec, prepared.TargetRoot)
+	if err != nil {
+		return s.refuse(ctx, rec, KindIntegrate, m, err, "")
+	}
+	if settled {
+		prepared, err = s.prepareMutationRecord(rec)
+		if err != nil {
+			return s.refuse(ctx, rec, KindIntegrate, m, err, "")
+		}
+		if prepared.SourceHead != m.ExpectedHead {
+			return s.refuse(ctx, rec, KindIntegrate, m, fmt.Errorf(
+				"subagentwork: the child workspace moved from the reviewed candidate %s to %s", m.ExpectedHead, prepared.SourceHead), "")
+		}
+	}
 	if err := s.requireCleanTarget(git, prepared.TargetRoot); err != nil {
 		return s.refuse(ctx, rec, KindIntegrate, m, err, "")
 	}
@@ -420,6 +440,59 @@ func (s *Service) settleFailedMerge(ctx context.Context, git MutationGit, rec Re
 		intent.ExpectedSource, intent.BeforeTarget, strings.Join(info.Conflicts, ", "), cause)
 }
 
+// settleOwnInterruptedMerge restores a target left mid-merge by this record's
+// own interrupted integration, and reports whether it did.
+//
+// It aborts only a merge it can prove is this operation's: MERGE_HEAD is the
+// recorded candidate and HEAD is still the recorded before-target. Anything
+// else — a foreign merge, or one whose facts no longer match — is left exactly
+// as it is and reported, because another operation's merge is not this one's to
+// cancel.
+//
+// It takes no proof of its own: the caller holds the exclusive idle lease on the
+// roots and this restores state the operation itself created, changing nothing
+// the user wrote. The fresh admission still precedes every new merge, so
+// settling here can never stand in for one.
+func (s *Service) settleOwnInterruptedMerge(git MutationGit, rec Record, targetRoot string) (bool, error) {
+	if rec.Integration == nil || rec.Integration.Kind != KindIntegrate {
+		return false, nil
+	}
+	switch rec.Integration.State {
+	case IntegrationIntent, IntegrationUnknown:
+	default:
+		return false, nil
+	}
+	if rec.Integration.ExpectedSource == "" || rec.Integration.BeforeTarget == "" {
+		return false, nil
+	}
+	state, err := git.MergeState(targetRoot)
+	if err != nil {
+		return false, fmt.Errorf("subagentwork: read the merge state of %s: %w", targetRoot, err)
+	}
+	if state == "" {
+		return false, nil
+	}
+	info := worktree.ParseMergeState(state)
+	head, headErr := s.git.RevParse(targetRoot, "HEAD")
+	if headErr != nil {
+		return false, fmt.Errorf("subagentwork: read the head of %s: %w", targetRoot, headErr)
+	}
+	if head != rec.Integration.BeforeTarget || !info.HasHead(rec.Integration.ExpectedSource) {
+		return false, fmt.Errorf("subagentwork: %s holds a merge this operation cannot prove it owns (merging %v at %s); settle or abort it by hand before integrating",
+			targetRoot, info.Heads, head)
+	}
+	if err := git.MergeAbort(targetRoot); err != nil {
+		return false, fmt.Errorf("subagentwork: abort the interrupted merge in %s: %w", targetRoot, err)
+	}
+	restored, rerr := s.git.RevParse(targetRoot, "HEAD")
+	after, aerr := git.MergeState(targetRoot)
+	if rerr != nil || aerr != nil || restored != rec.Integration.BeforeTarget || after != "" {
+		return false, fmt.Errorf("subagentwork: %s could not be restored to %s after aborting the interrupted merge (head %q, merge state %q)",
+			targetRoot, rec.Integration.BeforeTarget, restored, after)
+	}
+	return true, nil
+}
+
 // settleIntegrated persists the integration result before touching any artifact,
 // then removes the owned source.
 func (s *Service) settleIntegrated(ctx context.Context, git MutationGit, deps MutationDeps, rec Record, integ Integration, targetRoot string, proof *mutationProof) (Record, error) {
@@ -525,7 +598,15 @@ func (s *Service) Discard(ctx context.Context, m Mutation, deps MutationDeps) (R
 		return journalled, fmt.Errorf("subagentwork: commit the mutation admission: %w", err)
 	}
 	if err := s.cleanupSource(ctx, git, prepared.TargetRoot, journalled, true); err != nil {
+		// The discard itself is settled: the candidate will never be integrated,
+		// and a cleanup step failed. Journaling that settled state (rather than
+		// the bare intent) is what makes a retry reach resumeCleanup, whose
+		// cleanupSource already tolerates an already-removed worktree or branch.
+		// Leaving it at intent would send the retry back through
+		// prepareMutationRecord, which fails on the root this attempt removed,
+		// and the refusal would then overwrite the only record of the operation.
 		pending := intent
+		pending.State = IntegrationDiscarded
 		pending.Reason = "cleanup pending: " + err.Error()
 		written, werr := s.writeMutation(ctx, journalled, pending, CleanupRetained)
 		if werr != nil {
@@ -739,8 +820,12 @@ func (s *Service) refuse(ctx context.Context, rec Record, kind string, m Mutatio
 	if cleanup == "" {
 		cleanup = CleanupRetained
 	}
-	// A settled receipt is not overwritten by a later refusal.
-	if rec.Integration != nil && rec.Integration.State != IntegrationIntent {
+	// A refusal never writes over an operation the record already holds. A
+	// settled receipt is not overwritten by a later refusal, and an unsettled
+	// intent or unknown is the only proof of what the operation was doing —
+	// which is exactly what a later recovery needs in order to settle the
+	// target. Only a task with no recorded operation at all gets the refusal.
+	if rec.Integration != nil {
 		return rec, cause
 	}
 	integ := Integration{

@@ -408,6 +408,15 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		if cfg.workspaces.wired() && mode == subagentwork.ModeIsolated && !cfg.workspaces.isolatedSupported {
 			return registry.ToolResult{}, errors.New("agent.run: isolated worktrees are unavailable on this execution backend; pass \"workspace\": \"shared\" if the child may work in your checkout")
 		}
+		// A build with no workspace service cannot allocate the worktree an
+		// isolated child needs. The omitted default keeps the pre-cutover
+		// binding such builds have always used, but an explicit request for
+		// isolation is refused rather than quietly run in the parent's
+		// checkout: the caller asked for a different operation, and a shared run
+		// that reported success would be a lie about where the work happened.
+		if !cfg.workspaces.wired() && mode == subagentwork.ModeIsolated && args.Workspace != nil {
+			return registry.ToolResult{}, errors.New("agent.run: isolated workspaces are unavailable in this build (no workspace service is wired); omit \"workspace\" to run the child in the captured checkout")
+		}
 		// One logical dispatch owns one task. The identity is derived from the
 		// execution facts before any workspace exists; a repeat of the same call
 		// observes the record it already has and starts nothing.
@@ -665,7 +674,11 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			// The workspace's actual evidence is read once, here: after the
 			// child's run and before the report is written, so the report, the
 			// retained record and the card name the same candidate.
-			record = cfg.workspaces.observe(childCtx, state, record)
+			//
+			// It is a LOCAL, never an assignment to the captured record: the
+			// dispatch handler builds its receipt from that record, and this
+			// goroutine has no happens-before edge with that read.
+			observed := cfg.workspaces.observe(childCtx, state, record)
 			// The child's images ride its report, the same way its text does:
 			// taken here, once, so nothing between the child settling and the
 			// report being persisted can consume or lose them.
@@ -681,7 +694,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			// The report carries the workspace identity the receipt named, so a
 			// parent reading the report never has to reconstruct the task key,
 			// mode, root, branch, starting commit or integration target.
-			if block := subagentWorkspaceBlock(record); block != "" {
+			if block := subagentWorkspaceBlock(observed); block != "" {
 				content += "\n\n" + block
 			}
 			// Completion delivery is two-channel and unconditional.

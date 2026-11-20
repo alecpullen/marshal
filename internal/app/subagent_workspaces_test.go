@@ -815,7 +815,7 @@ func TestRunWorkspaceRestartMarksInterruptedRecords(t *testing.T) {
 		}
 	}
 
-	reconcileRestoredSubagentWorkspaces(context.Background(), store, state)
+	reconcileRestoredSubagentWorkspaces(context.Background(), nil, store, subagentwork.MutationDeps{}, state)
 
 	records, err := store.List(context.Background(), owner)
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
+	"marshal/internal/lsp"
 	"marshal/internal/snapshot"
 	"marshal/internal/subagentwork"
 	"marshal/internal/tools/native"
@@ -55,22 +56,44 @@ func (s *conversationCommandService) subagentWorkspaceStore(database *db.DB) sub
 	return s.workspaceStore
 }
 
-// reconcileRestoredSubagentWorkspaces runs once per conversation owner: a
-// record this process did not write cannot still be running, so an active
-// outcome left by a previous process becomes interrupted (the child was up when
-// the process ended) or unknown (allocation was never confirmed).
+// reconcileRestoredSubagentWorkspaces runs once per conversation owner, before
+// any lifecycle tool is registered.
+//
+// Two things are settled here. First, whatever an interrupted operation left in
+// git: an intent whose merge landed, a settled operation whose artifacts are
+// already gone, or a target still holding the operation's own half-applied
+// merge. That is the service's Reconcile, and it is observational — it aborts no
+// merge and removes nothing — so it can only ever record what git already
+// proves. Second, execution outcomes: a record this process did not write cannot
+// still be running, so an active outcome left by a previous process becomes
+// interrupted (the child was up when the process ended) or unknown (allocation
+// was never confirmed).
 //
 // It is deliberately NOT called on a rebuild. A config reload borrows the live
 // service, keeps its records and its children, and must never mistake itself for
 // a restart; neither does a session with a child still live in this process.
-func reconcileRestoredSubagentWorkspaces(ctx context.Context, store subagentwork.Store, state *session.State) {
-	if store == nil || state == nil || state.HasRunningSubagent() {
+func reconcileRestoredSubagentWorkspaces(ctx context.Context, service *subagentwork.Service, store subagentwork.Store, deps subagentwork.MutationDeps, state *session.State) {
+	if state == nil || state.HasRunningSubagent() {
 		return
 	}
-	records, err := store.List(ctx, state.SessionID())
-	if err != nil {
-		state.Logger().Warn("read retained subagent workspaces failed", "error", err)
-		return
+	var records []subagentwork.Record
+	if service != nil {
+		reconciled, err := service.Reconcile(ctx, state.SessionID(), deps)
+		if err != nil {
+			state.Logger().Warn("reconcile retained subagent workspaces failed", "error", err)
+		}
+		records = reconciled
+	}
+	if records == nil {
+		if store == nil {
+			return
+		}
+		listed, err := store.List(ctx, state.SessionID())
+		if err != nil {
+			state.Logger().Warn("read retained subagent workspaces failed", "error", err)
+			return
+		}
+		records = listed
 	}
 	for _, rec := range records {
 		var outcome string
@@ -125,8 +148,10 @@ func reconcileRestoredSubagentWorkspaces(ctx context.Context, store subagentwork
 //     are mutable state aimed at whichever root the parent last selected, so a
 //     child bound elsewhere must not rescan through them. Diagnostics fall back
 //     to the configured root-local checkers, which run in the bound root.
-//     Project-index symbols are retained: that query is explicitly
-//     project-scoped and read-only.
+//     Symbols keep only the project index: the parent's query is
+//     language-server-first and answers in the PARENT handle's root, so a child
+//     handed that query would read the parent's symbols as though they were its
+//     own.
 //
 // The returned options are the base for the child's registration. The caller
 // still owns the policy clone, the registry assembly and the scope view,
@@ -189,10 +214,14 @@ func bindSubagentWorkspace(parent, child *session.State, req agent.SubagentReque
 		}
 	}
 
-	// Diagnostics: keep the project-scoped symbol query, drop the parent's
-	// mutable language-server state.
+	// Diagnostics: keep the project-scoped symbol index, drop the parent's
+	// mutable language-server state — and drop its server side from the symbol
+	// query too, which answers in the parent handle's root.
 	opts.LSPSync = nil
 	opts.LSPIndex = nil
+	if query, ok := opts.Symbols.(*lsp.SymbolQuery); ok {
+		opts.Symbols = query.IndexOnly()
+	}
 	return opts, nil
 }
 

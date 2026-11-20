@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/session"
@@ -13,6 +14,13 @@ import (
 	"marshal/internal/tools/native"
 	"marshal/internal/worktree"
 )
+
+// repositoryMissTTL is how long a failed repository-identity lookup for one root
+// is trusted as "not a git checkout". Without it a transient git failure would
+// be cached as an identity and silently drop cross-process locking on that root
+// for the rest of the process; without any cache at all a non-git workspace
+// would pay one git subprocess per operation.
+var repositoryMissTTL = 5 * time.Second
 
 // subagentIdleGate is the app adapter of the workspace idle protocol. An
 // owned-child lifecycle mutation (an integration or a discard) may only rewrite
@@ -41,6 +49,11 @@ type subagentIdleGate struct {
 
 	mu           sync.Mutex
 	repositories map[string]string
+	// repositoryMisses remembers roots whose identity lookup FAILED, with the
+	// time it failed. A failure is not an identity: it is retried after
+	// repositoryMissTTL so a transient git error cannot disable cross-process
+	// locking for the life of the process.
+	repositoryMisses map[string]time.Time
 }
 
 // newSubagentIdleGate builds the adapter for one conversation owner. Every
@@ -188,8 +201,10 @@ func (g *subagentIdleGate) liveChildAt(roots []string) (string, bool) {
 }
 
 // repository returns the canonical repository identity of root, or "" when root
-// is not a git checkout. The answer is cached: it cannot change for the life of
-// a checkout, and the lookup shells out to git.
+// is not a git checkout. A successful answer is cached: it cannot change for the
+// life of a checkout, and the lookup shells out to git. A FAILED lookup is not
+// cached as an identity — it is retried after repositoryMissTTL, because a
+// transient failure that stuck would silently drop cross-process locking here.
 func (g *subagentIdleGate) repository(root string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -201,20 +216,31 @@ func (g *subagentIdleGate) repository(root string) (string, error) {
 		g.mu.Unlock()
 		return repository, nil
 	}
+	if at, ok := g.repositoryMisses[key]; ok && time.Since(at) < repositoryMissTTL {
+		g.mu.Unlock()
+		return "", nil
+	}
 	g.mu.Unlock()
 
-	repository := ""
-	if identifier, ok := g.git.(interface {
+	identifier, ok := g.git.(interface {
 		RepositoryID(dir string) (string, error)
-	}); ok {
-		if id, err := identifier.RepositoryID(root); err == nil {
-			repository = id
-		}
+	})
+	if !ok {
+		return "", nil
 	}
+	id, err := identifier.RepositoryID(root)
 	g.mu.Lock()
-	g.repositories[key] = repository
-	g.mu.Unlock()
-	return repository, nil
+	defer g.mu.Unlock()
+	if err != nil {
+		if g.repositoryMisses == nil {
+			g.repositoryMisses = make(map[string]time.Time)
+		}
+		g.repositoryMisses[key] = time.Now()
+		return "", nil
+	}
+	delete(g.repositoryMisses, key)
+	g.repositories[key] = id
+	return id, nil
 }
 
 // canonicalRoots canonicalizes, deduplicates and sorts a root list. The

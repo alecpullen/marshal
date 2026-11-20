@@ -66,11 +66,16 @@ func TestDenylistRemovesImageView(t *testing.T) {
 // workspace.worktree and workspace.finish rebind or merge a checkout (the
 // parent owns integration), and shell.sudo is privileged execution. A child
 // asks its parent; it never re-targets itself.
+//
+// agent.integrate and agent.discard are the same rule one step further: they act
+// on work the PARENT owns, on behalf of the parent's review, so a child that
+// held them could integrate or destroy a sibling's candidate it never inspected.
 func TestSubtaskScopeViewExcludesEscapeHatches(t *testing.T) {
 	src := registry.New()
 	for _, name := range []string{
 		"mode.request", "tools.select",
 		"workspace.worktree", "workspace.finish",
+		"agent.integrate", "agent.discard",
 		"shell.sudo", "file.read", "shell.run",
 	} {
 		tool := registry.Tool{Name: name, Schema: []byte(`{"type":"object"}`), Risk: registry.RiskWorkspaceWrite}
@@ -81,7 +86,8 @@ func TestSubtaskScopeViewExcludesEscapeHatches(t *testing.T) {
 	}
 	view := SubtaskScopeView(src)
 	for _, name := range []string{
-		"mode.request", "tools.select", "workspace.worktree", "workspace.finish", "shell.sudo",
+		"mode.request", "tools.select", "workspace.worktree", "workspace.finish",
+		"agent.integrate", "agent.discard", "shell.sudo",
 	} {
 		if _, ok := view.Lookup(name); ok {
 			t.Fatalf("%s must be excluded from the subtask scope view", name)

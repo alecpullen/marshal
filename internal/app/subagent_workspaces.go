@@ -229,3 +229,25 @@ func bindSubagentSnapshotter(snap session.Snapshotter, root string) session.Snap
 	}
 	return rooted.Bound(root)
 }
+
+// subagentSnapshotAt returns the exact-root capture callback a managed lifecycle
+// mutation uses. The root is the one the RECORD captured — the child's own
+// checkout, or the target it is destined for — never the parent's current
+// workspace, which by the time of the mutation may be somewhere else entirely.
+//
+// It reports what actually happened: a published capture's hash, or an empty
+// hash when this build has no snapshotter, because fabricating one would claim a
+// rollback coverage that does not exist. A store that refuses the capture is an
+// error, and the mutation is refused with it rather than proceeding unprotected.
+func subagentSnapshotAt(state *session.State) func(context.Context, string) (string, error) {
+	return func(ctx context.Context, root string) (string, error) {
+		if state == nil || strings.TrimSpace(root) == "" {
+			return "", nil
+		}
+		snap := state.Snapshotter()
+		if snap == nil {
+			return "", nil
+		}
+		return bindSubagentSnapshotter(snap, root).Track(ctx)
+	}
+}

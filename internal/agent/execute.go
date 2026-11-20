@@ -189,6 +189,22 @@ func (r *Runner) shellInputFor(toolName string, argsMap map[string]interface{}) 
 func (r *Runner) policyCall(ctx context.Context, invocationID, toolName string, argsMap map[string]interface{}) (policy.Call, error) {
 	call := policy.Call{InvocationID: invocationID, ToolName: toolName}
 	tool, registered := r.Registry.Lookup(toolName)
+	// A tool that owns its admission also prepares the exact effect it would
+	// apply, and that preparation is bound into the proof. The handler recomputes
+	// it under the workspace lease, so a record, source or target that moved in
+	// the meantime yields a different key and the stale proof is refused rather
+	// than re-approved.
+	if registered && tool.PrepareEffect != nil {
+		args, err := json.Marshal(argsMap)
+		if err != nil {
+			return policy.Call{}, fmt.Errorf("marshal %s arguments for effect preparation: %w", toolName, err)
+		}
+		effectKey, err := tool.PrepareEffect(ctx, registry.ToolCall{ID: invocationID, Name: toolName, Args: args})
+		if err != nil {
+			return policy.Call{}, fmt.Errorf("%s: %w", toolName, err)
+		}
+		call.EffectKey = effectKey
+	}
 	if registered && tool.PrepareCommand != nil {
 		args, err := json.Marshal(argsMap)
 		if err != nil {
@@ -1092,11 +1108,14 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) (_ []s
 	// admission lease, commits the proof exactly once and releases before the
 	// handler runs. A shell/test/sudo tool instead carries the proof into the
 	// handler, where the native command service admits the exact attempt at
-	// the accepted launch — the one place the process actually starts.
+	// the accepted launch — the one place the process actually starts. A tool
+	// that declares OwnsAdmission keeps the same arrangement for a different
+	// reason: its mutation target is known only inside the handler, under the
+	// exact-root lease, so that handler admits the recomputed effect itself.
 	if proof != nil {
 		handlerCtx = policy.WithAuthorization(handlerCtx, proof)
 	}
-	if !isShellTool(toolName) {
+	if !isShellTool(toolName) && !tool.OwnsAdmission {
 		admission, admErr := r.admitOrdinaryTool(handlerCtx, invocationID, toolName, argsMap, proof)
 		if admErr != nil {
 			return r.settleAdmissionFailure(ctx, action, admErr), nil

@@ -25,6 +25,12 @@ type Call struct {
 	Args         map[string]any
 	Shell        *ShellInput
 	Targets      []ShellTarget
+	// EffectKey names the exact workspace effect an owning tool is about to
+	// apply, as its own preparation describes it. It is part of the
+	// fingerprint, so an effect that changed between evaluation and admission
+	// no longer matches the proof that authorized it. Empty for every ordinary
+	// tool, which leaves their fingerprints exactly as they were.
+	EffectKey string
 }
 
 // CommandAttempt is one managed-command attempt to admit.
@@ -242,8 +248,11 @@ func ShellInputFromContext(ctx context.Context) (ShellInput, bool) {
 // Every fact the analyzer reads is bound, not just the command: the home
 // directory, read roots and environment steer effect and scope classification,
 // so a proof that omitted them would describe a different command than the one
-// that was approved. encoding/json orders map keys deterministically, which is
-// what makes the shell environment and tool arguments hashable.
+// that was approved. EffectKey is bound for the same reason, one level up: a
+// workspace effect described by a different prepared mutation is a different
+// operation, even when the tool name and arguments are identical.
+// encoding/json orders map keys deterministically, which is what makes the
+// shell environment and tool arguments hashable.
 func fingerprintCall(call Call) [32]byte {
 	payload := struct {
 		InvocationID string
@@ -251,7 +260,8 @@ func fingerprintCall(call Call) [32]byte {
 		Shell        *ShellInput
 		Args         map[string]any
 		Targets      []ShellTarget
-	}{call.InvocationID, call.ToolName, call.Shell, call.Args, call.Targets}
+		EffectKey    string
+	}{call.InvocationID, call.ToolName, call.Shell, call.Args, call.Targets, call.EffectKey}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		// Unmarshalable arguments must not silently collapse two distinct

@@ -23,9 +23,20 @@ import (
 // 300 bytes that were left. The tool is the agent's only way to see a
 // picture, which is the point of the feature, so the ceiling moves rather
 // than the surface. The system-prompt ceiling is unchanged.
+//
+// Design note — raised for owned subagent workspaces
+// (docs/subagent-workspaces/feature-spec.md, plan P3 Task 3).
+// agent.integrate and agent.discard let the parent integrate or discard a
+// child's owned candidate, and their arguments are the whole reason the
+// feature is safe: task_key and expected_head are required and neither
+// accepts a free path, branch or owner. Both tools expose that contract and
+// their refusal copy, so they cannot be trimmed under the 1.2 KB the surface
+// grew by. They are registered only when the conversation has a durable
+// workspace service, so a session without one never pays for them. The
+// system-prompt ceiling is unchanged.
 const (
 	maxSystemPromptBytes = 9000
-	maxToolSchemaBytes   = 17500
+	maxToolSchemaBytes   = 19500
 )
 
 // budgetFixtureWorkingDir is the fixed working-directory input used when

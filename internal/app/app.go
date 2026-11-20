@@ -1196,6 +1196,13 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		fileTracker = filetrack.New(database.SQLDB(), state.SessionID())
 	}
 
+	// One conversation gate serves both halves of the workspace-use protocol:
+	// every ordinary parent operation and managed command publishes a shared
+	// root-use lease through it, and an owned-child lifecycle mutation takes
+	// those same roots exclusively. That is what makes an ordinary write in
+	// this process visible to an integration instead of racing it.
+	workspaceGate := newSubagentIdleGate(state, writeLock, jobManager, worktree.CLIGitOps{})
+
 	nativeOpts := native.Options{
 		WorkspaceRoot:  state.WorkingDir,
 		CommandRunner:  commandRunner,
@@ -1223,7 +1230,11 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		// privileged CommandAuthorizer prompt must never be borrowed to admit
 		// one.
 		SetupAuthorizer: rootAuthorizer,
-		Images:          images,
+		// A direct parent operation holds a shared root-use lease for its whole
+		// life, so the exclusive lifecycle lease sees it and cannot mutate
+		// underneath it. A non-git root acquires nothing.
+		WorkspaceUse: workspaceGate.workspaceUse,
+		Images:       images,
 	}
 	if len(additionalDirs) > 0 {
 		nativeOpts.AdditionalRoots = additionalDirs
@@ -1323,6 +1334,23 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// never mistakes a config reload for a restart.
 	if owned {
 		reconcileRestoredSubagentWorkspaces(ctx, commandService.subagentWorkspaceStore(database), state)
+	}
+	// The parent-only lifecycle tools. They are registered in the ordinary
+	// parent registry — the same one every other runtime tool lands in — and the
+	// child scope view excludes them afterwards, so a child never inherits the
+	// right to integrate or discard work it did not review. A build with no
+	// durable service owns no candidate, so it offers neither tool rather than
+	// one that could only refuse.
+	if workspaceService != nil {
+		lifecycleDeps := workspaceGate.lifecycleMutationDeps(commandService)
+		if err := reg.Register(agent.NewSubagentIntegrateTool(state.SessionID(), workspaceService, lifecycleDeps, rootAuthorizer)); err != nil {
+			buildErr = err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.integrate: %w", err)
+		}
+		if err := reg.Register(agent.NewSubagentDiscardTool(state.SessionID(), workspaceService, lifecycleDeps, rootAuthorizer)); err != nil {
+			buildErr = err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.discard: %w", err)
+		}
 	}
 	// One write lock shared by the parent runner and every agent.run child:
 	// background children outlive the spawning turn, so parent and child

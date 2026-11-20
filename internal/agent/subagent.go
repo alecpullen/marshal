@@ -215,6 +215,11 @@ func subagentReportImages(args agentRunArgs, child *Runner) []schema.ImageRef {
 // it (the parent owns integration), and shell.sudo is privileged execution. A
 // child asks its parent; it never re-targets itself.
 //
+// agent.integrate and agent.discard belong to the same rule for the same
+// reason: they mutate work the PARENT owns on behalf of the parent's review, and
+// a child acting on a sibling's task key would integrate or destroy work it
+// never reviewed. A child reports; the parent decides.
+//
 // All other tools are visible so the child can perform implementation work;
 // their own Risk levels and the shared policy engine still gate approval for
 // writes, commands, and destructive tools. The list lives HERE and nowhere
@@ -229,6 +234,7 @@ func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 		}
 		switch tool.Name {
 		case "agent.run", "agent.await", "agent.kill", "agent.steer", "question.ask",
+			subagentIntegrateTool, subagentDiscardTool,
 			"mode.request", "tools.select",
 			"workspace.worktree", "workspace.finish",
 			"shell.sudo":

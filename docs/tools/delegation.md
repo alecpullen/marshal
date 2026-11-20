@@ -1,9 +1,10 @@
-<!-- tools: agent.run, agent.await, agent.kill, agent.steer, skill.load -->
+<!-- tools: agent.run, agent.await, agent.kill, agent.steer, agent.integrate, agent.discard, skill.load -->
 
 # Delegation
 
-Five tools hand work to something else: four manage child agents and background
-jobs, one loads an instruction set into the current context.
+Seven tools hand work to something else: six manage child agents, their owned
+worktrees and background jobs, one loads an instruction set into the current
+context.
 
 ## agent.run
 
@@ -121,6 +122,27 @@ would deadlock the very child it is waiting for.
 `agent.steer` sends an instruction into a running child, delivered at its next
 step. It is **main-agent only** — `SubtaskScopeView` excludes it, so a child
 cannot steer a sibling (`internal/app/app.go:861`).
+
+## agent.integrate, agent.discard
+
+The parent's two lifecycle tools, in `internal/agent/subagent_lifecycle.go`,
+registered only when the conversation has a durable workspace service. Both
+take exactly `task_key` and `expected_head` — neither accepts a path, branch or
+owner, so a model cannot aim them at a checkout it does not own.
+
+| Tool | Risk | Effect |
+|---|---|---|
+| `agent.integrate` | `workspace_write` | `git merge --no-ff` of the exact reviewed candidate SHA into the captured target checkout and branch |
+| `agent.discard` | `destructive` | drops a verified clean owned branch and its worktree; retained dirty work is never force-removed |
+
+A child's successful report does not mean its changes are in the parent; these
+tools are how they get there. Both revalidate ownership, the exact candidate,
+the target branch and the current target HEAD under a workspace lease before
+touching git, and both journal their intent and result, so an interrupted
+operation reconciles to one truthful receipt instead of a second merge. A stale
+`expected_head`, a moved target, a detached or switched branch, or a dirty
+source or target refuses rather than forcing anything. These are parent-only:
+`SubtaskScopeView` excludes them from every child.
 
 ## skill.load
 

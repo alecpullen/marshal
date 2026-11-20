@@ -254,3 +254,28 @@ func workspaceUseForRepository(repository, ownerSessionID string) func(ctx conte
 		})
 	}
 }
+
+// lifecycleMutationDeps is the dependency set one parent-only lifecycle mutation
+// runs with: this gate for exclusive use of the roots it touches, the exact-root
+// capture of the checkout the record named, and the rescan announcement for the
+// root an integration changed.
+//
+// Admit is deliberately absent. It is built per call by the tool's handler from
+// that call's own opaque proof, so the decision is always the one the current
+// invocation was evaluated under — never a decision borrowed from a previous
+// call, and never one this adapter could have made without the live authority.
+func (g *subagentIdleGate) lifecycleMutationDeps(commands *conversationCommandService) subagentwork.MutationDeps {
+	return subagentwork.MutationDeps{
+		Idle:     g,
+		Snapshot: subagentSnapshotAt(g.state),
+		Rescan: func(root string) {
+			// Root-specific, like every other rescan: a live language server is
+			// only re-synced for the workspace it actually serves, so an
+			// integration into another checkout is not mistaken for a change
+			// there.
+			if commands != nil {
+				commands.rescanLSP(root)
+			}
+		},
+	}
+}

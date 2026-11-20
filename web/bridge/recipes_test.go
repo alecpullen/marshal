@@ -236,7 +236,7 @@ func TestRecipePutGetDeleteAndCopy(t *testing.T) {
 func TestRecipeRoutes(t *testing.T) {
 	f := testFleet(t)
 	f.audit = NewAuditLog(t.TempDir())
-	s := NewServer(f, "")
+	s := NewServer(f)
 
 	rec := doReq(t, s, http.MethodGet, "/api/recipes", nil, nil)
 	var list []Recipe

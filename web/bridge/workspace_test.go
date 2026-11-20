@@ -628,7 +628,11 @@ func TestAgentOverridesReachTheContainerConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := strings.Join(newContainerTransport(cfg).buildRunArgs(), " ")
-	for _, want := range []string{"--name marshal-pool-svc-v1-0", "volume-subpath=pool/svc-0/work", "volume-subpath=pool/svc-0/sock"} {
+	for _, want := range []string{
+		"--name marshal-pool-svc-v1-0",
+		"source=" + filepath.Join(f.stateDir, "pool/svc-0/work"),
+		"source=" + filepath.Join(f.stateDir, "pool/svc-0/sock"),
+	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("args lack %q:\n%s", want, args)
 		}

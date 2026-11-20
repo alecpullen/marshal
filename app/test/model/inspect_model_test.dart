@@ -10,6 +10,7 @@ import 'package:marshal_app/src/model/inspect_model.dart';
 import 'package:marshal_app/src/model/preview_model.dart';
 
 import '../support/fake_bridge.dart';
+import '../support/sockets.dart';
 
 FakeReply _json(Object body, [int status = 200]) => FakeReply(
   status,
@@ -23,10 +24,9 @@ void main() {
 
   setUp(() async {
     HttpOverrides.global = null;
-    bridge = await FakeBridge.onLoopback();
-    client = BridgeClient(
-      serverTransport(bridge.base, token: () async => 'unused'),
-    );
+    final box = await socketBridge();
+    bridge = box.bridge;
+    client = BridgeClient(box.transport);
   });
 
   tearDown(() => bridge.close());

@@ -11,7 +11,7 @@ func libraryServer(t *testing.T) (*Server, *Fleet, *fakeAgent) {
 	t.Helper()
 	agent := newFakeAgent()
 	f := ctlFleet(t, agent)
-	return NewServer(f, ""), f, agent
+	return NewServer(f), f, agent
 }
 
 func TestLibraryListUsesTheRightSession(t *testing.T) {
@@ -180,20 +180,6 @@ func TestLibraryMemoryRoutes(t *testing.T) {
 		if rec := doReq(t, s, method, path, nil, nil); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s %s: %d, want 400", method, path, rec.Code)
 		}
-	}
-}
-
-func TestLibraryProjectScopeWithoutAMountIs501(t *testing.T) {
-	s, f, _ := libraryServer(t)
-	if _, err := f.control(ctlContext(t)); err != nil {
-		t.Fatal(err)
-	}
-	f.ctl.mu.Lock()
-	f.ctl.containerized, f.ctl.boundRoots = true, []string{"/somewhere/else"}
-	f.ctl.mu.Unlock()
-	rec := doReq(t, s, http.MethodGet, "/api/library/skills?scope=project&project="+t.TempDir(), nil, nil)
-	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "project_library_unsupported") {
-		t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
 	}
 }
 

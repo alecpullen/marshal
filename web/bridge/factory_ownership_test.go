@@ -55,7 +55,7 @@ func TestFactoryOwnershipGuardsProjectDeletion(t *testing.T) {
 	if err := f.ws.RemoveProject(root); !errors.Is(err, ErrFactoryConflict) {
 		t.Fatalf("workspace remove project: %v", err)
 	}
-	server := NewServer(f, "", "")
+	server := NewServer(f)
 	resp := doReq(t, server, http.MethodDelete, "/api/projects", map[string]string{"root": root}, nil)
 	if resp.Code != http.StatusConflict {
 		t.Fatalf("HTTP delete: %d %s", resp.Code, resp.Body.String())

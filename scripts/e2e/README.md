@@ -6,15 +6,22 @@ library only, so it runs anywhere the bridge does.
 
 ```bash
 python3 scripts/e2e/run_e2e.py \
-    --base http://127.0.0.1:7700 --token TOK \
+    --base unix:/run/user/1000/marshal/daemon/web.sock \
     --project /tmp/w5proj --project2 /tmp/w5proj2 \
     --repo w5forge --workspace w5prev --provider ollama-cloud-2
 ```
 
+`--base` names the daemon's web listener: `unix:/path/web.sock` dials that
+socket, and `http://127.0.0.1:PORT` (the `[daemon] web_listen` a loopback
+address gives) is plain HTTP. The listener asks for no credential, so the
+suite sends none; the routes that belong to the daemon's own socket — project
+attach, pin, restart, hosts report, enrollment — answer 404 there, and one
+group H check pins that.
+
 Every flag also reads an `E2E_*` environment variable (`E2E_BASE`,
-`E2E_TOKEN`, `E2E_PROJECT`, …). `--groups` selects a subset, e.g. `ABH`;
-`--json report.json` writes a machine-readable report; `-v` prints each
-check as it runs. The exit code is non-zero when any check fails.
+`E2E_PROJECT`, …). `--groups` selects a subset, e.g. `ABH`; `--json
+report.json` writes a machine-readable report; `-v` prints each check as it
+runs. The exit code is non-zero when any check fails.
 
 ## Groups
 
@@ -27,8 +34,8 @@ check as it runs. The exit code is non-zero when any check fails.
 | E workspaces | templates, drafts, patches, publish, builds, diff, pool, CA rotation, test shell |
 | F secrets | secrets, credentials, network view, egress decisions |
 | G forge | repos, issues, review drafts, CI history, webhook secrets |
-| H errors | auth, malformed and oversize bodies, unknown routes, traversal, SSE, MCP, clients, pending |
-| I studio and auth | the served Studio shell, its bootstrap and cache policy, client-route fallback, the bearer contract, and that the engine is not fetched from a CDN |
+| H errors | socket-only routes, malformed and oversize bodies, unknown routes, traversal, SSE, MCP, clients, pending |
+| I studio shell | the Studio directory the daemon names, the shell it serves from it, its bootstrap and cache policy, client-route fallback, and that the engine is not fetched from a CDN |
 
 ## Writing a check
 
@@ -63,3 +70,8 @@ State passes between checks through `c.set(key, value)` / `c.get(key)`.
 - A group that needs a precondition the environment lacks skips its
   checks rather than failing, so a green run on a partial environment is
   not the same as a green run on a full one. Read the skip list.
+- The daemon under test needs its Studio files. Without them group I does not
+  skip, it fails: `/api/daemon` reports a listener but no `studioDir`, and `/`
+  answers the page naming the directories it looked in rather than the Studio's
+  index. Only a daemon too old to report `webListen` skips there.
+  `scripts/dev-daemon.sh --studio` builds and serves the files in a checkout.

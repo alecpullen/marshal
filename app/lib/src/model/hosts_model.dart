@@ -1,39 +1,33 @@
 import 'package:flutter/foundation.dart';
 
 import '../client/fleet_profiles.dart';
-import 'fleet_store.dart' show HostView, describeFailure;
+import 'fleet_store.dart' show HostTunnel, HostView;
 import 'section_model.dart';
 
-/// What the add form holds: a server profile's name, its URL, the file whose
-/// certificates it is trusted with, and the token to sign in to it with.
+/// What the add form holds: a host's name and the SSH destination it is
+/// reached at.
 @immutable
 class HostDraft {
-  const HostDraft({
-    this.name = '',
-    this.url = '',
-    this.caFile = '',
-    this.token = '',
-  });
+  const HostDraft({this.name = '', this.destination = ''});
 
-  final String name, url, caFile, token;
+  final String name, destination;
 }
 
 /// Settings' Hosts section (F7 decision 7): every host discovery found, with
 /// what this app can reach of each.
 ///
-/// A host appears because discovery found it or because `marshal fleet
-/// servers` lists it (decision 9). A build that can run `marshal fleet` adds,
-/// removes and signs in to a server profile through [add], [remove] and
-/// [signIn]; a browser cannot, and its add row stays planned.
+/// A host appears because discovery found it: from the table `marshal fleet`
+/// keeps in `fleet.toml`, or — in a browser — because the daemon that served
+/// the page forwards to it (one-daemon D10). Both builds add and remove hosts
+/// through [add] and [remove], which run on the daemon this app is attached
+/// to: the one that keeps the tunnels (one-daemon D15).
 class HostsModel extends SectionModel<HostView> {
   HostsModel(
     this._read, {
     this.profiles,
     this.rediscover,
     this.forget,
-    this.retry,
-    this.storeToken,
-    this.clearToken,
+    this.tunnels,
   });
 
   /// A model already holding [hosts], for a test or the gallery.
@@ -42,9 +36,7 @@ class HostsModel extends SectionModel<HostView> {
     this.profiles,
     this.rediscover,
     this.forget,
-    this.retry,
-    this.storeToken,
-    this.clearToken,
+    this.tunnels,
   }) : _read = (() => hosts) {
     replaceItems(hosts);
   }
@@ -53,8 +45,9 @@ class HostsModel extends SectionModel<HostView> {
   /// and is marked with its last contact rather than dropped (F2 decision 8).
   final List<HostView> Function() _read;
 
-  /// The `marshal fleet` commands that edit `fleet.toml` (spec D6, D7), or
-  /// null in a build whose composition root gave it none.
+  /// The hosts commands that edit `fleet.toml` (spec D6, D7), as the daemon
+  /// this app is attached to runs them, or null in a build whose composition
+  /// root gave it none.
   final FleetProfiles? profiles;
 
   /// Finds the hosts again, so the one just added is listed and the rows are
@@ -64,31 +57,16 @@ class HostsModel extends SectionModel<HostView> {
   /// Drops a removed host from the fleet (spec D9).
   final void Function(String host)? forget;
 
-  /// Asks a host to try its stream again after its token changed.
-  final void Function(String host)? retry;
-
-  /// Stores [host]'s token: `marshal fleet login` in a native build, and the
-  /// host's own browser store in a page (decision 6). Null when this build has
-  /// neither, which is what [signIn] falls back on [profiles] for.
-  final Future<void> Function(String host, String token)? storeToken;
-
-  /// Forgets [host]'s token. It is the browser's alone: a native build keeps no
-  /// token of its own, and `marshal fleet token` resolves one when a request
-  /// needs it (decision 6).
-  final void Function(String host)? clearToken;
-
-  /// What a failed sign-in said, by host: the add already worked, and only
-  /// the token is wrong (decision 5).
-  final _loginFailures = <String, String>{};
+  /// Reads the tunnels the local daemon keeps, by host name (D7). Null in a
+  /// browser, which has no daemon of its own to ask.
+  final Future<Map<String, HostTunnel>> Function()? tunnels;
 
   /// The draft the open add form holds, so the shell's guard sees it.
   HostDraft? _draft;
 
-  /// Whether this build can add a server profile: a browser cannot.
+  /// Whether this app can add a host: it can, with the daemon's command
+  /// runner to add through.
   bool get canAdd => profiles?.supported ?? false;
-
-  /// What the last sign-in to [host] said, or null when it never failed.
-  String? loginFailure(String host) => _loginFailures[host];
 
   /// The open add form changed: a draft that holds anything is an edit the
   /// shell's guard asks about (design-system.md §9).
@@ -102,10 +80,7 @@ class HostsModel extends SectionModel<HostView> {
     final draft = _draft;
     final written =
         draft != null &&
-        (draft.name.isNotEmpty ||
-            draft.url.isNotEmpty ||
-            draft.caFile.isNotEmpty ||
-            draft.token.isNotEmpty);
+        (draft.name.isNotEmpty || draft.destination.isNotEmpty);
     return written || super.hasUnsavedEdits;
   }
 
@@ -115,94 +90,53 @@ class HostsModel extends SectionModel<HostView> {
     super.discardEdits();
   }
 
-  /// Adds a server profile: `fleet add`, then `fleet login` when a token was
-  /// given, then discovery.
+  /// Adds a host: `fleet add NAME DEST`, then discovery.
   ///
-  /// A failed add throws its words and stores nothing. A failed login does
-  /// not: the profile is added, the form closes as added, and the host's
-  /// detail says why beside Sign in (decision 5).
+  /// A failed add throws its words and stores nothing.
   Future<void> add(HostDraft draft) async {
     final name = draft.name.trim();
-    final url = draft.url.trim();
-    if (name.isEmpty || url.isEmpty) {
-      throw const FleetProfileFailure('A host needs a name and a URL');
-    }
-    final uri = Uri.tryParse(url);
-    if (uri == null) {
-      throw const FleetProfileFailure('That URL could not be read');
+    final destination = draft.destination.trim();
+    if (name.isEmpty || destination.isEmpty) {
+      throw const FleetProfileFailure(
+        'A host needs a name and an SSH destination',
+      );
     }
     final runner = profiles;
     if (runner == null || !runner.supported) {
       throw const FleetProfileFailure('This build cannot add a host');
     }
-    final caFile = draft.caFile.trim();
-    await runner.add(name, uri, caFile: caFile.isEmpty ? null : caFile);
-    final token = draft.token.trim();
-    if (token.isNotEmpty) {
-      try {
-        await runner.login(name, token);
-        _loginFailures.remove(name);
-      } catch (failure) {
-        _loginFailures[name] = describeFailure(failure);
-      }
-    }
+    await runner.add(name, destination);
     await rediscover?.call();
     notifyListeners();
   }
 
-  /// Removes a server profile and its stored token, then drops it from the
-  /// fleet (spec D9).
+  /// Removes a host and its table, then drops it from the fleet (spec D9).
   Future<void> remove(String host) async {
     final runner = profiles;
     if (runner == null || !runner.supported) {
       throw const FleetProfileFailure('This build cannot remove a host');
     }
     await runner.remove(host);
-    _loginFailures.remove(host);
     forget?.call(host);
     notifyListeners();
   }
 
-  /// Signs in to [host] with [token], then asks it to try again: a refused
-  /// token stopped its stream, and waiting would never clear it (decision 6).
-  ///
-  /// Where the build keeps a token of its own the token is stored through
-  /// [storeToken] — a browser writes the host's own key (spec D21) — and
-  /// everywhere else through `marshal fleet login`, as plan 2 built it.
-  Future<void> signIn(String host, String token) async {
-    final store = storeToken;
-    if (store == null) {
-      final runner = profiles;
-      if (runner == null) {
-        throw const FleetProfileFailure('This build cannot sign in to a host');
-      }
-      await runner.login(host, token);
-    } else {
-      await store(host, token);
-    }
-    _loginFailures.remove(host);
-    retry?.call(host);
-    notifyListeners();
-  }
-
-  /// Whether [host] can be signed out of: a relayed host, in a build that keeps
-  /// the token that reached it (decision 6). A native build has nothing to
-  /// clear, and a host reached directly carries the page's own token.
-  bool canSignOut(HostView host) => clearToken != null && host.via != null;
-
-  /// Forgets [host]'s token, then asks it to try again, so the host reads
-  /// "token refused" again until it is signed in to with a new one
-  /// (decision 6, spec D22).
-  Future<void> signOut(String host) async {
-    final clear = clearToken;
-    if (clear == null) return;
-    clear(host);
-    retry?.call(host);
-    notifyListeners();
-  }
-
+  /// The rows, each with the tunnel the local daemon keeps for it when a
+  /// reader is set. A reader that fails leaves the rows as they are: a tunnel
+  /// is an extra fact about a host, not a reason to say the host list failed.
   @override
-  Future<List<HostView>> fetch() async => _read();
+  Future<List<HostView>> fetch() async {
+    final rows = _read();
+    final readTunnels = tunnels;
+    if (readTunnels == null) return rows;
+    final Map<String, HostTunnel> kept;
+    try {
+      kept = await readTunnels();
+    } catch (_) {
+      return rows;
+    }
+    return [for (final row in rows) row.withTunnel(kept[row.name])];
+  }
 
   @override
   Object keyOf(HostView item) => item.name;

@@ -16,7 +16,6 @@ const (
 	FleetConnected                     // the stream is up
 	FleetReconnecting                  // retrying, for under a minute
 	FleetDown                          // retries have failed for a minute; still retrying every 30s
-	FleetRejected                      // a 401: the stream and every retry have stopped
 )
 
 // FleetState is the fleet as the client last read it. Every slice and map is

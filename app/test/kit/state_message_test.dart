@@ -75,6 +75,35 @@ void main() {
     expect(find.text('Try again'), findsOneWidget);
   });
 
+  testWidgets('unauthorized: the host, signed out, and what clears it', (
+    tester,
+  ) async {
+    await pump(tester, const StateMessage.unauthorized(host: 'studio-box'));
+    expect(find.text('studio-box is signed out'), findsOneWidget);
+    expect(find.text('Reload the page to sign in again.'), findsOneWidget);
+    expect(
+      tester.widget<Icon>(find.byType(Icon)).color,
+      e.warn,
+      reason: 'a refusal is marked in the warning tone, not as a failure',
+    );
+    expect(
+      styleOf(tester, 'studio-box is signed out').color,
+      e.fg,
+      reason: 'the sentence itself reads as text, not as an alarm',
+    );
+    expect(
+      find.byType(Btn),
+      findsNothing,
+      reason: 'no retry: only a page load clears a refusal (one-daemon D13)',
+    );
+  });
+
+  testWidgets('unauthorized without a host says "This Studio"', (tester) async {
+    await pump(tester, const StateMessage.unauthorized());
+    expect(find.text('This Studio is signed out'), findsOneWidget);
+    expect(find.text('Reload the page to sign in again.'), findsOneWidget);
+  });
+
   testWidgets('planned: a disabled row saying so, never drawn as working', (
     tester,
   ) async {

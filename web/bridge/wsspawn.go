@@ -54,8 +54,7 @@ type wsExtras struct {
 // runtimeInfo is the container runtime to use for workspace work. Under a
 // fake runner (tests) it is "docker".
 func (f *Fleet) runtimeInfo() (path, name string, ok bool) {
-	// Host-only outranks the fake-runner shortcut (decision 4).
-	if f.runner != nil && !f.hostOnly {
+	if f.runner != nil {
 		return "docker", "docker", true
 	}
 	return f.containerRuntime()
@@ -93,7 +92,7 @@ func plainVolumeMount(volume, target string, readonly bool) []string {
 // workspaceMounts renders a doc's mounts and files as runtime arguments.
 // storeName is the Studio template whose file store holds the [files]
 // sources.
-func (f *Fleet) workspaceMounts(ctx context.Context, doc WSDoc, storeName, runtimeName string) ([]string, error) {
+func (f *Fleet) workspaceMounts(ctx context.Context, doc WSDoc, storeName string) ([]string, error) {
 	var args []string
 	seen := map[string]bool{}
 	claim := func(target string) error {
@@ -128,14 +127,16 @@ func (f *Fleet) workspaceMounts(ctx context.Context, doc WSDoc, storeName, runti
 			if err != nil {
 				return nil, err
 			}
-			args = append(args, volumeMount(runtimeName, f.stateVolume, m.Target, "repos/"+filepath.Base(mirror), true)...)
+			args = append(args, stateMount(f.stateDir, m.Target, "repos/"+filepath.Base(mirror), true)...)
 		case m.Volume != "" && m.Repo == "":
 			if !volumeNameRe.MatchString(m.Volume) {
 				return nil, fmt.Errorf("%w: invalid volume name %q", ErrWorkspaceMountTarget, m.Volume)
 			}
 			// The marshal- namespace belongs to the bridge: its state
-			// volume holds fleet.json, credentials and every agent's work.
-			if m.Volume == f.stateVolume || strings.HasPrefix(m.Volume, "marshal-") {
+			// holds fleet.json, credentials and every agent's work. The
+			// prefix stays reserved, so an old marshal-state volume cannot
+			// be mounted by name.
+			if strings.HasPrefix(m.Volume, "marshal-") {
 				return nil, fmt.Errorf("%w: volume %q is reserved for the bridge", ErrWorkspaceMountTarget, m.Volume)
 			}
 			args = append(args, plainVolumeMount(m.Volume, m.Target, m.Readonly)...)
@@ -150,7 +151,7 @@ func (f *Fleet) workspaceMounts(ctx context.Context, doc WSDoc, storeName, runti
 		if !fileSourceRe.MatchString(src) || path.IsAbs(src) || path.Clean(src) != src || src == ".." || strings.HasPrefix(src, "../") {
 			return nil, fmt.Errorf("%w: invalid file source %q", ErrWorkspaceMountTarget, src)
 		}
-		args = append(args, volumeMount(runtimeName, f.stateVolume, fm.Target, "workspaces/"+storeName+"/files/"+src, fm.Readonly)...)
+		args = append(args, stateMount(f.stateDir, fm.Target, "workspaces/"+storeName+"/files/"+src, fm.Readonly)...)
 	}
 	return args, nil
 }
@@ -181,8 +182,8 @@ func (f *Fleet) AgentWorkspaceDoc(ctx context.Context, a Agent) (name string, do
 }
 
 // buildWorkspaceExtras renders everything a workspace adds to a container.
-func (f *Fleet) buildWorkspaceExtras(ctx context.Context, a Agent, doc WSDoc, storeName, runtimeName string) (wsExtras, error) {
-	mounts, err := f.workspaceMounts(ctx, doc, storeName, runtimeName)
+func (f *Fleet) buildWorkspaceExtras(ctx context.Context, a Agent, doc WSDoc, storeName string) (wsExtras, error) {
+	mounts, err := f.workspaceMounts(ctx, doc, storeName)
 	if err != nil {
 		return wsExtras{}, err
 	}
@@ -208,7 +209,7 @@ func (f *Fleet) buildWorkspaceExtras(ctx context.Context, a Agent, doc WSDoc, st
 // workspaceRuntimeExtras is the container config's source for a
 // workspace's mounts and env: the spawn's own resolution while it is in
 // flight, a fresh resolution when a runtime restarts later.
-func (f *Fleet) workspaceRuntimeExtras(a Agent, runtimeName string) ([]string, map[string]string, error) {
+func (f *Fleet) workspaceRuntimeExtras(a Agent) ([]string, map[string]string, error) {
 	f.wsMu.Lock()
 	ex, ok := f.wsExtras[a.ID]
 	f.wsMu.Unlock()
@@ -222,7 +223,7 @@ func (f *Fleet) workspaceRuntimeExtras(a Agent, runtimeName string) ([]string, m
 	if err != nil {
 		return nil, nil, err
 	}
-	ex, err = f.buildWorkspaceExtras(ctx, a, res.Doc, res.ImageName, runtimeName)
+	ex, err = f.buildWorkspaceExtras(ctx, a, res.Doc, res.ImageName)
 	if err != nil {
 		return nil, nil, err
 	}

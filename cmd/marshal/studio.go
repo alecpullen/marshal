@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
+	"os/exec"
+	"runtime"
+	"strings"
 	"time"
 
 	"marshal/internal/app/config"
@@ -15,33 +16,60 @@ import (
 	"marshal/internal/daemon"
 )
 
-// studioProbeTimeout bounds every socket and loopback call `studio` makes: the
-// command either opens a page in a moment or says why it cannot.
+// studioProbeTimeout bounds every socket and browser call `studio` makes: the
+// command either opens something in a moment or says why it cannot.
 const studioProbeTimeout = 5 * time.Second
 
-// runStudio implements `marshal studio`: it opens the web Studio on the local
-// daemon, already authenticated.
+// studioAppBundleID is the native app's bundle identifier (app/), which is
+// what `open` is asked for by name: the app is signed and installed by the
+// bundle, so its path is not this command's to guess.
+const studioAppBundleID = "dev.marshal.app"
+
+// errNoStudioApp is the answer when no native app is installed here: the
+// command goes on to the web Studio rather than failing, and when that is not
+// set up either it is the error the user sees.
+var errNoStudioApp = errors.New("no Marshal app is installed (no app has the bundle identifier " + studioAppBundleID + ")")
+
+// studioOpenApp opens the native Studio. It is a var so a test can answer for
+// a platform without opening anything.
+var studioOpenApp = func(ctx context.Context) error {
+	if runtime.GOOS != "darwin" {
+		// D14: the app is the desktop's door onto the daemon; everywhere
+		// else the web Studio is the only one.
+		return errNoStudioApp
+	}
+	out, err := exec.CommandContext(ctx, "open", "-b", studioAppBundleID).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	// `open` answers "Unable to find application named ..." when no app
+	// carries the identifier, which is the absent app rather than a failure
+	// to launch one.
+	if strings.Contains(string(out), "Unable to find application") {
+		return errNoStudioApp
+	}
+	if msg := strings.TrimSpace(string(out)); msg != "" {
+		return fmt.Errorf("open the Marshal app: %s", msg)
+	}
+	return fmt.Errorf("open the Marshal app: %w", err)
+}
+
+// studioOpenURL opens a URL in the browser; tests replace it.
+var studioOpenURL = mcpauth.OpenBrowser
+
+// runStudio implements `marshal studio`: it opens the native Studio, or else
+// the web Studio daemon.web_url names (D14).
 //
-// This is the browser's door onto the daemon the TUI and `marshal fleet` use.
-// The page drives that daemon's own sessions and host-child agents, so a spawn
-// needs no agent image and no workspace build: the container machinery belongs
-// to a server-profile bridge, and this profile has none.
+// Nothing is minted and no port is probed: the web Studio is whatever the
+// daemon's web listener serves, and the address it is reached on is the one
+// the user put in daemon.web_url. The daemon's own answer is read only to say
+// so when the listener is not up.
 //
-// The daemon's bearer token is long-lived and never appears in a URL, a
-// process argument, a shell history or a server log. Instead the daemon mints
-// a short-lived, single-use code on its peer-checked unix socket; the browser
-// opens `/#code=<code>`, a fragment the browser never sends to the server, and
-// the page exchanges it once for the token over the loopback listener
-// (web/bridge/studio_access.go). Before any of that, the port is asked who it
-// is, so a stale listener that happens to hold the same port is refused rather
-// than handed a code.
-//
-// Usage: marshal studio [--print] [--no-open]
+// Usage: marshal studio [--print]
 func runStudio(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("studio", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	printOnly := fs.Bool("print", false, "print the one-time sign-in URL instead of opening a browser")
-	noOpen := fs.Bool("no-open", false, "do not open a browser (the one-time sign-in URL is printed)")
+	printOnly := fs.Bool("print", false, "print the web Studio's address instead of opening it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -49,106 +77,66 @@ func runStudio(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return fmt.Errorf("marshal studio: unexpected argument %q", rest[0])
 	}
 
+	// The app is tried only when the command will not be printing an
+	// address: --print asks for the address, not for the app.
+	if !*printOnly {
+		switch err := studioOpenApp(ctx); {
+		case err == nil:
+			fmt.Fprintln(stdout, "studio: opened the Marshal app")
+			return nil
+		case errors.Is(err, errNoStudioApp):
+			// No app: the web Studio is the other door.
+		default:
+			// Not fatal, for the reason a missing browser is not: the
+			// web Studio may still answer.
+			fmt.Fprintf(stderr, "marshal studio: could not open the Marshal app (%v)\n", err)
+		}
+	}
+
 	home, err := daemonHome()
 	if err != nil {
 		return err
 	}
-	paths := daemon.PathsFor(home)
+	cfg, err := config.Load(config.LoadOptions{HomeDir: home, SkipProjectConfig: true})
+	if err != nil {
+		return fmt.Errorf("marshal studio: read the user config: %w", err)
+	}
+	webURL := strings.TrimSpace(cfg.Daemon.WebURL)
+	if webURL == "" {
+		return errors.New("marshal studio: neither the Marshal app nor a web Studio is set up: install the app, or set daemon.web_listen and daemon.web_url and run marshal daemon install (docs/one-daemon/design.md D10, D14)")
+	}
 
-	ctx, cancel := context.WithTimeout(ctx, studioProbeTimeout)
+	if line := studioListenerWarning(ctx, home); line != "" {
+		fmt.Fprintln(stderr, line)
+	}
+
+	if !*printOnly {
+		if err := studioOpenURL(webURL); err != nil {
+			// Not fatal: a headless box has no browser to open.
+			fmt.Fprintf(stderr, "marshal studio: could not open a browser (%v); run `marshal studio --print` for the address\n", err)
+		}
+	}
+	fmt.Fprintf(stdout, "studio: %s\n", webURL)
+	return nil
+}
+
+// studioListenerWarning is the one line the daemon's own answer earns here:
+// that its web listener is not listening, which is why a set-up web Studio
+// would not answer. A daemon that does not answer adds nothing — this command
+// is not the place to diagnose a stopped daemon.
+func studioListenerWarning(ctx context.Context, home string) string {
+	infoCtx, cancel := context.WithTimeout(ctx, studioProbeTimeout)
 	defer cancel()
-
-	// The socket is the daemon's own interface and is peer-checked by user
-	// ID, so reading what it did needs no credential. That answer is also how
-	// a bind failure reaches the user by name instead of as "nothing is
-	// serving".
-	client := daemon.NewClient(paths.Socket)
-	info, err := client.Info(ctx)
+	info, err := daemonClientFor(daemon.PathsFor(home).Socket).Info(infoCtx)
 	if err != nil {
-		return fmt.Errorf("marshal studio: the daemon's socket at %s did not answer (%w); run `marshal daemon install` and `marshal daemon start`", paths.Socket, err)
+		return ""
 	}
-	if info.StudioError != "" {
-		return fmt.Errorf("marshal studio: the daemon could not serve the Studio at %s: %s; free the port or change daemon.studio_addr in %s, then restart the daemon",
-			info.StudioAddr, info.StudioError, config.UserConfigPath(home))
+	reason := info.WebError
+	if reason == "" {
+		if info.WebListen != "" {
+			return ""
+		}
+		reason = "daemon.web_listen is not set"
 	}
-	if info.StudioAddr == "" {
-		return fmt.Errorf("marshal studio: the daemon serves no Studio (daemon.studio_addr is off); set it in %s and run `marshal daemon install`",
-			config.UserConfigPath(home))
-	}
-
-	base := "http://" + info.StudioAddr
-	// Ask the port who it is before handing it anything: a listener that is
-	// not this daemon must not be given a code, and a daemon that answers
-	// nothing has nothing to open.
-	if err := probeStudio(ctx, base, info); err != nil {
-		return err
-	}
-
-	code, err := client.MintStudioCode(ctx)
-	if err != nil {
-		return fmt.Errorf("marshal studio: %w", err)
-	}
-	page := studioSignInURL(base, code.Code)
-
-	// The URL carrying the code is printed only when the command will not
-	// open it. A code is a credential for its two minutes, and a terminal's
-	// scrollback outlives that by a lot; the default path prints the address
-	// and puts the code straight into the browser.
-	if *printOnly || *noOpen {
-		fmt.Fprintf(stdout, "studio: %s\n", page)
-		return nil
-	}
-	fmt.Fprintf(stdout, "studio: %s/\n", base)
-	if err := mcpauth.OpenBrowser(page); err != nil {
-		// Not fatal: a headless box has no browser to open.
-		fmt.Fprintf(stderr, "marshal studio: could not open a browser (%v); run `marshal studio --print` for a one-time sign-in URL\n", err)
-	}
-	return nil
-}
-
-// studioSignInURL is the page address carrying a single-use code. The code goes
-// after `#`, so the browser keeps it out of the request line and the daemon's
-// access log, and the page can read it without the server ever seeing it.
-func studioSignInURL(base, code string) string {
-	return base + "/#code=" + url.QueryEscape(code)
-}
-
-// studioHello is what GET /api/studio/hello answers: the daemon's identity,
-// and nothing secret.
-type studioHello struct {
-	Version   string `json:"version"`
-	Profile   string `json:"profile"`
-	PID       int    `json:"pid"`
-	StartedAt int64  `json:"startedAt"` // Unix milliseconds
-	Socket    string `json:"socket"`
-}
-
-// probeStudio confirms that the port answers as the daemon whose socket was
-// just read, before a code is sent to it. It sends no credential: the identity
-// it compares is the one the socket already gave us.
-func probeStudio(ctx context.Context, base string, want daemon.Info) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/studio/hello", nil)
-	if err != nil {
-		return fmt.Errorf("marshal studio: %w", err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("marshal studio: nothing is serving the Studio at %s (%w); run `marshal daemon install` and `marshal daemon start`", base, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("marshal studio: the bridge at %s has no Studio sign-in route; restart the daemon (`marshal daemon start`)", base)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("marshal studio: %s answered %s", base, resp.Status)
-	}
-	var got studioHello
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&got); err != nil {
-		return fmt.Errorf("marshal studio: %s answered something that is not a daemon identity (%w)", base, err)
-	}
-	if got.PID != want.PID || got.StartedAt != want.StartedAt || got.Socket != want.Socket {
-		return fmt.Errorf("marshal studio: %s is not the daemon at %s (it reports pid %d, started %d); refusing to sign a page in to it",
-			base, want.Socket, got.PID, got.StartedAt)
-	}
-	return nil
+	return fmt.Sprintf("marshal studio: the daemon's web listener is not listening (%s)", reason)
 }

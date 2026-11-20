@@ -5,10 +5,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
-import 'package:marshal_app/src/client/transport.dart';
 import 'package:marshal_app/src/model/changes_model.dart';
 
 import '../test/support/fake_bridge.dart';
+import '../test/support/sockets.dart';
 
 /// F4's end-to-end flow, driven on a device where one exists
 /// (f4-inspector.md, Work 9): an agent makes a change; the app runs the gate,
@@ -23,8 +23,8 @@ void main() {
 
   testWidgets('a change is gated, commented on and shipped', (tester) async {
     HttpOverrides.global = null;
-    final bridge = await FakeBridge.onLoopback();
-    addTearDown(bridge.close);
+    final socket = await socketBridge('f4.sock');
+    final bridge = socket.bridge;
     FakeReply json(Object body, [int status = 200]) => FakeReply(
       status,
       headers: const {'content-type': 'application/json'},
@@ -103,9 +103,7 @@ void main() {
         ),
       );
 
-    final client = BridgeClient(
-      serverTransport(bridge.base, token: () async => 'unused'),
-    );
+    final client = BridgeClient(socket.transport);
     final changes = ChangesModel(client, agentId: 'a-1');
 
     // The change arrives, and the gate says it passes.

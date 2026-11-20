@@ -9,22 +9,23 @@ import 'package:marshal_app/src/client/event_stream.dart';
 import 'package:marshal_app/src/client/transport.dart';
 
 import '../support/fake_bridge.dart';
+import '../support/sockets.dart';
 
 /// [BridgeClient] against the in-process fake bridge: one test per route, so
 /// a route's path, method and decoded type are pinned without a daemon.
 void main() {
   late FakeBridge fake;
+  late Transport transport;
   late BridgeClient client;
 
   setUp(() async {
     // flutter_test's binding answers every HttpClient with 400; the fake
     // bridge is on this machine, so the real client is wanted back.
     HttpOverrides.global = null;
-    fake = await FakeBridge.onLoopback();
-    addTearDown(fake.close);
-    client = BridgeClient(
-      serverTransport(fake.base, token: () async => 'unused'),
-    );
+    final box = await socketBridge();
+    fake = box.bridge;
+    transport = box.transport;
+    client = BridgeClient(transport);
   });
 
   test('daemon reads the daemon document', () async {
@@ -48,34 +49,96 @@ void main() {
     expect(fake.requests.single.uri, '/api/daemon');
   });
 
-  test('relayHosts reads the relay\'s hosts', () async {
+  test('hosts reads /api/hosts', () async {
     fake.reply(
       'GET',
-      '/api/relay/hosts',
+      '/api/hosts',
       const FakeReply(
         200,
         body:
-            '{"hosts":[{"name":"laptop","connected":true,'
-            '"since":1763300000000,"lastContact":1763300060000},'
-            '{"name":"build","connected":false}]}',
+            '{"hosts":[{"name":"laptop","ssh":"me@laptop","state":"live",'
+            '"socket":"/tmp/laptop.sock","since":1763300000000},'
+            '{"name":"build","ssh":"me@build","state":"down",'
+            '"socket":"/tmp/build.sock","lastError":"connection refused",'
+            '"since":1763300060000}]}',
       ),
     );
 
-    final relayed = await client.relayHosts();
+    final reported = await client.hosts();
 
-    expect(relayed.hosts, hasLength(2));
-    expect(relayed.hosts.first.name, 'laptop');
-    expect(relayed.hosts.first.connected, isTrue);
-    expect(relayed.hosts.first.since, 1763300000000);
-    expect(relayed.hosts.first.lastContact, 1763300060000);
-    // A host the relay names whether or not it is joined, so one that has
-    // never joined carries no times at all.
-    expect(relayed.hosts.last.name, 'build');
-    expect(relayed.hosts.last.connected, isFalse);
-    expect(relayed.hosts.last.since, isNull);
-    expect(relayed.hosts.last.lastContact, isNull);
+    expect(reported.hosts, hasLength(2));
+    expect(reported.hosts.first.name, 'laptop');
+    expect(reported.hosts.first.ssh, 'me@laptop');
+    expect(reported.hosts.first.state, HostState.hostLive);
+    expect(reported.hosts.first.socket, '/tmp/laptop.sock');
+    expect(reported.hosts.first.lastError, isNull);
+    expect(reported.hosts.first.since, 1763300000000);
+    // A host whose tunnel is down is still listed: its last error is why, and
+    // the row stays so the person can see it rather than lose the host.
+    expect(reported.hosts.last.name, 'build');
+    expect(reported.hosts.last.ssh, 'me@build');
+    expect(reported.hosts.last.state, HostState.hostDown);
+    expect(reported.hosts.last.socket, '/tmp/build.sock');
+    expect(reported.hosts.last.lastError, 'connection refused');
     expect(fake.requests.single.method, 'GET');
-    expect(fake.requests.single.uri, '/api/relay/hosts');
+    expect(fake.requests.single.uri, '/api/hosts');
+  });
+
+  test('addHost posts the host and reads the list', () async {
+    fake.reply(
+      'POST',
+      '/api/hosts',
+      const FakeReply(
+        201,
+        body:
+            '{"hosts":[{"name":"laptop","ssh":"me@laptop","state":"live",'
+            '"socket":"/tmp/laptop.sock","since":1763300000000}]}',
+      ),
+    );
+
+    final list = await client.addHost(
+      const HostAdd(name: 'laptop', ssh: 'me@laptop'),
+    );
+
+    // The answer is the list the daemon left, which is what a row is read
+    // from: the add itself says nothing else.
+    expect(list.hosts, hasLength(1));
+    expect(list.hosts.single.name, 'laptop');
+    expect(list.hosts.single.ssh, 'me@laptop');
+    expect(fake.requests.single.method, 'POST');
+    expect(fake.requests.single.uri, '/api/hosts');
+    final body = jsonDecode(fake.requests.single.body) as Map<String, dynamic>;
+    expect(body, containsPair('ssh', 'me@laptop'));
+    expect(body, containsPair('name', 'laptop'));
+  });
+
+  test('removeHost deletes by name', () async {
+    fake.reply(
+      'DELETE',
+      '/api/hosts/laptop',
+      const FakeReply(200, body: '{"hosts":[]}'),
+    );
+
+    final list = await client.removeHost('laptop');
+
+    expect(list.hosts, isEmpty);
+    expect(fake.requests.single.method, 'DELETE');
+    expect(fake.requests.single.uri, '/api/hosts/laptop');
+  });
+
+  test('removeHost escapes a name that needs it', () async {
+    // The name is a path segment, so one with a space in it is encoded rather
+    // than read as a different route: nothing else pins the escaping.
+    fake.reply(
+      'DELETE',
+      '/api/hosts/a%20b',
+      const FakeReply(200, body: '{"hosts":[]}'),
+    );
+
+    await client.removeHost('a b');
+
+    expect(fake.requests.single.method, 'DELETE');
+    expect(fake.requests.single.uri, '/api/hosts/a%20b');
   });
 
   test('agents decodes every agent', () async {
@@ -291,6 +354,82 @@ void main() {
     expect(url, 'http://127.0.0.1:5173/preview/t-1/');
     expect(fake.requests.single.method, 'POST');
     expect(fake.requests.single.uri, '/api/agents/a-1/preview/5173');
+  });
+
+  test('a preview names the client’s preview origin', () async {
+    // A link the route answers with has to open on this machine, so a client
+    // that reaches the host's preview listener through a forwarded loopback
+    // port says which one it is, and the bridge builds the URL from that.
+    final remote = BridgeClient(
+      transport,
+      previewOrigin: 'http://localhost:54400',
+    );
+    fake.reply(
+      'POST',
+      '/api/agents/a-1/preview/5173',
+      const FakeReply(
+        200,
+        body: '{"url":"http://localhost:54400/preview/t-1/"}',
+      ),
+    );
+
+    expect(
+      await remote.preview('a-1', 5173),
+      'http://localhost:54400/preview/t-1/',
+    );
+    expect(
+      fake.requests.single.headers[previewOriginHeader.toLowerCase()],
+      'http://localhost:54400',
+      reason: 'the port the host forwards is the origin the link is built on',
+    );
+  });
+
+  test('a preview without an origin sends no header', () async {
+    // The local daemon's previews open on this machine already, so a client
+    // with no forwarded port names nothing and the bridge keeps its own answer.
+    fake.reply(
+      'POST',
+      '/api/agents/a-1/preview/5173',
+      const FakeReply(200, body: '{"url":"http://127.0.0.1:5173/x/"}'),
+    );
+
+    await client.preview('a-1', 5173);
+
+    expect(
+      fake.requests.single.headers,
+      isNot(contains(previewOriginHeader.toLowerCase())),
+      reason: 'a client with no origin names none',
+    );
+  });
+
+  test('a non-preview call sends no preview origin header', () async {
+    // The origin is the preview route's business alone (web/bridge/preview.go
+    // reads it from that request): a client that has one must not let it ride
+    // on every call, or each route would read a header only previews answer.
+    final remote = BridgeClient(
+      transport,
+      previewOrigin: 'http://localhost:54400',
+    );
+    fake.reply(
+      'GET',
+      '/api/daemon',
+      const FakeReply(
+        200,
+        body:
+            '{"version":"0.9.1","profile":"local","pid":42,'
+            '"startedAt":1763300000000,"socket":"/tmp/daemon.sock",'
+            '"projects":[],"pinned":[],"children":[]}',
+      ),
+    );
+
+    await remote.daemon();
+
+    expect(fake.requests.single.uri, '/api/daemon');
+    expect(
+      fake.requests.single.headers,
+      isNot(contains(previewOriginHeader.toLowerCase())),
+      reason: 'only a preview names the origin it is reached through',
+    );
   });
 
   test('a preview answer that names no url yields no URL', () async {

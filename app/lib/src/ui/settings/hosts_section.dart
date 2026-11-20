@@ -1,5 +1,6 @@
 import '../../model/age.dart';
-import '../../model/fleet_store.dart' show HostView, describeFailure;
+import '../../model/fleet_store.dart'
+    show HostTunnel, HostView, describeFailure;
 import '../../model/hosts_model.dart';
 import '../kit/kit.dart';
 import '../sections/section_page.dart';
@@ -7,9 +8,11 @@ import '../sections/section_page.dart';
 /// Settings' Hosts section (F7 decision 7): every host discovery found, with
 /// its kind, what this app can reach of it and when it was last heard from.
 ///
-/// A host is named in `fleet.toml` and found by discovery. A build that can
-/// run `marshal fleet` adds one here; a browser cannot, and says what it
-/// reaches instead (spec D22).
+/// A host is named in `fleet.toml` and found by discovery. A host is added
+/// here, and a server profile removed here, in either build: the commands run
+/// on the daemon this app is attached to, which is the one that keeps the
+/// tunnels (one-daemon D15). A build with no daemon to add through keeps the
+/// row and marks it planned.
 class HostsSection extends StatelessWidget {
   const HostsSection({super.key, required this.model, this.state, this.now});
 
@@ -42,17 +45,11 @@ class HostsSection extends StatelessWidget {
           if (model.canAdd)
             RowItem(
               name: 'Add a host',
-              description:
-                  'A server profile, added to `fleet.toml` and signed in to',
+              description: _addDescription,
               onTap: () => _add(context),
             )
           else
-            RowItem.planned(
-              name: 'Add a host',
-              description:
-                  'A browser reaches the hosts the bridge that served it '
-                  'relays: join a daemon to it with `webbridge --join`.',
-            ),
+            RowItem.planned(name: 'Add a host', description: _addDescription),
         ]),
       ],
       detail: (context, host) =>
@@ -60,9 +57,16 @@ class HostsSection extends StatelessWidget {
     );
   }
 
-  /// Adds a server profile: its name, its URL, the certificates it is trusted
-  /// with and its token. A draft that holds anything counts for the shell's
-  /// guard while the sheet is open (design-system.md §9).
+  /// What the add row says the host is: another machine's daemon, which the
+  /// daemon this app is attached to reaches over SSH. It reads the same in
+  /// both builds, and where there is no daemon to add through.
+  static const _addDescription =
+      'Another machine\'s daemon, reached over SSH from the machine this '
+      'daemon runs on';
+
+  /// Adds a host: its name and the SSH destination it is reached at. A draft
+  /// that holds anything counts for the shell's guard while the sheet is open
+  /// (design-system.md §9).
   Future<void> _add(BuildContext context) async {
     await Sheet.show<void>(
       context,
@@ -75,23 +79,28 @@ class HostsSection extends StatelessWidget {
     model.draftChanged(null);
   }
 
-  /// What the host is, in one line: a local daemon, or a server profile — and
-  /// a relayed profile says where it is reached (spec D23).
-  static String _kind(HostView host) => switch (host.kind.name) {
-    'local' => 'A local daemon, on this machine',
-    _ =>
-      host.via == null
-          ? 'A server profile, over TLS'
-          : 'A server profile, through ${host.via}',
-  };
+  /// What the host is, in one line: a local daemon, a host reached over SSH,
+  /// or a page's own host — and a forwarded one says where it is reached
+  /// through, and where to (spec D23).
+  static String _kind(HostView host) {
+    if (host.kind.name == 'local') return 'A local daemon, on this machine';
+    final destination = host.destination;
+    final via = host.via;
+    if (via != null) {
+      return destination == null
+          ? 'Through $via'
+          : 'Through $via, over SSH to $destination';
+    }
+    if (destination != null) return 'Over SSH to $destination';
+    return 'The daemon that served this page';
+  }
 }
 
-/// What the add sheet holds (spec D6): a server's name and URL, the file whose
-/// certificates it is trusted with, and the token to reach it with.
+/// What the add sheet holds (spec D6): the host's name, and the SSH
+/// destination it is reached at — `you@machine`, or a Host from
+/// `~/.ssh/config`.
 ///
-/// The token is written and never read back, as Secrets' new value is. A
-/// failed add keeps the fields and says why under them; the sheet closes as
-/// added, because the profile is there and only the token is not.
+/// A failed add keeps the fields and says why under them.
 class HostForm extends StatefulWidget {
   const HostForm({super.key, required this.model, this.initialFailure});
 
@@ -107,9 +116,7 @@ class HostForm extends StatefulWidget {
 
 class _HostFormState extends State<HostForm> {
   final _name = TextEditingController();
-  final _url = TextEditingController();
-  final _caFile = TextEditingController();
-  final _token = TextEditingController();
+  final _destination = TextEditingController();
   String? _failure;
   bool _adding = false;
 
@@ -122,18 +129,12 @@ class _HostFormState extends State<HostForm> {
   @override
   void dispose() {
     _name.dispose();
-    _url.dispose();
-    _caFile.dispose();
-    _token.dispose();
+    _destination.dispose();
     super.dispose();
   }
 
-  HostDraft get _draft => HostDraft(
-    name: _name.text,
-    url: _url.text,
-    caFile: _caFile.text,
-    token: _token.text,
-  );
+  HostDraft get _draft =>
+      HostDraft(name: _name.text, destination: _destination.text);
 
   void _changed(String _) {
     widget.model.draftChanged(_draft);
@@ -167,33 +168,16 @@ class _HostFormState extends State<HostForm> {
       children: [
         Field(
           label: 'Name',
-          hint: 'studio',
+          hint: 'box',
           controller: _name,
           enabled: !_adding,
           onChanged: _changed,
         ),
         const SizedBox(height: Space.s16),
         Field(
-          label: 'URL',
-          hint: 'https://studio.example.com',
-          controller: _url,
-          enabled: !_adding,
-          onChanged: _changed,
-          onSubmitted: (_) => _add(),
-        ),
-        const SizedBox(height: Space.s16),
-        Field(
-          label: 'CA file',
-          hint: 'The certificates this host is trusted with',
-          controller: _caFile,
-          enabled: !_adding,
-          onChanged: _changed,
-        ),
-        const SizedBox(height: Space.s16),
-        Field(
-          label: 'Token',
-          hint: 'The token is written and never shown again',
-          controller: _token,
+          label: 'SSH destination',
+          hint: 'you@machine, or a Host from ~/.ssh/config',
+          controller: _destination,
           enabled: !_adding,
           onChanged: _changed,
           onSubmitted: (_) => _add(),
@@ -216,9 +200,9 @@ class _HostFormState extends State<HostForm> {
 }
 
 /// What a host is, and what a person can do about it: a server profile is
-/// removed, and one whose token the bridge refused is signed in to again. The
-/// local daemon is neither — it is this machine's, and its profile is not the
-/// Studio's to write.
+/// removed. The local daemon is never — it is this machine's, and its profile
+/// is not the Studio's to write. Nothing here signs in: the operator's proxy
+/// admits the page, and a refusal is cleared by reloading it (one-daemon D13).
 class HostDetail extends StatefulWidget {
   const HostDetail({
     super.key,
@@ -236,59 +220,29 @@ class HostDetail extends StatefulWidget {
 }
 
 class _HostDetailState extends State<HostDetail> {
-  final _token = TextEditingController();
-
-  /// A sign-in's words, shown under the token field.
-  String? _failure;
-
   /// A removal's words, shown under the button that asked for it: a host
   /// that answered every request can still be refused a removal (an inline
-  /// definition, a file whose mode went loose), and that refusal is not a
-  /// sign-in failure.
+  /// definition, a file whose mode went loose), and that refusal is the
+  /// Studio's own, not the proxy's.
   String? _removeFailure;
-  bool _signingIn = false;
-  bool _signingOut = false;
 
-  @override
-  void dispose() {
-    _token.dispose();
-    super.dispose();
-  }
-
-  /// Whether the relay this host is reached through is one the bridge refused.
-  /// While it is, signing in here cannot help: the relay's own token is what is
-  /// refused, so the detail says so and offers no Sign in of its own (D23).
-  ///
-  /// A `via` the section does not list is read as not refused: both real
-  /// compositions always list the relay's own row (the page's host first in a
-  /// browser, the hub's row in a native build), so this only answers a
-  /// fixture that withholds it.
-  bool get _relayRefused {
-    final via = widget.host.via;
-    if (via == null) return false;
-    for (final other in widget.model.items) {
-      if (other.name == via) return other.refused;
-    }
-    return false;
-  }
-
-  /// A refused token is not a silence: a server profile that refused one is
-  /// signed in to again, and one whose sign-in failed when it was added says
-  /// why beside the field (decision 5).
   @override
   Widget build(BuildContext context) {
     final e = Ember.of(context);
     final host = widget.host;
     final seen = host.lastContact;
     final server = host.kind.name != 'local';
-    final loginFailure = widget.model.loginFailure(host.name);
-    final relayRefused = _relayRefused;
-    final failure = _failure;
+    final destination = host.destination;
+    final tunnel = host.tunnel;
     final removeFailure = _removeFailure;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _Fact('Kind', HostsSection._kind(host)),
+        if (destination != null) _Fact('SSH', destination),
+        if (tunnel != null) _Fact('Tunnel', _tunnelWords(tunnel)),
+        if (tunnel != null && tunnel.lastError.isNotEmpty)
+          _Fact('Last error', tunnel.lastError),
         _Fact('Reach', host.reachWords(widget.now)),
         _Fact(
           'Last contact',
@@ -306,104 +260,32 @@ class _HostDetailState extends State<HostDetail> {
                     'heard from.',
           style: e.small.tint(e.muted),
         ),
-        if (relayRefused) ...[
-          const SizedBox(height: Space.s12),
-          Text('Sign in to the relay first.', style: e.small.tint(e.err)),
-        ],
-        // A browser cannot remove a profile any more than it can add one, so
-        // the affordance follows the runner rather than the host's kind.
-        if (server && widget.model.canAdd) ...[
+        // The affordance follows the runner rather than the host's kind: a
+        // build with no daemon to remove a host through offers nothing. Only a
+        // host reached over SSH has a table of its own to delete.
+        if (server && widget.model.canAdd && destination != null) ...[
           const SizedBox(height: Space.s16),
-          Row(
-            children: [
-              Btn('Remove…', onTap: () => _remove(context)),
-              // Signing out is the browser's alone: it is what holds the token
-              // that reached a relayed host (decision 6, spec D22).
-              if (widget.model.canSignOut(host)) ...[
-                const SizedBox(width: Space.s12),
-                Btn('Sign out', onTap: _signingOut ? null : _signOut),
-              ],
-            ],
-          ),
+          Row(children: [Btn('Remove…', onTap: () => _remove(context))]),
           if (removeFailure != null) ...[
             const SizedBox(height: Space.s12),
             Text(removeFailure, style: e.small.tint(e.err)),
           ],
         ],
-        if (server &&
-            !relayRefused &&
-            (host.refused || loginFailure != null)) ...[
-          const SizedBox(height: Space.s20),
-          if (loginFailure != null) ...[
-            Text(loginFailure, style: e.small.tint(e.err)),
-            const SizedBox(height: Space.s12),
-          ],
-          Field(
-            label: 'Token',
-            hint: 'The token is written and never shown again',
-            controller: _token,
-            enabled: !_signingIn,
-            onChanged: (_) {
-              if (failure != null) setState(() => _failure = null);
-            },
-            onSubmitted: (_) => _signIn(),
-          ),
-          if (failure != null) ...[
-            const SizedBox(height: Space.s12),
-            Text(failure, style: e.small.tint(e.err)),
-          ],
-          const SizedBox(height: Space.s16),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Btn.primary(
-              _signingIn ? 'Signing in' : 'Sign in',
-              onTap: _signingIn ? null : _signIn,
-            ),
-          ),
-        ],
       ],
     );
   }
 
-  Future<void> _signIn() async {
-    final token = _token.text.trim();
-    if (token.isEmpty) {
-      setState(() => _failure = 'A token is needed');
-      return;
-    }
-    setState(() {
-      _signingIn = true;
-      _failure = null;
-    });
-    try {
-      await widget.model.signIn(widget.host.name, token);
-      if (!mounted) return;
-      _token.clear();
-      setState(() => _signingIn = false);
-    } catch (failure) {
-      if (!mounted) return;
-      setState(() {
-        _signingIn = false;
-        _failure = describeFailure(failure);
-      });
-    }
+  /// The tunnel's state in words, with how long it has been in it when the
+  /// daemon said when that changed: "live", "down 4m since", and so on.
+  String _tunnelWords(HostTunnel tunnel) {
+    final since = tunnel.since;
+    if (since == null) return tunnel.state;
+    return '${tunnel.state} since '
+        '${relativeAge(since, widget.now)} ago';
   }
 
-  /// Forgets the token this browser kept for the host, then asks it to try
-  /// again: it reads "token refused" until it is signed in to with a new one
-  /// (decision 6, spec D22).
-  Future<void> _signOut() async {
-    setState(() {
-      _signingOut = true;
-      _failure = null;
-    });
-    await widget.model.signOut(widget.host.name);
-    if (!mounted) return;
-    setState(() => _signingOut = false);
-  }
-
-  /// Removes the profile and its stored token, after the confirmation Access
-  /// asks before a revoke: it names what is lost, and what keeps running.
+  /// Removes the profile, after the confirmation Access asks before a revoke:
+  /// it names what is lost, and what keeps running.
   Future<void> _remove(BuildContext context) async {
     final host = widget.host;
     if (_removeFailure != null) setState(() => _removeFailure = null);
@@ -420,8 +302,8 @@ class _HostDetailState extends State<HostDetail> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'The Studio stops showing it, and its profile and stored token '
-              'are deleted. Its daemon keeps running.',
+              'The Studio stops showing it, and this daemon deletes its table '
+              'from fleet.toml. Its own daemon keeps running.',
             ),
             const SizedBox(height: Space.s16),
             Align(

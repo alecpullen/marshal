@@ -319,7 +319,7 @@ func (f *Fleet) OpenTerminal(ctx context.Context, agentID string, cols, rows int
 	if rt.child != nil && rt.child.Containerized {
 		path, _, ok := f.runtimeInfo()
 		if !ok {
-			return "", ErrWorkspaceNeedsRuntime
+			return "", f.needsRuntime()
 		}
 		name := containerNameFor(agentID)
 		if a, ok := f.ws.Agent(agentID); ok && a.ContainerName != "" {
@@ -872,7 +872,7 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 	}
 	rtPath, rtName, ok := f.runtimeInfo()
 	if !ok {
-		return "", ErrWorkspaceNeedsRuntime
+		return "", f.needsRuntime()
 	}
 	cols, rows = clampTerm(cols, 80), clampTerm(rows, 24)
 	t := &terminal{id: newTerminalID(), owner: workspaceOwner(res.Name), done: make(chan struct{})}
@@ -885,7 +885,7 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 		ID: shellID, Profile: DefaultRuntimeProfile(),
 		Workspace: &AgentWorkspace{Name: res.Name, Version: res.Version, Source: contract.WorkspaceSource(res.Source)},
 	}
-	extras, err := f.buildWorkspaceExtras(ctx, pseudo, res.Doc, res.ImageName, rtName)
+	extras, err := f.buildWorkspaceExtras(ctx, pseudo, res.Doc, res.ImageName)
 	if err != nil {
 		return "", err
 	}
@@ -909,7 +909,7 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 	}
 	args = append(args, extras.mounts...)
 	for _, v := range wiring.Volumes {
-		args = append(args, volumeMount(rtName, f.stateVolume, v.Target, v.Subpath, v.ReadOnly)...)
+		args = append(args, stateMount(f.stateDir, v.Target, v.Subpath, v.ReadOnly)...)
 	}
 	env := map[string]string{"TERM": "xterm-256color"}
 	for k, v := range extras.env {

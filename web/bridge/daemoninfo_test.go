@@ -1,9 +1,11 @@
 package bridge
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -16,8 +18,8 @@ func viaHandler(t *testing.T, h http.Handler, method, path string) *httptest.Res
 	return rec
 }
 
-// daemonTestServer is a token-protected server with daemon info and two
-// projects, in the order the workspace holds them.
+// daemonTestServer is a server with daemon info and the given projects, in
+// the order the workspace holds them.
 func daemonTestServer(t *testing.T, projects ...string) *Server {
 	t.Helper()
 	f := testFleet(t)
@@ -26,7 +28,7 @@ func daemonTestServer(t *testing.T, projects ...string) *Server {
 			t.Fatal(err)
 		}
 	}
-	s := NewServer(f, "secret")
+	s := NewServer(f)
 	s.SetDaemonInfo(DaemonInfo{
 		Version:   "v1.2.3",
 		Profile:   "local",
@@ -38,8 +40,8 @@ func daemonTestServer(t *testing.T, projects ...string) *Server {
 }
 
 // TestTheDaemonRouteAnswersItsInfo is decision 8: the socket handler serves
-// the daemon's own description plus the workspace's projects, sorted, with
-// no token; the network handler still refuses an unauthenticated request.
+// the daemon's own description plus the workspace's projects, sorted, and the
+// web listener serves it on the mux too.
 func TestTheDaemonRouteAnswersItsInfo(t *testing.T) {
 	s := daemonTestServer(t, "/home/u/zeta", "/home/u/alpha")
 
@@ -56,16 +58,39 @@ func TestTheDaemonRouteAnswersItsInfo(t *testing.T) {
 	if len(got.Projects) != 2 || got.Projects[0] != "/home/u/alpha" || got.Projects[1] != "/home/u/zeta" {
 		t.Fatalf("projects = %v, want them sorted", got.Projects)
 	}
+	// A daemon that never started a preview listener names no preview
+	// address: the field is absent, not an empty string a caller could take
+	// for an origin it can reach (one-daemon open question 1).
+	if body := rec.Body.String(); strings.Contains(body, "previewAddr") {
+		t.Fatalf("daemon info %s reports previewAddr with no preview listener", body)
+	}
+}
 
-	if rec := doReq(t, s, http.MethodGet, "/api/daemon", nil, nil); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("network /api/daemon without a token = %d, want 401", rec.Code)
+// TestThePreviewAddrIsReported: a daemon that started a preview listener
+// reports its bound address, and the listener's port with it, so a caller can
+// reach that origin and name it back (one-daemon open question 1).
+func TestThePreviewAddrIsReported(t *testing.T) {
+	s := daemonTestServer(t)
+	s.SetPreviewAddr(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 54400})
+
+	rec := viaHandler(t, s.SocketHandler(), http.MethodGet, "/api/daemon")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("socket /api/daemon status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got DaemonInfo
+	decodeBody(t, rec, &got)
+	if got.PreviewAddr != "127.0.0.1:54400" {
+		t.Fatalf("previewAddr = %q, want the bound preview address", got.PreviewAddr)
+	}
+	if port := s.previewPort.Load(); port != 54400 {
+		t.Fatalf("preview port = %d, want SetPreviewAddr to set 54400", port)
 	}
 }
 
 // TestTheDaemonRouteIsAbsentWithoutInfo: a server that is not a daemon
 // answers 404, so the server profile's API is unchanged in effect.
 func TestTheDaemonRouteIsAbsentWithoutInfo(t *testing.T) {
-	s := NewServer(testFleet(t), "secret")
+	s := NewServer(testFleet(t))
 
 	rec := viaHandler(t, s.SocketHandler(), http.MethodGet, "/api/daemon")
 	if rec.Code != http.StatusNotFound {
@@ -112,7 +137,7 @@ func TestTheDaemonRouteReportsThePins(t *testing.T) {
 	if err := f.ws.SetPinned(root, true); err != nil {
 		t.Fatalf("SetPinned: %v", err)
 	}
-	s := NewServer(f, "secret")
+	s := NewServer(f)
 	s.SetDaemonInfo(DaemonInfo{Version: "v1", Profile: "local"})
 	sock := s.SocketHandler()
 

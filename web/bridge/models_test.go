@@ -124,7 +124,7 @@ func TestModelsUnsupportedAgentIs501(t *testing.T) {
 
 func TestSpawnForwardsRoutingToSessionNew(t *testing.T) {
 	f, _, agentOf := agentFleet(t)
-	s := NewServer(f, "")
+	s := NewServer(f)
 	rec := doReq(t, s, http.MethodPost, "/api/agents", map[string]any{
 		"project": t.TempDir(), "name": "routed",
 		"routing": map[string]any{"implementer": "fast"},

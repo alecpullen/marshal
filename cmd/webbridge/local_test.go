@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -24,9 +26,14 @@ func isolateWebbridgeEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
 		"WEBBRIDGE_PROFILE", "WEBBRIDGE_SOCKET", "WEBBRIDGE_ADDR", "WEBBRIDGE_TOKEN",
-		"WEBBRIDGE_CWD_ROOT", "WEBBRIDGE_STATE_DIR", "WEBBRIDGE_WORKSPACE",
+		"WEBBRIDGE_TOKEN_FILE", "WEBBRIDGE_TLS_CERT", "WEBBRIDGE_TLS_KEY",
+		"WEBBRIDGE_WEB_LISTEN", "WEBBRIDGE_WEB_GROUP", "WEBBRIDGE_PREVIEW_ADDR",
+		"WEBBRIDGE_PREVIEW_URL",
+		"WEBBRIDGE_CWD_ROOT", "WEBBRIDGE_STATE_DIR", "WEBBRIDGE_STATE_VOLUME",
+		"WEBBRIDGE_WORKSPACE",
 		"WEBBRIDGE_EGRESS", "WEBBRIDGE_SECRETS", "WEBBRIDGE_SECRETS_KEY_FILE",
-		"WEBBRIDGE_IDLE_SESSION_TIMEOUT", "WEBBRIDGE_OAUTH_REFRESH",
+		"WEBBRIDGE_IDLE_SESSION_TIMEOUT", "WEBBRIDGE_OAUTH_REFRESH", "WEBBRIDGE_TUNNELS",
+		"WEBBRIDGE_STUDIO_DIR",
 		"WEBBRIDGE_RELAY_JOIN", "WEBBRIDGE_JOIN", "WEBBRIDGE_JOIN_NAME",
 		"WEBBRIDGE_JOIN_TOKEN_FILE", "WEBBRIDGE_JOIN_CA_FILE",
 	} {
@@ -64,10 +71,18 @@ func socketClient(path string) *http.Client {
 // waitForDaemon polls GET /api/daemon until the local daemon answers.
 func waitForDaemon(t *testing.T, client *http.Client) bridge.DaemonInfo {
 	t.Helper()
+	return waitForDaemonAt(t, client, "daemon")
+}
+
+// waitForDaemonAt polls GET /api/daemon at host. The daemon's own socket
+// answers any Host, its web listener only a host the daemon publishes (D13),
+// so a test waiting on web.sock names the published one.
+func waitForDaemonAt(t *testing.T, client *http.Client, host string) bridge.DaemonInfo {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	var last error
 	for time.Now().Before(deadline) {
-		resp, err := client.Get("http://daemon/api/daemon")
+		resp, err := client.Get("http://" + host + "/api/daemon")
 		if err != nil {
 			last = err
 		} else {
@@ -85,10 +100,10 @@ func waitForDaemon(t *testing.T, client *http.Client) bridge.DaemonInfo {
 	return bridge.DaemonInfo{}
 }
 
-// TestTheLocalProfilesDefaults pins decision 2: each default applies
-// only when neither its flag nor its variable was given, and the
-// working-directory project is not registered.
-func TestTheLocalProfilesDefaults(t *testing.T) {
+// TestTheDaemonsDefaults pins the one daemon's defaults (OD1): each applies
+// only when neither its flag nor its variable was given, the egress proxy is
+// off, and no working-directory project is registered.
+func TestTheDaemonsDefaults(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	data := t.TempDir()
 	t.Setenv("MARSHAL_DATA_DIR", data)
@@ -114,71 +129,45 @@ func TestTheLocalProfilesDefaults(t *testing.T) {
 		t.Errorf("secrets = %q, want env", cfg.secrets)
 	}
 	if cfg.cwdRoot != "" {
-		t.Errorf("cwdRoot = %q, want empty: the local profile registers no working-directory project", cfg.cwdRoot)
+		t.Errorf("cwdRoot = %q, want empty: the daemon registers no working-directory project", cfg.cwdRoot)
 	}
 	if want := 30 * time.Minute; cfg.idleSessionTimeout != want {
 		t.Errorf("idleSessionTimeout = %s, want %s", cfg.idleSessionTimeout, want)
 	}
-	// The refresh helper is off unless asked: nothing else in the local
-	// profile's defaults starts a process.
+	// The refresh helper is off unless asked: nothing else in the daemon's
+	// defaults starts a process.
 	if cfg.oauthRefresh {
 		t.Errorf("oauthRefresh = true, want false: the refresh helper is asked for")
 	}
 }
 
-// TestTheLocalProfileRefuses pins decision 3, the settings that only the
-// local profile understands, and the relay's flags, whose refusals sit beside
-// them.
-func TestTheLocalProfileRefuses(t *testing.T) {
+// TestTheDaemonRefuses pins the settings the daemon refuses. The retired
+// --profile is refused unless it says local, and the retired --relay-join is
+// refused outright (TestRelayJoinIsRefused). The four join flags are not
+// refused: they are accepted and ignored (TestTheJoinFlagsAreIgnored).
+func TestTheDaemonRefuses(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(keyFile, make([]byte, 32), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// A token and a join secret file: parseConfig only records where they
-	// are, so neither needs contents until a bridge reads it.
-	tokenFile := filepath.Join(t.TempDir(), "studio.token")
-	joinSecret := filepath.Join(t.TempDir(), "join.secret")
 
 	cases := []struct {
 		name string
 		args []string
 		env  map[string]string
 		// want is the text the refusal must name. An empty want means the
-		// settings are accepted, which is what the join's token rule is
-		// pinned with.
+		// settings are accepted, which is what the retired flag is pinned
+		// with.
 		want string
 	}{
-		{"egress flag", []string{"--profile", "local", "--egress", "on"}, nil, "local"},
-		{"egress env", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_EGRESS": "on"}, "local"},
-		{"secrets local", []string{"--profile", "local", "--secrets", "local", "--secrets-key-file", keyFile}, nil, "local"},
-		{"socket without the profile", []string{"--socket", "/tmp/x.sock"}, nil, "local"},
-		{"addr off without the profile", []string{"--addr", "off"}, nil, "local"},
-		{"idle timeout without the profile", []string{"--idle-session-timeout", "5m"}, nil, "local"},
-		{"idle timeout negative", []string{"--profile", "local", "--idle-session-timeout", "-5m"}, nil, "local"},
-		{"oauth refresh without the profile", []string{"--oauth-refresh"}, nil, "local"},
+		{"idle timeout negative", []string{"--idle-session-timeout", "-5m"}, nil, "cannot be negative"},
 		{"oauth refresh unparsable", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_OAUTH_REFRESH": "yes"}, "WEBBRIDGE_OAUTH_REFRESH"},
-		{"profile cloud", []string{"--profile", "cloud"}, nil, "local"},
-		// The token file is a listener's and a join's alike: with no
-		// listener and no join, there is nothing to hand it to.
-		{"token file without a listener or a join", []string{"--profile", "local", "--addr", "off", "--token-file", tokenFile}, nil, "the TCP listener or a join"},
-		// A join needs the url it dials, the name it joins under, the file
-		// holding that name's secret, and a token to check relayed requests
-		// with.
-		{"join without a name", []string{"--profile", "local", "--addr", "off", "--join", "http://127.0.0.1:7700", "--join-token-file", joinSecret, "--token-file", tokenFile}, nil, "--join-name"},
-		{"join without a token file", []string{"--profile", "local", "--addr", "off", "--join", "http://127.0.0.1:7700", "--join-name", "box", "--token-file", tokenFile}, nil, "--join-token-file"},
-		{"join without a bearer token", []string{"--profile", "local", "--addr", "off", "--join", "http://127.0.0.1:7700", "--join-name", "box", "--join-token-file", joinSecret}, nil, "--token or --token-file"},
-		{"join name without a join", []string{"--profile", "local", "--join-name", "box"}, nil, "--join"},
-		{"join token file without a join", []string{"--profile", "local", "--join-token-file", joinSecret}, nil, "--join"},
-		{"join ca file without a join", []string{"--profile", "local", "--join-ca-file", joinSecret}, nil, "--join"},
-		{"relay join without a pair", []string{"--profile", "local", "--relay-join", "box"}, nil, "expected NAME=PATH"},
-		{"relay join given twice", []string{"--profile", "local", "--relay-join", "box=" + joinSecret, "--relay-join", "box=" + tokenFile}, nil, "given twice"},
-		{"relay join twice from the variable", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_RELAY_JOIN": "box=" + joinSecret + ",box=" + tokenFile}, "given twice"},
-		// --addr off leaves the socket as the only listener, but a join
-		// still needs the token its relayed requests are checked with, so
-		// --token-file is accepted and read.
-		{"token file for a join", []string{"--profile", "local", "--addr", "off", "--join", "http://127.0.0.1:7700", "--join-name", "box", "--join-token-file", joinSecret, "--token-file", tokenFile}, nil, ""},
+		// --profile is retired: local, or no flag at all, is every bridge.
+		{"profile local", []string{"--profile", "local"}, nil, ""},
+		{"profile cloud", []string{"--profile", "cloud"}, nil, "retired"},
+		{"profile server", []string{"--profile", "server"}, nil, "retired"},
+		// The settings the daemon once guarded behind the profile are its
+		// own: the egress proxy is off unless asked for, and asking is fine.
+		{"egress on", []string{"--egress", "on"}, nil, ""},
+		{"egress on from the variable", nil, map[string]string{"WEBBRIDGE_EGRESS": "on"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -196,11 +185,180 @@ func TestTheLocalProfileRefuses(t *testing.T) {
 			if err == nil {
 				t.Fatalf("parseConfig(%v) accepted the setting", tc.args)
 			}
-			// Every refusal names what to use instead: the local
-			// profile. A variable that does not parse names the
-			// variable instead, and a refusal about a flag names it.
+			// Every refusal names what to keep: the retired profile, the
+			// flag, or the setting. A variable that does not parse names
+			// the variable instead.
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error %q does not name %s", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestRelayJoinIsRefused pins the one retirement that is a refusal: the relay
+// a joining host dialled into has no place in the one daemon, where a remote
+// daemon is a host reached over SSH (D6). The refusal says so, by flag and by
+// variable alike.
+func TestRelayJoinIsRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		env  map[string]string
+	}{
+		{"flag", []string{"--relay-join", "box=/tmp/box.secret"}, nil},
+		{"variable", nil, map[string]string{"WEBBRIDGE_RELAY_JOIN": "box=/tmp/box.secret"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateWebbridgeEnv(t)
+			t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			_, err := parseConfig(tc.args, io.Discard)
+			if err == nil {
+				t.Fatalf("parseConfig(%v) accepted the retired --relay-join", tc.args)
+			}
+			if !strings.Contains(err.Error(), "--relay-join is retired") || !strings.Contains(err.Error(), "SSH") {
+				t.Errorf("error %q does not retire --relay-join for a host reached over SSH", err)
+			}
+		})
+	}
+}
+
+// TestTheJoinFlagsAreIgnored pins the retirement the other way round: an
+// installed unit's four join flags still start the daemon — the files they
+// name are never opened — and one warning names them. The warning goes
+// through slog, the path the retired --profile takes, so the test reads the
+// handler that writes where stderr would hold it.
+func TestTheJoinFlagsAreIgnored(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{
+			"--socket", socket,
+			"--join", "https://relay.example",
+			"--join-name", "box",
+			"--join-token-file", "/nonexistent/join.secret",
+			"--join-ca-file", "/nonexistent/relay.pem",
+		}, io.Discard, io.Discard)
+	}()
+
+	// The daemon serves: the flags are ignored rather than refused, and the
+	// secret files they name are never read, so a missing one stops nothing.
+	waitForDaemon(t, socketClient(socket))
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
+	}
+
+	want := "--join, --join-name, --join-token-file, --join-ca-file are retired and ignored"
+	if got := strings.Count(logged.String(), "retired and ignored"); got != 1 {
+		t.Fatalf("warnings = %d, want 1: %s", got, logged.String())
+	}
+	if !strings.Contains(logged.String(), want) {
+		t.Errorf("the warning does not name the four flags as %q: %s", want, logged.String())
+	}
+	if !strings.Contains(logged.String(), "marshal daemon install") {
+		t.Errorf("the warning does not say how to rewrite the unit: %s", logged.String())
+	}
+}
+
+// TestTheRetiredListenerFlagsAreIgnored: an installed unit's --addr and
+// --token-file still start the daemon — neither is read, so a missing token
+// file stops nothing — and one warning names them.
+func TestTheRetiredListenerFlagsAreIgnored(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{
+			"--addr", "off", "--token-file", "/nonexistent/studio.token",
+			"--socket", socket,
+		}, io.Discard, io.Discard)
+	}()
+
+	// The daemon serves: the flags are ignored rather than refused, and the
+	// token file they name is never read, so a missing one stops nothing.
+	waitForDaemon(t, socketClient(socket))
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
+	}
+
+	want := "--addr, --token-file are retired and ignored"
+	if got := strings.Count(logged.String(), "retired and ignored"); got != 1 {
+		t.Fatalf("warnings = %d, want 1: %s", got, logged.String())
+	}
+	if !strings.Contains(logged.String(), want) {
+		t.Errorf("the warning does not name %q: %s", want, logged.String())
+	}
+	if !strings.Contains(logged.String(), "marshal daemon install") {
+		t.Errorf("the warning does not say how to rewrite the unit: %s", logged.String())
+	}
+}
+
+// TestTheRetiredProfileWarnsOnce pins the one rule the retired flag still
+// carries: local, or no flag at all, is accepted, and only an explicit local
+// is worth a warning.
+func TestTheRetiredProfileWarnsOnce(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		env  map[string]string
+		want int
+	}{
+		{"flag", []string{"--profile", "local"}, nil, 1},
+		{"variable", nil, map[string]string{"WEBBRIDGE_PROFILE": "local"}, 1},
+		{"absent", nil, nil, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateWebbridgeEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			if _, err := parseConfig(tc.args, io.Discard); err != nil {
+				t.Fatalf("parseConfig(%v) refused the settings: %v", tc.args, err)
+			}
+			if got := strings.Count(buf.String(), "level=WARN"); got != tc.want {
+				t.Errorf("warnings = %d, want %d (%s)", got, tc.want, buf.String())
 			}
 		})
 	}
@@ -215,8 +373,8 @@ func TestTheIdleTimeoutParses(t *testing.T) {
 		args []string
 		want time.Duration
 	}{
-		{"five minutes", []string{"--profile", "local", "--idle-session-timeout", "5m"}, 5 * time.Minute},
-		{"zero", []string{"--profile", "local", "--idle-session-timeout", "0"}, 0},
+		{"five minutes", []string{"--idle-session-timeout", "5m"}, 5 * time.Minute},
+		{"zero", []string{"--idle-session-timeout", "0"}, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -234,8 +392,8 @@ func TestTheIdleTimeoutParses(t *testing.T) {
 }
 
 // TestTheLocalProfileServesItsSocket runs the daemon for real and asks
-// its socket who it is: --addr off means the socket is the only
-// listener, peer-checked rather than token-checked.
+// its socket who it is: the socket is peer-checked, and with no
+// --web-listen it is the only listener.
 func TestTheLocalProfileServesItsSocket(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
@@ -246,7 +404,7 @@ func TestTheLocalProfileServesItsSocket(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"--profile", "local", "--addr", "off", "--socket", socket}, io.Discard, &stderr)
+		done <- run(ctx, []string{"--socket", socket}, io.Discard, &stderr)
 	}()
 
 	info := waitForDaemon(t, socketClient(socket))
@@ -293,8 +451,156 @@ func TestTheLocalProfileServesItsSocket(t *testing.T) {
 	if _, err := os.Stat(socket); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("socket still exists after shutdown: %v", err)
 	}
-	if strings.Contains(stderr.String(), "generated bearer token") {
-		t.Fatalf("the local profile generated a token: %q", stderr.String())
+}
+
+// TestTheDaemonServesTheWebListener: --web-listen unix puts web.sock beside
+// the daemon's own socket, serving the API with no bearer check, while a
+// socket-only route stays 404 there (D3).
+//
+// The web listener is guarded: it answers only a host this daemon publishes
+// (D13), so the run is given --public-url http://web and the requests below
+// are addressed to that name, as a proxy in front of web.sock would address
+// it.
+func TestTheDaemonServesTheWebListener(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+	web := filepath.Join(filepath.Dir(socket), "web.sock")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{
+			"--socket", socket,
+			"--web-listen", "unix",
+			// The web listener answers only a host this daemon publishes
+			// (D13); "web" is the name the requests below put in the Host.
+			"--public-url", "http://web",
+		}, io.Discard, io.Discard)
+	}()
+
+	client := socketClient(web)
+	// The web listener answers only a host the daemon publishes (D13), so
+	// it is polled at the name --public-url gave it.
+	info := waitForDaemonAt(t, client, "web")
+	if want := "unix:" + web; info.WebListen != want {
+		t.Errorf("webListen = %q, want %q", info.WebListen, want)
+	}
+	if info.WebError != "" {
+		t.Errorf("webError = %q, want empty", info.WebError)
+	}
+
+	// No Authorization header: the web listener holds no token.
+	resp, err := client.Get("http://web/api/agents")
+	if err != nil {
+		t.Fatalf("GET /api/agents over web.sock: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/agents over web.sock = %d, want 200 with no Authorization", resp.StatusCode)
+	}
+
+	// Pinning a project is the socket's own route: the web listener neither
+	// opens a child nor changes what the daemon keeps running.
+	resp, err = client.Post("http://web/api/projects/pin", "application/json",
+		strings.NewReader(`{"root":"/tmp/x","pinned":true}`))
+	if err != nil {
+		t.Fatalf("POST /api/projects/pin over web.sock: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST /api/projects/pin over web.sock = %d, want 404", resp.StatusCode)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
+	}
+}
+
+// TestAWebListenerThatCannotBindIsReported: a live process already on
+// web.sock leaves the daemon serving its own socket, with the failure
+// reported on GET /api/daemon instead of refused at startup (OD1).
+func TestAWebListenerThatCannotBindIsReported(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+	web := filepath.Join(filepath.Dir(socket), "web.sock")
+
+	// A listener already owns the path, so the daemon's bind is refused.
+	live, err := net.Listen("unix", web)
+	if err != nil {
+		t.Fatalf("occupy %s: %v", web, err)
+	}
+	t.Cleanup(func() { _ = live.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{"--socket", socket, "--web-listen", "unix"}, io.Discard, io.Discard)
+	}()
+
+	info := waitForDaemon(t, socketClient(socket))
+	if info.WebListen != "" {
+		t.Errorf("webListen = %q, want empty: the bind failed", info.WebListen)
+	}
+	if info.WebError == "" {
+		t.Fatal("webError is empty; a web listener that cannot bind must be reported")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
+	}
+}
+
+// TestPreviewsOpenWithoutAWebListener: previews have a listener of their own,
+// so they open even with no --web-listen; 501 would mean no preview port was
+// recorded.
+func TestPreviewsOpenWithoutAWebListener(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{"--socket", socket}, io.Discard, io.Discard)
+	}()
+
+	client := socketClient(socket)
+	waitForDaemon(t, client)
+
+	resp, err := client.Post("http://daemon/api/agents/x/preview/3000", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /api/agents/x/preview/3000: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusNotImplemented {
+		t.Fatal("previews answered 501; the preview listener opened no port")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
 	}
 }
 
@@ -345,7 +651,7 @@ func TestTheLocalProfileSupervisesTheRefreshHelper(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"--profile", "local", "--addr", "off", "--socket", socket,
+		done <- run(ctx, []string{"--socket", socket,
 			"--oauth-refresh", "--marshal-bin", script}, io.Discard, io.Discard)
 	}()
 
@@ -384,9 +690,9 @@ func TestTheLocalProfileSupervisesTheRefreshHelper(t *testing.T) {
 	}
 }
 
-// TestTheLocalProfileStartsNoHelperUnasked: without --oauth-refresh, the
-// local profile runs no helper and reports none.
-func TestTheLocalProfileStartsNoHelperUnasked(t *testing.T) {
+// TestTheDaemonStartsNoHelperUnasked: without --oauth-refresh, the
+// daemon runs no helper and reports none.
+func TestTheDaemonStartsNoHelperUnasked(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
 	socket := localSocketPath(t)
@@ -396,7 +702,7 @@ func TestTheLocalProfileStartsNoHelperUnasked(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"--profile", "local", "--addr", "off", "--socket", socket,
+		done <- run(ctx, []string{"--socket", socket,
 			"--marshal-bin", script}, io.Discard, io.Discard)
 	}()
 
@@ -419,6 +725,76 @@ func TestTheLocalProfileStartsNoHelperUnasked(t *testing.T) {
 	}
 }
 
+// TestTheDaemonSupervisesTheTunnelsHelper: --tunnels runs `<marshal-bin>
+// daemon tunnels --socket <socket>` beside the daemon, and takes it down
+// again when the bridge stops.
+func TestTheDaemonSupervisesTheTunnelsHelper(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+	script, argsFile := helperScript(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{"--socket", socket,
+			"--tunnels", "--marshal-bin", script}, io.Discard, io.Discard)
+	}()
+
+	// The helper is the marshal binary with `daemon tunnels`, dialling the
+	// socket this daemon serves on.
+	want := "daemon tunnels --socket " + socket
+	if argv := waitForArgs(t, argsFile); argv != want {
+		t.Errorf("helper argv = %q, want %q", argv, want)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not return within 10s of its context being cancelled")
+	}
+}
+
+// TestTheDaemonStartsNoTunnelsHelperUnasked: without --tunnels, the
+// daemon runs no tunnels helper.
+func TestTheDaemonStartsNoTunnelsHelperUnasked(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+	script, argsFile := helperScript(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{"--socket", socket,
+			"--marshal-bin", script}, io.Discard, io.Discard)
+	}()
+
+	waitForDaemon(t, socketClient(socket))
+	// The helper records its arguments as it starts, so half a second is
+	// long enough for one that was going to run.
+	time.Sleep(500 * time.Millisecond)
+	if b, err := os.ReadFile(argsFile); err == nil {
+		t.Fatalf("the tunnels helper ran without --tunnels: %q", string(b))
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
+	}
+}
+
 // TestASecondLocalDaemonRefusesToStart: the socket belongs to the first
 // daemon, and the refusal is ErrDaemonRunning — not a second server
 // fighting for the same path.
@@ -426,7 +802,7 @@ func TestASecondLocalDaemonRefusesToStart(t *testing.T) {
 	isolateWebbridgeEnv(t)
 	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
 	socket := localSocketPath(t)
-	args := []string{"--profile", "local", "--addr", "off", "--socket", socket}
+	args := []string{"--socket", socket}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -443,7 +819,7 @@ func TestASecondLocalDaemonRefusesToStart(t *testing.T) {
 	secondRoot := t.TempDir()
 	secondState := filepath.Join(secondRoot, "state")
 	secondArgs := []string{
-		"--profile", "local", "--addr", "off", "--socket", socket,
+		"--socket", socket,
 		"--state-dir", secondState,
 		"--workspace", filepath.Join(secondRoot, "workspace.json"),
 	}
@@ -472,5 +848,110 @@ func TestASecondLocalDaemonRefusesToStart(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the first daemon did not stop within 5s")
+	}
+}
+
+// TestTheDaemonReportsItsStudioDir: --studio-dir points the daemon at the
+// Studio's files, GET /api/daemon reports that directory, and the socket
+// answers its index at / — the socket and the web listener share one Server,
+// so both serve the Studio (D12).
+func TestTheDaemonReportsItsStudioDir(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+	studio := writeStudioIndex(t, t.TempDir())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{"--socket", socket, "--studio-dir", studio}, io.Discard, io.Discard)
+	}()
+
+	client := socketClient(socket)
+	info := waitForDaemon(t, client)
+	if info.StudioDir != studio {
+		t.Errorf("studioDir = %q, want %q", info.StudioDir, studio)
+	}
+
+	resp, err := client.Get("http://daemon/")
+	if err != nil {
+		t.Fatalf("GET / over the socket: %v", err)
+	}
+	body, rerr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if rerr != nil {
+		t.Fatalf("read the Studio's index: %v", rerr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200 from the given Studio directory", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "Marshal Studio") {
+		t.Fatalf("GET / answered %q, want the Studio's index.html", string(body))
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
+	}
+}
+
+// TestTheDaemonRunsWithoutStudioFiles: a daemon that finds no Studio files —
+// ownExecutable naming a binary in an empty directory — starts anyway,
+// reports no studioDir, and answers / with the 503 page that says where it
+// looked (D12).
+func TestTheDaemonRunsWithoutStudioFiles(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+	// The search runs on ownExecutable, which is the seam: a binary in an
+	// empty directory has no Studio beside or above it.
+	exeDir := t.TempDir()
+	oldOwn := ownExecutable
+	ownExecutable = func() (string, error) { return filepath.Join(exeDir, "webbridge"), nil }
+	t.Cleanup(func() { ownExecutable = oldOwn })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, []string{"--socket", socket}, io.Discard, io.Discard) }()
+
+	client := socketClient(socket)
+	info := waitForDaemon(t, client)
+	if info.StudioDir != "" {
+		t.Errorf("studioDir = %q, want empty: no Studio files were found", info.StudioDir)
+	}
+
+	resp, err := client.Get("http://daemon/")
+	if err != nil {
+		t.Fatalf("GET / over the socket: %v", err)
+	}
+	body, rerr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if rerr != nil {
+		t.Fatalf("read the no-files page: %v", rerr)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET / = %d, want 503 with no Studio files", resp.StatusCode)
+	}
+	// The page names where the search looked, so a user can put the files
+	// there or point --studio-dir at them.
+	if want := filepath.Join(exeDir, "share", "marshal", "studio"); !strings.Contains(string(body), want) {
+		t.Fatalf("GET / answered %q, want the page naming %s", string(body), want)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
 	}
 }

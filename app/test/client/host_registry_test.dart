@@ -7,8 +7,8 @@ import 'package:marshal_app/src/client/host.dart';
 import 'package:marshal_app/src/client/transport.dart';
 
 /// The host registry, held to F1 decision 8: a host's reach follows its fleet
-/// stream, an unreachable host is kept with its last contact, and a refused
-/// token is terminal.
+/// stream, an unreachable host is kept with its last contact, and the proxy's
+/// refusal is terminal.
 void main() {
   late _ScriptedTransport transport;
   late _FakeClock clock;
@@ -73,6 +73,37 @@ void main() {
     );
   });
 
+  test("a host keeps its spec's destination", () async {
+    // A host the daemon reaches over ssh keeps the destination it was found
+    // with, so a screen can say where it is reached (one-daemon D9).
+    final overSsh = HostRegistry(
+      discovery: () async => [
+        HostSpec(
+          name: 'box',
+          kind: HostKind.server,
+          destination: 'me@box',
+          client: BridgeClient(transport),
+        ),
+      ],
+      fleetFor: (client) => EventStream(
+        transport,
+        '/api/events',
+        now: clock.now,
+        wait: clock.wait,
+        jitter: 0,
+      ),
+    );
+    addTearDown(overSsh.dispose);
+    await overSsh.discover();
+
+    expect(overSsh.hosts.single.destination, 'me@box');
+    expect(
+      host.destination,
+      isNull,
+      reason: 'the local daemon is reached here, over no ssh destination',
+    );
+  });
+
   test('a stopped daemon becomes stale then unreachable', () async {
     await pumpEventQueue();
     expect(host.reach, HostReach.connecting);
@@ -132,7 +163,7 @@ void main() {
     expect(host.lastContact, contact);
   });
 
-  test('a wrong token marks the host unauthorized', () async {
+  test('a proxy refusal marks the host unauthorized', () async {
     await pumpEventQueue();
     transport.last.addError(Unauthorized());
     await pumpEventQueue();
@@ -141,7 +172,7 @@ void main() {
     expect(
       transport.requests,
       hasLength(1),
-      reason: 'a refused token is never retried',
+      reason: 'a refused request is never retried: a reload clears it (D13)',
     );
   });
 
@@ -174,30 +205,6 @@ void main() {
       hasLength(requests),
       reason: 'a forgotten host is not retried',
     );
-  });
-
-  test("retry restarts a host's stream", () async {
-    // A refused token is terminal: the stream stops and is not retried
-    // (decision 6).
-    await pumpEventQueue();
-    transport.last.addError(Unauthorized());
-    await pumpEventQueue();
-    expect(host.reach, HostReach.unauthorized);
-    expect(transport.requests, hasLength(1));
-
-    // The token changed, so the host is asked to try once more.
-    registry.retry('local');
-    await pumpEventQueue();
-    expect(
-      transport.requests,
-      hasLength(2),
-      reason: 'the stream starts again rather than waiting for a new token',
-    );
-
-    // The new connection is followed as the old one was.
-    send(transport.last, ': hb\n\n');
-    await pumpEventQueue();
-    expect(host.reach, HostReach.live);
   });
 }
 

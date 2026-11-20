@@ -50,7 +50,7 @@ func newBudgetHarness(t *testing.T, cfg Budgets) *budgetHarness {
 		}
 		return nil, nil, false
 	}
-	h.s = NewServer(f, "")
+	h.s = NewServer(f)
 	return h
 }
 

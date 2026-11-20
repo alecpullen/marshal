@@ -2,7 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart' show DaemonInfo;
 import 'package:marshal_app/src/client/fleet_profiles.dart';
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
-import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/model/fleet_store.dart'
+    show HostTunnel, HostView;
 import 'package:marshal_app/src/model/general_model.dart';
 import 'package:marshal_app/src/model/hosts_model.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
@@ -25,15 +26,10 @@ class _Runner implements FleetProfiles {
   final calls = <String>[];
 
   @override
-  Future<void> add(String name, Uri url, {String? caFile}) async {
-    calls.add('add $name');
+  Future<void> add(String name, String destination) async {
+    calls.add('add $name $destination');
     final words = failAdd;
     if (words != null) throw FleetProfileFailure(words);
-  }
-
-  @override
-  Future<void> login(String name, String token) async {
-    calls.add('login $name');
   }
 
   @override
@@ -74,6 +70,7 @@ void main() {
     projects: const ['/home/u/marshal'],
     pinned: const ['/home/u/widgets'],
     children: const [],
+    hosts: const [],
   );
 
   /// The place with both sections this step has, on [section].
@@ -83,9 +80,6 @@ void main() {
     StateKind? state,
     List<HostView>? listing,
     FleetProfiles? profiles,
-    List<String>? stored,
-    List<String>? cleared,
-    List<String>? retried,
   }) {
     final prefs = preferences ?? GeneralPreferences();
     return SettingsPlace(
@@ -94,15 +88,7 @@ void main() {
       state: state,
       sections: {
         SettingsSectionKind.hosts: (state) => HostsSection(
-          model: HostsModel.fixture(
-            listing ?? hosts,
-            profiles: profiles,
-            storeToken: stored == null
-                ? null
-                : (host, token) async => stored.add('$host: $token'),
-            clearToken: cleared?.add,
-            retry: retried?.add,
-          ),
+          model: HostsModel.fixture(listing ?? hosts, profiles: profiles),
           state: state,
           now: now,
         ),
@@ -141,7 +127,11 @@ void main() {
     expect(find.text('live'), findsOneWidget);
   });
 
-  testWidgets('the add row is planned in a browser', (tester) async {
+  testWidgets('the add row is planned without a daemon to add through', (
+    tester,
+  ) async {
+    // A build with no profiles has no daemon to run the commands through, so
+    // the row is where a host will be added, marked planned.
     await pump(tester, place());
 
     final planned = tester.widgetList<StateMessage>(find.byType(StateMessage));
@@ -162,38 +152,70 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Name'), findsOneWidget);
-    expect(find.text('URL'), findsOneWidget);
-    expect(find.text('CA file'), findsOneWidget);
-    expect(find.text('Token'), findsOneWidget);
+    expect(find.text('SSH destination'), findsOneWidget);
+    expect(
+      find.text('URL'),
+      findsNothing,
+      reason: 'a host is reached over SSH, not over a URL',
+    );
+  });
+
+  testWidgets('a browser adds a host through its daemon', (tester) async {
+    // A browser adds a host exactly as the native app does: the daemon this
+    // Studio is attached to runs `marshal fleet add` on its own machine, which
+    // is the one that keeps the tunnels (one-daemon D15).
+    final runner = _Runner();
+    await pump(tester, place(profiles: runner));
+
+    expect(
+      find.text(
+        "Another machine's daemon, reached over SSH from the machine this "
+        'daemon runs on',
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Add a host'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(EditableText).at(0), 'box');
+    await tester.enterText(find.byType(EditableText).at(1), 'me@box');
+    await tester.tap(find.widgetWithText(Btn, 'Add'));
+    await tester.pumpAndSettle();
+
+    expect(runner.calls, ['add box me@box']);
+    expect(find.text('Name'), findsNothing, reason: 'the sheet closed');
   });
 
   testWidgets('a failed add shows its words and keeps the fields', (
     tester,
   ) async {
-    final runner = _Runner(failAdd: 'studio is already in fleet.toml');
+    final runner = _Runner(failAdd: 'box is already in fleet.toml');
     await pump(tester, place(profiles: runner));
 
     await tester.tap(find.text('Add a host'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(EditableText).at(0), 'studio');
-    await tester.enterText(
-      find.byType(EditableText).at(1),
-      'https://127.0.0.1:7700',
-    );
+    await tester.enterText(find.byType(EditableText).at(0), 'box');
+    await tester.enterText(find.byType(EditableText).at(1), 'me@box');
     await tester.tap(find.widgetWithText(Btn, 'Add'));
     await tester.pumpAndSettle();
 
     // The runner's words sit under the fields, and the fields keep what was
     // typed, so the name can be corrected rather than retyped.
-    expect(find.text('studio is already in fleet.toml'), findsOneWidget);
+    expect(find.text('box is already in fleet.toml'), findsOneWidget);
     expect(
       tester
           .widget<EditableText>(find.byType(EditableText).at(0))
           .controller
           .text,
-      'studio',
+      'box',
     );
-    expect(runner.calls, ['add studio']);
+    expect(
+      tester
+          .widget<EditableText>(find.byType(EditableText).at(1))
+          .controller
+          .text,
+      'me@box',
+    );
+    expect(runner.calls, ['add box me@box']);
   });
 
   testWidgets('the local daemon cannot be removed', (tester) async {
@@ -210,7 +232,22 @@ void main() {
 
   testWidgets('remove asks first', (tester) async {
     final runner = _Runner();
-    await pump(tester, place(profiles: runner));
+    await pump(
+      tester,
+      place(
+        profiles: runner,
+        listing: [
+          hosts.first,
+          HostView(
+            name: 'studio',
+            kind: HostKind.server,
+            reach: HostReach.unreachable,
+            lastContact: now.subtract(const Duration(minutes: 4)),
+            destination: 'me@studio',
+          ),
+        ],
+      ),
+    );
 
     await tester.tap(find.text('studio'));
     await tester.pumpAndSettle();
@@ -220,7 +257,7 @@ void main() {
     // Nothing is removed until the confirmation says what is lost.
     expect(runner.calls, isEmpty);
     expect(find.textContaining('stops showing it'), findsOneWidget);
-    expect(find.textContaining('Its daemon keeps running'), findsOneWidget);
+    expect(find.textContaining('Its own daemon keeps running'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(Btn, 'Remove'));
     await tester.pumpAndSettle();
@@ -228,7 +265,61 @@ void main() {
     expect(runner.calls, ['remove studio']);
   });
 
-  testWidgets('an unauthorized host offers sign in', (tester) async {
+  testWidgets('an SSH host shows its destination, tunnel and last error', (
+    tester,
+  ) async {
+    final since = now.subtract(const Duration(minutes: 4));
+    await pump(
+      tester,
+      place(
+        profiles: _Runner(),
+        listing: [
+          hosts.first,
+          HostView(
+            name: 'box',
+            kind: HostKind.server,
+            reach: HostReach.unreachable,
+            lastContact: since,
+            destination: 'me@box',
+            tunnel: HostTunnel(
+              state: 'down',
+              lastError: 'Permission denied (publickey).',
+              since: since,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    await tester.tap(find.text('box'));
+    await tester.pumpAndSettle();
+
+    final detail = find.byType(HostDetail);
+    expect(
+      find.descendant(of: detail, matching: find.text('Over SSH to me@box')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: detail, matching: find.text('me@box')),
+      findsOneWidget,
+      reason: 'the SSH fact names the destination',
+    );
+    expect(
+      find.descendant(of: detail, matching: find.text('down since 4m ago')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: detail,
+        matching: find.text('Permission denied (publickey).'),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a native build offers no sign in', (tester) async {
+    // A native build keeps no token of its own: the daemon reaches its hosts
+    // over the tunnels it keeps, so there is nothing here to sign in to.
     await pump(
       tester,
       place(
@@ -248,8 +339,8 @@ void main() {
     await tester.tap(find.text('studio'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Sign in'), findsOneWidget);
-    expect(find.text('Token'), findsOneWidget);
+    expect(find.text('Sign in'), findsNothing);
+    expect(find.text('Token'), findsNothing);
   });
 
   testWidgets('a relayed host says where it is reached', (tester) async {
@@ -281,105 +372,10 @@ void main() {
     expect(
       find.descendant(
         of: find.byType(HostDetail),
-        matching: find.text('A server profile, through hub'),
+        matching: find.text('Through hub'),
       ),
       findsOneWidget,
     );
-  });
-
-  testWidgets('a relayed host behind a refused relay says to sign in to the '
-      'relay', (tester) async {
-    await pump(
-      tester,
-      place(
-        profiles: _Runner(),
-        listing: [
-          hosts.first,
-          HostView(
-            name: 'hub',
-            kind: HostKind.server,
-            reach: HostReach.unauthorized,
-            lastContact: now.subtract(const Duration(minutes: 4)),
-          ),
-          HostView(
-            name: 'laptop',
-            kind: HostKind.server,
-            reach: HostReach.unauthorized,
-            lastContact: now.subtract(const Duration(minutes: 4)),
-            via: 'hub',
-          ),
-        ],
-      ),
-    );
-
-    await tester.tap(find.text('laptop'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Sign in to the relay first.'), findsOneWidget);
-    expect(
-      find.text('Sign in'),
-      findsNothing,
-      reason: 'signing in to the host cannot clear the relay’s refusal',
-    );
-  });
-
-  testWidgets('a relayed host offers sign out where a store can clear it', (
-    tester,
-  ) async {
-    final stored = <String>[];
-    final cleared = <String>[];
-    final retried = <String>[];
-    await pump(
-      tester,
-      place(
-        profiles: _Runner(),
-        stored: stored,
-        cleared: cleared,
-        retried: retried,
-        listing: [
-          hosts.first,
-          HostView(
-            name: 'hub',
-            kind: HostKind.server,
-            reach: HostReach.live,
-            lastContact: now,
-          ),
-          HostView(
-            name: 'laptop',
-            kind: HostKind.server,
-            reach: HostReach.unauthorized,
-            lastContact: now.subtract(const Duration(minutes: 4)),
-            via: 'hub',
-          ),
-        ],
-      ),
-    );
-
-    await tester.tap(find.text('laptop'));
-    await tester.pumpAndSettle();
-
-    // A browser signs in by writing the host's own key, and then asks the host
-    // to try again (decision 6).
-    await tester.enterText(
-      find.descendant(
-        of: find.byType(Field),
-        matching: find.byType(EditableText),
-      ),
-      'a-token',
-    );
-    await tester.tap(find.text('Sign in'));
-    await tester.pumpAndSettle();
-
-    expect(stored, ['laptop: a-token']);
-    expect(retried, ['laptop']);
-
-    // Signing out clears that key and asks again, so the host reads "token
-    // refused" until it is signed in to once more (spec D22).
-    await tester.tap(find.text('Sign out'));
-    await tester.pumpAndSettle();
-
-    expect(cleared, ['laptop']);
-    expect(retried, ['laptop', 'laptop']);
   });
 
   testWidgets('appearance changes the theme', (tester) async {

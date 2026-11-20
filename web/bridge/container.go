@@ -57,11 +57,15 @@ type ContainerConfig struct {
 	WorkspaceDir string
 	// SocketDir is the host directory bind-mounted at /run/marshal.
 	SocketDir string
-	// RuntimeName is "docker" or "podman" — selects the volume-subpath
-	// option spelling. Empty defaults to docker syntax.
+	// RuntimeName is "docker" or "podman" — names the runtime a derived image
+	// builds with. Empty defaults to docker syntax.
 	RuntimeName string
-	// StateVolume is the name of the shared state volume.
-	StateVolume string
+	// StateDir is the host directory every state subpath binds under: a state
+	// mount is a bind of StateDir/<subpath>.
+	StateDir string
+	// HomeConfigDir, when non-empty, is a host directory bound read-only as the
+	// shared config home, in place of HomeConfigSubpath.
+	HomeConfigDir string
 	// WorkSubpath is the subpath within the state volume for the agent's
 	// workspace (e.g. "work/<agentID>").
 	WorkSubpath string
@@ -78,12 +82,6 @@ type ContainerConfig struct {
 	// shares one config home and one data home. Empty disables both.
 	HomeConfigSubpath string
 	HomeDataSubpath   string
-	// HomeConfigWritable mounts the config home read-write. Only the
-	// control agent sets it.
-	HomeConfigWritable bool
-	// ExtraBinds are host paths bind-mounted at a container path. The
-	// control agent uses them to reach declared project roots.
-	ExtraBinds []ProjectMount
 	// Network is a user-defined network to join (the egress proxy's
 	// internal network). Empty uses the runtime default. "host" and
 	// "container:" modes are never honoured.
@@ -230,29 +228,30 @@ func (c *containerTransport) commonRunArgs(extraEnv map[string]string) []string 
 	var args []string
 	if c.cfg.LocalMount != "" {
 		// A LocalPath agent works on the host checkout itself, so its
-		// workspace is a bind mount of the (translated) host path rather
-		// than a volume subpath.
+		// workspace is a bind mount of the host path rather than a state
+		// subpath.
 		args = append(args, "-v", c.cfg.LocalMount+":"+containerWorkDir)
 	} else {
 		args = append(args,
-			volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerWorkDir, c.cfg.WorkSubpath, false)...)
+			stateMount(c.cfg.StateDir, containerWorkDir, c.cfg.WorkSubpath, false)...)
 	}
 	args = append(args,
-		volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerSocketDir, c.cfg.SocketSubpath, false)...)
+		stateMount(c.cfg.StateDir, containerSocketDir, c.cfg.SocketSubpath, false)...)
 	args = append(args, c.cfg.ExtraMounts...)
 	if c.cfg.HomeConfigSubpath != "" {
-		// The shared homes: config is read-only for project agents and
-		// writable only for the control agent, which owns config edits.
+		// The shared homes: the config home is always read-only for an
+		// agent, and the data home is always read-write.
+		if c.cfg.HomeConfigDir != "" {
+			args = append(args, bindMount(c.cfg.HomeConfigDir, containerConfigDir, true)...)
+		} else {
+			args = append(args,
+				stateMount(c.cfg.StateDir, containerConfigDir, c.cfg.HomeConfigSubpath, true)...)
+		}
 		args = append(args,
-			volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerConfigDir, c.cfg.HomeConfigSubpath, !c.cfg.HomeConfigWritable)...)
-		args = append(args,
-			volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerDataDir, c.cfg.HomeDataSubpath, false)...)
-	}
-	for _, m := range c.cfg.ExtraBinds {
-		args = append(args, "-v", m.Host+":"+m.Container)
+			stateMount(c.cfg.StateDir, containerDataDir, c.cfg.HomeDataSubpath, false)...)
 	}
 	for _, v := range c.cfg.ExtraVolumes {
-		args = append(args, volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, v.Target, v.Subpath, v.ReadOnly)...)
+		args = append(args, stateMount(c.cfg.StateDir, v.Target, v.Subpath, v.ReadOnly)...)
 	}
 	if n := c.cfg.Network; n != "" && n != "host" && n != "none" && !strings.HasPrefix(n, "container:") {
 		args = append(args, "--network", n)

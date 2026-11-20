@@ -156,7 +156,8 @@ func TestEgressContainerTopology(t *testing.T) {
 	joined := strings.Join(runs[0], " ")
 	for _, want := range []string{
 		"--name marshal-egress", "--network marshal-agents",
-		"target=/egress,volume-subpath=egress", "-p 127.0.0.1::8081", "marshal-egress:v1 egress --listen :3128 --preview-listen :8081 --control unix:///egress/control.sock",
+		"--mount type=bind,source=" + filepath.Join(f.stateDir, egressSubpath) + ",target=" + egressMountDir,
+		"-p 127.0.0.1::8081", "marshal-egress:v1 egress --listen :3128 --preview-listen :8081 --control unix:///egress/control.sock",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("sidecar args missing %q:\n%s", want, joined)
@@ -213,7 +214,7 @@ func TestEgressAgentWiringAndPolicy(t *testing.T) {
 	}
 	cfg := ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: containerNameFor(a.ID),
-		StateVolume: "marshal-state", WorkSubpath: "work/ag1", SocketSubpath: "sockets/ag1", SocketDir: "/s",
+		StateDir: t.TempDir(), WorkSubpath: "work/ag1", SocketSubpath: "sockets/ag1", SocketDir: "/s",
 		Env: withEnv(map[string]string{"X": "1"}, w.Env), Network: w.Network, ExtraVolumes: w.Volumes,
 	}
 	joined := strings.Join(newContainerTransport(cfg).buildRunArgs(), " ")
@@ -315,9 +316,10 @@ func TestEgressInjectionAddsCAMountAndEnv(t *testing.T) {
 		w.Env["GIT_SSL_CAINFO"] == "" || w.Env["REQUESTS_CA_BUNDLE"] == "" || w.Env["CURL_CA_BUNDLE"] == "" {
 		t.Fatalf("CA env = %v", w.Env)
 	}
-	cfg := ContainerConfig{RuntimeName: "docker", StateVolume: "v", ExtraVolumes: w.Volumes, Network: w.Network, Image: "i", Name: "n"}
+	stateDir := t.TempDir()
+	cfg := ContainerConfig{RuntimeName: "docker", StateDir: stateDir, ExtraVolumes: w.Volumes, Network: w.Network, Image: "i", Name: "n"}
 	joined := strings.Join(newContainerTransport(cfg).buildRunArgs(), " ")
-	if !strings.Contains(joined, "target=/marshal/ca,volume-subpath=ca,readonly") {
+	if !strings.Contains(joined, "source="+filepath.Join(stateDir, "ca")+",target=/marshal/ca,readonly") {
 		t.Errorf("CA not mounted read-only:\n%s", joined)
 	}
 	for _, e := range w.Env {
@@ -541,53 +543,20 @@ func waitCond(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-func TestEgressProcessMode(t *testing.T) {
+func TestEgressNeedsAContainerRuntime(t *testing.T) {
 	ctx := context.Background()
 	f, _ := testEgressFleet(t, false)
 	f.runner = nil
 	f.egressRuntime = func() (string, bool) { return "", false }
-	if err := f.StartEgress(ctx); err != nil {
-		t.Fatal(err)
+	err := f.StartEgress(ctx)
+	if !errors.Is(err, ErrWorkspaceNeedsRuntime) {
+		t.Fatalf("StartEgress = %v, want it to wrap ErrWorkspaceNeedsRuntime", err)
 	}
-	if !f.egressProcessMode() || f.egress.proxy == nil {
-		t.Fatal("process mode not active")
+	if f.egress != nil {
+		t.Fatal("egress must stay off without a container runtime")
 	}
-	if !strings.HasPrefix(f.egress.proxyAddr, "127.0.0.1:") {
-		t.Fatalf("proxy addr = %q", f.egress.proxyAddr)
-	}
-	w, ok, err := f.egressPrepare(ctx, Agent{ID: "ag1"})
-	if err != nil || !ok {
-		t.Fatal(err)
-	}
-	if w.Network != "" || len(w.Volumes) != 0 {
-		t.Fatalf("process mode must not use a container network: %+v", w)
-	}
-	want := "http://ag1:" + f.egress.tokenFor("ag1") + "@" + f.egress.proxyAddr
-	if w.Env["HTTPS_PROXY"] != want {
-		t.Fatalf("HTTPS_PROXY = %q, want %q", w.Env["HTTPS_PROXY"], want)
-	}
-	// The in-process proxy enforces the policy it was given.
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "hi") }))
-	defer up.Close()
-	pu, _ := url.Parse(w.Env["HTTP_PROXY"])
-	c := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
-	resp, err := c.Get(up.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("open mode request = %d", resp.StatusCode)
-	}
-	waitCond(t, "record in network log", func() bool { return len(f.netlog.Hosts("default", "")) == 1 })
-	f.egress.register(ctx, "ag1", "default", EgressSpec{Mode: EgressModeOff})
-	resp, err = c.Get(up.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("off mode request = %d", resp.StatusCode)
+	if !f.egressProcessMode() {
+		t.Fatal("no proxy means not isolated")
 	}
 }
 

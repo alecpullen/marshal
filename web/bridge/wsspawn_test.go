@@ -73,7 +73,7 @@ func TestSpawnWorkspaceRunsInTheBuiltImage(t *testing.T) {
 	for _, want := range []string{
 		"marshal-derived-svc acp",
 		"--mount type=volume,source=gocache,target=/go/pkg",
-		"--mount type=volume,source=marshal-state,target=/etc/app.toml,volume-subpath=workspaces/svc/files/conf/app.toml,readonly",
+		"--mount type=bind,source=" + filepath.Join(e.f.stateDir, "workspaces/svc/files/conf/app.toml") + ",target=/etc/app.toml,readonly",
 		"--cpus 3", "--memory 6144m",
 	} {
 		if !strings.Contains(args, want) {
@@ -257,7 +257,9 @@ func TestSpawnWorkspaceMountsARepoMirrorReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := strings.Join(newContainerTransport(e.cfgs[id]).buildRunArgs(), " ")
-	want := "target=/libs/lib,volume-subpath=repos/" + filepath.Base(mirrorDir(e.f.stateDir, bare)) + ",readonly"
+	want := "--mount type=bind,source=" +
+		filepath.Join(e.f.stateDir, "repos", filepath.Base(mirrorDir(e.f.stateDir, bare))) +
+		",target=/libs/lib,readonly"
 	if !strings.Contains(args, want) {
 		t.Fatalf("args lack %q:\n%s", want, args)
 	}
@@ -367,10 +369,9 @@ func TestAgentWorkspaceDocResolvesTheSpawnedWorkspace(t *testing.T) {
 	}
 }
 
-func TestSpawnWorkspaceRefusesTheBridgeStateVolume(t *testing.T) {
+func TestSpawnWorkspaceRefusesTheReservedVolumePrefix(t *testing.T) {
 	for _, vol := range []string{"marshal-state", "marshal-anything"} {
 		e := newWSSpawnEnv(t)
-		e.f.stateVolume = "marshal-state"
 		doc := sampleDoc("svc")
 		doc.Mounts = []WSMount{{Volume: vol, Target: "/stolen"}}
 		e.builtTemplate(t, "svc", doc)

@@ -224,8 +224,10 @@ message, and their parsing is gone.
      error naming D5.
 
 **Verify:** `go test ./cmd/webbridge -count=1` passes, and `grep -n
-'projectMount\|stateVolume\|defaultStateDir' cmd/webbridge/main.go` prints only
-the two refusals.
+'state-volume\|project-mount\|WEBBRIDGE_STATE_VOLUME' cmd/webbridge/main.go`
+prints four lines: the two flag declarations (`:166–167`) and the refusal
+loop's two table entries (`:333–334`). Silence here means the refusals were
+deleted with the parsing, not that the file is clean.
 
 ## Task 3: The containerized daemon's files go
 

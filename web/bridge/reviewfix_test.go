@@ -80,7 +80,7 @@ func TestBudgetsReportExposesLoaded(t *testing.T) {
 	f := testFleet(t) // no control agent
 	f.usage = NewUsageLog(t.TempDir())
 	var rep2 map[string]json.RawMessage
-	decodeBody(t, doReq(t, NewServer(f, ""), http.MethodGet, "/api/budgets", nil, nil), &rep2)
+	decodeBody(t, doReq(t, NewServer(f), http.MethodGet, "/api/budgets", nil, nil), &rep2)
 	if string(rep2["loaded"]) != "false" {
 		t.Fatalf("loaded = %s, want false without a control agent", rep2["loaded"])
 	}
@@ -220,7 +220,7 @@ func TestRerouteUndoIsAtomic(t *testing.T) {
 
 func TestRunsStartDiscardsAFreshAgentWhenTheRunFails(t *testing.T) {
 	f, _, _ := agentFleet(t)
-	f.newRuntime = func(a Agent) (*Child, error) {
+	refusing := func() *Child {
 		fa := newFakeAgent()
 		fa.handler = func(m string, _ json.RawMessage) (any, *rpcError, bool) {
 			if m == "session/swarm_start" {
@@ -228,9 +228,13 @@ func TestRunsStartDiscardsAFreshAgentWhenTheRunFails(t *testing.T) {
 			}
 			return nil, nil, false
 		}
-		return &Child{Transport: fa}, nil
+		return &Child{Transport: fa}
 	}
-	rec := doReq(t, NewServer(f, ""), http.MethodPost, "/api/runs",
+	// A plain local agent runs on its project's child (P4 D10 decision 2), so
+	// the refusing fake has to be that child, not only a child of its own.
+	f.newRuntime = func(a Agent) (*Child, error) { return refusing(), nil }
+	f.newProjectChild = func(root, socket string) (*Child, error) { return refusing(), nil }
+	rec := doReq(t, NewServer(f), http.MethodPost, "/api/runs",
 		map[string]any{"project": t.TempDir(), "kind": "swarm", "goal": "go"}, nil)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
@@ -244,7 +248,7 @@ func TestRunAnswerClearsThePreviousError(t *testing.T) {
 	f, _, agentOf := agentFleet(t)
 	id, _ := f.Spawn(t.Context(), t.TempDir(), SpawnOptions{})
 	f.live.setRunErr(id, f.live.beginRun(id), "old failure")
-	rec := doReq(t, NewServer(f, ""), http.MethodPost, "/api/runs/"+id+"/answer", map[string]any{"answer": "go"}, nil)
+	rec := doReq(t, NewServer(f), http.MethodPost, "/api/runs/"+id+"/answer", map[string]any{"answer": "go"}, nil)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("answer = %d %s", rec.Code, rec.Body.String())
 	}

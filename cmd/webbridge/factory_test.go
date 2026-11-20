@@ -20,7 +20,7 @@ func TestFactoryStartupOrdering(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer owned.Close()
-	err = run(context.Background(), []string{"--token", "test-token", "--workspace", filepath.Join(root, "workspace.json"), "--state-dir", state, "--cwd-root", root, "--egress", "off", "--preview-addr", "off"}, io.Discard, io.Discard)
+	err = run(context.Background(), []string{"--workspace", filepath.Join(root, "workspace.json"), "--state-dir", state, "--cwd-root", root, "--egress", "off", "--preview-addr", "off"}, io.Discard, io.Discard)
 	if !errors.Is(err, bridge.ErrFactoryLocked) {
 		t.Fatalf("startup must refuse owned journal before starting work: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestFactoryStartupRecoveryBeforeDispatchAndParkedSkip(t *testing.T) {
 	if err := ws.PutAgent(bridge.Agent{ID: "parked", Project: root, FactoryItemID: "old-item", FactoryRole: "implementer", FactoryParked: true}); err != nil {
 		t.Fatal(err)
 	}
-	fleet := bridge.NewFleet(ws, "nonexistent-fixture-binary", nil, state, bridge.Limits{}, "", nil, "")
+	fleet := bridge.NewFleet(ws, "nonexistent-fixture-binary", nil, state, bridge.Limits{}, "")
 	defer fleet.Close()
 	store, err := bridge.OpenFactoryStore(filepath.Join(state, "factory", "v1"))
 	if err != nil {

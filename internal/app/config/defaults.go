@@ -139,7 +139,6 @@ func Default() Config {
 		},
 		Daemon: DaemonConfig{
 			IdleSessionTimeout: 30 * time.Minute,
-			StudioAddr:         "127.0.0.1:7788",
 		},
 		Desktop: DesktopConfig{
 			Enabled:          false,

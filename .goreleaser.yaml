@@ -89,9 +89,27 @@ archives:
       {{- .Version }}_
       {{- .Os }}_
       {{- .Arch }}
+    # The Studio rides beside the binaries: the daemon serves it from
+    # <bin dir>/../share/marshal/studio, and the app bundles and Homebrew put it
+    # in the same place. The release workflow downloads it before this runs.
+    #
+    # The Studio entry is the bare directory on purpose. These globs are
+    # matched with fileglob, whose `**` crosses separators, so `studio/**/*`
+    # reads as "studio/", then any characters, then a literal "/", then a
+    # segment: it matches everything *below* the directory and misses the
+    # zero-depth `share/marshal/studio/index.html`. An archive without the
+    # entry document is a directory no daemon counts — scripts/install.sh
+    # refuses it, Homebrew's pkgshare.install and both app bundles copy it
+    # anyway — and only a tagged release would show it. Naming the directory
+    # itself is what fileglob expands to the directory and everything inside it,
+    # at repo-root-relative paths. Do not "tidy" this back into `**/*`; the
+    # `The archive carries the Studio's index.html` step in
+    # .github/workflows/go-checks.yml packs a snapshot archive and reads that
+    # path back out of it, so a glob that misses it fails before a tag.
     files:
       - README.md
       - LICENSE
+      - share/marshal/studio
 
 checksum:
   name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
@@ -125,6 +143,9 @@ brews:
     skip_upload: auto
     install: |
       bin.install "marshal", "webbridge"
+      # pkgshare is <prefix>/share/marshal, so the daemon finds the Studio at
+      # <bin dir>/../share/marshal/studio.
+      pkgshare.install "share/marshal/studio"
     caveats: |
       Run `marshal daemon install` to install and start the background daemon.
       Do not use `brew services`: the daemon writes its own launchd agent or
@@ -149,24 +170,6 @@ dockers:
       - "ghcr.io/marshal/agent:{{ .Version }}-arm64"
     build_flag_templates:
       - "--platform=linux/arm64"
-  - id: bridge-amd64
-    ids: [webbridge]
-    goos: linux
-    goarch: amd64
-    dockerfile: build/Dockerfile.bridge
-    image_templates:
-      - "ghcr.io/marshal/webbridge:{{ .Version }}-amd64"
-    build_flag_templates:
-      - "--platform=linux/amd64"
-  - id: bridge-arm64
-    ids: [webbridge]
-    goos: linux
-    goarch: arm64
-    dockerfile: build/Dockerfile.bridge
-    image_templates:
-      - "ghcr.io/marshal/webbridge:{{ .Version }}-arm64"
-    build_flag_templates:
-      - "--platform=linux/arm64"
 
 docker_manifests:
   - name_template: "ghcr.io/marshal/agent:{{ .Version }}"
@@ -177,14 +180,6 @@ docker_manifests:
     image_templates:
       - "ghcr.io/marshal/agent:{{ .Version }}-amd64"
       - "ghcr.io/marshal/agent:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/marshal/webbridge:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/marshal/webbridge:{{ .Version }}-amd64"
-      - "ghcr.io/marshal/webbridge:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/marshal/webbridge:latest"
-    image_templates:
-      - "ghcr.io/marshal/webbridge:{{ .Version }}-amd64"
-      - "ghcr.io/marshal/webbridge:{{ .Version }}-arm64"
 
 release:
   draft: true
@@ -207,7 +202,8 @@ release:
     ```
 
     Both install `marshal` and `webbridge` and run `marshal daemon install`.
-    The archives below are the same two binaries.
+    The archives below are the same two binaries, with the Studio beside them
+    at `share/marshal/studio`.
 
     macOS builds are signed and notarized. A release cut without the signing
     secrets is not: if macOS refuses a quarantined download, remove the

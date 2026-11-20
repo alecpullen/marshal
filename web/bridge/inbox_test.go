@@ -291,12 +291,15 @@ func TestFleetInbox(t *testing.T) {
 // answer is the fleet's live inbox, so each agent lands in the group its
 // state puts it in, and an intake submission is in the needs-you queue.
 func TestTheInboxRouteAnswersTheGroups(t *testing.T) {
-	e, s, root := projectEnv(t)
-	busy, err := e.f.Spawn(ctlContext(t), root, SpawnOptions{Name: "busy", Mode: "edit"})
+	e, s, _ := projectEnv(t)
+	// A plain local agent runs on its project's child (P4 D10 decision 2), so
+	// each agent gets a project of its own: one root would pool both agents'
+	// sessions on one child, and this test turns on telling them apart.
+	busy, err := e.f.Spawn(ctlContext(t), t.TempDir(), SpawnOptions{Name: "busy", Mode: "edit"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	quiet, err := e.f.Spawn(ctlContext(t), root, SpawnOptions{Name: "quiet", Mode: "edit"})
+	quiet, err := e.f.Spawn(ctlContext(t), t.TempDir(), SpawnOptions{Name: "quiet", Mode: "edit"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,29 +350,6 @@ func TestTheInboxRouteAnswersTheGroups(t *testing.T) {
 	}
 	if !bytes.Equal(itemBytes, listed[0]) {
 		t.Fatalf("the inbox item's submission encodes as\n%s\nGET /api/pending answers\n%s", itemBytes, listed[0])
-	}
-}
-
-// TestTheInboxRouteNeedsTheToken checks that the route sits behind the same
-// bearer check as the rest of /api/.
-func TestTheInboxRouteNeedsTheToken(t *testing.T) {
-	const token = "tok"
-	e := newWSSpawnEnv(t)
-	s := NewServer(e.f, token)
-	auth := map[string]string{"Authorization": "Bearer " + token}
-
-	if rec := doReq(t, s, http.MethodGet, "/api/inbox", nil, nil); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /api/inbox without a token = %d, want 401", rec.Code)
-	}
-	if rec := doReq(t, s, http.MethodGet, "/api/inbox", nil, auth); rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/inbox with a token = %d, want 200", rec.Code)
-	}
-	// The same pair for GET /api/agents, the route it is registered beside.
-	if rec := doReq(t, s, http.MethodGet, "/api/agents", nil, nil); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /api/agents without a token = %d, want 401", rec.Code)
-	}
-	if rec := doReq(t, s, http.MethodGet, "/api/agents", nil, auth); rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/agents with a token = %d, want 200", rec.Code)
 	}
 }
 

@@ -59,7 +59,11 @@ func TestPoolFillStartsTheConfiguredNumber(t *testing.T) {
 		}
 	}
 	e.imgs.mu.Unlock()
-	for _, want := range []string{"volume-subpath=pool/svc-0/work", "volume-subpath=pool/svc-0/sock", "acp --listen", "marshal-derived-"} {
+	for _, want := range []string{
+		"source=" + filepath.Join(e.f.stateDir, "pool/svc-0/work"),
+		"source=" + filepath.Join(e.f.stateDir, "pool/svc-0/sock"),
+		"acp --listen", "marshal-derived-",
+	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("pool run lacks %q:\n%s", want, args)
 		}
@@ -177,7 +181,7 @@ func TestPoolShrinkKeepsTheRest(t *testing.T) {
 func TestPoolDeleteDropsIdleContainers(t *testing.T) {
 	e := newWSSpawnEnv(t)
 	pooledTemplate(t, e, 1)
-	s := NewServer(e.f, "")
+	s := NewServer(e.f)
 	if rec := doReq(t, s, "DELETE", "/api/workspaces/svc", nil, nil); rec.Code != 204 {
 		t.Fatalf("delete = %d", rec.Code)
 	}

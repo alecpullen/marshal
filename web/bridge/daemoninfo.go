@@ -39,7 +39,8 @@ func (s *Server) SetRefreshHelper(h *Helper) {
 // daemon answers what this daemon is. The info is copied and its projects
 // replaced with the workspace's current list, so a project added or
 // removed since startup is reported without restarting the daemon. The
-// children are current for the same reason, and so is the refresh helper.
+// children are current for the same reason, and so is the refresh helper,
+// and so are the hosts.
 func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	if s.daemonInfo == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not a daemon"})
@@ -58,13 +59,17 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 		pid, restarts := s.refresh.State()
 		out.Refresh = &DaemonRefresh{PID: pid, Restarts: restarts}
 	}
-	// The join is read per request, as the children are: a bridge that is joined
-	// to a relay reports where, and one that is not reports nothing at all
-	// (D17).
-	out.Join = nil
-	if j := s.joiner(); j != nil {
-		join := j.Report()
-		out.Join = &join
+	out.Hosts = s.reportedHosts()
+	// The Studio's directory is read from the server, not the info: a
+	// daemon serves whatever directory it was given, and answers "" when it
+	// found no files (one-daemon D12).
+	out.StudioDir = s.studioDir
+	// The preview listener's own address, for a caller that reaches it
+	// through a way of its own: it names it back as the origin of the links
+	// it issues (one-daemon open question 1).
+	out.PreviewAddr = ""
+	if addr := s.previewAddr.Load(); addr != nil {
+		out.PreviewAddr = *addr
 	}
 	writeJSON(w, http.StatusOK, out)
 }

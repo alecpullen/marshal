@@ -141,6 +141,9 @@ re-read that host. A section never hands its own list to the Inbox.
 ### Adding a host, and choosing where work runs (plan 2)
 
 **D6. `marshal fleet add` and `marshal fleet remove` edit `fleet.toml`.**
+
+> Superseded by one-daemon D6–D8 (docs/one-daemon/design.md, 2026-11-20): `fleet.toml` holds hosts over SSH.
+
 - `marshal fleet add NAME URL [--ca-file PATH] [--no-notify]` appends a
   `[servers.NAME]` table to the file's text. It creates the file `0600`, in a
   `0700` directory, when there is none. It keeps the file's comments and
@@ -206,6 +209,8 @@ name's join secret. The file must be private (`0600`, owned by the user), and
 is read at start. A name follows `fleet.toml`'s name rule
 (`^[A-Za-z0-9._-]+$`). Either profile can relay. A bridge with no
 `--relay-join` relays nothing, and its own API is unchanged.
+
+> Superseded by one-daemon D10 (docs/one-daemon/design.md, 2026-11-20): the relay and the join are replaced by the forward to each host's tunnel.
 
 **D12. A daemon dials out to join.**
 - `webbridge --join URL --join-name NAME --join-token-file PATH
@@ -297,6 +302,9 @@ it answers 404 exactly as a bridge older than this plan does.
 relayed transport: the relay's transport, with every path prefixed by
 `/api/hosts/<name>` and `X-Marshal-Host-Token` set from that host's token.
 The transport is plain Dart (`app/lib/src/client/relayed_transport.dart`).
+
+> Superseded by one-daemon D10, D15 (docs/one-daemon/design.md, 2026-11-20): a browser reaches hosts through its daemon's forward, with no token.
+
 - A 401 on a relayed host is that host's `Unauthorized`, and it reads "token
   refused". The relay refusing the page's own token also refuses the relay's
   own host, which then reads "token refused" too. While its relay does, a

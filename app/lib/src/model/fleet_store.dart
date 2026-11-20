@@ -47,6 +47,7 @@ class FleetStore extends ChangeNotifier {
         reach: owner.reach,
         lastContact: owner.lastContact,
         via: owner.via,
+        destination: owner.destination,
       ),
   ]);
 
@@ -809,6 +810,21 @@ class HostedSession {
   final SessionRow row;
 }
 
+/// A host's tunnel as the local daemon last reported it.
+@immutable
+class HostTunnel {
+  const HostTunnel({required this.state, this.lastError = '', this.since});
+
+  /// `connecting`, `live` or `down`.
+  final String state;
+
+  /// What the ssh that carries the tunnel last said, or ''.
+  final String lastError;
+
+  /// When [state] last changed, or null when nothing reported one.
+  final DateTime? since;
+}
+
 /// One host as a view lists it: its name, which kind of bridge it is, and
 /// what the app can reach of it.
 ///
@@ -822,6 +838,8 @@ class HostView {
     required this.reach,
     required this.lastContact,
     this.via,
+    this.destination,
+    this.tunnel,
   });
 
   final String name;
@@ -829,8 +847,15 @@ class HostView {
   /// A local daemon, or a server profile.
   final HostKind kind;
 
-  /// The relay's host name this host is reached through, or null.
+  /// The daemon this host is reached through, or null.
   final String? via;
+
+  /// The SSH destination this host is reached over, or null.
+  final String? destination;
+
+  /// The SSH tunnel the local daemon keeps for this host, or null when
+  /// nothing reported one.
+  final HostTunnel? tunnel;
 
   /// Live, stale, unreachable or unauthorized.
   final HostReach reach;
@@ -838,21 +863,47 @@ class HostView {
   /// When it was last heard from, or null when it never has been.
   final DateTime? lastContact;
 
+  /// This host with [tunnel] in place of the one it has, every other field
+  /// unchanged.
+  HostView withTunnel(HostTunnel? tunnel) => HostView(
+    name: name,
+    kind: kind,
+    reach: reach,
+    lastContact: lastContact,
+    via: via,
+    destination: destination,
+    tunnel: tunnel,
+  );
+
   /// Whether the host is answering now.
   bool get live => reach.name == 'live';
 
-  /// Whether the bridge refused this page's token for it. A refusal is not a
-  /// silence: a screen says so and offers the way to sign in.
+  /// Whether the operator's proxy refused the request for it. A refusal is not
+  /// a silence: a screen names the host and says the page is signed out.
   bool get refused => reach.name == 'unauthorized';
 
   /// The reach in the design system's words, with its age when the host is
-  /// not answering: "live", "stale 4m", "unreachable 4m", "token refused".
+  /// not answering: "live", "stale 4m", "unreachable 4m", "signed out".
   /// A screen shows this rather than colouring a dot it cannot explain.
-  String reachWords(DateTime now) => switch (reach.name) {
+  ///
+  /// A tunnel is checked first: it says what the ssh that carries this host
+  /// is doing, which is why the host is unreachable when it is down, and the
+  /// age is the tunnel's own since it changed state.
+  String reachWords(DateTime now) => switch (tunnel) {
+    HostTunnel(state: 'down') => 'down ${_tunnelAge(now)}',
+    HostTunnel(state: 'connecting') => 'connecting',
+    _ => _reachWords(now),
+  };
+
+  /// How long the tunnel has been in its state, measured from its `since`.
+  String _tunnelAge(DateTime now) =>
+      relativeAge(tunnel?.since ?? lastContact ?? now, now);
+
+  String _reachWords(DateTime now) => switch (reach.name) {
     'live' => 'live',
     'stale' => 'stale ${relativeAge(lastContact ?? now, now)}',
     'unreachable' => 'unreachable ${relativeAge(lastContact ?? now, now)}',
-    'unauthorized' => 'token refused',
+    'unauthorized' => 'signed out',
     _ => 'connecting',
   };
 

@@ -4,7 +4,6 @@ package fleetclient
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,11 +28,9 @@ const streamPath = "/api/events?stream=fleet"
 
 // Transport is how the client reaches one bridge.
 type Transport struct {
-	Server  string       // the name the screen shows
+	Server  string       // the name the screen shows: `local`, or a host's
 	BaseURL string       // "http://daemon" on the socket
 	HTTP    *http.Client // no overall timeout: the stream is long-lived
-	// Token is the bearer token for one connect; nil sends none.
-	Token func(ctx context.Context) (string, error)
 	// Local marks the local daemon: GET /api/daemon is read.
 	Local bool
 }
@@ -54,30 +51,6 @@ func Socket(path string) Transport {
 			},
 		},
 		Local: true,
-	}
-}
-
-// tlsHandshakeTimeout bounds a server profile's TLS handshake, so an endpoint
-// that accepts the connection and then says nothing cannot hold a connect open.
-const tlsHandshakeTimeout = 10 * time.Second
-
-// HTTPS is a server profile's transport: the bridge at base, over tlsConfig
-// (nil for a loopback http base), with the token on every request.
-func HTTPS(name, base string, tlsConfig *tls.Config, token func(ctx context.Context) (string, error)) Transport {
-	return Transport{
-		Server:  name,
-		BaseURL: strings.TrimSuffix(base, "/"),
-		// No overall timeout: the stream is long-lived. No proxy either: a
-		// server profile names a host, and the environment's proxy is not
-		// part of the configuration the profile carries.
-		HTTP: &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig:     tlsConfig,
-				Proxy:               nil,
-				TLSHandshakeTimeout: tlsHandshakeTimeout,
-			},
-		},
-		Token: token,
 	}
 }
 
@@ -277,7 +250,7 @@ func (c *Client) httpClient() *http.Client {
 var errStreamEnded = errors.New("the fleet stream ended")
 
 // run connects, and reconnects when the stream ends, until ctx is done or
-// Close is called. A rejected token ends it: a 401 is never retried.
+// Close is called.
 func (c *Client) run(ctx context.Context) {
 	defer close(c.done)
 
@@ -292,10 +265,6 @@ func (c *Client) run(ctx context.Context) {
 	for {
 		upAt, err := c.attempt(ctx)
 		if ctx.Err() != nil {
-			return
-		}
-		if unauthorized(err) {
-			c.reject()
 			return
 		}
 		if err == nil {
@@ -455,23 +424,13 @@ func (c *Client) applyFrame(ctx context.Context, payload []byte) {
 	}
 }
 
-// statusError is a non-200 answer. It carries the status, so the client can
-// tell a rejected token from a transient failure.
+// statusError is a non-200 answer.
 type statusError struct {
-	status int
-	msg    string
+	msg string
 }
 
 // Error is the answer's message.
 func (e *statusError) Error() string { return e.msg }
-
-// unauthorized reports whether err is the bridge's 401. The bridge answers it
-// only when a token is rejected, so a 401 anywhere means the same thing: the
-// token is wrong, and nothing is retried.
-func unauthorized(err error) bool {
-	var rejected *statusError
-	return errors.As(err, &rejected) && rejected.status == http.StatusUnauthorized
-}
 
 // openStream opens GET /api/events?stream=fleet. Only a 200 answer is a
 // connected stream.
@@ -486,9 +445,6 @@ func (c *Client) openStream(ctx context.Context) (*http.Response, error) {
 		// what happened after it.
 		req.Header.Set("Last-Event-ID", c.lastEventID)
 	}
-	if err := c.authorize(ctx, req); err != nil {
-		return nil, err
-	}
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fleet stream: %w", err)
@@ -497,26 +453,10 @@ func (c *Client) openStream(ctx context.Context) (*http.Response, error) {
 		defer resp.Body.Close()
 		detail := responseDetail(resp)
 		return nil, &statusError{
-			status: resp.StatusCode,
-			msg:    fmt.Sprintf("fleet stream: %s: %s", resp.Status, detail),
+			msg: fmt.Sprintf("fleet stream: %s: %s", resp.Status, detail),
 		}
 	}
 	return resp, nil
-}
-
-// authorize sets the bearer token, when the transport has one.
-func (c *Client) authorize(ctx context.Context, req *http.Request) error {
-	if c.transport.Token == nil {
-		return nil
-	}
-	token, err := c.transport.Token(ctx)
-	if err != nil {
-		return fmt.Errorf("fleet token: %w", err)
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	return nil
 }
 
 // get reads one GET answer, bounded by ctx.
@@ -524,9 +464,6 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.transport.BaseURL+path, nil)
 	if err != nil {
 		return fmt.Errorf("fleet request: %w", err)
-	}
-	if err := c.authorize(ctx, req); err != nil {
-		return err
 	}
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
@@ -536,8 +473,7 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 
 	if resp.StatusCode != http.StatusOK {
 		return &statusError{
-			status: resp.StatusCode,
-			msg:    fmt.Sprintf("fleet read %s: %s: %s", path, resp.Status, responseDetail(resp)),
+			msg: fmt.Sprintf("fleet read %s: %s: %s", path, resp.Status, responseDetail(resp)),
 		}
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
@@ -598,9 +534,6 @@ func (c *Client) readSnapshot(ctx context.Context) (snapshot, error) {
 	var budgets contract.BudgetReport
 	if err := c.read(ctx, "/api/budgets", &budgets); err == nil {
 		snap.budgets = &budgets
-	} else if unauthorized(err) {
-		// A rejected token is not a missing budget report: it stops the client.
-		return snapshot{}, err
 	}
 
 	if c.transport.Local {
@@ -616,42 +549,30 @@ func (c *Client) readSnapshot(ctx context.Context) (snapshot, error) {
 
 // readOverflow reads everything the connect reads, keeping what it can: a
 // failed budgets read leaves Budgets nil, and the others keep their previous
-// value. The second answer reports whether one of the reads was rejected, so
-// the caller can stop the client.
-func (c *Client) readOverflow(ctx context.Context) (snapshot, bool) {
+// value.
+func (c *Client) readOverflow(ctx context.Context) snapshot {
 	var snap snapshot
 
 	if err := c.read(ctx, "/api/agents", &snap.agents); err == nil {
 		snap.agentsOK = true
-	} else if unauthorized(err) {
-		// A rejected token stops the client, so no further request is made.
-		return snap, true
 	}
 	if err := c.read(ctx, "/api/inbox", &snap.inbox); err == nil {
 		snap.inboxOK = true
-	} else if unauthorized(err) {
-		return snap, true
 	}
 	if err := c.read(ctx, "/api/projects", &snap.projects); err == nil {
 		snap.projectsOK = true
-	} else if unauthorized(err) {
-		return snap, true
 	}
 	var budgets contract.BudgetReport
 	if err := c.read(ctx, "/api/budgets", &budgets); err == nil {
 		snap.budgets = &budgets
-	} else if unauthorized(err) {
-		return snap, true
 	}
 	if c.transport.Local {
 		var daemon contract.DaemonInfo
 		if err := c.read(ctx, "/api/daemon", &daemon); err == nil {
 			snap.daemon, snap.daemonOK = &daemon, true
-		} else if unauthorized(err) {
-			return snap, true
 		}
 	}
-	return snap, false
+	return snap
 }
 
 // install puts a read snapshot into the state.
@@ -674,18 +595,12 @@ func (c *Client) install(snap snapshot) {
 }
 
 // connected marks the first full read landed and the stream up.
-//
-// A rejection stands: a 401 that arrived while the deltas were being applied
-// stopped the client, and the read that followed it must not present the
-// connection as live.
 func (c *Client) connected() {
 	c.mu.Lock()
 	c.state.Loaded = true
 	c.state.Epoch++
-	if c.state.Conn != acpclient.FleetRejected {
-		c.state.Conn = acpclient.FleetConnected
-		c.state.ConnErr = ""
-	}
+	c.state.Conn = acpclient.FleetConnected
+	c.state.ConnErr = ""
 	c.mu.Unlock()
 	c.fire()
 }
@@ -703,21 +618,6 @@ func (c *Client) fail(down bool, err error) {
 	c.state.ConnErr = err.Error()
 	c.mu.Unlock()
 	c.fire()
-}
-
-// reject records the bridge's 401 and stops everything: the token is wrong, so
-// the stream, the retries and the timers all end, and no further request is
-// made.
-func (c *Client) reject() {
-	c.mu.Lock()
-	c.state.Conn = acpclient.FleetRejected
-	c.state.ConnErr = "token rejected for " + c.transport.Server
-	cancel := c.cancel
-	c.mu.Unlock()
-	c.fire()
-	if cancel != nil {
-		cancel()
-	}
 }
 
 // watchDaemon starts the local daemon's reread while the stream is up. The
@@ -740,7 +640,7 @@ func (c *Client) watchDaemon(ctx context.Context) func() {
 }
 
 // pollDaemon rereads GET /api/daemon on the interval. A failed reread leaves
-// the info as it was and tries again on the next tick; a 401 stops the client.
+// the info as it was and tries again on the next tick.
 func (c *Client) pollDaemon(ctx context.Context) {
 	ticker := time.NewTicker(c.daemonEvery)
 	defer ticker.Stop()
@@ -752,10 +652,6 @@ func (c *Client) pollDaemon(ctx context.Context) {
 		}
 		var info contract.DaemonInfo
 		if err := c.read(ctx, "/api/daemon", &info); err != nil {
-			if unauthorized(err) {
-				c.reject()
-				return
-			}
 			continue
 		}
 		if c.setDaemon(&info) {
@@ -777,14 +673,10 @@ func (c *Client) setDaemon(info *contract.DaemonInfo) bool {
 }
 
 // refetchAgents replaces every row with the snapshot's, which wins over
-// anything a delta set. A failed refetch leaves the rows alone; a rejected
-// token stops the client.
+// anything a delta set. A failed refetch leaves the rows alone.
 func (c *Client) refetchAgents(ctx context.Context) {
 	var rows []contract.AgentStatus
 	if err := c.read(ctx, "/api/agents", &rows); err != nil {
-		if unauthorized(err) {
-			c.reject()
-		}
 		return
 	}
 	c.mu.Lock()
@@ -793,14 +685,10 @@ func (c *Client) refetchAgents(ctx context.Context) {
 	c.fire()
 }
 
-// refetchBudgets replaces the report. A failed refetch leaves it as it was; a
-// rejected token stops the client.
+// refetchBudgets replaces the report. A failed refetch leaves it as it was.
 func (c *Client) refetchBudgets(ctx context.Context) {
 	var report contract.BudgetReport
 	if err := c.read(ctx, "/api/budgets", &report); err != nil {
-		if unauthorized(err) {
-			c.reject()
-		}
 		return
 	}
 	c.mu.Lock()
@@ -810,14 +698,9 @@ func (c *Client) refetchBudgets(ctx context.Context) {
 }
 
 // refetchEverything rereads everything the connect read, after a
-// replay_overflow, and bumps the epoch. A rejected token stops the client
-// instead: nothing is installed and the epoch does not move.
+// replay_overflow, and bumps the epoch.
 func (c *Client) refetchEverything(ctx context.Context) {
-	snap, rejected := c.readOverflow(ctx)
-	if rejected {
-		c.reject()
-		return
-	}
+	snap := c.readOverflow(ctx)
 	c.install(snap)
 	c.mu.Lock()
 	c.state.Epoch++

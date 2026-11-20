@@ -45,7 +45,7 @@ func discoveryReportFleet(t *testing.T, repo Repo, root string) (*Fleet, *Worksp
 			t.Fatalf("link project to repo: %v", err)
 		}
 	}
-	f := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "", nil, "")
+	f := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "")
 	f.git = testGitRunner(t)
 	t.Cleanup(f.Close)
 	return f, ws

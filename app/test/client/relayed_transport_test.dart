@@ -5,16 +5,15 @@ import 'package:marshal_app/src/client/transport.dart';
 
 /// [relayedTransport] against a recording transport: every route a host serves
 /// is written as though the host were reached directly, and the relay's prefix
-/// and the host's own token are added at this one seam (spec D18).
+/// is added at this one seam (one-daemon D10).
 void main() {
   late _RecordingTransport relay;
 
   setUp(() => relay = _RecordingTransport());
 
-  /// The host as a client above this seam sees it: named, with a token stored
-  /// unless the test says otherwise.
-  Transport host({String name = 'alpha', String? token = 'alpha-host-token'}) =>
-      relayedTransport(relay, host: name, token: () async => token);
+  /// The host as a client above this seam sees it.
+  Transport host({String name = 'alpha'}) =>
+      relayedTransport(relay, host: name);
 
   test('routes go under the host\'s prefix', () async {
     relay.reply(const Response(status: 200, body: '[]'));
@@ -49,19 +48,7 @@ void main() {
     );
   });
 
-  test('the host token rides in its own header', () async {
-    relay.reply(const Response(status: 200));
-
-    await host(token: 'alpha-secret').send(const Request(path: '/api/agents'));
-
-    // The token is the host's own credential, and this seam adds nothing else:
-    // the relay's transport sets its own Authorization as it always does.
-    expect(relay.requests.single.headers, {
-      'X-Marshal-Host-Token': 'alpha-secret',
-    });
-  });
-
-  test('the route\'s own headers are kept', () async {
+  test('the route\'s own headers are kept, and nothing is added', () async {
     relay.reply(const Response(status: 200));
 
     await host().send(
@@ -71,47 +58,13 @@ void main() {
       ),
     );
 
-    expect(relay.requests.single.headers, {
-      'If-Match': '"abc123"',
-      'X-Marshal-Host-Token': 'alpha-host-token',
-    });
-  });
-
-  test('with no token send answers 401 and sends nothing', () async {
-    final response = await host(token: null)
-        .send(const Request(path: '/api/agents'));
-
-    expect(response.status, 401);
-    expect(response.body, 'sign in to alpha first');
-    expect(
-      relay.requests,
-      isEmpty,
-      reason: 'a request with no host token never reaches the relay',
-    );
-  });
-
-  test('with no token a stream fails unauthorized', () async {
-    await expectLater(
-      host(
-        token: null,
-      ).lines(const Request(path: '/api/events', query: {'stream': 'fleet'})),
-      emitsError(
-        isA<Unauthorized>().having(
-          (failure) => failure.message,
-          'message',
-          'sign in to alpha first',
-        ),
-      ),
-    );
-    expect(
-      relay.requests,
-      isEmpty,
-      reason: 'a stream with no host token never reaches the relay',
-    );
+    // The page holds no credential (one-daemon D13): a forwarded request
+    // carries the route's own headers and no token of its own or the host's.
+    expect(relay.requests.single.headers, {'If-Match': '"abc123"'});
   });
 
   test('a 503 from the relay is the relay\'s words', () async {
-    // The relay answers for itself when it cannot reach the host, and that
+    // The daemon answers for itself when it cannot reach the host, and that
     // answer is the caller's: nothing here rewrites a failure it did not
     // cause.
     relay.reply(const Response(status: 503, body: 'no relayed host alpha'));

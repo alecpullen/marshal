@@ -31,7 +31,7 @@ func TestRunsListReflectsRunProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(f, "")
+	s := NewServer(f)
 
 	var empty []runListEntry
 	rec := doReq(t, s, http.MethodGet, "/api/runs", nil, nil)
@@ -63,7 +63,7 @@ func TestRunsGetProxiesSessionRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentOf(id).results["session/run"] = json.RawMessage(testRunDigest)
-	s := NewServer(f, "")
+	s := NewServer(f)
 	rec := doReq(t, s, http.MethodGet, "/api/runs/"+id, nil, nil)
 	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != testRunDigest {
 		t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
@@ -82,7 +82,7 @@ func TestRunsGetUnsupported(t *testing.T) {
 		}
 		return nil, nil, false
 	}
-	rec := doReq(t, NewServer(f, ""), http.MethodGet, "/api/runs/"+id, nil, nil)
+	rec := doReq(t, NewServer(f), http.MethodGet, "/api/runs/"+id, nil, nil)
 	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "run_unsupported") {
 		t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
 	}
@@ -91,7 +91,7 @@ func TestRunsGetUnsupported(t *testing.T) {
 func TestRunsStartSDDWritesThePlanAndSendsSDDStart(t *testing.T) {
 	f, _, agentOf := agentFleet(t)
 	root := t.TempDir()
-	s := NewServer(f, "")
+	s := NewServer(f)
 	rec := doReq(t, s, http.MethodPost, "/api/runs", map[string]any{
 		"project": root, "kind": "sdd", "plan": "## Task 1: x\n",
 	}, nil)
@@ -129,7 +129,7 @@ func TestRunsStartSDDWritesThePlanAndSendsSDDStart(t *testing.T) {
 func TestRunsStartSDDWithPlanPathOnExistingAgent(t *testing.T) {
 	f, _, agentOf := agentFleet(t)
 	id, _ := f.Spawn(t.Context(), t.TempDir(), SpawnOptions{})
-	rec := doReq(t, NewServer(f, ""), http.MethodPost, "/api/runs",
+	rec := doReq(t, NewServer(f), http.MethodPost, "/api/runs",
 		map[string]any{"agentId": id, "kind": "sdd", "planPath": "/home/u/plan.md"}, nil)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
@@ -142,7 +142,7 @@ func TestRunsStartSDDWithPlanPathOnExistingAgent(t *testing.T) {
 func TestRunsStartSwarmSendsSwarmStart(t *testing.T) {
 	f, _, agentOf := agentFleet(t)
 	id, _ := f.Spawn(t.Context(), t.TempDir(), SpawnOptions{})
-	rec := doReq(t, NewServer(f, ""), http.MethodPost, "/api/runs",
+	rec := doReq(t, NewServer(f), http.MethodPost, "/api/runs",
 		map[string]any{"agentId": id, "kind": "swarm", "goal": "fix the flaky test"}, nil)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
@@ -155,7 +155,7 @@ func TestRunsStartSwarmSendsSwarmStart(t *testing.T) {
 
 func TestRunsStartRejectsBadRequestsWithoutSpawning(t *testing.T) {
 	f, _, _ := agentFleet(t)
-	s := NewServer(f, "")
+	s := NewServer(f)
 	root := t.TempDir()
 	for name, body := range map[string]map[string]any{
 		"no kind":       {"project": root},
@@ -181,7 +181,7 @@ func TestRunsStartSurfacesAnImmediateRefusal(t *testing.T) {
 		}
 		return nil, nil, false
 	}
-	rec := doReq(t, NewServer(f, ""), http.MethodPost, "/api/runs",
+	rec := doReq(t, NewServer(f), http.MethodPost, "/api/runs",
 		map[string]any{"agentId": id, "kind": "swarm", "goal": "go"}, nil)
 	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "already active") {
 		t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
@@ -206,7 +206,7 @@ func TestRunsStartRecordsALateFailure(t *testing.T) {
 		}
 		return nil, nil, false
 	}
-	rec := doReq(t, NewServer(f, ""), http.MethodPost, "/api/runs",
+	rec := doReq(t, NewServer(f), http.MethodPost, "/api/runs",
 		map[string]any{"agentId": id, "kind": "swarm", "goal": "go"}, nil)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("a run still in flight should be accepted: %d %s", rec.Code, rec.Body.String())
@@ -220,7 +220,7 @@ func TestRunsStartRecordsALateFailure(t *testing.T) {
 func TestRunsAnswerProxiesSDDAnswer(t *testing.T) {
 	f, _, agentOf := agentFleet(t)
 	id, _ := f.Spawn(t.Context(), t.TempDir(), SpawnOptions{})
-	rec := doReq(t, NewServer(f, ""), http.MethodPost, "/api/runs/"+id+"/answer",
+	rec := doReq(t, NewServer(f), http.MethodPost, "/api/runs/"+id+"/answer",
 		map[string]any{"answer": "yes"}, nil)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
@@ -229,7 +229,7 @@ func TestRunsAnswerProxiesSDDAnswer(t *testing.T) {
 	if len(got) != 1 || !strings.Contains(got[0], `"answer":"yes"`) || !strings.Contains(got[0], `"sessionId":"s-1"`) {
 		t.Fatalf("sdd_answer = %v", got)
 	}
-	if rec := doReq(t, NewServer(f, ""), http.MethodPost, "/api/runs/nope/answer",
+	if rec := doReq(t, NewServer(f), http.MethodPost, "/api/runs/nope/answer",
 		map[string]any{"answer": "yes"}, nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown agent: %d", rec.Code)
 	}

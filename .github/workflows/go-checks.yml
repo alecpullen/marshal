@@ -58,8 +58,10 @@ jobs:
   # pure-Dart half of the app — the status models, the menu model, the Studio's
   # models and the fixture both languages read — so it needs no GTK, no display
   # and no build of the desktop runner. The Studio's web build is made here
-  # because it is what `go:embed` bakes into webbridge; the bundles themselves
-  # are built in the release workflow, on the OSes that can build them.
+  # because it is what every install ships beside the binaries and what a daemon
+  # serves at /; this job builds it, fails on a CDN reference in it, and serves
+  # it through a real daemon. The bundles themselves are built in the release
+  # workflow, on the OSes that can build them.
   app:
     name: App tests and Studio build
     runs-on: ubuntu-latest
@@ -69,6 +71,12 @@ jobs:
         working-directory: app
     steps:
       - uses: actions/checkout@v4
+      # Go is here for the last step only: the smoke test builds webbridge and
+      # has a real daemon serve the Studio build. The `go` job owns the Go
+      # suite, and nothing here links webbridge to the Studio.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       # Pinned to the version this app was developed and last verified against,
       # not a floating channel: a Flutter upgrade changes the analyzer's rules
       # and the formatter's output, and neither should arrive unannounced on a
@@ -82,15 +90,59 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
-      # The Studio's build is the one `go:embed` bakes into webbridge. Its base
-      # href is `/`, and `--no-web-resources-cdn` makes the build fetch the
-      # CanvasKit engine from this server instead of gstatic, so a private
-      # network that cannot reach the CDN still starts it.
+      # The Studio's build is what every install ships beside the binaries, at
+      # share/marshal/studio, and what a local daemon serves at /. Its base href
+      # is `/`, and `--no-web-resources-cdn` makes the build fetch the CanvasKit
+      # engine from this server instead of gstatic, so a private network that
+      # cannot reach the CDN still starts it.
       - name: Build the Studio for /
-        run: flutter build web --base-href / --no-web-resources-cdn --output ../web/bridge/static
-      - name: The Studio's build embeds
+        run: flutter build web --base-href / --no-web-resources-cdn --output ../share/marshal/studio
+      # What this asks, and why it is not a hostname grep. A correct
+      # `--no-web-resources-cdn` build still spells gstatic out in three
+      # places: the bootstrap keeps the CDN URL in the dead branch beside the
+      # flag (`useLocalCanvasKit?…:"https://www.gstatic.com/flutter-canvaskit"`),
+      # flutter.js.map carries that source verbatim, and the engine itself
+      # defaults its font base to fonts.gstatic.com. Searching for the string
+      # therefore fails a good build and tells nothing apart. Where the engine
+      # actually comes from does, and only the second assert below separates
+      # the two builds: Flutter 3.50 copies canvaskit/ into a default build
+      # too, so a build made without `--no-web-resources-cdn` has the wasm
+      # file and fetches the engine from gstatic at run time anyway — blank on
+      # a network that cannot reach it, invisible on a host that can. What it
+      # never has is `"useLocalCanvasKit":true` in its build config. The first
+      # assert keeps a build that ships no engine at all (an older Flutter's
+      # fetch-only output) from passing either.
+      # scripts/e2e/checks_spa.py makes the same assertions against the build a
+      # daemon serves at run time.
+      - name: The Studio's engine is local, not a CDN
         working-directory: .
-        run: CGO_ENABLED=1 go build -o /tmp/webbridge ./cmd/webbridge
+        run: |
+          studio=share/marshal/studio
+          engine="$studio/canvaskit/canvaskit.wasm"
+          if [ ! -f "$engine" ]; then
+            echo "the Studio build ships no local CanvasKit engine: $engine is not a regular file, so the Studio fetches its engine from a CDN at run time. Build it with:" >&2
+            echo "  cd app && flutter build web --base-href / --no-web-resources-cdn --output ../share/marshal/studio" >&2
+            exit 1
+          fi
+          if ! grep -q '"useLocalCanvasKit":true' "$studio/flutter_bootstrap.js"; then
+            echo "the Studio build does not name its own CanvasKit engine: $studio/flutter_bootstrap.js carries no \"useLocalCanvasKit\":true, so it fetches the engine from a CDN at run time. Build it with:" >&2
+            echo "  cd app && flutter build web --base-href / --no-web-resources-cdn --output ../share/marshal/studio" >&2
+            exit 1
+          fi
+      # For inspecting what this job built. The release builds its own Studio,
+      # on the OS whose bundle it goes into, so it consumes no artifact, and
+      # this name is deliberately not `studio-web`: release.yaml calls this
+      # workflow and also uploads `studio-web` itself, and upload-artifact@v4
+      # refuses a duplicate name, which would fail whichever uploaded second.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studio-web-appjob
+          path: share/marshal/studio/
+          if-no-files-found: error
+      # The browser-only tests are not run in CI: `flutter test --platform chrome`
+      # hangs on the runner (the browser host starts, then nothing arrives), so
+      # it sat until the job timed out. `flutter analyze` still compiles them;
+      # run them locally with `flutter test --platform chrome $(grep -rl "@TestOn('browser')" test)`.
       # F8's cutover removed the Svelte Studio with its toolchain: the Studio is
       # the Flutter one, and a reintroduced Node project under web/ would be a
       # second Studio nobody builds. This fails rather than letting one rot in
@@ -106,13 +158,24 @@ jobs:
             printf '%s\n%s\n' "$svelte" "$node" >&2
             exit 1
           fi
+      # The build the steps above made, served the way an install serves it: a
+      # real webbridge, its own web listener, plan 3's guard in front and the
+      # Studio from a directory. Nothing here links webbridge to the Studio, so
+      # this is what proves the two halves meet.
+      - name: The Studio is served
+        working-directory: .
+        run: |
+          CGO_ENABLED=1 go build -o webbridge ./cmd/webbridge
+          scripts/studio-smoke.sh
       - name: Check formatting
         run: dart format --output=none --set-exit-if-changed lib test
 
   release-config:
     name: Installer and release config
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The install gate and `goreleaser check` are seconds; the snapshot archive
+    # below builds marshal for this runner, which links tree-sitter.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Shellcheck the installer
@@ -155,5 +218,65 @@ jobs:
           if [ -n "$unexpected" ]; then
             echo "goreleaser check: deprecations other than 'brews' are not accepted:" >&2
             printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+      # `check` validates the config's syntax, not what its archive globs
+      # actually match, and an archive is only packed at tag time — too late to
+      # learn it shipped a Studio directory without the document that makes it
+      # one. `studio/**/*` did exactly that: `**` crosses separators, so the
+      # pattern needed one more `/` than `studio/index.html` has, and every
+      # install and both app bundles would have carried a directory the daemon
+      # does not count. So this packs a real archive from a stand-in Studio and
+      # reads the entry document back out of it. It runs here, in the job this
+      # workflow already gives GoReleaser, because release.yaml only *calls*
+      # this workflow: it has no step of its own to hang this on, and this job
+      # runs on every pull request, which is the point.
+      - name: The archive carries the Studio's index.html
+        run: |
+          set -euo pipefail
+          # share/ and dist/ are gitignored, so the stand-in does not make the
+          # tree dirty, which GoReleaser refuses to release from. Both are
+          # removed again below, whatever happens.
+          trap 'rm -rf share/marshal/studio dist' EXIT
+          mkdir -p share/marshal/studio/assets
+          printf '<!doctype html><title>stand-in</title>\n' > share/marshal/studio/index.html
+          printf '{}\n' > share/marshal/studio/assets/AssetManifest.json
+          # `release` has no --single-target; that flag belongs to `build`. And
+          # the checked-in config builds six targets across two OSes: the darwin
+          # pair wants osxcross (o64-clang/oa64-clang), linux/arm64 an aarch64
+          # cross compiler, and neither is on a plain ubuntu runner. The release
+          # job runs inside goreleaser-cross, which has them; this guard is
+          # about the archive's glob, not the cross toolchain, so it releases
+          # one native target from a copy of the config whose only edits are
+          # that target and the compilers it would name.
+          cfg="$RUNNER_TEMP/goreleaser-native.yaml"
+          python3 - "$cfg" <<'PY'
+          import sys, yaml
+          doc = yaml.safe_load(open('.goreleaser.yaml'))
+          for build in doc['builds']:
+              build['goos'] = ['linux']
+              build['goarch'] = ['amd64']
+              # The overrides only name goreleaser-cross's compilers: a native
+              # target needs none of them, and CC/CXX would point at binaries
+              # this runner does not have.
+              build['env'] = ['CGO_ENABLED=1']
+              build.pop('overrides', None)
+          yaml.safe_dump(doc, open(sys.argv[1], 'w'), sort_keys=False)
+          PY
+          # --snapshot stops at the artifacts: no tag, no publish, no changelog.
+          # Docker, Homebrew, notarizing and publishing are the release job's
+          # business.
+          goreleaser release --snapshot --clean --config "$cfg" \
+            --skip=docker,homebrew,publish,validate,notarize
+          tarball="$(ls dist/*.tar.gz | head -1)"
+          echo "inspecting $tarball"
+          # The entries are read into a file first: piping them straight into
+          # `grep -q` lets grep exit on its match, tar then dies of SIGPIPE, and
+          # `pipefail` calls the pipeline failed — a Studio the archive does
+          # carry would be reported as missing.
+          tar -tzf "$tarball" > dist/.entries
+          if ! grep -qx 'share/marshal/studio/index.html' dist/.entries; then
+            echo "$tarball carries no share/marshal/studio/index.html: the archive's Studio glob in .goreleaser.yaml misses the zero-depth index.html, and a daemon does not count such a directory as a Studio. Name the directory (share/marshal/studio) rather than a /**/* pattern under it. What the archive holds under it:" >&2
+            grep 'share/marshal/studio' dist/.entries >&2 || echo "  (nothing)" >&2
             exit 1
           fi

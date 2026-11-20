@@ -32,7 +32,7 @@ func discoveryRouteFixture(t *testing.T) (*Fleet, *Workspace, Repo, func() []dis
 // other.
 func TestDiscoverRouteReturnsCapabilitiesAndReportTogether(t *testing.T) {
 	fleet, _, repo, _ := discoveryRouteFixture(t)
-	s := NewServer(fleet, "")
+	s := NewServer(fleet)
 
 	rec := doReq(t, s, http.MethodPost, "/api/repos/"+repo.ID+"/discover", nil, nil)
 	if rec.Code != http.StatusOK {
@@ -108,7 +108,7 @@ func TestDiscoverRouteReturnsCapabilitiesAndReportTogether(t *testing.T) {
 // bridge has no workspace, no repos and no credentials, so the endpoint
 // reports the capability as absent rather than panicking.
 func TestDiscoverRouteRequiresFleet(t *testing.T) {
-	s, _, _, _ := newTestServer(t, "")
+	s, _, _, _ := newTestServer(t)
 
 	rec := doReq(t, s, http.MethodPost, "/api/repos/repo-1/discover", nil, nil)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -125,7 +125,7 @@ func TestDiscoverRouteRequiresFleet(t *testing.T) {
 // reaches the forge.
 func TestDiscoverRouteUnknownRepo(t *testing.T) {
 	fleet, _, repo, requests := discoveryRouteFixture(t)
-	s := NewServer(fleet, "")
+	s := NewServer(fleet)
 
 	rec := doReq(t, s, http.MethodPost, "/api/repos/missing/discover", nil, nil)
 	if rec.Code != http.StatusNotFound {
@@ -151,7 +151,7 @@ func TestDiscoverRouteUnknownRepo(t *testing.T) {
 // read-shaped GET is rejected by the mux rather than reaching the handler.
 func TestDiscoverRouteMethodMismatch(t *testing.T) {
 	fleet, _, repo, requests := discoveryRouteFixture(t)
-	s := NewServer(fleet, "")
+	s := NewServer(fleet)
 
 	rec := doReq(t, s, http.MethodGet, "/api/repos/"+repo.ID+"/discover", nil, nil)
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -162,32 +162,12 @@ func TestDiscoverRouteMethodMismatch(t *testing.T) {
 	}
 }
 
-// TestDiscoverRouteHonoursBearerAuth pins that the route sits behind the
-// shared /api bearer check: it needs no auth code of its own and cannot be
-// reached unauthenticated when the server has a token.
-func TestDiscoverRouteHonoursBearerAuth(t *testing.T) {
-	const token = "discover-route-token"
-	fleet, _, repo, _ := discoveryRouteFixture(t)
-	s := NewServer(fleet, token)
-
-	path := "/api/repos/" + repo.ID + "/discover"
-	if rec := doReq(t, s, http.MethodPost, path, nil, nil); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated POST discover = %d, want 401 (body %s)", rec.Code, rec.Body.String())
-	}
-	rec := doReq(t, s, http.MethodPost, path, nil, map[string]string{
-		"Authorization": "Bearer " + token,
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("authenticated POST discover = %d, want 200 (body %s)", rec.Code, rec.Body.String())
-	}
-}
-
 // TestDiscoverRouteDoesNotPersistState pins the read-only guarantee at the
 // HTTP boundary: a successful call leaves the workspace file byte-identical,
 // its version unchanged, and creates no project, agent or pending work item.
 func TestDiscoverRouteDoesNotPersistState(t *testing.T) {
 	fleet, ws, repo, _ := discoveryRouteFixture(t)
-	s := NewServer(fleet, "")
+	s := NewServer(fleet)
 
 	before, err := os.ReadFile(ws.path)
 	if err != nil {
@@ -251,9 +231,9 @@ func TestDiscoverRouteInternalFailureIs500(t *testing.T) {
 	}
 	ws.mu.Unlock()
 
-	fleet := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "", nil, "")
+	fleet := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "")
 	t.Cleanup(fleet.Close)
-	s := NewServer(fleet, "")
+	s := NewServer(fleet)
 
 	rec := doReq(t, s, http.MethodPost, "/api/repos/repo-unidentifiable/discover", nil, nil)
 	if rec.Code == http.StatusBadGateway {

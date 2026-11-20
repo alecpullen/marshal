@@ -23,7 +23,7 @@ jobs:
     uses: ./.github/workflows/go-checks.yml
 
   release:
-    needs: checks
+    needs: [checks, studio-web]
     # Only a tag push cuts a release. The published and manual runs exist for
     # install-smoke and must not try to cut an existing tag again.
     if: github.event_name == 'push'
@@ -38,12 +38,13 @@ jobs:
           fetch-depth: 0
       - name: Trust the workspace checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      # The Studio's build is embedded by `go:embed`: it must be in place
-      # before GoReleaser builds webbridge.
+      # The Studio is not compiled into webbridge: the archives carry it beside
+      # the binaries, at share/marshal/studio, which is where the daemon looks.
+      # It must be in place before GoReleaser packs the archives.
       - uses: actions/download-artifact@v4
         with:
           name: studio-web
-          path: web/bridge/static
+          path: share/marshal/studio
       - name: Decide optional publishers
         id: optional
         env:
@@ -69,9 +70,9 @@ jobs:
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
 
-  # The Studio's Flutter web build, which `go:embed` bakes into webbridge in
-  # the release job below. It is its own job because the goreleaser container
-  # has no Flutter, and the Studio is built from app/.
+  # The Studio's Flutter web build, from app/. GoReleaser archives the build
+  # beside the binaries, at share/marshal/studio, which is where the daemon
+  # looks for it, so the release job above needs it first.
   studio-web:
     name: Studio web build
     runs-on: ubuntu-latest
@@ -85,11 +86,15 @@ jobs:
         working-directory: app
         run: |
           flutter pub get
-          flutter build web --base-href / --no-web-resources-cdn --output ../web/bridge/static
+          flutter build web --base-href / --no-web-resources-cdn --output ../share/marshal/studio
       - uses: actions/upload-artifact@v4
         with:
           name: studio-web
-          path: web/bridge/static
+          path: share/marshal/studio
+          # An empty Studio is a bundle and a Homebrew formula that copy a
+          # directory the daemon will not count, so fail here rather than three
+          # jobs later.
+          if-no-files-found: error
 
   # The app bundle carries the two binaries the release job just built, so it
   # cannot start until that release exists. Both jobs read the drafted release
@@ -132,7 +137,7 @@ jobs:
           mkdir -p dist app-bins
           gh release download "$GITHUB_REF_NAME" \
             --pattern "*darwin_${arch}.tar.gz" --dir dist
-          tar -xzf dist/*"_darwin_${arch}.tar.gz" -C app-bins marshal webbridge
+          tar -xzf dist/*"_darwin_${arch}.tar.gz" -C app-bins marshal webbridge share
       - name: Build the app bundle
         working-directory: app
         env:
@@ -147,6 +152,8 @@ jobs:
           flutter build macos --release \
             --dart-define=APP_VERSION="${APP_VERSION#v}"
       - name: Bundle the daemon binaries
+        # Runs before the signing step, so the bundle's seal covers every file
+        # it adds — the Studio included.
         run: |
           set -euo pipefail
           bundle="app/build/macos/Build/Products/Release/Marshal.app"
@@ -154,6 +161,9 @@ jobs:
           cp app-bins/marshal app-bins/webbridge "$bundle/Contents/Resources/bin/"
           chmod 755 "$bundle/Contents/Resources/bin/marshal" \
             "$bundle/Contents/Resources/bin/webbridge"
+          # The daemon looks for the Studio at <bin dir>/../share/marshal/studio.
+          mkdir -p "$bundle/Contents/Resources/share/marshal"
+          cp -R app-bins/share/marshal/studio "$bundle/Contents/Resources/share/marshal/"
       - name: Sign, notarize, staple, and package
         if: env.MACOS_SIGN_P12 != ''
         run: |
@@ -257,7 +267,7 @@ jobs:
           mkdir -p dist app-bins
           gh release download "$GITHUB_REF_NAME" \
             --pattern "*linux_${arch}.tar.gz" --dir dist
-          tar -xzf dist/*"_linux_${arch}.tar.gz" -C app-bins marshal webbridge
+          tar -xzf dist/*"_linux_${arch}.tar.gz" -C app-bins marshal webbridge share
       - name: Build the app bundle
         working-directory: app
         env:
@@ -275,6 +285,9 @@ jobs:
           mkdir -p "$bundle/bin"
           cp app-bins/marshal app-bins/webbridge "$bundle/bin/"
           chmod 755 "$bundle/bin/marshal" "$bundle/bin/webbridge"
+          # The daemon looks for the Studio at <bin dir>/../share/marshal/studio.
+          mkdir -p "$bundle/share/marshal"
+          cp -R app-bins/share/marshal/studio "$bundle/share/marshal/"
           tarball="marshal-app_${GITHUB_REF_NAME}_linux_x64.tar.gz"
           tar -czf "$RUNNER_TEMP/$tarball" -C "$(dirname "$bundle")" bundle
           gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/$tarball" --clobber
@@ -324,3 +337,5 @@ jobs:
           ./scripts/install.sh --no-daemon --version "${{ steps.tag.outputs.tag }}" --prefix "$prefix"
           "$prefix/marshal" --version
           "$prefix/webbridge" --version
+          # install.sh puts the Studio beside the prefix, at <prefix>/../share.
+          test -f "$RUNNER_TEMP/share/marshal/studio/index.html"

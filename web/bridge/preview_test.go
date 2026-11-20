@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // previewEnv is a workspace-spawned agent declaring one preview port.
@@ -22,9 +24,34 @@ type previewEnv struct {
 	id   string
 	port int
 	now  time.Time
+	// host is the address p.do sends requests to. It is the bridge's published
+	// one (see previewPublished), which the web listener answers (D13), so a
+	// preview of it is on that same host, on the preview port.
+	host string
 }
 
+// previewPublished is the address the preview env's bridge publishes. These
+// tests send their requests there, so the guard answers them, and the preview
+// origin — built from the request's host — is "example.com:<preview port>".
+const previewPublished = "http://example.com:7700"
+
+// previewHost is the Host header the published env's requests carry.
+const previewHost = "example.com:7700"
+
 func newPreviewEnv(t *testing.T, port int) *previewEnv {
+	t.Helper()
+	return newPreviewEnvAt(t, port, previewPublished, previewHost)
+}
+
+// newPreviewEnvOnLoopback is newPreviewEnv with nothing published: the bridge
+// answers loopback names only, for a test about the preview origin a loopback
+// request gets (the token in a localhost subdomain).
+func newPreviewEnvOnLoopback(t *testing.T, port int) *previewEnv {
+	t.Helper()
+	return newPreviewEnvAt(t, port, "", "localhost:7700")
+}
+
+func newPreviewEnvAt(t *testing.T, port int, publicURL, host string) *previewEnv {
 	t.Helper()
 	e := newWSSpawnEnv(t)
 	doc := sampleDoc("svc")
@@ -34,16 +61,16 @@ func newPreviewEnv(t *testing.T, port int) *previewEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(e.f, "")
+	srv := NewServer(e.f, publicURL)
 	srv.SetPreviewPort(9911)
-	pe := &previewEnv{wsSpawnEnv: e, srv: srv, id: id, port: port, now: time.Unix(1_800_000_000, 0)}
+	pe := &previewEnv{wsSpawnEnv: e, srv: srv, id: id, port: port, now: time.Unix(1_800_000_000, 0), host: host}
 	e.f.clock = func() time.Time { return pe.now }
 	return pe
 }
 
 func (p *previewEnv) do(method, target string, mod func(*http.Request)) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, target, nil)
-	req.Host = "example.com:7700"
+	req.Host = p.host
 	if mod != nil {
 		mod(req)
 	}
@@ -82,6 +109,23 @@ func (p *previewEnv) issue(t *testing.T, port int) (string, string) {
 	return u.Query().Get("t"), u.RequestURI()
 }
 
+// issueNamingURL asks for a preview of the env's declared port, naming origin
+// as the way the caller reaches this daemon's preview listener.
+func (p *previewEnv) issueNamingURL(t *testing.T, origin string) string {
+	t.Helper()
+	rec := p.do("POST", "/api/agents/"+p.id+"/preview/"+strconv.Itoa(p.port), func(r *http.Request) {
+		r.Header.Set(contract.PreviewOriginHeader, origin)
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("issue = %d %s", rec.Code, rec.Body)
+	}
+	var out struct{ URL string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body %s: %v", rec.Body, err)
+	}
+	return out.URL
+}
+
 func TestPreviewAuthUndeclaredPortIs403(t *testing.T) {
 	p := newPreviewEnv(t, 3000)
 	if rec := p.do("POST", "/api/agents/"+p.id+"/preview/4000", nil); rec.Code != http.StatusForbidden {
@@ -102,9 +146,11 @@ func TestPreviewAuthAgentWithoutAWorkspaceIs403(t *testing.T) {
 		t.Skipf("plain spawn unavailable: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	srv := NewServer(e.f, "")
+	srv := NewServer(e.f)
 	srv.SetPreviewPort(9911)
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/agents/"+id+"/preview/3000", nil))
+	req := httptest.NewRequest("POST", "/api/agents/"+id+"/preview/3000", nil)
+	req.Host = "localhost"
+	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("no workspace = %d %s", rec.Code, rec.Body)
 	}
@@ -245,6 +291,7 @@ func TestPreviewIsServedFromItsOwnOrigin(t *testing.T) {
 	// The API origin never serves /preview, even with a valid cookie: a
 	// page the agent serves there would share the UI's sessionStorage.
 	req := httptest.NewRequest("GET", "/preview/"+p.id+"/3000/", nil)
+	req.Host = p.host
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	p.srv.ServeHTTP(rec, req)
@@ -264,9 +311,11 @@ func TestPreviewIsServedFromItsOwnOrigin(t *testing.T) {
 
 func TestPreviewIssueNeedsAPreviewListener(t *testing.T) {
 	e := newWSSpawnEnv(t)
-	srv := NewServer(e.f, "")
+	srv := NewServer(e.f)
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/agents/a/preview/3000", nil))
+	req := httptest.NewRequest("POST", "/api/agents/a/preview/3000", nil)
+	req.Host = "localhost"
+	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "preview_unconfigured") {
 		t.Fatalf("no listener = %d %s", rec.Code, rec.Body)
 	}
@@ -315,8 +364,590 @@ func TestPreviewOriginCarriesTheTokenOnLocalhost(t *testing.T) {
 	}
 }
 
-func TestPreviewOnLocalhostNeedsNoCookie(t *testing.T) {
+// issueURL is the whole URL an issue request answers with, whatever origin
+// it names.
+func (p *previewEnv) issueURL(t *testing.T) string {
+	t.Helper()
+	rec := p.do("POST", "/api/agents/"+p.id+"/preview/"+strconv.Itoa(p.port), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("issue = %d %s", rec.Code, rec.Body)
+	}
+	var out struct{ URL string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body %s: %v", rec.Body, err)
+	}
+	return out.URL
+}
+
+func TestAPreviewURLNamesTheOrigin(t *testing.T) {
 	p := newPreviewEnv(t, 3000)
+	if err := p.srv.SetPreviewURL("https://preview.example.com/"); err != nil {
+		t.Fatal(err)
+	}
+	raw := p.issueURL(t)
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Scheme != "https" || u.Host != "preview.example.com" {
+		t.Fatalf("issued URL %q does not name the configured origin", raw)
+	}
+	if want := "/preview/" + p.id + "/3000/"; !strings.HasPrefix(u.Path, want) {
+		t.Fatalf("issued URL %q is not a preview of this agent", raw)
+	}
+}
+
+func TestAPreviewURLKeepsTheToken(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	// The configured origin cannot carry the token in its host name, as a
+	// localhost one would, so the link keeps its ?t=.
+	if err := p.srv.SetPreviewURL("https://preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	rec := p.do("POST", "/api/agents/"+p.id+"/preview/3000", func(r *http.Request) {
+		r.Host = "localhost:7700"
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("issue = %d %s", rec.Code, rec.Body)
+	}
+	var out struct{ URL string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(out.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Host != "preview.example.com" {
+		t.Fatalf("issued URL %q does not name the configured origin", out.URL)
+	}
+	if tok := u.Query().Get("t"); len(tok) < 30 {
+		t.Fatalf("issued URL %q carries no token", out.URL)
+	}
+}
+
+func TestAPreviewTemplateParses(t *testing.T) {
+	for _, tc := range []struct {
+		base                   string
+		scheme, prefix, suffix string
+		port                   string
+		// folded is set for a base whose host is not all lower case: DNS is
+		// case-insensitive, so the template normalises the name it emits.
+		folded bool
+	}{
+		{"https://p{token}.preview.example.com", "https", "p", ".preview.example.com", "", false},
+		{"http://{token}.p.example.com:8445", "http", "", ".p.example.com", "8445", false},
+		{"https://P{token}.Preview.Example.com", "https", "p", ".preview.example.com", "", true},
+	} {
+		tmpl, ok, err := parsePreviewTemplate(tc.base)
+		if err != nil || !ok {
+			t.Fatalf("parsePreviewTemplate(%q) = %+v, %v, %v", tc.base, tmpl, ok, err)
+		}
+		if tmpl.Scheme != tc.scheme || tmpl.Prefix != tc.prefix || tmpl.Suffix != tc.suffix || tmpl.Port != tc.port {
+			t.Fatalf("parsePreviewTemplate(%q) = %+v", tc.base, tmpl)
+		}
+		if err := CheckPreviewURL(tc.base); err != nil {
+			t.Fatalf("CheckPreviewURL(%q) = %v", tc.base, err)
+		}
+		// The template names an origin, and reads the token back out of it.
+		origin := tmpl.Origin("ab12cd")
+		want := strings.Replace(tc.base, "{token}", "ab12cd", 1)
+		if tc.folded {
+			if !strings.EqualFold(origin, want) {
+				t.Fatalf("Origin(%q) = %q, want %q", tc.base, origin, want)
+			}
+		} else if origin != want {
+			t.Fatalf("Origin(%q) = %q, want %q", tc.base, origin, want)
+		}
+		u, err := url.Parse(origin)
+		if err != nil {
+			t.Fatalf("parse %q: %v", origin, err)
+		}
+		if tok, ok := tmpl.Token(u.Host); !ok || tok != "ab12cd" {
+			t.Fatalf("Token(%q) = %q, %v", u.Host, tok, ok)
+		}
+		// DNS is case-insensitive, so the name may arrive in any case.
+		if tok, ok := tmpl.Token(strings.ToUpper(u.Host)); !ok || tok != "ab12cd" {
+			t.Fatalf("Token(%q) = %q, %v", strings.ToUpper(u.Host), tok, ok)
+		}
+		// Only a lower-case hex middle is a token: nothing else is one of
+		// ours, and an empty middle is no token at all.
+		for _, bad := range []string{"p" + tmpl.Suffix, "p" + strings.Repeat("0", 8) + "X" + tmpl.Suffix} {
+			if _, ok := tmpl.Token(bad); ok {
+				t.Errorf("Token(%q) accepted", bad)
+			}
+		}
+	}
+
+	if _, ok, err := parsePreviewTemplate("https://preview.example.com"); ok || err != nil {
+		t.Fatalf("a plain origin parsed as a template: %v, %v", ok, err)
+	}
+
+	for _, base := range []string{
+		"https://p{token}.{token}.preview.example.com", // twice
+		"https://a.{token}.preview.example.com",        // not the first label
+		"https://p.preview.example.com/{token}",        // in the path
+		"ftp://p{token}.preview.example.com",           // not http(s)
+		"p{token}.preview.example.com",                 // no scheme at all
+		"https://{token}.*.preview.example.com",        // a wildcard is no label
+		"https://p{token}.preview.example.com:99999",   // a port out of range
+	} {
+		if _, ok, err := parsePreviewTemplate(base); ok || err == nil {
+			t.Errorf("parsePreviewTemplate(%q) = ok %v, err %v", base, ok, err)
+		}
+		if err := CheckPreviewURL(base); err == nil {
+			t.Errorf("CheckPreviewURL(%q) accepted", base)
+		}
+	}
+	// A refusal names what the operator wrote, not what {token} stands in for.
+	if _, _, err := parsePreviewTemplate("https://p{token}.preview.example.com:99999"); err == nil ||
+		!strings.Contains(err.Error(), "https://p{token}.preview.example.com:99999") ||
+		strings.Contains(err.Error(), "p0.preview.example.com") {
+		t.Errorf("refusal names the substituted URL: %v", err)
+	}
+}
+
+func TestAPreviewTemplateNamesEachPreviewsOrigin(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	if err := p.srv.SetPreviewURL("https://p{token}.preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	want := "/preview/" + p.id + "/3000/"
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		raw := p.issueURL(t)
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		host := u.Host
+		if u.Scheme != "https" || !strings.HasPrefix(host, "p") || !strings.HasSuffix(host, ".preview.example.com") {
+			t.Fatalf("issued URL %q is not on the template's origin", raw)
+		}
+		tok := strings.TrimSuffix(strings.TrimPrefix(host, "p"), ".preview.example.com")
+		if !p.f.previewTokenValid(tok, p.id, 3000) {
+			t.Fatalf("the host carries %q, which is not the token issued", tok)
+		}
+		if u.Path != want || u.RawQuery != "" {
+			t.Fatalf("issued URL %q, want %s with no ?t=", raw, want)
+		}
+		seen[host] = true
+	}
+	if len(seen) != 2 {
+		t.Fatalf("two previews shared an origin: %v", seen)
+	}
+}
+
+func TestThePreviewListenerReadsATemplatedHost(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	if err := p.srv.SetPreviewURL("https://p{token}.preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	var hits []string
+	p.f.previewForward = func(w http.ResponseWriter, r *http.Request, id string, port int, rest string) {
+		hits = append(hits, id+"|"+strconv.Itoa(port)+"|"+rest)
+		w.WriteHeader(http.StatusNoContent)
+	}
+	raw := p.issueURL(t)
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	rec := p.do("GET", u.Path+"app.js", func(r *http.Request) { r.Host = u.Host })
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("templated host = %d %s", rec.Code, rec.Body)
+	}
+	if len(hits) != 1 || hits[0] != p.id+"|3000|/app.js" {
+		t.Fatalf("hits = %v", hits)
+	}
+	// A wrong token, and a name that is not the template, reach nothing.
+	for _, host := range []string{
+		"p" + strings.Repeat("0", 48) + ".preview.example.com",
+		"preview.example.com",
+	} {
+		if rec := p.do("GET", u.Path, func(r *http.Request) { r.Host = host }); rec.Code != http.StatusNotFound {
+			t.Errorf("host %s = %d, want 404", host, rec.Code)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("a refused request reached the agent: %v", hits)
+	}
+}
+
+// TestAPreviewTemplateOnLocalhostAuthenticates: a template that ends in
+// .localhost is a shape the localhost rule knows no token for (it reads only
+// p<token>.localhost), so the template is consulted first. Its link's host
+// authenticates the agent it was issued for, and a wrong token on the same
+// name is no way in.
+func TestAPreviewTemplateOnLocalhostAuthenticates(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	if err := p.srv.SetPreviewURL("https://{token}.preview.localhost"); err != nil {
+		t.Fatal(err)
+	}
+	hits := 0
+	p.f.previewForward = func(w http.ResponseWriter, r *http.Request, id string, port int, rest string) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	}
+	raw := p.issueURL(t)
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	if u.Scheme != "https" || u.RawQuery != "" {
+		t.Fatalf("issued URL %q, want the template's own origin and no ?t=", raw)
+	}
+	host := u.Hostname()
+	if !strings.HasSuffix(host, ".preview.localhost") {
+		t.Fatalf("host = %q, want <token>.preview.localhost", host)
+	}
+	tok := strings.TrimSuffix(host, ".preview.localhost")
+	if !p.f.previewTokenValid(tok, p.id, 3000) {
+		t.Fatalf("the host carries %q, which is not the token issued", tok)
+	}
+	// The link's own host is the credential: no cookie, no ?t=.
+	if rec := p.do("GET", u.Path, func(r *http.Request) { r.Host = u.Host }); rec.Code != http.StatusNoContent {
+		t.Fatalf("the link's own host = %d %s", rec.Code, rec.Body)
+	}
+	if hits != 1 {
+		t.Fatalf("hits = %d, want the agent reached once", hits)
+	}
+	// Another hex token, one wearing the p the localhost rule wants, and the
+	// bare name are all refused.
+	for _, host := range []string{
+		strings.Repeat("0", 48) + ".preview.localhost",
+		"p" + strings.Repeat("0", 48) + ".preview.localhost",
+		"preview.localhost",
+	} {
+		if rec := p.do("GET", u.Path, func(r *http.Request) { r.Host = host }); rec.Code != http.StatusNotFound {
+			t.Errorf("host %s = %d, want 404", host, rec.Code)
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("a refused host reached the agent: %d", hits)
+	}
+}
+
+// TestAPreviewTemplateTokenNeedsItsPrefix: a host carrying a live token but
+// lacking the template's prefix is not a name the template reads a token from,
+// so with no other credential the listener refuses it. A prefix and suffix that
+// overlap on a short name read no token either, and do not run off the string.
+func TestAPreviewTemplateTokenNeedsItsPrefix(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	if err := p.srv.SetPreviewURL("https://p{token}.preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	hits := 0
+	p.f.previewForward = func(w http.ResponseWriter, r *http.Request, _ string, _ int, _ string) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	}
+	raw := p.issueURL(t)
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	tok := strings.TrimSuffix(strings.TrimPrefix(u.Hostname(), "p"), ".preview.example.com")
+	if !p.f.previewTokenValid(tok, p.id, 3000) {
+		t.Fatalf("the host carries %q, which is not the token issued", tok)
+	}
+	// The same live token on the template's suffix, with no prefix, is no
+	// host of this template's: it carries no credential, so it is a 404.
+	if rec := p.do("GET", u.Path, func(r *http.Request) { r.Host = tok + ".preview.example.com" }); rec.Code != http.StatusNotFound {
+		t.Errorf("unprefixed host = %d, want 404", rec.Code)
+	}
+	if hits != 0 {
+		t.Fatalf("an unprefixed host reached the agent")
+	}
+
+	over, ok, err := parsePreviewTemplate("https://p{token}p.evil.com")
+	if err != nil || !ok {
+		t.Fatalf("parsePreviewTemplate = %+v, %v, %v", over, ok, err)
+	}
+	for _, host := range []string{"pp.evil.com", "p.evil.com", "pp.evil.com:8443", "p.evil.com:8443"} {
+		if got, ok := over.Token(host); ok {
+			t.Errorf("Token(%q) = %q, want no token", host, got)
+		}
+	}
+}
+
+func TestAPlainPreviewURLIsUnchanged(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	if err := p.srv.SetPreviewURL("https://preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	raw := p.issueURL(t)
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	if u.Scheme != "https" || u.Host != "preview.example.com" {
+		t.Fatalf("issued URL %q is not on the configured origin", raw)
+	}
+	if want := "/preview/" + p.id + "/3000/"; u.Path != want {
+		t.Fatalf("issued URL %q, want the path %s", raw, want)
+	}
+	if tok := u.Query().Get("t"); len(tok) < 30 {
+		t.Fatalf("issued URL %q carries no ?t= token", raw)
+	}
+	// The listener still authenticates it as one ?t= token on one name.
+	if rec := p.do("GET", u.RequestURI(), func(r *http.Request) { r.Host = u.Host }); rec.Code != http.StatusFound {
+		t.Fatalf("token request on the configured origin = %d %s", rec.Code, rec.Body)
+	}
+}
+
+// TestAPreviewOriginHeaderNamesTheLink: the origin a caller reaches this
+// daemon's preview listener through is the origin the issued link takes, in
+// place of the daemon's own idea of it. A localhost name carries the token in
+// the host, so the link needs no ?t=; any other host keeps it (one-daemon open
+// question 1).
+func TestAPreviewOriginHeaderNamesTheLink(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	want := "/preview/" + p.id + "/3000/"
+
+	t.Run("localhost", func(t *testing.T) {
+		raw := p.issueNamingURL(t, "http://localhost:54400")
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		if u.Scheme != "http" || u.Port() != "54400" {
+			t.Fatalf("issued URL %q is not on the origin the caller named", raw)
+		}
+		host := u.Hostname()
+		if !strings.HasPrefix(host, "p") || !strings.HasSuffix(host, ".localhost") {
+			t.Fatalf("host = %q, want p<token>.localhost", host)
+		}
+		tok := strings.TrimSuffix(strings.TrimPrefix(host, "p"), ".localhost")
+		if !p.f.previewTokenValid(tok, p.id, 3000) {
+			t.Fatalf("the host carries %q, which is not the token issued", tok)
+		}
+		if u.Path != want || u.RawQuery != "" {
+			t.Fatalf("issued URL %q, want %s with no ?t=", raw, want)
+		}
+	})
+
+	t.Run("another host", func(t *testing.T) {
+		raw := p.issueNamingURL(t, "http://box.lan:54400")
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		if u.Scheme != "http" || u.Host != "box.lan:54400" {
+			t.Fatalf("issued URL %q, want it on http://box.lan:54400", raw)
+		}
+		if u.Path != want {
+			t.Fatalf("issued URL %q, want the path %s", raw, want)
+		}
+		if tok := u.Query().Get("t"); !p.f.previewTokenValid(tok, p.id, 3000) {
+			t.Fatalf("the link carries %q, which is not the token issued", tok)
+		}
+	})
+}
+
+// TestThePreviewOriginHeaderKeepsItsScheme: the header names the way the
+// caller will dial this daemon's preview listener, so the link carries that
+// scheme. The request's own scheme says how it reached the daemon, which is a
+// different hop: a plain-HTTP request naming an https origin still gets an
+// https link (one-daemon open question 1).
+func TestThePreviewOriginHeaderKeepsItsScheme(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	want := "/preview/" + p.id + "/3000/"
+
+	t.Run("another host", func(t *testing.T) {
+		// The request is plain HTTP (p.do sends no TLS), so an https link
+		// proves the header's scheme decided it and not the request's.
+		raw := p.issueNamingURL(t, "https://box.lan:54400")
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		if u.Scheme != "https" || u.Host != "box.lan:54400" {
+			t.Fatalf("issued URL %q, want it on https://box.lan:54400", raw)
+		}
+		if u.Path != want {
+			t.Fatalf("issued URL %q, want the path %s", raw, want)
+		}
+		if tok := u.Query().Get("t"); !p.f.previewTokenValid(tok, p.id, 3000) {
+			t.Fatalf("the link carries %q, which is not the token issued", tok)
+		}
+	})
+
+	t.Run("localhost", func(t *testing.T) {
+		raw := p.issueNamingURL(t, "https://localhost:54400")
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		if u.Scheme != "https" || u.Port() != "54400" {
+			t.Fatalf("issued URL %q, want it on https://localhost:54400", raw)
+		}
+		host := u.Hostname()
+		if !strings.HasPrefix(host, "p") || !strings.HasSuffix(host, ".localhost") {
+			t.Fatalf("host = %q, want p<token>.localhost", host)
+		}
+		tok := strings.TrimSuffix(strings.TrimPrefix(host, "p"), ".localhost")
+		if !p.f.previewTokenValid(tok, p.id, 3000) {
+			t.Fatalf("the host carries %q, which is not the token issued", tok)
+		}
+		if u.Path != want || u.RawQuery != "" {
+			t.Fatalf("issued URL %q, want %s with no ?t=", raw, want)
+		}
+	})
+}
+
+// TestATemplatedPreviewOriginHeaderNamesThePreviewsHost: a caller whose way in
+// is a template gets a link on its own preview's name, with the token there
+// and no ?t=, as a localhost name does (one-daemon open question 1).
+func TestATemplatedPreviewOriginHeaderNamesThePreviewsHost(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	want := "/preview/" + p.id + "/3000/"
+	raw := p.issueNamingURL(t, "https://p{token}.preview.example.com")
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	if u.Scheme != "https" || u.Port() != "" {
+		t.Fatalf("issued URL %q, want it on https://p<token>.preview.example.com", raw)
+	}
+	host := u.Hostname()
+	if !strings.HasPrefix(host, "p") || !strings.HasSuffix(host, ".preview.example.com") {
+		t.Fatalf("host = %q, want p<token>.preview.example.com", host)
+	}
+	tok := strings.TrimSuffix(strings.TrimPrefix(host, "p"), ".preview.example.com")
+	if !p.f.previewTokenValid(tok, p.id, 3000) {
+		t.Fatalf("the host carries %q, which is not the token issued", tok)
+	}
+	if u.Path != want || u.RawQuery != "" {
+		t.Fatalf("issued URL %q, want %s with no ?t=", raw, want)
+	}
+	// A templated way in subdivides per preview, so the next one is another
+	// origin.
+	other, err := url.Parse(p.issueNamingURL(t, "https://p{token}.preview.example.com"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if other.Host == u.Host {
+		t.Fatalf("two previews shared the origin %q", u.Host)
+	}
+}
+
+// TestAPlainPreviewOriginHeaderWithoutAPort: a plain origin needs no port; the
+// scheme's own is the one the link names.
+func TestAPlainPreviewOriginHeaderWithoutAPort(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	want := "/preview/" + p.id + "/3000/"
+	for _, tc := range []struct{ origin, scheme, port string }{
+		{"http://box.lan", "http", "80"},
+		{"https://box.lan", "https", "443"},
+	} {
+		t.Run(tc.origin, func(t *testing.T) {
+			raw := p.issueNamingURL(t, tc.origin)
+			u, err := url.Parse(raw)
+			if err != nil {
+				t.Fatalf("parse %q: %v", raw, err)
+			}
+			if u.Scheme != tc.scheme || u.Hostname() != "box.lan" || u.Port() != tc.port {
+				t.Fatalf("issued URL %q, want it on %s://box.lan:%s", raw, tc.scheme, tc.port)
+			}
+			if u.Path != want {
+				t.Fatalf("issued URL %q, want the path %s", raw, want)
+			}
+			if tok := u.Query().Get("t"); !p.f.previewTokenValid(tok, p.id, 3000) {
+				t.Fatalf("the link carries %q, which is not the token issued", tok)
+			}
+		})
+	}
+}
+
+// TestABadPreviewOriginHeaderIsIgnored: a header that is neither a valid
+// template nor an http origin with a host and a port in range is no way in, so
+// the link is the one the daemon issues without it (one-daemon open question
+// 1).
+func TestABadPreviewOriginHeaderIsIgnored(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	for _, origin := range []string{
+		"http://box.lan:54400/x", // a path
+		"http://box.lan:99999/",  // a port out of range
+		"http://box.lan:0",       // a port below the range
+		"http://box.lan:00",      // ...and one that parses as zero
+		"ftp://box.lan:54400",    // not http
+		"garbage",                // not an origin at all
+		// Templates that are not one: a broken template is no more a way in
+		// than a broken origin is.
+		"https://p{token}.{token}.preview.example.com", // {token} twice
+		"https://a.{token}.preview.example.com",        // {token} in a later label
+		"https://p{token}.preview.example.com/x",       // a template with a path
+		"ftp://p{token}.preview.example.com",           // a template that is not http
+	} {
+		t.Run(origin, func(t *testing.T) {
+			raw := p.issueNamingURL(t, origin)
+			u, err := url.Parse(raw)
+			if err != nil {
+				t.Fatalf("parse %q: %v", raw, err)
+			}
+			if u.Scheme != "http" || u.Host != "example.com:9911" {
+				t.Fatalf("issued URL %q, want the origin the request alone names", raw)
+			}
+			if tok := u.Query().Get("t"); !p.f.previewTokenValid(tok, p.id, 3000) {
+				t.Fatalf("the link carries %q, which is not the token issued", tok)
+			}
+		})
+	}
+}
+
+// TestTheHeaderWinsOverThePreviewURL: a configured public origin is what the
+// daemon publishes, but a caller that knows its own way in is answered with
+// that: the header decides (one-daemon open question 1).
+func TestTheHeaderWinsOverThePreviewURL(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	if err := p.srv.SetPreviewURL("https://preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	published, err := url.Parse(p.issueURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.Host != "preview.example.com" {
+		t.Fatalf("issued URL %q, want the configured origin without a header", published)
+	}
+
+	raw := p.issueNamingURL(t, "http://box.lan:54400")
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	if u.Host != "box.lan:54400" {
+		t.Fatalf("issued URL %q, want the caller's own origin over the preview URL", raw)
+	}
+}
+
+func TestCheckPreviewURLRefusesAPath(t *testing.T) {
+	for _, base := range []string{
+		"https://preview.example.com/x",
+		"https://preview.example.com/?x=1",
+		"ftp://preview.example.com",
+		// A browser discards userinfo, so a link carrying it names an origin
+		// the page would not be served from.
+		"https://u@preview.example.com",
+	} {
+		if err := CheckPreviewURL(base); err == nil {
+			t.Errorf("CheckPreviewURL(%q) accepted", base)
+		}
+	}
+	for _, base := range []string{
+		"https://preview.example.com",
+		"https://preview.example.com/",
+		"http://127.0.0.1:9911",
+	} {
+		if err := CheckPreviewURL(base); err != nil {
+			t.Errorf("CheckPreviewURL(%q) = %v", base, err)
+		}
+	}
+}
+
+func TestPreviewOnLocalhostNeedsNoCookie(t *testing.T) {
+	p := newPreviewEnvOnLoopback(t, 3000)
 	var got []string
 	p.f.previewForward = func(w http.ResponseWriter, r *http.Request, id string, port int, rest string) {
 		got = append(got, id+"|"+rest)
@@ -400,7 +1031,7 @@ func TestPreviewOnLocalhostSendsNoReferrer(t *testing.T) {
 	}))
 	defer up.Close()
 	port, _ := strconv.Atoi(strings.TrimPrefix(up.URL[strings.LastIndex(up.URL, ":"):], ":"))
-	p := newPreviewEnv(t, port)
+	p := newPreviewEnvOnLoopback(t, port)
 	rec := p.do("POST", "/api/agents/"+p.id+"/preview/"+strconv.Itoa(port), func(r *http.Request) { r.Host = "127.0.0.1:7700" })
 	var out struct{ URL string }
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -603,7 +1234,6 @@ func TestPreviewForwardContainerModeGoesThroughTheSidecar(t *testing.T) {
 
 	p := newPreviewEnv(t, port)
 	h := newEgressHost(p.f)
-	h.mode = egressModeContainer
 	h.tokenKey = []byte("0123456789abcdef0123456789abcdef")
 	p.f.egress = h
 	px := NewEgressProxy(nil, nil, nil, nil)
@@ -642,7 +1272,7 @@ func TestPreviewForwardContainerModeGoesThroughTheSidecar(t *testing.T) {
 }
 
 func TestEgressSidecarPublishesThePreviewListener(t *testing.T) {
-	args := strings.Join(egressSidecarArgs("docker", "marshal-state", "marshal-egress:dev"), " ")
+	args := strings.Join(egressSidecarArgs("/host/state", "marshal-egress:dev"), " ")
 	for _, want := range []string{"-p 127.0.0.1::8081", "--preview-listen :8081", "--listen :3128"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("sidecar args lack %q:\n%s", want, args)

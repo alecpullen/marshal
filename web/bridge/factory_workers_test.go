@@ -15,11 +15,15 @@ func parkedFixture(t *testing.T, work json.RawMessage, signalErr error) (*Fleet,
 	root := t.TempDir()
 	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
 	w := FactoryWorker{AgentID: "a1", SessionID: "s1", Role: "implementer", SpawnEffectID: "e1"}
-	a := Agent{ID: w.AgentID, Project: root, SessionID: w.SessionID, FactoryItemID: "i1", FactoryRole: w.Role, FactorySpawnEffectID: w.SpawnEffectID}
+	// A factory worker spawns against a repo (factoryWorkers.spawn passes
+	// RepoID), so it is a git-sourced agent and keeps a child of its own
+	// (P4 D10 decision 2) rather than joining a project's child.
+	a := Agent{ID: w.AgentID, Project: root, SessionID: w.SessionID, SourceKind: "git",
+		FactoryItemID: "i1", FactoryRole: w.Role, FactorySpawnEffectID: w.SpawnEffectID}
 	if err := ws.PutAgent(a); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "", nil, t.TempDir(), Limits{MaxConcurrent: 1}, "", nil, "")
+	f := NewFleet(ws, "", nil, t.TempDir(), Limits{MaxConcurrent: 1}, "")
 	tr := &captureTransport{results: map[string]json.RawMessage{"session/end_work": work}, signalErr: signalErr}
 	c := &Child{Transport: tr}
 	r := NewRegistry(c)
@@ -217,7 +221,7 @@ func factoryObservationIdle(o FactoryObservation) bool {
 func observerFixture(t *testing.T) (*Fleet, *Workspace) {
 	t.Helper()
 	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
-	f := NewFleet(ws, "", nil, t.TempDir(), Limits{}, "", nil, "")
+	f := NewFleet(ws, "", nil, t.TempDir(), Limits{}, "")
 	t.Cleanup(f.Close)
 	return f, ws
 }
@@ -333,7 +337,7 @@ func TestFactorySpawnFactoryWorkerUsesTheLatestApprovalRouting(t *testing.T) {
 	if err := ws.PutRepo(Repo{ID: "repo-1", URL: bare, Branch: "main", OwnerID: DefaultOwnerID}); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "", nil, t.TempDir(), Limits{}, "", nil, "")
+	f := NewFleet(ws, "", nil, t.TempDir(), Limits{}, "")
 	tr := &captureTransport{}
 	f.newRuntime = func(Agent) (*Child, error) { return &Child{Transport: tr}, nil }
 	t.Cleanup(f.Close)
@@ -407,7 +411,7 @@ func newFactorySubagentWorkerFixture(t *testing.T) *factorySubagentWorkerFixture
 	if err := ws.PutRepo(Repo{ID: "repo-1", URL: bare, Branch: "main", OwnerID: DefaultOwnerID}); err != nil {
 		t.Fatal(err)
 	}
-	fx.f = NewFleet(ws, "", nil, t.TempDir(), Limits{}, "", nil, "")
+	fx.f = NewFleet(ws, "", nil, t.TempDir(), Limits{}, "")
 	fx.ctl = newFakeAgent()
 	fx.f.newControl = func() (*Child, error) { return &Child{Transport: fx.ctl}, nil }
 	fx.f.newRuntime = func(a Agent) (*Child, error) {
@@ -487,7 +491,8 @@ func (fx *factorySubagentWorkerFixture) recoverableWorker(t *testing.T, item Fac
 	worker.Role, worker.SpawnEffectID = role, "spawn-1"
 	if err := fx.f.ws.PutAgent(Agent{
 		ID: worker.AgentID, Project: project, SessionID: worker.SessionID,
-		OwnerID: DefaultOwnerID, Origin: OriginUI,
+		SourceKind: "git",
+		OwnerID:    DefaultOwnerID, Origin: OriginUI,
 		FactoryItemID: item.ID, FactoryRole: role, FactorySpawnEffectID: worker.SpawnEffectID,
 	}); err != nil {
 		t.Fatal(err)
@@ -717,7 +722,7 @@ func newDelegatedWorkers(t *testing.T, itemID string, sessions ...string) *deleg
 	t.Helper()
 	root := t.TempDir()
 	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
-	f := NewFleet(ws, "", nil, t.TempDir(), Limits{MaxConcurrent: len(sessions)}, "", nil, "")
+	f := NewFleet(ws, "", nil, t.TempDir(), Limits{MaxConcurrent: len(sessions)}, "")
 	dw := &delegatedWorkers{fleet: f, item: FactoryItem{ID: itemID, Approvals: []FactoryApproval{{Plan: "plan", Spec: "spec"}}}}
 	for _, session := range sessions {
 		w := FactoryWorker{AgentID: "agent-" + session, SessionID: session, Role: "implementer", SpawnEffectID: "spawn-" + session}

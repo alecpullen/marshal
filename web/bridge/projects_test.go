@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +22,7 @@ func projectEnv(t *testing.T) (*wsSpawnEnv, *Server, string) {
 	if err := e.f.ws.AddProject(root); err != nil {
 		t.Fatal(err)
 	}
-	return e, NewServer(e.f, ""), root
+	return e, NewServer(e.f), root
 }
 
 func putSettings(t *testing.T, s *Server, root string, body any) int {
@@ -614,7 +613,7 @@ func TestProjectSettingsConditionalConflict(t *testing.T) {
 	}
 	// Two header lines are two tags, which the bridge refuses to choose
 	// between.
-	req := httptest.NewRequest(http.MethodPut, path, bytes.NewReader([]byte(`{"workspace":"svc@2"}`)))
+	req := testJSONRequest(http.MethodPut, path, `{"workspace":"svc@2"}`)
 	req.Header.Add("If-Match", current)
 	req.Header.Add("If-Match", current)
 	twin := httptest.NewRecorder()
@@ -779,7 +778,7 @@ func TestProjectSettingsConcurrentConditionalWrites(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			req := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(bodies[i]))
+			req := testJSONRequest(http.MethodPut, path, string(bodies[i]))
 			req.Header.Set("If-Match", tag)
 			rr := httptest.NewRecorder()
 			<-start

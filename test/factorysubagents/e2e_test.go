@@ -133,8 +133,7 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatalf("find this test binary: %v", err)
 	}
-	h.fleet = bridge.NewFleet(ws, executable, nil, t.TempDir(), bridge.Limits{}, "factory-subagents-test", nil, "")
-	h.fleet.SetHostProcessesOnly()
+	h.fleet = bridge.NewFleet(ws, executable, nil, t.TempDir(), bridge.Limits{}, "factory-subagents-test")
 	t.Cleanup(h.fleet.Close)
 
 	h.store, err = bridge.OpenFactoryStore(t.TempDir())

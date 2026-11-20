@@ -19,7 +19,7 @@ func ownChildFleet(t *testing.T) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "marshal-test-bin", nil, shortStateDir(t), Limits{}, "", nil, "marshal-state")
+	f := NewFleet(ws, "marshal-test-bin", nil, shortStateDir(t), Limits{}, "")
 	f.probe = func() (path, name string, ok bool) { return "", "", false }
 	t.Cleanup(f.Close)
 	return f
@@ -55,7 +55,9 @@ func (s *socketWatchingTransport) sawStaleAtStart() bool {
 // directory's v/, and the runtime records that path (decision 1).
 func TestAnOwnChildStartsWithAViewerSocket(t *testing.T) {
 	f := ownChildFleet(t)
-	a := Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile()}
+	// An agent with a child of its own: no project root, so placement leaves
+	// it on a child of its own (P4 D10 decision 2).
+	a := Agent{ID: "a1", SourceKind: "local", Profile: DefaultRuntimeProfile()}
 
 	want := agentViewerSocketPath(f.stateDir, a.ID)
 	// The binary is not on this machine, so the start itself fails; the
@@ -96,7 +98,10 @@ func TestAContainerChildNamesItsViewerSocket(t *testing.T) {
 	f.probe = func() (path, name string, ok bool) {
 		return "/usr/local/bin/docker", "docker", true
 	}
-	a := Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile()}
+	a := Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile(), Workspace: &AgentWorkspace{Name: "w"}}
+	f.wsMu.Lock()
+	f.wsExtras[a.ID] = wsExtras{}
+	f.wsMu.Unlock()
 
 	child, err := f.newRuntime(a)
 	if err != nil {
@@ -141,7 +146,8 @@ func TestAContainerChildNamesItsViewerSocket(t *testing.T) {
 // gone before the child it belongs to starts (decision 1).
 func TestAStaleViewerSocketIsRemoved(t *testing.T) {
 	f := ownChildFleet(t)
-	a := Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile()}
+	// No project root, so this agent keeps a child of its own (P4 D10).
+	a := Agent{ID: "a1", SourceKind: "local", Profile: DefaultRuntimeProfile()}
 	socket := agentViewerSocketPath(f.stateDir, a.ID)
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		t.Fatal(err)
@@ -178,7 +184,8 @@ func TestTheViewerSocketGoesWithTheChild(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := ownChildFleet(t)
-			a := Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile()}
+			// No project root: the agent keeps a child of its own (P4 D10).
+			a := Agent{ID: "a1", SourceKind: "local", Profile: DefaultRuntimeProfile()}
 			tr := newFakeTransport()
 			f.newRuntime = func(Agent) (*Child, error) { return &Child{Transport: tr}, nil }
 			if _, err := f.startRuntime(ctlContext(t), a); err != nil {

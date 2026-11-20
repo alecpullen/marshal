@@ -1806,14 +1806,16 @@ class DaemonInfo {
     required this.pid,
     required this.startedAt,
     required this.socket,
-    this.studioAddr,
-    this.studioError,
+    this.webListen,
+    this.webError,
+    this.previewAddr,
     required this.projects,
     required this.pinned,
     required this.children,
     this.refresh,
-    this.join,
+    required this.hosts,
     this.restart,
+    this.studioDir,
   });
 
   final String version;
@@ -1822,13 +1824,13 @@ class DaemonInfo {
   /// Unix milliseconds
   final int startedAt;
   final String socket;
-  /// StudioAddr is the address the Studio listener actually bound, and
-  /// StudioError is why it bound nothing when it could not. `marshal
-  /// studio` reads both over the socket: the address is the truth (a
-  /// configured port 0 names its own once bound), and the error is what
-  /// makes a busy port a named failure instead of "nothing is serving".
-  final String? studioAddr;
-  final String? studioError;
+  /// WebListen is the web listener's bound address ("unix:&lt;path&gt;" or
+  /// host:port), and WebError is why it bound nothing (D10).
+  final String? webListen;
+  final String? webError;
+  /// PreviewAddr is the preview listener's bound address (host:port), or ""
+  /// when previews are off.
+  final String? previewAddr;
   /// filled per request
   final List<String> projects;
   /// filled per request
@@ -1837,10 +1839,13 @@ class DaemonInfo {
   final List<DaemonChild> children;
   /// filled per request
   final DaemonRefresh? refresh;
-  /// filled per request
-  final DaemonJoin? join;
+  /// filled per request: the tunnel helper's last report
+  final List<DaemonHost> hosts;
   /// the daemon's own; filled per request
   final DaemonRestart? restart;
+  /// StudioDir is the directory the Studio is served from, or "" when the
+  /// daemon found none (one-daemon D12).
+  final String? studioDir;
 
   factory DaemonInfo.fromJson(Map<String, dynamic> json) {
     return DaemonInfo(
@@ -1849,8 +1854,9 @@ class DaemonInfo {
       pid: (json['pid'] as num).toInt(),
       startedAt: (json['startedAt'] as num).toInt(),
       socket: json['socket'] as String,
-      studioAddr: json['studioAddr'] as String?,
-      studioError: json['studioError'] as String?,
+      webListen: json['webListen'] as String?,
+      webError: json['webError'] as String?,
+      previewAddr: json['previewAddr'] as String?,
       projects: _list(
         json['projects'],
         (value) => value as String,
@@ -1867,14 +1873,15 @@ class DaemonInfo {
         json['refresh'],
         DaemonRefresh.fromJson,
       ),
-      join: _objectOrNull(
-        json['join'],
-        DaemonJoin.fromJson,
+      hosts: _list(
+        json['hosts'],
+        (value) => _object(value, DaemonHost.fromJson),
       ),
       restart: _objectOrNull(
         json['restart'],
         DaemonRestart.fromJson,
       ),
+      studioDir: json['studioDir'] as String?,
     );
   }
 
@@ -1885,11 +1892,14 @@ class DaemonInfo {
     json['pid'] = pid;
     json['startedAt'] = startedAt;
     json['socket'] = socket;
-    if (studioAddr != null) {
-      json['studioAddr'] = studioAddr;
+    if (webListen != null) {
+      json['webListen'] = webListen;
     }
-    if (studioError != null) {
-      json['studioError'] = studioError;
+    if (webError != null) {
+      json['webError'] = webError;
+    }
+    if (previewAddr != null) {
+      json['previewAddr'] = previewAddr;
     }
     json['projects'] = projects;
     json['pinned'] = pinned;
@@ -1899,11 +1909,14 @@ class DaemonInfo {
     if (refresh != null) {
       json['refresh'] = refresh!.toJson();
     }
-    if (join != null) {
-      json['join'] = join!.toJson();
-    }
+    json['hosts'] = [
+      for (final value in hosts) value.toJson(),
+    ];
     if (restart != null) {
       json['restart'] = restart!.toJson();
+    }
+    if (studioDir != null) {
+      json['studioDir'] = studioDir;
     }
     return json;
   }
@@ -2000,6 +2013,183 @@ class DaemonRefresh {
     final json = <String, dynamic>{};
     json['pid'] = pid;
     json['restarts'] = restarts;
+    return json;
+  }
+}
+
+/// HostState is a remote host's tunnel state (one-daemon D7).
+enum HostState {
+  hostConnecting('connecting'),
+  hostLive('live'),
+  hostDown('down'),
+  unknown('unknown');
+
+  const HostState(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static HostState fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// DaemonHost is one remote host's tunnel as GET /api/daemon reports it
+/// (one-daemon D7, D9).
+class DaemonHost {
+  const DaemonHost({
+    required this.name,
+    required this.ssh,
+    required this.state,
+    required this.socket,
+    this.previewPort,
+    this.lastError,
+    required this.since,
+    this.rawEnums = const {},
+  });
+
+  final String name;
+  /// the destination, as fleet.toml names it
+  final String ssh;
+  final HostState state;
+  /// this machine's end of the tunnel
+  final String socket;
+  /// PreviewPort is this machine's loopback port forwarded to the host's
+  /// preview listener, or 0 when the host serves no previews.
+  final int? previewPort;
+  final String? lastError;
+  /// Unix milliseconds: when State last changed
+  final int since;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory DaemonHost.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final stateWire = json['state'] as String;
+    final state = HostState.fromWire(stateWire);
+    if (state == HostState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return DaemonHost(
+      name: json['name'] as String,
+      ssh: json['ssh'] as String,
+      state: state,
+      socket: json['socket'] as String,
+      previewPort: (json['previewPort'] as num?)?.toInt(),
+      lastError: json['lastError'] as String?,
+      since: (json['since'] as num).toInt(),
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['ssh'] = ssh;
+    json['state'] = rawEnums['state'] ?? state.wire;
+    json['socket'] = socket;
+    if (previewPort != null) {
+      json['previewPort'] = previewPort;
+    }
+    if (lastError != null) {
+      json['lastError'] = lastError;
+    }
+    json['since'] = since;
+    return json;
+  }
+}
+
+/// DaemonHostsReport is PUT /api/daemon/hosts's body: every host the tunnel
+/// helper keeps, replacing its last report.
+class DaemonHostsReport {
+  const DaemonHostsReport({
+    required this.hosts,
+  });
+
+  final List<DaemonHost> hosts;
+
+  factory DaemonHostsReport.fromJson(Map<String, dynamic> json) {
+    return DaemonHostsReport(
+      hosts: _list(
+        json['hosts'],
+        (value) => _object(value, DaemonHost.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['hosts'] = [
+      for (final value in hosts) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// HostList is GET /api/hosts's answer: the hosts this daemon keeps a tunnel
+/// to, as its tunnel helper last reported them (one-daemon D10).
+class HostList {
+  const HostList({
+    required this.hosts,
+  });
+
+  final List<DaemonHost> hosts;
+
+  factory HostList.fromJson(Map<String, dynamic> json) {
+    return HostList(
+      hosts: _list(
+        json['hosts'],
+        (value) => _object(value, DaemonHost.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['hosts'] = [
+      for (final value in hosts) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// HostAdd is POST /api/hosts's body: a host to add to fleet.toml on this
+/// daemon's machine (one-daemon D15, plan 7).
+class HostAdd {
+  const HostAdd({
+    required this.name,
+    required this.ssh,
+    this.marshal,
+  });
+
+  final String name;
+  final String ssh;
+  final String? marshal;
+
+  factory HostAdd.fromJson(Map<String, dynamic> json) {
+    return HostAdd(
+      name: json['name'] as String,
+      ssh: json['ssh'] as String,
+      marshal: json['marshal'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['ssh'] = ssh;
+    if (marshal != null) {
+      json['marshal'] = marshal;
+    }
     return json;
   }
 }
@@ -12025,106 +12215,6 @@ class RecipeCopy {
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{};
     json['name'] = name;
-    return json;
-  }
-}
-
-/// RelayHosts is GET /api/relay/hosts (P8 D16): every host the relay names.
-class RelayHosts {
-  const RelayHosts({
-    required this.hosts,
-  });
-
-  final List<RelayHost> hosts;
-
-  factory RelayHosts.fromJson(Map<String, dynamic> json) {
-    return RelayHosts(
-      hosts: _list(
-        json['hosts'],
-        (value) => _object(value, RelayHost.fromJson),
-      ),
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    final json = <String, dynamic>{};
-    json['hosts'] = [
-      for (final value in hosts) value.toJson(),
-    ];
-    return json;
-  }
-}
-
-/// RelayHost is one host a relay names, joined or not.
-class RelayHost {
-  const RelayHost({
-    required this.name,
-    required this.connected,
-    this.since,
-    this.lastContact,
-  });
-
-  final String name;
-  final bool connected;
-  /// Unix ms the current instance joined
-  final int? since;
-  /// Unix ms of the last join or forwarded response
-  final int? lastContact;
-
-  factory RelayHost.fromJson(Map<String, dynamic> json) {
-    return RelayHost(
-      name: json['name'] as String,
-      connected: json['connected'] as bool,
-      since: (json['since'] as num?)?.toInt(),
-      lastContact: (json['lastContact'] as num?)?.toInt(),
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    final json = <String, dynamic>{};
-    json['name'] = name;
-    json['connected'] = connected;
-    if (since != null) {
-      json['since'] = since;
-    }
-    if (lastContact != null) {
-      json['lastContact'] = lastContact;
-    }
-    return json;
-  }
-}
-
-/// DaemonJoin is a joining bridge's join, as GET /api/daemon reports it (D17).
-class DaemonJoin {
-  const DaemonJoin({
-    required this.url,
-    required this.name,
-    required this.connected,
-    this.lastError,
-  });
-
-  final String url;
-  final String name;
-  final bool connected;
-  final String? lastError;
-
-  factory DaemonJoin.fromJson(Map<String, dynamic> json) {
-    return DaemonJoin(
-      url: json['url'] as String,
-      name: json['name'] as String,
-      connected: json['connected'] as bool,
-      lastError: json['lastError'] as String?,
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    final json = <String, dynamic>{};
-    json['url'] = url;
-    json['name'] = name;
-    json['connected'] = connected;
-    if (lastError != null) {
-      json['lastError'] = lastError;
-    }
     return json;
   }
 }

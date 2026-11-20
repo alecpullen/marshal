@@ -5,8 +5,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	appconfig "marshal/internal/app/config"
 	"marshal/internal/buildinfo"
 	"marshal/internal/procenv"
 	"marshal/web/bridge"
@@ -38,17 +37,12 @@ func versionString() string {
 }
 
 // daemonVersion is the bare version: the stamped release version, else the
-// source build's dev+<commit> (decision 7). The local profile reports it
+// source build's dev+<commit> (decision 7). The daemon reports it
 // through GET /api/daemon, which wants the version itself rather than the
 // banner around it, and the fleet carries it as its build version.
 func daemonVersion() string {
 	return buildinfo.Version(version)
 }
-
-// defaultStateDir is the in-container mount point for the state volume.
-// When running as a host process (no container runtime), the state dir
-// defaults to beside the workspace file instead.
-const defaultStateDir = "/state"
 
 // stringList collects repeatable project flags.
 type stringList []string
@@ -58,43 +52,31 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // config holds the resolved flag/env settings.
 type config struct {
-	// profile is "server" (the default) or "local" (P4 D1).
-	profile string
-	// socket is the local profile's unix listener.
+	// socket is the daemon's unix listener.
 	socket string
-	addr   string
+	// webListen is --web-listen as given: none when empty, "unix", an
+	// absolute socket path, or a loopback host:port (D3).
+	webListen string
+	// webGroup shares a unix --web-listen with this group (0660).
+	webGroup string
 	// previewAddr is where previews are served, on an origin of their own.
-	// Empty means the --addr host on an automatic port; "off" disables.
+	// Empty means a free port on 127.0.0.1; "off" disables.
 	previewAddr string
-	token       string
-	// tokenFile is where the bearer token is read from, and written to
-	// when the file does not exist yet. It is how a local daemon hands
-	// the Studio its token without putting the secret on a command line
-	// or asking the user to paste it.
-	tokenFile   string
-	marshalBin  string
-	cwdRoot     string
-	projects    []string
-	workspace   string
-	stateDir    string
-	stateVolume string
-	agentEnv    stringList
-	// tlsCert and tlsKey enable HTTPS when both are set. Certificate
-	// lifecycle — issuance, renewal — is deliberately out of scope:
-	// every deployment already solves it differently (a reverse proxy,
-	// a homelab CA, tailscale cert), and baking ACME in would add a
-	// dependency to replace something the environment provides.
-	tlsCert string
-	tlsKey  string
+	// previewURL is the public origin preview links name, for a proxy that
+	// publishes previews.
+	previewURL string
+	marshalBin string
+	cwdRoot    string
+	projects   []string
+	workspace  string
+	stateDir   string
+	agentEnv   stringList
 	// maxConcurrent bounds concurrent agents (0 = default 4).
 	maxConcurrent int
 	// maxDiskMB bounds the state directory size in MB (0 = unlimited).
 	maxDiskMB int64
 	// maxCloneMB bounds a single clone size in MB (0 = unlimited).
 	maxCloneMB int64
-	// projectMounts maps host paths to the bridge's in-container view,
-	// for translating LocalPath agent workspace mounts.
-	projectMounts []bridge.ProjectMount
 	// secrets selects the secret backend: env (default), local or openbao.
 	secrets         string
 	secretsKeyFile  string
@@ -109,32 +91,18 @@ type config struct {
 	// in outbound notifications. Empty yields relative links.
 	publicURL string
 	// idleSessionTimeout is how long a project session with no viewer
-	// and no run lives on in the local profile (P4 D7a); zero never
+	// and no run lives on in the daemon (P4 D7a); zero never
 	// ends one.
 	idleSessionTimeout time.Duration
-	// oauthRefresh runs `<marshal-bin> daemon refresh` beside the local
-	// profile's bridge (P4 D12). Off unless asked.
+	// oauthRefresh runs `<marshal-bin> daemon refresh` beside the bridge
+	// (P4 D12). Off unless asked.
 	oauthRefresh bool
-	// relayJoins names the hosts that may join this bridge as a relay, each
-	// with the file holding that name's join secret (P8 D11). A bridge with
-	// none relays nothing.
-	relayJoins []relayJoin
-	// join is the relay this bridge dials out to, joinName the name it
-	// joins under, joinTokenFile the file holding that name's secret, and
-	// joinCAFile an optional certificate to trust when dialling it (P8
-	// D12). Empty join means this bridge joins nothing.
-	join          string
-	joinName      string
-	joinTokenFile string
-	joinCAFile    string
-}
-
-// relayJoin is one host a relay names and the file holding its join secret
-// (P8 D11). The command reads the file and hands the bridge the value
-// (decision 2); the bridge never opens a secret file.
-type relayJoin struct {
-	name string
-	path string
+	// tunnels runs `<marshal-bin> daemon tunnels` beside the bridge
+	// (one-daemon D7).
+	tunnels bool
+	// studioDir is --studio-dir: the Studio's files, served at /. Empty
+	// means the search beside this binary (bridge.FindStudioDir, D12).
+	studioDir string
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -143,24 +111,28 @@ type relayJoin struct {
 func parseConfig(args []string, stderr io.Writer) (config, error) {
 	fs := flag.NewFlagSet("webbridge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	profile := fs.String("profile", envOr("WEBBRIDGE_PROFILE", "server"), "profile: server (network listeners, container-capable) or local (unix socket, host processes)")
-	socket := fs.String("socket", envOr("WEBBRIDGE_SOCKET", ""), "unix socket to serve on (--profile local)")
-	addr := fs.String("addr", envOr("WEBBRIDGE_ADDR", "127.0.0.1:7700"), "listen address")
-	previewAddr := fs.String("preview-addr", envOr("WEBBRIDGE_PREVIEW_ADDR", ""), "listen address for previews, served from a separate origin (default: the --addr host on a free port; \"off\" disables)")
-	token := fs.String("token", envOr("WEBBRIDGE_TOKEN", ""), "bearer token for /api routes (generated when empty)")
-	tokenFile := fs.String("token-file", envOr("WEBBRIDGE_TOKEN_FILE", ""), "file to read the bearer token from, and create it 0600 when absent (--profile local)")
+	profile := fs.String("profile", envOr("WEBBRIDGE_PROFILE", ""), "retired: local is accepted and ignored")
+	socket := fs.String("socket", envOr("WEBBRIDGE_SOCKET", ""), "unix socket to serve on")
+	// The TCP listener, its bearer token and its TLS are retired (D2, D3):
+	// the daemon serves a unix socket and, on request, a web listener a
+	// proxy publishes. --addr and --token-file stay declared because the
+	// units already installed carry them, and applyDaemonDefaults warns
+	// about them; the token and TLS flags are refused there instead.
+	fs.String("addr", envOr("WEBBRIDGE_ADDR", ""), "retired; ignored")
+	fs.String("token-file", envOr("WEBBRIDGE_TOKEN_FILE", ""), "retired; ignored")
+	fs.String("token", envOr("WEBBRIDGE_TOKEN", ""), "retired: the daemon holds no token")
+	fs.String("tls-cert", envOr("WEBBRIDGE_TLS_CERT", ""), "retired: the daemon serves no TLS")
+	fs.String("tls-key", envOr("WEBBRIDGE_TLS_KEY", ""), "retired: the daemon serves no TLS")
+	webListen := fs.String("web-listen", envOr("WEBBRIDGE_WEB_LISTEN", ""), "the web listener: unix, an absolute socket path, or a loopback host:port (default: none)")
+	webGroup := fs.String("web-group", envOr("WEBBRIDGE_WEB_GROUP", ""), "share a unix --web-listen with this group (0660)")
+	previewAddr := fs.String("preview-addr", envOr("WEBBRIDGE_PREVIEW_ADDR", ""), "loopback address for previews (default: a free port on 127.0.0.1; \"off\" disables)")
+	previewURL := fs.String("preview-url", envOr("WEBBRIDGE_PREVIEW_URL", ""), "the public origin preview links name, for a proxy that publishes previews")
 	marshalBin := fs.String("marshal-bin", envOr("WEBBRIDGE_MARSHAL_BIN", "marshal"), "marshal binary to supervise")
 	cwdRoot := fs.String("cwd-root", envOr("WEBBRIDGE_CWD_ROOT", ""), "default cwd for session list/load (defaults to the working directory)")
 	var projects stringList
 	fs.Var(&projects, "project", "project root to manage (repeatable)")
-	var projectMounts stringList
-	fs.Var(&projectMounts, "project-mount", "host:container path mapping for local project mounts (repeatable)")
 	workspace := fs.String("workspace", envOr("WEBBRIDGE_WORKSPACE", ""), "fleet workspace path")
-	tlsCert := fs.String("tls-cert", envOr("WEBBRIDGE_TLS_CERT", ""), "PEM certificate file; enables HTTPS when set with --tls-key")
-	tlsKey := fs.String("tls-key", envOr("WEBBRIDGE_TLS_KEY", ""), "PEM private key file; enables HTTPS when set with --tls-cert")
-	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", defaultStateDir), "directory for repo mirrors and agent workspaces (defaults to /state)")
-	stateVolume := fs.String("state-volume", envOr("WEBBRIDGE_STATE_VOLUME", "marshal-state"),
-		"name of the volume mounted at --state-dir; agents mount subpaths of it")
+	stateDir := fs.String("state-dir", envOr("WEBBRIDGE_STATE_DIR", ""), "directory for repo mirrors and agent workspaces (default: beside the daemon's socket)")
 	var agentEnv stringList
 	fs.Var(&agentEnv, "agent-env", "KEY=VALUE handed to every agent container (repeatable)")
 	maxConcurrent := fs.Int("max-concurrent", 0, "max concurrent agents (0 = default 4)")
@@ -172,23 +144,27 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	baoMount := fs.String("bao-mount", envOr("WEBBRIDGE_BAO_MOUNT", "secret"), "OpenBao KV v2 mount")
 	baoRoleIDFile := fs.String("bao-role-id-file", envOr("WEBBRIDGE_BAO_ROLE_ID_FILE", ""), "file holding the AppRole role id")
 	baoSecretIDFile := fs.String("bao-secret-id-file", envOr("WEBBRIDGE_BAO_SECRET_ID_FILE", ""), "file holding the AppRole secret id")
-	egress := fs.String("egress", envOr("WEBBRIDGE_EGRESS", "on"), "egress proxy for agents: on or off")
+	egress := fs.String("egress", envOr("WEBBRIDGE_EGRESS", "off"), "egress proxy for agents: on or off")
 	baoCAFile := fs.String("bao-ca-file", envOr("WEBBRIDGE_BAO_CA_FILE", ""), "extra CA certificate to trust for OpenBao")
 	publicURL := fs.String("public-url", envOr("WEBBRIDGE_PUBLIC_URL", ""), "externally reachable base URL, used for links in outbound notifications")
-	// The relay's side: each NAME=PATH names a host that may join this
-	// bridge and the file holding that name's secret (P8 D11). The flag is
-	// repeatable; the variable carries the same pairs comma-separated, as
-	// one value, when the flag is not given.
-	var relayJoinArgs stringList
-	fs.Func("relay-join", "host NAME=PATH that may join this bridge as a relay, its secret in PATH (repeatable; WEBBRIDGE_RELAY_JOIN carries pairs comma-separated)", func(v string) error {
-		relayJoinArgs = append(relayJoinArgs, v)
-		return nil
-	})
-	// The joining side: the relay this bridge dials out to (P8 D12).
-	join := fs.String("join", envOr("WEBBRIDGE_JOIN", ""), "relay URL to join: https, or http on a loopback host")
-	joinName := fs.String("join-name", envOr("WEBBRIDGE_JOIN_NAME", ""), "the name this bridge joins its relay under")
-	joinTokenFile := fs.String("join-token-file", envOr("WEBBRIDGE_JOIN_TOKEN_FILE", ""), "file holding the relay's join secret for --join-name")
-	joinCAFile := fs.String("join-ca-file", envOr("WEBBRIDGE_JOIN_CA_FILE", ""), "extra CA certificate to trust when dialling the relay")
+	studioDir := fs.String("studio-dir", envOr("WEBBRIDGE_STUDIO_DIR", ""), "the Studio's files (default: share/marshal/studio beside or above this binary)")
+	// The relay and the joiner are retired (one-daemon D6): a remote daemon
+	// is a host reached over SSH, not a bridge that dials in or is dialled.
+	// --relay-join is refused; it stays declared so the refusal names the
+	// flag rather than the parser's "flag provided but not defined". The
+	// join flags stay declared and are accepted and ignored, because the
+	// unit files already installed carry them (applyDaemonDefaults warns).
+	fs.Func("relay-join", "retired: a remote daemon is a host reached over SSH", func(string) error { return nil })
+	for _, f := range []string{"join", "join-name", "join-token-file", "join-ca-file"} {
+		fs.String(f, "", "retired; ignored")
+	}
+	// The container's state volume and project mounts are retired (D5): the
+	// daemon runs on the host and keeps its state in --state-dir. Both stay
+	// declared, and applyDaemonDefaults refuses them by name, because an
+	// installed unit or a hand-run container carries them and the parser's
+	// "flag provided but not defined" names no decision.
+	fs.Func("state-volume", "retired: the state dir is on the host", func(string) error { return nil })
+	fs.Func("project-mount", "retired: the daemon runs on the host and reads --project", func(string) error { return nil })
 	// The duration flags read their variable through envOr like the rest,
 	// then hand the text to the parser: a variable that does not parse is
 	// a configuration error rather than a silent fallback.
@@ -196,41 +172,75 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if err != nil {
 		return config{}, fmt.Errorf("WEBBRIDGE_IDLE_SESSION_TIMEOUT: %w", err)
 	}
-	idleSessionTimeout := fs.Duration("idle-session-timeout", idleTimeoutDefault, "how long a project session with no viewer and no run lives on (--profile local; 0 never ends one)")
+	idleSessionTimeout := fs.Duration("idle-session-timeout", idleTimeoutDefault, "how long a project session with no viewer and no run lives on (0 never ends one)")
 	// The boolean flag reads its variable the same way, before it is
 	// declared: a variable that does not parse is a configuration error.
 	oauthRefreshDefault, err := strconv.ParseBool(envOr("WEBBRIDGE_OAUTH_REFRESH", "false"))
 	if err != nil {
 		return config{}, fmt.Errorf("WEBBRIDGE_OAUTH_REFRESH: %w", err)
 	}
-	oauthRefresh := fs.Bool("oauth-refresh", oauthRefreshDefault, "run <marshal-bin> daemon refresh alongside the bridge (--profile local)")
+	oauthRefresh := fs.Bool("oauth-refresh", oauthRefreshDefault, "run <marshal-bin> daemon refresh alongside the bridge")
+	// The tunnels helper's variable is read the same way (one-daemon D7).
+	tunnelsDefault, err := strconv.ParseBool(envOr("WEBBRIDGE_TUNNELS", "false"))
+	if err != nil {
+		return config{}, fmt.Errorf("WEBBRIDGE_TUNNELS: %w", err)
+	}
+	tunnels := fs.Bool("tunnels", tunnelsDefault, "run <marshal-bin> daemon tunnels alongside the bridge")
+	// A retired container flag with no value dies in the parser's "flag needs
+	// an argument", which names no decision, before the D5 refusal below can
+	// see it. Refuse that shape here, so `--state-volume` bare reaches the D5
+	// refusal like `--state-volume VALUE` does through given().
+	for _, name := range []string{"state-volume", "project-mount"} {
+		if flagGivenBare(args, name) {
+			return config{}, errRetiredContainerFlag(name)
+		}
+	}
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{profile: *profile, socket: *socket, addr: *addr, previewAddr: *previewAddr, token: *token, tokenFile: *tokenFile, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
+	cfg := config{socket: *socket, webListen: *webListen, webGroup: *webGroup, previewAddr: *previewAddr, previewURL: *previewURL, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
 		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL,
-		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh,
-		join: *join, joinName: *joinName, joinTokenFile: *joinTokenFile, joinCAFile: *joinCAFile}
-	pm, err := parseProjectMounts(projectMounts)
-	if err != nil {
-		return config{}, err
-	}
-	cfg.projectMounts = pm
+		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh, tunnels: *tunnels, studioDir: *studioDir}
 	given := givenFrom(fs)
-	if err := applyProfile(&cfg, given); err != nil {
+	if err := applyDaemonDefaults(&cfg, given, *profile); err != nil {
 		return config{}, err
 	}
-	if err := applyRelay(&cfg, given, relayJoinArgs); err != nil {
-		return config{}, err
+	// The web listener's syntax, and the pairing of its settings, are the
+	// bridge's to judge (D3), so parseConfig names no rule the listener
+	// repeats. --web-group on its own names a listener that is not there.
+	if cfg.webGroup != "" && cfg.webListen == "" {
+		return config{}, fmt.Errorf("--web-group needs --web-listen")
 	}
-	// Half-configured TLS fails loudly. Serving plaintext because one
-	// flag name was mistyped is the failure nobody notices.
-	if (cfg.tlsCert == "") != (cfg.tlsKey == "") {
-		return config{}, fmt.Errorf("--tls-cert and --tls-key must be given together")
+	if cfg.webListen != "" {
+		if _, err := bridge.ParseWebListen(cfg.webListen, cfg.webGroup, cfg.socket); err != nil {
+			return config{}, err
+		}
+	}
+	// Previews are a loopback origin of their own; "off" disables them.
+	if cfg.previewAddr != "" && cfg.previewAddr != "off" {
+		if err := bridge.CheckLoopback("--preview-addr", cfg.previewAddr); err != nil {
+			return config{}, err
+		}
+	}
+	// A public preview origin is what a proxy publishes, so it carries no
+	// path, query or fragment of its own.
+	if cfg.previewURL != "" {
+		if err := bridge.CheckPreviewURL(cfg.previewURL); err != nil {
+			return config{}, err
+		}
+	}
+	// A given Studio directory must be one: the daemon serves these files at
+	// /, so a path with no index.html is a mistake to name now rather than to
+	// answer 503 over later.
+	if cfg.studioDir != "" {
+		info, err := os.Stat(filepath.Join(cfg.studioDir, "index.html"))
+		if err != nil || !info.Mode().IsRegular() {
+			return config{}, fmt.Errorf("--studio-dir %s: no index.html there; that directory must hold the Studio's files", cfg.studioDir)
+		}
 	}
 	if cfg.egress != "on" && cfg.egress != "off" {
 		return config{}, fmt.Errorf("--egress %q: expected on or off", cfg.egress)
@@ -247,22 +257,6 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		}
 	default:
 		return config{}, fmt.Errorf("--secrets %q: expected env, local or openbao", cfg.secrets)
-	}
-	if cfg.workspace == "" {
-		p, err := bridge.DefaultWorkspacePath()
-		if err != nil {
-			return config{}, err
-		}
-		cfg.workspace = p
-	}
-	// The working-directory project is a server-profile convenience:
-	// the local profile registers no project unless it was named.
-	if cfg.cwdRoot == "" && cfg.profile != "local" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return config{}, fmt.Errorf("--cwd-root unset and cannot determine working directory: %w", err)
-		}
-		cfg.cwdRoot = cwd
 	}
 	return cfg, nil
 }
@@ -282,15 +276,39 @@ func givenFrom(fs *flag.FlagSet) givenSettings {
 	return g
 }
 
+// flagGivenBare reports whether args carry the flag with no value at all —
+// the shape the parser refuses with "flag needs an argument", before any
+// decision can be named. A valued occurrence ("--flag=V", "--flag V") is
+// left to given(), which sees it after the parse.
+func flagGivenBare(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "-"+name || arg == "--"+name {
+			return true
+		}
+	}
+	return false
+}
+
+// errRetiredContainerFlag is the D5 refusal, kept in one place so a bare
+// flag (refused before the parser) and a valued one or its variable
+// (refused by applyDaemonDefaults) name the same decision.
+func errRetiredContainerFlag(name string) error {
+	return fmt.Errorf("--%s is retired: the daemon runs on the host and keeps its state in --state-dir; a server is a Linux machine with marshal daemon install (docs/one-daemon/design.md D5)", name)
+}
+
 // given reports whether a setting reached the command line or its
-// variable is set to something. An empty variable means unset, as envOr
+// variable is set to something. A setting with no variable at all
+// reports only its flag. An empty variable means unset, as envOr
 // treats it: os.Getenv cannot tell unset from set-and-blank, and this
 // file has always read them the same way.
 func (g givenSettings) given(flagName, env string) bool {
 	if g.flags[flagName] {
 		return true
 	}
-	return os.Getenv(env) != ""
+	return env != "" && os.Getenv(env) != ""
 }
 
 // set is given plus "and not empty": an empty value means unset, as
@@ -300,60 +318,85 @@ func (g givenSettings) set(flagName, env, value string) bool {
 	return value != "" && g.given(flagName, env)
 }
 
-// applyProfile validates --profile and applies the local profile's
-// defaults and refusals (decisions 1-3). The server profile is today's
-// bridge and is left alone apart from the settings that belong to the
-// local profile and would silently do nothing here.
-func applyProfile(cfg *config, given givenSettings) error {
-	switch cfg.profile {
-	case "server":
-		if cfg.socket != "" {
-			return fmt.Errorf("--socket is for --profile local")
+// applyDaemonDefaults validates the retired --profile and applies the one
+// daemon's defaults and refusals. Every webbridge is the daemon
+// (docs/one-daemon/design.md), so these settings always apply.
+func applyDaemonDefaults(cfg *config, given givenSettings, profile string) error {
+	// --profile is retired. "local", or no flag at all, is this daemon, and
+	// saying so is worth a warning; any other value asked for a bridge that
+	// no longer exists.
+	switch profile {
+	case "", "local":
+		if given.given("profile", "WEBBRIDGE_PROFILE") {
+			slog.Default().Warn("webbridge: --profile is retired; the flag is ignored")
 		}
-		if cfg.addr == "off" {
-			return fmt.Errorf("--addr off is for --profile local")
-		}
-		if given.given("idle-session-timeout", "WEBBRIDGE_IDLE_SESSION_TIMEOUT") {
-			return fmt.Errorf("--idle-session-timeout is for --profile local")
-		}
-		if given.given("oauth-refresh", "WEBBRIDGE_OAUTH_REFRESH") {
-			return fmt.Errorf("--oauth-refresh is for --profile local")
-		}
-		return nil
-	case "local":
 	default:
-		return fmt.Errorf("--profile %q: expected server or local", cfg.profile)
+		return fmt.Errorf("--profile %q: the server profile is retired; every webbridge is the daemon (docs/one-daemon/design.md)", profile)
 	}
 
-	// Decision 3: no egress proxy, and no secret backend but the
-	// environment. Each refusal fires only when the setting was given;
-	// the quiet answers below are the defaults.
-	if given.given("egress", "WEBBRIDGE_EGRESS") {
-		if cfg.egress == "on" {
-			return fmt.Errorf("--egress on: the local profile runs no egress proxy")
+	// --relay-join is retired: a remote daemon is a host reached over SSH,
+	// not a bridge that dials in and is reversed onto (D6). It is refused
+	// rather than ignored, because a unit that carries it asked for a
+	// listener that no longer exists.
+	if given.given("relay-join", "WEBBRIDGE_RELAY_JOIN") {
+		return fmt.Errorf("--relay-join is retired: a remote daemon is a host reached over SSH (marshal fleet add; docs/one-daemon/design.md D6)")
+	}
+
+	// The TCP listener's token and TLS are retired with it (D2, D3): the
+	// daemon holds no token and serves no TLS, and a proxy in front of
+	// --web-listen is where a certificate belongs. These are refused, not
+	// ignored: a unit that carries one asked for a secret or a
+	// certificate this daemon no longer has.
+	for _, f := range []struct{ flag, env string }{
+		{"token", "WEBBRIDGE_TOKEN"},
+		{"tls-cert", "WEBBRIDGE_TLS_CERT"},
+		{"tls-key", "WEBBRIDGE_TLS_KEY"},
+	} {
+		if given.given(f.flag, f.env) {
+			return fmt.Errorf("--%s is retired: the daemon holds no token and serves no TLS; put a proxy in front of --web-listen (docs/one-daemon/design.md D2, D3)", f.flag)
 		}
-	} else {
-		cfg.egress = "off"
-	}
-	if cfg.secrets != "env" {
-		return fmt.Errorf("--secrets %s: the local profile takes secrets from the environment", cfg.secrets)
-	}
-	// A token belongs to the TCP listener, or to the join a bridge makes: D12
-	// names either as a joining bridge's bearer token, because relayed
-	// requests are checked with it. Without a join, --addr off has no use for
-	// one, and refusing beats accepting it and never using it.
-	if cfg.addr == "off" && cfg.join == "" && given.set("token", "WEBBRIDGE_TOKEN", cfg.token) {
-		return fmt.Errorf("--token is for the TCP listener or a join, and neither is set")
-	}
-	if cfg.addr == "off" && cfg.join == "" && given.set("token-file", "WEBBRIDGE_TOKEN_FILE", cfg.tokenFile) {
-		return fmt.Errorf("--token-file is for the TCP listener or a join, and neither is set")
-	}
-	if cfg.idleSessionTimeout < 0 {
-		return fmt.Errorf("--idle-session-timeout %s: the local profile waits a negative time for an idle session", cfg.idleSessionTimeout)
 	}
 
-	// Decision 2: the local profile's defaults, each applying only when
-	// its flag and its variable are both unset.
+	// The container's state volume and project mounts are retired (D5): the
+	// daemon runs on the host, so there is no volume to mount and no mount
+	// to hand an agent. Refused rather than ignored, because a unit that
+	// carries one asked for a container this daemon no longer starts.
+	for _, f := range []struct{ flag, env string }{
+		{"state-volume", "WEBBRIDGE_STATE_VOLUME"},
+		{"project-mount", ""},
+	} {
+		if given.given(f.flag, f.env) {
+			return errRetiredContainerFlag(f.flag)
+		}
+	}
+
+	// --addr and --token-file retired with the TCP listener, but are
+	// accepted and ignored for the same reason as the join flags: the
+	// units already installed carry them. They join the one warning.
+	var retired []string
+	for _, f := range []struct{ flag, env string }{
+		{"join", "WEBBRIDGE_JOIN"},
+		{"join-name", "WEBBRIDGE_JOIN_NAME"},
+		{"join-token-file", "WEBBRIDGE_JOIN_TOKEN_FILE"},
+		{"join-ca-file", "WEBBRIDGE_JOIN_CA_FILE"},
+		{"addr", "WEBBRIDGE_ADDR"},
+		{"token-file", "WEBBRIDGE_TOKEN_FILE"},
+	} {
+		if given.given(f.flag, f.env) {
+			retired = append(retired, "--"+f.flag)
+		}
+	}
+	if len(retired) > 0 {
+		slog.Default().Warn("webbridge: " + strings.Join(retired, ", ") +
+			" are retired and ignored; run marshal daemon install to rewrite the unit")
+	}
+
+	if cfg.idleSessionTimeout < 0 {
+		return fmt.Errorf("--idle-session-timeout %s: a session timeout cannot be negative", cfg.idleSessionTimeout)
+	}
+
+	// The daemon's defaults, each applying only when its flag and its
+	// variable are both unset.
 	dir, err := bridge.DefaultDaemonDir()
 	if err != nil {
 		return err
@@ -368,114 +411,6 @@ func applyProfile(cfg *config, given givenSettings) error {
 		cfg.workspace = filepath.Join(dir, "fleet.json")
 	}
 	return nil
-}
-
-// applyRelay validates the relay's flags and the join's, and resolves the
-// --relay-join pairs (P8 D11, D12). The refusals sit beside applyProfile's,
-// because either profile can relay and either can join.
-func applyRelay(cfg *config, given givenSettings, pairs []string) error {
-	// The flag is repeatable; the variable carries the same pairs
-	// comma-separated, as one value, when the flag is not given.
-	if len(pairs) == 0 {
-		if env := os.Getenv("WEBBRIDGE_RELAY_JOIN"); env != "" {
-			pairs = strings.Split(env, ",")
-		}
-	}
-	seen := make(map[string]bool, len(pairs))
-	for _, pair := range pairs {
-		name, path, ok := strings.Cut(pair, "=")
-		if !ok || name == "" || path == "" {
-			return fmt.Errorf("--relay-join %q: expected NAME=PATH", pair)
-		}
-		if seen[name] {
-			return fmt.Errorf("--relay-join %s: the name is given twice", name)
-		}
-		seen[name] = true
-		cfg.relayJoins = append(cfg.relayJoins, relayJoin{name: name, path: path})
-	}
-
-	// A join needs the url it dials, the name it joins under and the file
-	// holding that name's secret. Every one is required: a join that
-	// cannot present all three is refused before it dials anything.
-	joined := given.set("join", "WEBBRIDGE_JOIN", cfg.join)
-	if joined {
-		if !given.set("join-name", "WEBBRIDGE_JOIN_NAME", cfg.joinName) {
-			return fmt.Errorf("--join needs --join-name")
-		}
-		if !given.set("join-token-file", "WEBBRIDGE_JOIN_TOKEN_FILE", cfg.joinTokenFile) {
-			return fmt.Errorf("--join needs --join-token-file")
-		}
-		// Relayed requests are checked with this bridge's own bearer token
-		// (D15), so a joining bridge without one would join and then refuse
-		// everything that reached it.
-		if cfg.token == "" && cfg.tokenFile == "" {
-			return fmt.Errorf("--join needs a bearer token: give --token or --token-file")
-		}
-		return nil
-	}
-	for _, f := range []struct{ flag, env, value string }{
-		{"join-name", "WEBBRIDGE_JOIN_NAME", cfg.joinName},
-		{"join-token-file", "WEBBRIDGE_JOIN_TOKEN_FILE", cfg.joinTokenFile},
-		{"join-ca-file", "WEBBRIDGE_JOIN_CA_FILE", cfg.joinCAFile},
-	} {
-		if given.set(f.flag, f.env, f.value) {
-			return fmt.Errorf("--%s is for --join", f.flag)
-		}
-	}
-	return nil
-}
-
-// readSecretFile reads a join secret from path. A file group or other can
-// read is refused, naming it: the file is a credential, and this is the one
-// place the command touches one (decision 2). The bridge is handed the
-// value and never opens the file.
-func readSecretFile(path string) (string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", fmt.Errorf("join secret %s: %w", path, err)
-	}
-	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		return "", fmt.Errorf("join secret %s has mode %o; it must be 0600", path, perm)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("join secret %s: %w", path, err)
-	}
-	secret := strings.TrimSpace(string(data))
-	if secret == "" {
-		return "", fmt.Errorf("join secret %s is empty", path)
-	}
-	return secret, nil
-}
-
-// readRelaySecrets reads each --relay-join secret file, keyed by the name
-// that may join with it (P8 D11).
-func readRelaySecrets(joins []relayJoin) (map[string]string, error) {
-	secrets := make(map[string]string, len(joins))
-	for _, join := range joins {
-		secret, err := readSecretFile(join.path)
-		if err != nil {
-			return nil, err
-		}
-		secrets[join.name] = secret
-	}
-	return secrets, nil
-}
-
-// buildJoiner builds the joiner this bridge dials out with (P8 D12). The join
-// secret is read here, from the file the command names, and the bridge is
-// handed the value (decision 2): bridge never opens a secret file.
-func buildJoiner(cfg config, api *bridge.Server) (*bridge.Joiner, error) {
-	secret, err := readSecretFile(cfg.joinTokenFile)
-	if err != nil {
-		return nil, err
-	}
-	return bridge.NewJoiner(bridge.JoinConfig{
-		URL:    cfg.join,
-		Name:   cfg.joinName,
-		Secret: secret,
-		CAFile: cfg.joinCAFile,
-	}, api.RelayedHandler())
 }
 
 // buildSecretProvider constructs the backend the flags select.
@@ -530,7 +465,7 @@ func runSubcommand(ctx context.Context, args []string, stdout io.Writer) (bool, 
 	return false, nil
 }
 
-// localProjectEnv is the local profile's project environment resolver: project
+// localProjectEnv is the daemon's project environment resolver: project
 // children print their environment by re-running this binary with "print-env"
 // (P4 D7). Symlinks are resolved, so a login shell that starts elsewhere still
 // reaches the binary.
@@ -543,23 +478,6 @@ func localProjectEnv() (*bridge.ProjectEnv, error) {
 		exe = resolved
 	}
 	return bridge.NewProjectEnv([]string{exe, "print-env"}), nil
-}
-
-// parseProjectMounts parses repeatable --project-mount HOST:CONTAINER
-// flags into ProjectMount entries.
-func parseProjectMounts(specs []string) ([]bridge.ProjectMount, error) {
-	var mounts []bridge.ProjectMount
-	for _, s := range specs {
-		parts := strings.SplitN(s, ":", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return nil, fmt.Errorf("--project-mount %q: expected HOST:CONTAINER", s)
-		}
-		mounts = append(mounts, bridge.ProjectMount{
-			Host:      filepath.Clean(parts[0]),
-			Container: filepath.Clean(parts[1]),
-		})
-	}
-	return mounts, nil
 }
 
 // askpassResponse answers one git credential prompt. Git asks for a
@@ -589,45 +507,6 @@ func envOr(name, def string) string {
 		return v
 	}
 	return def
-}
-
-// genToken returns a random 128-bit bearer token, hex-encoded.
-func genToken() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b[:]), nil
-}
-
-// readOrCreateToken returns the token held in path, creating the file with a
-// fresh token when it is missing or empty.
-//
-// This is how the local profile hands the Studio its token: the daemon reads
-// or mints the file once at startup and the browser is pointed at a URL
-// carrying the same value, so the secret is never typed, never on a command
-// line a process list would show, and never in the log. The file is written
-// 0600 because it is a credential: anything that can read it can drive the
-// daemon.
-func readOrCreateToken(path string) (string, error) {
-	if data, err := os.ReadFile(path); err == nil {
-		if tok := strings.TrimSpace(string(data)); tok != "" {
-			return tok, nil
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("read %s: %w", path, err)
-	}
-	tok, err := genToken()
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", fmt.Errorf("create %s: %w", filepath.Dir(path), err)
-	}
-	if err := os.WriteFile(path, []byte(tok+"\n"), 0o600); err != nil {
-		return "", fmt.Errorf("write %s: %w", path, err)
-	}
-	return tok, nil
 }
 
 // errReexec is run's answer when the daemon is to re-execute itself (decision 2).
@@ -671,7 +550,7 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	// The local profile reports when it started, and the plan dates that
+	// The daemon reports when it started, and the plan dates that
 	// from the start of run rather than from the listener.
 	startedAt := time.Now()
 
@@ -704,31 +583,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	cfg, err := parseConfig(args, stderr)
 	if err != nil {
 		return err
-	}
-	// --addr off means the local socket is the only listener, and the
-	// socket is peer-checked rather than token-checked: there is no
-	// bearer token to generate.
-	//
-	// --token-file is how the local profile hands the Studio its token.
-	// It is read when present and minted when absent, so a restarted
-	// daemon keeps one token and an open Studio tab keeps working. The
-	// token stays out of the log either way. A joining bridge reads or
-	// mints it too, even under --addr off: relayed requests are checked
-	// with this token, so a join without one would refuse everything that
-	// reached it (D12, D15).
-	if cfg.token == "" && cfg.tokenFile != "" && (cfg.addr != "off" || cfg.join != "") {
-		cfg.token, err = readOrCreateToken(cfg.tokenFile)
-		if err != nil {
-			return err
-		}
-	}
-	if cfg.token == "" && cfg.addr != "off" {
-		cfg.token, err = genToken()
-		if err != nil {
-			return fmt.Errorf("generate token: %w", err)
-		}
-		// Printed once, to stderr only: never logged, never in a URL.
-		fmt.Fprintf(stderr, "webbridge: no --token given; generated bearer token: %s\n", cfg.token)
 	}
 
 	ws := bridge.NewWorkspace(cfg.workspace)
@@ -771,31 +625,37 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		MaxConcurrent: cfg.maxConcurrent,
 		MaxDiskMB:     cfg.maxDiskMB,
 		MaxCloneMB:    cfg.maxCloneMB,
-	}, daemonVersion(), cfg.projectMounts, cfg.stateVolume)
+	}, daemonVersion())
 
-	// The local profile runs its fleet as host processes (decision 4).
-	// This must precede every start below — egress, reattach, the poller
-	// and the scheduler — so no agent or probe sees a container runtime.
-	if cfg.profile == "local" {
-		fleet.SetHostProcessesOnly()
-		// A project child starts with its project's environment (decision
-		// 7). A bridge that cannot name its own binary leaves children
-		// inheriting the bridge's environment instead.
-		if projectEnv, err := localProjectEnv(); err != nil {
-			slog.Default().Warn("webbridge: project children inherit the bridge's environment", "err", err)
-		} else {
-			fleet.SetProjectEnv(projectEnv)
-		}
-		// A session with no viewer and no run is ended after the idle
-		// timeout (P4 D7a), swept on its own goroutine; zero never ends
-		// one, and the sweep returns at once.
-		fleet.SetIdleSessionTimeout(cfg.idleSessionTimeout)
-		go fleet.RunIdleSweep(ctx)
-		// A stale child is restarted on a new marshal build once it is idle
-		// (P6 B4), on its own goroutine: unlike the idle sweep, this one runs
-		// whatever the idle timeout is.
-		go fleet.RunRestartSweep(ctx)
+	// A container agent's config home is the user's own, bound read-only, so
+	// a sign-in made once serves every agent. The fleet's state is always on
+	// the host, so this must precede every start below — egress, reattach,
+	// the poller and the scheduler — and no probe may run before it.
+	configHome := ""
+	if home, herr := os.UserHomeDir(); herr != nil {
+		slog.Default().Warn("webbridge: no home directory for container agents' config; using the state subpath", "err", herr)
+	} else {
+		configHome = appconfig.UserDir(home)
 	}
+	fleet.SetConfigHome(configHome)
+
+	// A project child starts with its project's environment (decision 7). A
+	// bridge that cannot name its own binary leaves children inheriting the
+	// bridge's environment instead.
+	if projectEnv, err := localProjectEnv(); err != nil {
+		slog.Default().Warn("webbridge: project children inherit the bridge's environment", "err", err)
+	} else {
+		fleet.SetProjectEnv(projectEnv)
+	}
+	// A session with no viewer and no run is ended after the idle timeout
+	// (P4 D7a), swept on its own goroutine; zero never ends one, and the sweep
+	// returns at once.
+	fleet.SetIdleSessionTimeout(cfg.idleSessionTimeout)
+	go fleet.RunIdleSweep(ctx)
+	// A stale child is restarted on a new marshal build once it is idle
+	// (P6 B4), on its own goroutine: unlike the idle sweep, this one runs
+	// whatever the idle timeout is.
+	go fleet.RunRestartSweep(ctx)
 
 	secrets, err := buildSecretProvider(cfg)
 	if err != nil {
@@ -847,12 +707,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// on factoryDone here is always safe.
 	defer shutdownFactory()
 
-	// The local profile starts each pinned project's child on its own
-	// goroutine, one after another (decision 9). The server profile pins
-	// nothing, so it starts none.
-	if cfg.profile == "local" {
-		go fleet.StartPinned(ctx)
-	}
+	// Each pinned project's child starts on its own goroutine, one after
+	// another (decision 9).
+	go fleet.StartPinned(ctx)
 
 	// Watch labelled issues on registered repos. Off by default; only
 	// repos with Watch set are polled.
@@ -860,197 +717,191 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// Run due schedules. Fleet mode only: registry mode has no scheduler.
 	fleet.StartScheduler(nil)
 
-	api := bridge.NewServer(fleet, cfg.token, cfg.publicURL, bridge.NewFactoryAPI(factoryStore, factoryController, fleet))
+	api := bridge.NewServer(fleet, cfg.publicURL, bridge.NewFactoryAPI(factoryStore, factoryController, fleet))
 
-	// A bridge given --relay-join relays the hosts that join it (D11). Each
-	// secret is read here and handed to the bridge as a value (decision 2):
-	// a file group or other can read stops the start, naming the file. A
-	// bridge given none relays nothing, and its own API is unchanged.
-	if len(cfg.relayJoins) > 0 {
-		secrets, err := readRelaySecrets(cfg.relayJoins)
-		if err != nil {
-			shutdownFactory()
-			fleet.Close()
-			return err
-		}
-		relay, err := bridge.NewHostRelay(secrets)
-		if err != nil {
-			shutdownFactory()
-			fleet.Close()
-			return err
-		}
-		api.SetHostRelay(relay)
+	// The Studio is a directory of files, served at / by the one Server the
+	// socket and the web listener share (D12). A given --studio-dir is
+	// served as it is; otherwise the search runs beside this binary. A daemon
+	// that finds none still serves, answering / with the page that says
+	// where it looked.
+	studioDir, studioLooked := cfg.studioDir, []string(nil)
+	if cfg.studioDir != "" {
+		studioLooked = []string{cfg.studioDir}
+	} else if exe, exeErr := ownExecutable(); exeErr != nil {
+		// No binary to look beside: nothing was searched, so there is
+		// nothing to name as looked in.
+		slog.Default().Warn("webbridge: no Studio files found: cannot find the executable to look beside it", "err", exeErr)
+	} else {
+		studioDir, studioLooked = bridge.FindStudioDir(exe)
 	}
-
-	// A joining bridge dials out to its relay and serves the connections the
-	// relay reverses onto it (D12, D13). It is built and set here, before any
-	// listener serves, so the per-request read in GET /api/daemon cannot race
-	// the field; only Run waits for the signal context below.
-	var joiner *bridge.Joiner
-	if cfg.join != "" {
-		joiner, err = buildJoiner(cfg, api)
-		if err != nil {
-			shutdownFactory()
-			fleet.Close()
-			return err
-		}
-		api.SetJoiner(joiner)
+	api.SetStudioDir(studioDir, studioLooked)
+	if studioDir != "" {
+		slog.Default().Info("webbridge: serving the Studio from " + studioDir)
+	} else if studioLooked != nil {
+		slog.Default().Warn("webbridge: no Studio files found; looked in " + strings.Join(studioLooked, ", "))
 	}
 
 	// serveErr carries the first listener to stop serving. The socket and
-	// the TCP listener can both exist, so it holds two, and each goroutine
+	// the web listener can both exist, so it holds two, and each goroutine
 	// parks its answer here rather than dropping it.
 	serveErr := make(chan error, 2)
 
-	// The Studio listener is bound before the socket starts serving, so
-	// GET /api/daemon can report what the bind did. A port that cannot be
-	// bound is a failure the launcher can name, not a page that silently
-	// fails to load.
-	//
-	// --addr off leaves the socket as the only listener: no TCP, no
-	// previews, no token. The scheme and the TCP listener exist only
-	// when one is opened.
-	var srv *http.Server
-	var ln net.Listener
-	scheme := "http"
-	if cfg.tlsCert != "" {
-		scheme = "https"
+	// The daemon listens on a unix socket of the user's own: the same routes
+	// as ServeHTTP without the bearer check, peer-checked instead, so a client
+	// on the same account drives it without a secret on the command line
+	// (decisions 5-7).
+	var socketSrv *http.Server
+	// The daemon records its own executable so a replaced build can
+	// restart it, and so the socket's restart route knows what to
+	// execute (P6 B5). A daemon that cannot name its binary serves on
+	// without the restart route rather than failing to start.
+	if own, oerr := ownExecutable(); oerr != nil {
+		slog.Default().Warn("webbridge: restarting the daemon is unavailable", "err", oerr)
+	} else if oerr := fleet.SetOwnBinary(own); oerr != nil {
+		slog.Default().Warn("webbridge: restarting the daemon is unavailable", "path", own, "err", oerr)
 	}
-	var studioAddr, studioErr string
-	if cfg.addr != "off" {
-		ln, err = net.Listen("tcp", cfg.addr)
-		if err != nil {
-			if cfg.profile == "local" {
-				// The socket is the local daemon's real interface: the
-				// TUI, `marshal fleet` and every session live there. A
-				// busy Studio port costs the browser tab, not the
-				// daemon, so the socket carries on — but the failure is
-				// logged at error level and recorded for /api/daemon, so
-				// `marshal studio` repeats the real cause instead of
-				// "nothing is serving".
-				studioErr = err.Error()
-				slog.Default().Error("webbridge: studio listener unavailable", "addr", cfg.addr, "err", err)
-				ln = nil
-			} else {
-				// Stop escalates SIGTERM→SIGKILL over stopGrace, so a stubborn
-				// child delays the error return slightly; correct cleanup beats
-				// a faster failure here.
-				shutdownFactory()
-				fleet.Close()
-				return fmt.Errorf("listen %s: %w", cfg.addr, err)
-			}
+	if cfg.oauthRefresh {
+		// The refresh helper (P4 D12): `<marshal-bin> daemon refresh`
+		// beside the bridge, on the run's context. run waits for it to
+		// return before it returns, so the bridge never leaves a
+		// helper behind.
+		helper := &bridge.Helper{
+			Name:   "refresh",
+			Argv:   []string{cfg.marshalBin, "daemon", "refresh"},
+			Stderr: stderr,
 		}
-		if ln != nil {
-			studioAddr = ln.Addr().String()
-			srv = &http.Server{
-				Addr:              cfg.addr,
-				Handler:           api,
-				ReadHeaderTimeout: 10 * time.Second,
+		api.SetRefreshHelper(helper)
+		helperCtx, stopHelper := context.WithCancel(ctx)
+		helperDone := make(chan struct{})
+		go func() {
+			defer close(helperDone)
+			helper.Run(helperCtx)
+		}()
+		defer func() {
+			stopHelper()
+			<-helperDone
+		}()
+	}
+	if cfg.tunnels {
+		// The tunnels helper (one-daemon D7): `<marshal-bin> daemon
+		// tunnels` keeps one SSH tunnel per host beside the bridge and
+		// reports them on the socket. It is not the refresh helper: the
+		// hosts are its report, so it is not handed to
+		// SetRefreshHelper. run waits for it before returning, as it
+		// does for the refresh helper.
+		helper := &bridge.Helper{
+			Name:   "tunnels",
+			Argv:   []string{cfg.marshalBin, "daemon", "tunnels", "--socket", cfg.socket},
+			Stderr: stderr,
+		}
+		tunnelsCtx, stopTunnels := context.WithCancel(ctx)
+		tunnelsDone := make(chan struct{})
+		go func() {
+			defer close(tunnelsDone)
+			helper.Run(tunnelsCtx)
+		}()
+		defer func() {
+			stopTunnels()
+			<-tunnelsDone
+		}()
+	}
+	sln, lerr := bridge.ListenLocal(cfg.socket)
+	if lerr != nil {
+		// A refused socket — another daemon, a directory open to
+		// other users — leaves nothing to serve. Stop the factory
+		// before closing the fleet, as a failed TCP listen does
+		// below: quiescing first releases the journal lock the next
+		// start has to take.
+		shutdownFactory()
+		fleet.Close()
+		return lerr
+	}
+	// The web listener is bound after the socket's directory exists and
+	// before anything serves, so SetDaemonInfo below can report what the
+	// bind did. "unix" puts web.sock beside the daemon's own socket. A
+	// listener that cannot bind costs the web pages, not the daemon: the
+	// failure is logged at error level and reported as WebError, and the
+	// socket carries on (as a failed Studio port did, OD1).
+	var webSrv *http.Server
+	var webLn net.Listener
+	var webListen, webErr string
+	if cfg.webListen != "" {
+		web, perr := bridge.ParseWebListen(cfg.webListen, cfg.webGroup, cfg.socket)
+		if perr != nil {
+			webErr = perr.Error()
+			slog.Default().Error("webbridge: web listener unavailable", "err", perr)
+		} else if wln, werr := bridge.ListenWeb(web); werr != nil {
+			webErr = werr.Error()
+			slog.Default().Error("webbridge: web listener unavailable", "web-listen", web.String(), "err", werr)
+		} else {
+			webLn = wln
+			webListen = web.String()
+			if web.Network == "tcp" {
+				// A configured port 0 names its own once bound.
+				webListen = wln.Addr().String()
 			}
-			fmt.Fprintf(stderr, "webbridge: listening on %s://%s (%d project(s))\n", scheme, studioAddr, len(ws.Projects()))
+			webSrv = &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second}
+			fmt.Fprintf(stderr, "webbridge: web listener on %s\n", webListen)
 		}
 	}
 
-	// The local profile listens on a unix socket of the user's own: the
-	// same routes as ServeHTTP without the bearer check, peer-checked
-	// instead, so a client on the same account drives it without a
-	// secret on the command line (decisions 5-7).
-	var socketSrv *http.Server
-	if cfg.profile == "local" {
-		api.SetDaemonInfo(bridge.DaemonInfo{
-			Version:     daemonVersion(),
-			Profile:     "local",
-			PID:         os.Getpid(),
-			StartedAt:   startedAt.UnixMilli(),
-			Socket:      cfg.socket,
-			StudioAddr:  studioAddr,
-			StudioError: studioErr,
-		})
-		// The daemon records its own executable so a replaced build can
-		// restart it, and so the socket's restart route knows what to
-		// execute (P6 B5). A daemon that cannot name its binary serves on
-		// without the restart route rather than failing to start.
-		if own, oerr := ownExecutable(); oerr != nil {
-			slog.Default().Warn("webbridge: restarting the daemon is unavailable", "err", oerr)
-		} else if oerr := fleet.SetOwnBinary(own); oerr != nil {
-			slog.Default().Warn("webbridge: restarting the daemon is unavailable", "path", own, "err", oerr)
-		}
-		if cfg.oauthRefresh {
-			// The refresh helper (P4 D12): `<marshal-bin> daemon refresh`
-			// beside the bridge, on the run's context. run waits for it to
-			// return before it returns, so the bridge never leaves a
-			// helper behind.
-			helper := &bridge.Helper{
-				Argv:   []string{cfg.marshalBin, "daemon", "refresh"},
-				Stderr: stderr,
+	api.SetDaemonInfo(bridge.DaemonInfo{
+		Version:   daemonVersion(),
+		Profile:   "local",
+		PID:       os.Getpid(),
+		StartedAt: startedAt.UnixMilli(),
+		Socket:    cfg.socket,
+		WebListen: webListen,
+		WebError:  webErr,
+	})
+
+	// Previews get a listener, and so an origin, of their own: a page the
+	// agent serves must not share storage with the UI. They are independent
+	// of the web listener: a preview is reachable whenever previews are on.
+	var previewSrv *http.Server
+	if cfg.previewAddr != "off" {
+		pln, perr := listenPreview(cfg.previewAddr)
+		if perr != nil {
+			slog.Default().Warn("webbridge: previews unavailable", "err", perr)
+		} else {
+			api.SetPreviewAddr(pln.Addr().(*net.TCPAddr))
+			if cfg.previewURL != "" {
+				if uerr := api.SetPreviewURL(cfg.previewURL); uerr != nil {
+					slog.Default().Warn("webbridge: preview URL", "err", uerr)
+				}
 			}
-			api.SetRefreshHelper(helper)
-			helperCtx, stopHelper := context.WithCancel(ctx)
-			helperDone := make(chan struct{})
-			go func() {
-				defer close(helperDone)
-				helper.Run(helperCtx)
-			}()
-			defer func() {
-				stopHelper()
-				<-helperDone
-			}()
+			previewSrv = &http.Server{Handler: api.PreviewHandler(), ReadHeaderTimeout: 10 * time.Second}
+			go func() { _ = previewSrv.Serve(pln) }()
+			fmt.Fprintf(stderr, "webbridge: previews on http://%s\n", pln.Addr())
 		}
-		sln, lerr := bridge.ListenLocal(cfg.socket)
-		if lerr != nil {
-			// A refused socket — another daemon, a directory open to
-			// other users — leaves nothing to serve. Stop the factory
-			// before closing the fleet, as a failed TCP listen does
-			// below: quiescing first releases the journal lock the next
-			// start has to take.
-			shutdownFactory()
-			fleet.Close()
-			return lerr
+	}
+
+	socketSrv = &http.Server{
+		Handler:           api.SocketHandler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		err := socketSrv.Serve(bridge.PeerChecked(sln, os.Getuid(), slog.Default()))
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
 		}
-		socketSrv = &http.Server{
-			Handler:           api.SocketHandler(),
-			ReadHeaderTimeout: 10 * time.Second,
-		}
+		serveErr <- err
+	}()
+	fmt.Fprintf(stderr, "webbridge: listening on unix://%s\n", cfg.socket)
+
+	if webSrv != nil {
 		go func() {
-			err := socketSrv.Serve(bridge.PeerChecked(sln, os.Getuid(), slog.Default()))
+			err := webSrv.Serve(webLn)
 			if errors.Is(err, http.ErrServerClosed) {
 				err = nil
 			}
 			serveErr <- err
 		}()
-		fmt.Fprintf(stderr, "webbridge: listening on unix://%s\n", cfg.socket)
-	}
-
-	// Previews get a listener, and so an origin, of their own: a page the
-	// agent serves must not share storage with the UI that holds the token.
-	// They ride with the Studio listener: without it there is no page to
-	// show them in, so a failed bind above opens none.
-	var previewSrv *http.Server
-	if srv != nil && cfg.previewAddr != "off" {
-		pln, perr := listenPreview(cfg.addr, cfg.previewAddr)
-		if perr != nil {
-			slog.Default().Warn("webbridge: previews unavailable", "err", perr)
-		} else {
-			api.SetPreviewPort(pln.Addr().(*net.TCPAddr).Port)
-			previewSrv = &http.Server{Handler: api.PreviewHandler(), ReadHeaderTimeout: 10 * time.Second}
-			go func() { _ = serveHTTP(previewSrv, pln, cfg.tlsCert, cfg.tlsKey) }()
-			fmt.Fprintf(stderr, "webbridge: previews on %s://%s\n", scheme, pln.Addr())
-		}
 	}
 
 	// Reconcile orphaned worktrees after the server is listening, so a slow
 	// prune cannot delay accepting requests.
 	go fleet.ReconcileWorktrees(context.Background())
-
-	if srv != nil {
-		go func() {
-			err := serveHTTP(srv, ln, cfg.tlsCert, cfg.tlsKey)
-			if errors.Is(err, http.ErrServerClosed) {
-				err = nil
-			}
-			serveErr <- err
-		}()
-	}
 
 	// SIGINT/SIGTERM (or the caller's ctx) triggers shutdown: HTTP
 	// first, then the child.
@@ -1072,33 +923,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			// what removes the socket file.
 			_ = socketSrv.Shutdown(shutdownCtx)
 		}
-		if srv != nil {
-			if err := srv.Shutdown(shutdownCtx); err != nil {
+		if webSrv != nil {
+			if err := webSrv.Shutdown(shutdownCtx); err != nil {
 				slog.Default().Warn("webbridge: HTTP shutdown", "err", err)
 			}
 		}
 		shutdownFactory()
 		fleet.Close()
 	})
-
-	// A joining bridge dials out to its relay and serves the connections the
-	// relay reverses onto it (D12, D13). The joiner itself was built and set
-	// before the listeners started; here it only runs, on sigCtx, so a
-	// shutdown stops it with the listeners and run waits for it before it
-	// returns.
-	if joiner != nil {
-		joined := make(chan struct{})
-		go func() {
-			defer close(joined)
-			_ = joiner.Run(sigCtx)
-		}()
-		// stop is idempotent, so cancelling here as well as in the defer
-		// above is what lets run wait for the joiner on every path out.
-		defer func() {
-			stop()
-			<-joined
-		}()
-	}
 
 	select {
 	case err := <-serveErr:
@@ -1113,8 +945,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if socketSrv != nil {
 			_ = socketSrv.Close()
 		}
-		if srv != nil {
-			_ = srv.Close()
+		if webSrv != nil {
+			_ = webSrv.Close()
 		}
 		shutdownFactory()
 		fleet.Close()
@@ -1150,34 +982,12 @@ func openRecoveredFactory(ctx context.Context, fleet *bridge.Fleet, stateDir str
 	return store, controller, nil
 }
 
-// serveHTTP serves srv on ln, using TLS when both a certificate and a
-// key are supplied.
-//
-// The pair is validated in parseConfig, so reaching here with exactly
-// one set is a programming error rather than a user one; this function
-// treats an empty cert as "plaintext" and nothing more.
-func serveHTTP(srv *http.Server, ln net.Listener, certFile, keyFile string) error {
-	if certFile == "" || keyFile == "" {
-		return srv.Serve(ln)
-	}
-	return srv.ServeTLS(ln, certFile, keyFile)
-}
-
-// listenPreview opens the preview listener: previewAddr when given, else
-// the API address's host on a free port. A port different from the API's
-// is what makes it a different origin.
-func listenPreview(apiAddr, previewAddr string) (net.Listener, error) {
+// listenPreview opens the preview listener: previewAddr when given, else a
+// free port on 127.0.0.1. It needs no address of the API's: previews have
+// their own origin because they are their own listener.
+func listenPreview(previewAddr string) (net.Listener, error) {
 	if previewAddr == "" {
-		host, _, err := net.SplitHostPort(apiAddr)
-		if err != nil {
-			return nil, err
-		}
-		previewAddr = net.JoinHostPort(host, "0")
-	}
-	if _, port, err := net.SplitHostPort(previewAddr); err == nil {
-		if _, aport, aerr := net.SplitHostPort(apiAddr); aerr == nil && port == aport && port != "0" {
-			return nil, fmt.Errorf("--preview-addr %s must differ from --addr: previews need their own origin", previewAddr)
-		}
+		previewAddr = "127.0.0.1:0"
 	}
 	return net.Listen("tcp", previewAddr)
 }

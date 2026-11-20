@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import base64
 import json
-import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -108,31 +107,17 @@ def register(s: Suite) -> None:
         aid, tid = c.get("term_agent"), c.get("terminal")
         if not aid or not tid:
             raise Skip("no terminal open")
-        url = f"{c.env.base}/api/agents/{q(aid)}/terminal/{q(tid)}/events"
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {c.env.token}"})
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                s.expect(
-                    resp.status == 200,
-                    f"terminal events returned {resp.status}",
-                    request=f"GET {url}",
-                )
-                ctype = resp.headers.get("Content-Type", "")
-                s.expect(
-                    "text/event-stream" in ctype,
-                    f"terminal events content-type is {ctype!r}",
-                    request=f"GET {url}",
-                )
-                resp.read(64)
-        except socket.timeout:
-            # A quiet terminal legitimately sends nothing; the stream is open.
-            return
-        except urllib.error.HTTPError as exc:
-            raise Failure(
-                f"terminal events returned {exc.code}",
-                request=f"GET {url}",
-                response=exc.read().decode("utf-8", "replace")[:300],
-            ) from exc
+        path = f"/api/agents/{q(aid)}/terminal/{q(tid)}/events"
+        # A quiet terminal legitimately sends nothing, so the stream is read
+        # only far enough to see its status and content type.
+        r = c.client.stream(path, timeout=5)
+        s.expect_status(r, 200, request=f"GET {path}")
+        ctype = r.header("Content-Type")
+        s.expect(
+            "text/event-stream" in ctype,
+            f"terminal events content-type is {ctype!r}",
+            request=f"GET {path}",
+        )
 
     def release(c: Ctx) -> None:
         aid, tid = c.get("term_agent"), c.get("terminal")

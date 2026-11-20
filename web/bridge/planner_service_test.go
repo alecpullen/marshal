@@ -287,7 +287,7 @@ func newPlannerTestEnv(t *testing.T) *plannerTestEnv {
 	if err := env.ws.PutProjectSettings(env.root, ProjectSettings{Intake: ProjectIntake{RepoID: env.repo.ID}}); err != nil {
 		t.Fatalf("store project settings: %v", err)
 	}
-	env.fleet = NewFleet(env.ws, "unused", nil, env.stateDir, Limits{}, "", nil, "")
+	env.fleet = NewFleet(env.ws, "unused", nil, env.stateDir, Limits{}, "")
 	t.Cleanup(env.fleet.Close)
 	env.provisioner = &fakePlannerProvisioner{stateDir: env.stateDir}
 	env.use(newFakePlannerBackend())
@@ -494,8 +494,8 @@ func TestPlannerSeparateWorkspaceDefault(t *testing.T) {
 		// — proof the route exists and that nothing is silently substituted.
 		t.Setenv(plannerAdapterEnv, "")
 		before := countWorkspaceDirs(t, env.stateDir)
-		srv := NewServer(env.fleet, "")
-		r := httptest.NewRequest(http.MethodPost, "/api/planners", strings.NewReader(env.createBody(nil)))
+		srv := NewServer(env.fleet)
+		r := testJSONRequest(http.MethodPost, "/api/planners", env.createBody(nil))
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, r)
 		if w.Code != http.StatusInternalServerError {

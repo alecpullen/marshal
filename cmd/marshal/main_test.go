@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -15,11 +16,11 @@ import (
 	"marshal/internal/acp"
 	"marshal/internal/app/config"
 	"marshal/internal/buildinfo"
-	"marshal/internal/credentials"
-	"marshal/internal/fleetprofile"
+	"marshal/internal/daemon"
 	"marshal/internal/launch"
 	"marshal/internal/llm/provider"
 	"marshal/internal/trust"
+	"marshal/web/bridge/contract"
 )
 
 // TestRecordPermanentTrustAnchorsAtRepoRoot pins the --trust fix: the
@@ -650,6 +651,20 @@ func writeFleetFile(t *testing.T, dir, body string) string {
 	return path
 }
 
+// recordHost replaces hostOption so a test reads the host name a runner was
+// handed: launch's options are unexported.
+func recordHost(t *testing.T) *[]string {
+	t.Helper()
+	names := []string{}
+	old := hostOption
+	hostOption = func(name string) launch.Option {
+		names = append(names, name)
+		return old(name)
+	}
+	t.Cleanup(func() { hostOption = old })
+	return &names
+}
+
 // recordNotify replaces notifyOption so a test reads the flag a runner was
 // handed: launch's options are unexported.
 func recordNotify(t *testing.T) *bool {
@@ -799,12 +814,6 @@ func TestFleetRefusesArgumentsAndEmbedded(t *testing.T) {
 		t.Fatal("the fleet runner was called for a refused invocation")
 		return nil
 	}
-	oldServer := fleetServerRunner
-	defer func() { fleetServerRunner = oldServer }()
-	fleetServerRunner = func(ctx context.Context, out io.Writer, srv fleetprofile.Server, opts ...launch.Option) error {
-		t.Fatal("the server fleet runner was called for a refused invocation")
-		return nil
-	}
 
 	cases := []struct {
 		args []string
@@ -815,14 +824,14 @@ func TestFleetRefusesArgumentsAndEmbedded(t *testing.T) {
 		{[]string{"fleet", "--embedded=1"}, "--embedded cannot be combined with fleet"},
 		{[]string{"fleet", "login", "--embedded"}, "--embedded cannot be combined with fleet"},
 		{[]string{"fleet", "stray"}, "unexpected argument"},
-		{[]string{"fleet", "--server"}, "requires a server name"},
-		{[]string{"fleet", "--server="}, "requires a server name"},
-		{[]string{"fleet", "--server", ""}, "requires a server name"},
-		{[]string{"fleet", "--server", "a", "--server", "b"}, "given more than once"},
+		{[]string{"fleet", "--host"}, "requires a host name"},
+		{[]string{"fleet", "--host="}, "requires a host name"},
+		{[]string{"fleet", "--host", ""}, "requires a host name"},
+		{[]string{"fleet", "--host", "a", "--host", "b"}, "given more than once"},
 		{[]string{"fleet", "--frobnicate"}, "unexpected flag"},
-		{[]string{"fleet", "--server", "a", "login", "b"}, "cannot be combined with login"},
-		{[]string{"fleet", "login"}, "a server name is required"},
-		{[]string{"fleet", "login", "a", "b"}, "at most one server name"},
+		{[]string{"fleet", "--json"}, "unexpected flag"},
+		{[]string{"fleet", "--host", "a", "add", "b", "c"}, "cannot be combined with add"},
+		{[]string{"fleet", "--host", "a", "remove", "b"}, "cannot be combined with remove"},
 	}
 	for _, tc := range cases {
 		var stdout, stderr bytes.Buffer
@@ -870,32 +879,34 @@ func TestAttachRefusesExtraArgumentsAndEmbedded(t *testing.T) {
 	}
 }
 
-// TestFleetServerRoutesToTheServerRunner pins `marshal fleet --server NAME`:
-// both spellings reach the server fleet runner with the profile the file names
-// for NAME (decision 9).
-func TestFleetServerRoutesToTheServerRunner(t *testing.T) {
+// TestFleetHostRunsOnTheTunnelSocket pins `marshal fleet --host NAME`: both
+// spellings reach the fleet runner with the socket the local daemon reports for
+// the host's tunnel, and the host name reaches the loop (D8).
+func TestFleetHostRunsOnTheTunnelSocket(t *testing.T) {
 	_, dir := isolateFleetConfig(t)
-	writeFleetFile(t, dir, "[servers.example]\nurl = \"https://fleet.example.com\"\n")
+	writeFleetFile(t, dir, "[hosts.box]\nssh = \"me@box\"\n")
+	tunnelSocket := filepath.Join(dir, "hosts", "box.sock")
+	fakeDaemonSocket(t, fakeDaemonClient{info: daemon.Info{Hosts: []daemon.HostInfo{{
+		Name:   "box",
+		SSH:    "me@box",
+		State:  contract.HostLive,
+		Socket: tunnelSocket,
+	}}}})
+	hosts := recordHost(t)
 
 	oldFleet := fleetRunner
 	defer func() { fleetRunner = oldFleet }()
-	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
-		t.Fatal("the local fleet runner was called for --server")
-		return nil
-	}
-	oldServer := fleetServerRunner
-	defer func() { fleetServerRunner = oldServer }()
 
 	for _, args := range [][]string{
-		{"fleet", "--server", "example"},
-		{"fleet", "--server=example"},
+		{"fleet", "--host", "box"},
+		{"fleet", "--host=box"},
 	} {
 		var stdout, stderr bytes.Buffer
 		called := false
-		var got fleetprofile.Server
-		fleetServerRunner = func(ctx context.Context, out io.Writer, srv fleetprofile.Server, opts ...launch.Option) error {
+		var gotSocket string
+		fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
 			called = true
-			got = srv
+			gotSocket = socket
 			return nil
 		}
 
@@ -903,76 +914,193 @@ func TestFleetServerRoutesToTheServerRunner(t *testing.T) {
 			t.Fatalf("run(%v) error = %v", args, err)
 		}
 		if !called {
-			t.Fatalf("run(%v) did not reach the server fleet runner", args)
+			t.Fatalf("run(%v) did not reach the fleet runner", args)
 		}
-		if got.Name != "example" {
-			t.Errorf("run(%v) profile name = %q, want %q", args, got.Name, "example")
+		if gotSocket != tunnelSocket {
+			t.Errorf("run(%v) socket = %q, want the tunnel's %q", args, gotSocket, tunnelSocket)
 		}
-		if got.URL != "https://fleet.example.com" {
-			t.Errorf("run(%v) profile url = %q, want the file's %q", args, got.URL, "https://fleet.example.com")
+		if want := []string{"box"}; !reflect.DeepEqual(*hosts, want) {
+			t.Errorf("run(%v) host option = %v, want %v", args, *hosts, want)
 		}
+		*hosts = nil
 	}
 }
 
-// TestFleetServerNeedsAKnownName pins decision 9's refusal: a name the file
-// lacks fails, and the error names the file and the servers it has.
-func TestFleetServerNeedsAKnownName(t *testing.T) {
+// TestFleetHostNeedsAKnownName pins decision 9's refusal: a name the file
+// lacks fails, and the error names the file and the hosts it has.
+func TestFleetHostNeedsAKnownName(t *testing.T) {
 	_, dir := isolateFleetConfig(t)
-	path := writeFleetFile(t, dir, "[servers.one]\nurl = \"https://one.example.com\"\n\n[servers.two]\nurl = \"https://two.example.com\"\n")
+	path := writeFleetFile(t, dir, "[hosts.one]\nssh = \"me@one.example\"\n\n[hosts.two]\nssh = \"me@two.example\"\n")
 
-	oldServer := fleetServerRunner
-	defer func() { fleetServerRunner = oldServer }()
-	fleetServerRunner = func(ctx context.Context, out io.Writer, srv fleetprofile.Server, opts ...launch.Option) error {
-		t.Fatal("the server fleet runner was called for an unknown name")
+	oldFleet := fleetRunner
+	defer func() { fleetRunner = oldFleet }()
+	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
+		t.Fatal("the fleet runner was called for an unknown name")
 		return nil
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"fleet", "--server", "nope"}, bytes.NewBuffer(nil), &stdout, &stderr)
+	err := run(context.Background(), []string{"fleet", "--host", "nope"}, bytes.NewBuffer(nil), &stdout, &stderr)
 	if err == nil {
 		t.Fatal("run() returned no error for a name the file lacks")
 	}
-	for _, want := range []string{path, `no server "nope"`, "one, two"} {
+	for _, want := range []string{path, `no host "nope"`, "one, two"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to name %q", err, want)
 		}
 	}
 }
 
-// TestFleetServerWithoutAFileGivesAStarter pins decision 9's other half: no
-// fleet.toml at all is not an error, and --server answers a starter table for
-// the name.
-func TestFleetServerWithoutAFileGivesAStarter(t *testing.T) {
+// TestFleetHostWithoutAFileGivesAStarter pins decision 9's other half: no
+// fleet.toml at all is not an error, and --host answers a starter table for the
+// name.
+func TestFleetHostWithoutAFileGivesAStarter(t *testing.T) {
 	_, dir := isolateFleetConfig(t)
 
-	oldServer := fleetServerRunner
-	defer func() { fleetServerRunner = oldServer }()
-	fleetServerRunner = func(ctx context.Context, out io.Writer, srv fleetprofile.Server, opts ...launch.Option) error {
-		t.Fatal("the server fleet runner was called with no file")
+	oldFleet := fleetRunner
+	defer func() { fleetRunner = oldFleet }()
+	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
+		t.Fatal("the fleet runner was called with no file")
 		return nil
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"fleet", "--server", "example"}, bytes.NewBuffer(nil), &stdout, &stderr)
+	err := run(context.Background(), []string{"fleet", "--host", "example"}, bytes.NewBuffer(nil), &stdout, &stderr)
 	if err == nil {
 		t.Fatal("run() returned no error with no file and an unknown name")
 	}
-	for _, want := range []string{filepath.Join(dir, "fleet.toml"), "names no servers", "[servers.example]", "url = "} {
+	for _, want := range []string{filepath.Join(dir, "fleet.toml"), "names no hosts", "[hosts.example]", `ssh = "you@machine"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to name %q", err, want)
+		}
+	}
+}
+
+// TestFleetHostRefusesAHostThatIsDown pins D7's states: a host whose tunnel is
+// not live is refused with its state, and with the daemon's last error when
+// there is one.
+func TestFleetHostRefusesAHostThatIsDown(t *testing.T) {
+	_, dir := isolateFleetConfig(t)
+	writeFleetFile(t, dir, "[hosts.box]\nssh = \"me@box\"\n")
+	fakeDaemonSocket(t, fakeDaemonClient{info: daemon.Info{Hosts: []daemon.HostInfo{{
+		Name:      "box",
+		SSH:       "me@box",
+		State:     contract.HostDown,
+		Socket:    filepath.Join(dir, "hosts", "box.sock"),
+		LastError: "ssh: connect to host box port 22: connection refused",
+	}}}})
+
+	oldFleet := fleetRunner
+	defer func() { fleetRunner = oldFleet }()
+	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
+		t.Fatal("the fleet runner was called for a host that is down")
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"fleet", "--host", "box"}, bytes.NewBuffer(nil), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run() returned no error for a host that is down")
+	}
+	for _, want := range []string{"box is down", "connection refused"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to carry %q", err, want)
+		}
+	}
+}
+
+// TestFleetHostRefusesAHostTheDaemonDoesNotReport pins the stale report: the
+// local daemon answers but names no tunnel to the host, so nothing says where
+// to dial.
+func TestFleetHostRefusesAHostTheDaemonDoesNotReport(t *testing.T) {
+	_, dir := isolateFleetConfig(t)
+	writeFleetFile(t, dir, "[hosts.box]\nssh = \"me@box\"\n")
+	fakeDaemonSocket(t, fakeDaemonClient{info: daemon.Info{}})
+
+	oldFleet := fleetRunner
+	defer func() { fleetRunner = oldFleet }()
+	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
+		t.Fatal("the fleet runner was called for a host the daemon does not report")
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"fleet", "--host", "box"}, bytes.NewBuffer(nil), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run() returned no error for a host the daemon does not report")
+	}
+	for _, want := range []string{"reports no tunnel to box", "marshal daemon install"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to carry %q", err, want)
+		}
+	}
+}
+
+// TestFleetServerIsRetired pins D8's cutover: --server named a bridge, and a
+// remote daemon is a host now, so the flag says what replaced it.
+func TestFleetServerIsRetired(t *testing.T) {
+	isolateFleetConfig(t)
+
+	oldFleet := fleetRunner
+	defer func() { fleetRunner = oldFleet }()
+	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
+		t.Fatal("the fleet runner was called for the retired --server")
+		return nil
+	}
+
+	for _, args := range [][]string{
+		{"fleet", "--server", "example"},
+		{"fleet", "--server=example"},
+	} {
+		var stdout, stderr bytes.Buffer
+		err := run(context.Background(), args, bytes.NewBuffer(nil), &stdout, &stderr)
+		if err == nil {
+			t.Fatalf("run(%v) accepted --server", args)
+		}
+		for _, want := range []string{"--server is retired", "marshal fleet --host NAME", "D8"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("run(%v) error = %q, want it to carry %q", args, err, want)
+			}
+		}
+	}
+}
+
+// TestFleetLoginTokenAndServersAreRetired pins the other three retirements: a
+// host is reached over SSH and needs no token, and the daemon reports the
+// hosts, so nothing is left for them to name.
+func TestFleetLoginTokenAndServersAreRetired(t *testing.T) {
+	isolateFleetConfig(t)
+
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"fleet", "login", "example"}, "marshal fleet login: retired; a host is reached over SSH and needs no token"},
+		{[]string{"fleet", "token", "example"}, "marshal fleet token: retired; a host is reached over SSH and needs no token"},
+		{[]string{"fleet", "servers"}, "marshal fleet servers: retired; marshal daemon status lists the hosts"},
+	}
+	for _, tc := range cases {
+		var stdout, stderr bytes.Buffer
+		err := run(context.Background(), tc.args, bytes.NewBuffer(nil), &stdout, &stderr)
+		if err == nil {
+			t.Fatalf("run(%v) returned no error, want a retirement", tc.args)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("run(%v) error = %q, want %q", tc.args, err, tc.want)
 		}
 	}
 }
 
 // TestFleetRefusesAFileItCannotRead pins decision 3 through decision 9: a
 // fleet.toml others can read stops the fleet screen with the sentence that
-// says how to fix it, for both the daemon's form and --server's.
+// says how to fix it, for both the daemon's form and --host's. The file is
+// checked before a host is looked up, so --host needs no tunnel here.
 func TestFleetRefusesAFileItCannotRead(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the mode check is unix's")
 	}
 	_, dir := isolateFleetConfig(t)
-	path := writeFleetFile(t, dir, "[servers.example]\nurl = \"https://fleet.example.com\"\n")
+	path := writeFleetFile(t, dir, "[hosts.example]\nssh = \"me@example\"\n")
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatalf("chmod fleet.toml: %v", err)
 	}
@@ -980,19 +1108,13 @@ func TestFleetRefusesAFileItCannotRead(t *testing.T) {
 	oldFleet := fleetRunner
 	defer func() { fleetRunner = oldFleet }()
 	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
-		t.Fatal("the local fleet runner was called for an unreadable file")
-		return nil
-	}
-	oldServer := fleetServerRunner
-	defer func() { fleetServerRunner = oldServer }()
-	fleetServerRunner = func(ctx context.Context, out io.Writer, srv fleetprofile.Server, opts ...launch.Option) error {
-		t.Fatal("the server fleet runner was called for an unreadable file")
+		t.Fatal("the fleet runner was called for an unreadable file")
 		return nil
 	}
 
 	for _, args := range [][]string{
 		{"fleet"},
-		{"fleet", "--server", "example"},
+		{"fleet", "--host", "example"},
 	} {
 		var stdout, stderr bytes.Buffer
 		err := run(context.Background(), args, bytes.NewBuffer(nil), &stdout, &stderr)
@@ -1007,7 +1129,8 @@ func TestFleetRefusesAFileItCannotRead(t *testing.T) {
 }
 
 // TestFleetPassesTheFilesNotify pins decision 9's notify: the local table's
-// notify reaches the daemon runner, and a server's reaches the server runner.
+// notify reaches the daemon runner, and a host's reaches the runner the tunnel
+// hands it.
 func TestFleetPassesTheFilesNotify(t *testing.T) {
 	t.Run("local", func(t *testing.T) {
 		_, dir := isolateFleetConfig(t)
@@ -1034,28 +1157,34 @@ func TestFleetPassesTheFilesNotify(t *testing.T) {
 		}
 	})
 
-	t.Run("server", func(t *testing.T) {
+	t.Run("host", func(t *testing.T) {
 		_, dir := isolateFleetConfig(t)
-		writeFleetFile(t, dir, "[servers.example]\nurl = \"https://fleet.example.com\"\nnotify = false\n")
+		writeFleetFile(t, dir, "[hosts.box]\nssh = \"me@box\"\nnotify = false\n")
+		fakeDaemonSocket(t, fakeDaemonClient{info: daemon.Info{Hosts: []daemon.HostInfo{{
+			Name:   "box",
+			SSH:    "me@box",
+			State:  contract.HostLive,
+			Socket: filepath.Join(dir, "hosts", "box.sock"),
+		}}}})
 		on := recordNotify(t)
 
-		oldServer := fleetServerRunner
-		t.Cleanup(func() { fleetServerRunner = oldServer })
+		oldFleet := fleetRunner
+		t.Cleanup(func() { fleetRunner = oldFleet })
 		called := false
-		fleetServerRunner = func(ctx context.Context, out io.Writer, srv fleetprofile.Server, opts ...launch.Option) error {
+		fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
 			called = true
 			return nil
 		}
 
 		var stdout, stderr bytes.Buffer
-		if err := run(context.Background(), []string{"fleet", "--server", "example"}, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
+		if err := run(context.Background(), []string{"fleet", "--host", "box"}, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
 			t.Fatalf("run() error = %v", err)
 		}
 		if !called {
-			t.Fatal("run() did not reach the server fleet runner")
+			t.Fatal("run() did not reach the fleet runner")
 		}
 		if *on {
-			t.Error("notifications = on, want the profile's notify = false")
+			t.Error("notifications = on, want the host's notify = false")
 		}
 	})
 }
@@ -1094,115 +1223,5 @@ func TestPlainMarshalKeepsGoingPastABadFleetFile(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), path) {
 		t.Errorf("stderr = %q, want it to name the file %q", stderr.String(), path)
-	}
-}
-
-// TestFleetLoginStoresTheToken pins decision 10: a piped token lands in the
-// keychain under decision 4's key, trimmed.
-func TestFleetLoginStoresTheToken(t *testing.T) {
-	_, dir := isolateFleetConfig(t)
-	writeFleetFile(t, dir, "[servers.example]\nurl = \"https://fleet.example.com\"\n")
-
-	store := credentials.NewMemStore()
-	oldStore := fleetLoginStore
-	defer func() { fleetLoginStore = oldStore }()
-	fleetLoginStore = func() (credentials.Store, error) { return store, nil }
-
-	var stdout, stderr bytes.Buffer
-	stdin := strings.NewReader("  s3cret-token  \n")
-	if err := run(context.Background(), []string{"fleet", "login", "example"}, stdin, &stdout, &stderr); err != nil {
-		t.Fatalf("run() error = %v", err)
-	}
-
-	got, err := store.Get(fleetprofile.KeychainKey("example"))
-	if err != nil {
-		t.Fatalf("the token was not stored: %v", err)
-	}
-	if string(got) != "s3cret-token" {
-		t.Errorf("stored token = %q, want the piped line trimmed", string(got))
-	}
-	if !strings.Contains(stderr.String(), "Stored the token for example.") {
-		t.Errorf("stderr = %q, want it to report the token was stored", stderr.String())
-	}
-}
-
-// TestFleetLoginRefusesAnUnknownServer pins decision 10's first check: a name
-// the file lacks is refused before anything is read or stored.
-func TestFleetLoginRefusesAnUnknownServer(t *testing.T) {
-	_, dir := isolateFleetConfig(t)
-	writeFleetFile(t, dir, "[servers.one]\nurl = \"https://one.example.com\"\n")
-
-	opened := false
-	oldStore := fleetLoginStore
-	defer func() { fleetLoginStore = oldStore }()
-	fleetLoginStore = func() (credentials.Store, error) {
-		opened = true
-		return credentials.NewMemStore(), nil
-	}
-
-	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"fleet", "login", "nope"}, strings.NewReader("tok\n"), &stdout, &stderr)
-	if err == nil {
-		t.Fatal("run() returned no error for a name the file lacks")
-	}
-	if !strings.Contains(err.Error(), "one") {
-		t.Errorf("error = %q, want it to name the servers the file has", err)
-	}
-	if opened {
-		t.Error("the keychain was opened for an unknown server")
-	}
-}
-
-// TestFleetLoginRefusesATokenCmdServer pins decision 10: a profile that reads
-// its token from token_cmd has no use for a stored one.
-func TestFleetLoginRefusesATokenCmdServer(t *testing.T) {
-	_, dir := isolateFleetConfig(t)
-	writeFleetFile(t, dir, "[servers.example]\nurl = \"https://fleet.example.com\"\ntoken_cmd = \"pass show fleet/example\"\n")
-
-	opened := false
-	oldStore := fleetLoginStore
-	defer func() { fleetLoginStore = oldStore }()
-	fleetLoginStore = func() (credentials.Store, error) {
-		opened = true
-		return credentials.NewMemStore(), nil
-	}
-
-	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"fleet", "login", "example"}, strings.NewReader("tok\n"), &stdout, &stderr)
-	if err == nil {
-		t.Fatal("run() returned no error for a token_cmd profile")
-	}
-	if !strings.Contains(err.Error(), "token_cmd") {
-		t.Errorf("error = %q, want it to name token_cmd", err)
-	}
-	if opened {
-		t.Error("the keychain was opened for a token_cmd profile")
-	}
-}
-
-// TestFleetLoginRefusesAnEmptyToken pins decision 10's last check: a blank
-// line stores nothing.
-func TestFleetLoginRefusesAnEmptyToken(t *testing.T) {
-	_, dir := isolateFleetConfig(t)
-	writeFleetFile(t, dir, "[servers.example]\nurl = \"https://fleet.example.com\"\n")
-
-	opened := false
-	oldStore := fleetLoginStore
-	defer func() { fleetLoginStore = oldStore }()
-	fleetLoginStore = func() (credentials.Store, error) {
-		opened = true
-		return credentials.NewMemStore(), nil
-	}
-
-	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"fleet", "login", "example"}, strings.NewReader("   \n"), &stdout, &stderr)
-	if err == nil {
-		t.Fatal("run() returned no error for an empty token")
-	}
-	if !strings.Contains(err.Error(), "empty") {
-		t.Errorf("error = %q, want it to say the token is empty", err)
-	}
-	if opened {
-		t.Error("the keychain was opened for an empty token")
 	}
 }

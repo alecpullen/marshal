@@ -101,9 +101,7 @@ func (f *Fleet) baseDigest(runtime, base string) (string, error) {
 // the agent in an environment the repo did not ask for.
 func (f *Fleet) ensureDerivedImage(ctx context.Context, base string) (string, error) {
 	var runtime string
-	// Host-only outranks the fake-runner shortcut: a host-only fleet has
-	// no runtime to derive on (decision 4).
-	if f.runner != nil && !f.hostOnly {
+	if f.runner != nil {
 		runtime = "docker" // test mode: fake runner intercepts all commands
 	} else {
 		_, name, ok := f.containerRuntime()

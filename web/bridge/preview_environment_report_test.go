@@ -40,7 +40,7 @@ func previewReportFleet(t *testing.T, repo Repo, cred *Credential) (*Fleet, *Wor
 			t.Fatalf("put credential: %v", err)
 		}
 	}
-	f := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "", nil, "")
+	f := NewFleet(ws, "unused", nil, t.TempDir(), Limits{}, "")
 	t.Cleanup(f.Close)
 	return f, ws
 }
@@ -1144,7 +1144,7 @@ func TestPreviewReportDoesNotChangeTheDiscoveryContract(t *testing.T) {
 	// repository rather than 405, which is what a missing route would.
 	repo := discoveryTestRepo("github", "")
 	fleet, _ := previewReportFleet(t, repo, ptrCredential(previewReportPAT()))
-	s := NewServer(fleet, "")
+	s := NewServer(fleet)
 	rec := doReq(t, s, http.MethodPost, "/api/repos/missing/discover", nil, nil)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("POST /api/repos/missing/discover = %d, want 404 (the route still exists)", rec.Code)

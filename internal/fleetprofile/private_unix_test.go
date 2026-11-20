@@ -9,7 +9,7 @@ import (
 )
 
 func TestTheFileMustBePrivate(t *testing.T) {
-	body := "[servers.home]\nurl = \"https://fleet.example.com\"\n"
+	body := "[hosts.attic]\nssh = \"me@attic\"\n"
 
 	t.Run("0644", func(t *testing.T) {
 		path := writeFleetMode(t, body, 0o644)

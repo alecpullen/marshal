@@ -150,7 +150,7 @@ func TestWorkspaceCAEnvProviderUnavailable(t *testing.T) {
 	if _, _, err := f.workspaceCA(context.Background(), "dev"); !errors.Is(err, ErrInjectionUnavailable) {
 		t.Fatalf("err = %v", err)
 	}
-	s := NewServer(f, "")
+	s := NewServer(f)
 	if c := doReq(t, s, http.MethodPost, "/api/workspaces/dev/ca/rotate", nil, nil).Code; c != http.StatusConflict {
 		t.Fatalf("rotate on env = %d", c)
 	}
@@ -164,7 +164,7 @@ func TestWorkspaceCARotationChangesSerial(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldLeaf, _ := f.leafFor(ctx, "dev", "", "a.example.com")
-	s := NewServer(f, "")
+	s := NewServer(f)
 	rec := doReq(t, s, http.MethodPost, "/api/workspaces/dev/ca/rotate", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("rotate = %d %s", rec.Code, rec.Body)

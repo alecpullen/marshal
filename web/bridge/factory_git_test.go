@@ -37,7 +37,7 @@ func factoryGitFixture(t *testing.T) (*factoryGit, FactoryItem, FactoryWorker, s
 	if err := ws.PutAgent(a); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "", nil, t.TempDir(), Limits{}, "", nil, "")
+	f := NewFleet(ws, "", nil, t.TempDir(), Limits{}, "")
 	tr := &captureTransport{onRequest: func(method string) error {
 		if method == "session/commit" {
 			gitText(t, work, "add", "--", "docs/marshal-factory/item-1/plan.md", "docs/marshal-factory/item-1/spec.md")

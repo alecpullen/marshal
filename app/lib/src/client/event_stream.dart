@@ -22,8 +22,8 @@ enum StreamState {
   /// is shown, plainly marked with its age.
   stale,
 
-  /// The stream will not be retried: the bridge refused the token. Only a new
-  /// token changes that (decision 6).
+  /// The stream will not be retried: the operator's proxy refused the request,
+  /// so the page is signed out. Only a page load clears that (one-daemon D13).
   stopped,
 }
 
@@ -129,7 +129,7 @@ class EventStream {
   int _runGeneration = 0;
 
   /// Connects, and keeps the connection: after a drop it retries with backoff
-  /// until [stop], or until the bridge refuses the credentials.
+  /// until [stop], or until the proxy refuses the request (one-daemon D13).
   void start() {
     if (_running) return;
     _running = true;
@@ -159,8 +159,9 @@ class EventStream {
       try {
         await _consume(generation);
       } on Unauthorized {
-        // Decision 6: the same token cannot start working, so this is
-        // terminal rather than a retry on a timer.
+        // The proxy refused the request, so the page is signed out: nothing a
+        // retry does clears that (one-daemon D13), so this is terminal rather
+        // than a retry on a timer.
         _running = false;
         _runGeneration++;
         _state.value = StreamState.stopped;

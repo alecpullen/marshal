@@ -11,11 +11,6 @@ import (
 	"time"
 )
 
-// controlContainerName names the control agent's container. It does not
-// carry containerNamePrefix, so listAgentContainers never mistakes it for
-// a project agent when reattaching.
-const controlContainerName = "marshal-control"
-
 // controlHandshakeTimeout bounds the lazy start (initialize plus
 // session/new) so one stuck control agent cannot hang every request that
 // needs it.
@@ -38,12 +33,6 @@ type controlRuntime struct {
 	// caps holds the capability names the agent advertised in initialize,
 	// from both agentCapabilities and sessionCapabilities.
 	caps map[string]bool
-	// boundRoots are the bridge-view project roots a containerized
-	// control agent can reach. Empty in process mode, where every root is
-	// reachable.
-	boundRoots []string
-	// containerized mirrors Child.Containerized for the live child.
-	containerized bool
 }
 
 func newControlRuntime() *controlRuntime {
@@ -54,67 +43,14 @@ func newControlRuntime() *controlRuntime {
 // in. It holds nothing but scratch state for the agent.
 func (f *Fleet) controlWorkDir() string { return filepath.Join(f.stateDir, "control") }
 
-// buildControlChild returns the control agent's Child. Tests replace it
-// through newControl; production picks a container when a runtime exists
-// and a host process otherwise, the same fallback agents use.
-func (f *Fleet) buildControlChild() (*Child, []string, error) {
+// buildControlChild returns the control agent's Child. The control agent is
+// a host process: it has no workspace, and a workspace is what makes a
+// container. Tests replace it through newControl.
+func (f *Fleet) buildControlChild() (*Child, error) {
 	if f.newControl != nil {
-		child, err := f.newControl()
-		return child, nil, err
+		return f.newControl()
 	}
-	runtime, name, ok := f.containerRuntime()
-	if !ok {
-		return &Child{MarshalBin: f.marshalBin}, nil, nil
-	}
-	cfg, bound := f.controlContainerConfig(runtime, name)
-	return &Child{Transport: newContainerTransport(cfg), Containerized: true}, bound, nil
-}
-
-// controlContainerConfig is the control container's shape: the default
-// profile image, a writable config home (it owns config edits), and the
-// project roots it can reach bound at their bridge-view paths.
-//
-// It also returns those bridge-view roots, so projectSession can refuse a
-// root the container cannot see instead of failing inside the agent.
-func (f *Fleet) controlContainerConfig(runtime, runtimeName string) (ContainerConfig, []string) {
-	profile := DefaultRuntimeProfile()
-	profile.Image = defaultAgentImageFor(f.buildVersion)
-	cfg := ContainerConfig{
-		Runtime:            runtime,
-		RuntimeName:        runtimeName,
-		Image:              profile.Image,
-		Name:               controlContainerName,
-		WorkspaceDir:       f.controlWorkDir(),
-		SocketDir:          socketDirFor(f.stateDir, "control"),
-		StateVolume:        f.stateVolume,
-		WorkSubpath:        "control",
-		SocketSubpath:      "sockets/control",
-		CPUs:               profile.CPUs,
-		MemoryMB:           profile.MemoryMB,
-		Env:                f.agentEnv,
-		HomeConfigSubpath:  homeConfigSubpath,
-		HomeDataSubpath:    homeDataSubpath,
-		HomeConfigWritable: true,
-	}
-	var bound []string
-	if len(f.projectMounts) > 0 {
-		// Containerized bridge: bind the daemon's view of each declared
-		// root at the bridge's view, so a bridge-view path is also a valid
-		// agent path.
-		for _, m := range f.projectMounts {
-			cfg.ExtraBinds = append(cfg.ExtraBinds, ProjectMount{Host: m.Host, Container: m.Container})
-			bound = append(bound, filepath.Clean(m.Container))
-		}
-	} else {
-		// Host-process bridge: its own view is the daemon's view, so each
-		// registered project binds at its own path. A project added after
-		// the control agent started is not reachable until it restarts.
-		for _, p := range f.ws.Projects() {
-			cfg.ExtraBinds = append(cfg.ExtraBinds, ProjectMount{Host: p, Container: p})
-			bound = append(bound, filepath.Clean(p))
-		}
-	}
-	return cfg, bound
+	return &Child{MarshalBin: f.marshalBin}, nil
 }
 
 // control returns the control runtime, starting it on first use and
@@ -136,7 +72,7 @@ func (f *Fleet) control(ctx context.Context) (*controlRuntime, error) {
 			return nil, fmt.Errorf("bridge: create control dir: %w", err)
 		}
 		f.ensureHomes()
-		child, bound, err := f.buildControlChild()
+		child, err := f.buildControlChild()
 		if err != nil {
 			return nil, err
 		}
@@ -157,7 +93,7 @@ func (f *Fleet) control(ctx context.Context) (*controlRuntime, error) {
 		if err := child.Start(); err != nil {
 			return nil, fmt.Errorf("bridge: start control agent: %w (stderr: %s)", err, child.StderrLog())
 		}
-		c.child, c.containerized, c.boundRoots = child, child.Containerized, bound
+		c.child = child
 	}
 
 	hctx, cancel := context.WithTimeout(ctx, controlHandshakeTimeout)
@@ -201,13 +137,9 @@ func (f *Fleet) controlHandshake(ctx context.Context, c *controlRuntime) error {
 	return nil
 }
 
-// controlSessionCwd is the control session's working directory as the
-// agent sees it: /work in a container (the control subpath), the state
-// directory itself otherwise.
+// controlSessionCwd is the control session's working directory: the
+// bridge-side control directory, which a host-process control agent shares.
 func (f *Fleet) controlSessionCwd(c *controlRuntime) string {
-	if c.containerized {
-		return containerWorkDir
-	}
 	return f.controlWorkDir()
 }
 
@@ -295,8 +227,7 @@ func (f *Fleet) controlSessionID(ctx context.Context) (string, error) {
 }
 
 // projectSession returns the control-agent session for a project root,
-// opening and caching it on first use. A root the containerized control
-// agent cannot see yields ErrUnsupported{"project_library"}.
+// opening and caching it on first use.
 func (f *Fleet) projectSession(ctx context.Context, root string) (string, error) {
 	c, err := f.control(ctx)
 	if err != nil {
@@ -308,13 +239,10 @@ func (f *Fleet) projectSession(ctx context.Context, root string) (string, error)
 		c.mu.Unlock()
 		return sid, nil
 	}
-	containerized, bound, child := c.containerized, c.boundRoots, c.child
+	child := c.child
 	c.mu.Unlock()
 	if child == nil {
 		return "", fmt.Errorf("bridge: control agent is not running")
-	}
-	if containerized && !underAny(bound, root) {
-		return "", ErrUnsupported{Feature: "project_library"}
 	}
 	sid, err := newSessionOn(ctx, child, root)
 	if err != nil {
@@ -352,17 +280,6 @@ func (f *Fleet) controlChild(ctx context.Context) (*Child, error) {
 		return nil, fmt.Errorf("bridge: control agent is not running")
 	}
 	return child, nil
-}
-
-// underAny reports whether path is one of roots or lies beneath one, on
-// segment boundaries.
-func underAny(roots []string, path string) bool {
-	for _, r := range roots {
-		if path == r || strings.HasPrefix(path, r+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
 }
 
 // stopControl shuts the control agent down with the fleet. Unlike project

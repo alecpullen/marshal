@@ -24,7 +24,7 @@ func provisionFleet(t *testing.T, limits Limits) *Fleet {
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	f := NewFleet(ws, "unused", nil, t.TempDir(), limits, "", nil, "marshal-state")
+	f := NewFleet(ws, "unused", nil, t.TempDir(), limits, "")
 	f.newRuntime = func(a Agent) (*Child, error) {
 		return &Child{Transport: &scriptedTransport{gate: gateResult{OK: true}}}, nil
 	}

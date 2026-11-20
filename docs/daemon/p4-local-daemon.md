@@ -231,6 +231,8 @@ against.
 
 ### D1. The local profile
 
+> Superseded by one-daemon D1, D2, D10 (docs/one-daemon/design.md, 2026-11-20): the daemon has one profile, no bearer token, and an opt-in web listener.
+
 - **The flags.** `webbridge --profile local` selects the profile; `server`, the
   default, is today's bridge. `--socket <path>` names the unix listener and is
   valid only with `--profile local`. Its default is

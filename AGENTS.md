@@ -31,7 +31,7 @@ go test ./internal/app/...    # one package (prefer the narrowest scope)
 go vet ./...
 gofmt -w .
 scripts/dev-daemon.sh         # rebuild this tree, restart the local daemon, print status
-scripts/dev-studio.sh         # rebuild the SPA and binaries, restart the browser studio, print status
+scripts/dev-daemon.sh --studio  # also rebuild the browser Studio into share/marshal/studio
                               #   --dev-image also refreshes the agent container image from ./marshal
 ```
 
@@ -40,52 +40,62 @@ keeps, are documented in `docs/testing-ci-audit.md`. Everything after the mode
 that is not `--base`/`--go-only` is passed through to `go test`, so
 `scripts/test.sh quick ./internal/acp -run TestStack` works.
 
-`scripts/dev-daemon.sh` and `scripts/dev-studio.sh` keep a development box's
-daemon and browser studio running this checkout's build without cutting a
-release. Setup, the rebuild-and-restart loop, the agent image, and how to
-recreate the services from scratch are documented in
-[`docs/dev-loop.md`](docs/dev-loop.md).
+`scripts/dev-daemon.sh` keeps a development box's daemon — and the Studio it
+serves — running this checkout's build without cutting a release. Setup, the
+rebuild-and-restart loop, the agent image, and how to recreate the service from
+scratch are documented in [`docs/dev-loop.md`](docs/dev-loop.md).
 
 `marshal` also dispatches subcommands: `acp` (headless JSON-RPC server),
 `attach` (reattach to a daemon session), `daemon` (install, drive and restart
 the local daemon), `fleet` (the fleet screen on the local daemon), `history`,
-`plugin`, `snapshots`, `calibrate-tokens`. Top-level flags are `--trust`,
+`mcp` (a stdio relay to `/mcp` over the socket), `plugin`, `snapshots`,
+`calibrate-tokens`. Top-level flags are `--trust`,
 `--embedded` (run in this process, without the daemon) and `--version`.
 
 ### Web control plane
 
 ```bash
-cd app && flutter build web --base-href / --no-web-resources-cdn --output ../web/bridge/static
-go build ./cmd/webbridge                    # embeds the Studio
+cd app && flutter build web --base-href / --no-web-resources-cdn --output ../share/marshal/studio
+go build ./cmd/webbridge
 ```
 
 The Studio is the Flutter app in `app/` (`docs/studio-flutter/`), and `/`
 serves it: F8's cutover retired the Svelte Studio and its Node toolchain, so
 there is no `web/ui`, no `npm` step, and no second client to keep in step.
-`web/bridge/static/` is the build; in a Go-only checkout it holds a placeholder
-index, so `go build` still embeds a page. The app job and the release's
-`studio-web` job both run that command before building `webbridge`, because
-`//go:embed` bakes it in. An old `/next/…` link redirects permanently to the
-same place at `/`.
+`webbridge` serves the Studio from `share/marshal/studio`, found beside or above
+its binary, or from `--studio-dir`; a checkout builds it there with the command
+above. Releases, Homebrew, `install.sh` and the app bundles ship it. A daemon
+without it serves a page that says where it looked (one-daemon D12). An old
+`/next/…` link redirects permanently to the same place at `/`.
 
 `--no-web-resources-cdn` is not optional: without it the build fetches the
 CanvasKit engine from gstatic, and a private network that cannot reach that CDN
-never starts the Studio. The e2e suite checks the served build for a CDN URL.
+never starts the Studio. CI and the e2e suite check the served build for a CDN
+URL.
 
 `web/bridge/contract` holds the fleet loop's wire types and generates the app's
 Dart module, `app/lib/src/client/contract.g.dart`: regenerate with
 `go test ./web/bridge/contract/dartgen -run TestDartContractIsCurrent -update`.
 That currency test fails on a contract change that is not regenerated.
 
-A bridge given `--relay-join NAME=PATH` is a relay for the hosts that join it:
-each forwarded request arrives under `/api/hosts/<name>/` and is decided by
-that host's own token, never the relay's. `--join URL` — the local daemon's
-`daemon.join_url`, its secret stored by `marshal daemon join-token` — makes a
-bridge dial out and join one, where the joining bridge serves and the relay is
-its client.
+`[daemon] web_listen` (`unix`, an absolute socket path, or a loopback address)
+opens the daemon's web listener: the Studio and the API, with no authentication
+of its own, behind the operator's proxy, which authenticates the browser
+(one-daemon D10, D13). `GET /api/hosts` and `/api/hosts/<name>/…` forward to
+each host's tunnel, and the socket-only routes — the project and agent attach,
+pin, restart, the hosts report and enrollment — are not served there. The
+listener answers only `localhost`, the loopback addresses and `web_url`'s host,
+and refuses a cross-site state-changing request and a non-JSON `/api/` body
+(`web/bridge/webguard.go`). `POST /api/hosts` and `DELETE /api/hosts/<name>`
+run `marshal fleet add` and `remove` on the daemon's machine, so the Studio
+adds hosts in either build. `[daemon] preview_url` may be a template,
+`https://p{token}.<domain>`, for a proxy that serves wildcard hostnames, and a
+proxied browser's previews of forwarded hosts are relayed by this daemon's
+preview listener over each host's tunnel.
 
-`webbridge --profile local` is the user's local daemon (P4): a unix socket,
-host processes only, and no container machinery. Each project runs its own
+`webbridge` is the user's daemon (P4; one-daemon D1): a unix socket, and agents
+as host processes unless they have a workspace, which runs them in a container
+(a rootless runtime on Linux, or Docker Desktop). Each project runs its own
 `marshal acp --viewers` child, started on the first attach and stopped 30s
 after its last session closes; `POST /api/projects/attach` upgrades a marshal
 client onto that child's viewer socket, relaying its frames unchanged. A
@@ -111,8 +121,8 @@ session, with its index watched, until `marshal daemon unpin`. A fleet agent
 the local daemon starts on a local project runs on that project's child,
 beside the TUI's sessions. The bridge follows each fleet agent's session, so a
 turn started from its session screen shows in the fleet and its requests reach
-the bridge. An agent with a child of its own — a git agent, a workspace agent,
-or any agent while the egress proxy is on — starts that child with a viewer
+the bridge. An agent with a child of its own — a git agent, or a workspace agent —
+starts that child with a viewer
 socket of its own (`<state>/v/a-<hash>.sock`) and opens with `⏎` too. A
 containerized agent serves viewers inside its container on `viewers.sock`,
 beside its control socket, and the bridge's attach dials it on the host side;
@@ -124,25 +134,27 @@ containerized agent". A daemon session screen shows
 shown agent's own — and opening the fleet turns on the bell and the desktop
 notification (`internal/app/notify`, never imported by the TUI).
 
-`marshal fleet --server NAME` runs that same screen on a server-profile bridge
-elsewhere, over TLS. The profiles live in `fleet.toml` in the user's config
-directory (`~/.config/marshal/fleet.toml` by default), which must be private —
-`0600`, owned by the user — and holds no token: a server's token comes from its
-`token_cmd`, or from the keychain, where `marshal fleet login NAME` stores it.
-`marshal fleet add NAME URL` and `marshal fleet remove NAME` write the file,
-keeping its comments.
-Each `[servers.<name>]` table names an `https://` origin (or a loopback
-`http://` one) and may set `ca_file` and `notify`; a table with `relay = "HUB"`
-in place of `url` is reached through HUB, and the fleet screen does not use one
-yet; `[local] notify` turns
-notifications off for the local daemon. The bridge serves the agent attach on
-its network listener behind the bearer token, over TLS or on a loopback
-address, and refuses it 403 elsewhere. `internal/fleetprofile` owns that file.
+`marshal fleet --host NAME` runs that same screen on another machine's daemon,
+reached over SSH (one-daemon D6–D9). The hosts live in `fleet.toml` in the
+user's config directory (`~/.config/marshal/fleet.toml` by default), which must
+be private — `0600`, owned by the user. Each `[hosts.<name>]` table names an
+`ssh` destination as `ssh` takes it, and may set `marshal` (the remote binary's
+path) and `notify`; `[local] notify` turns notifications off for the local
+daemon. `marshal fleet add NAME DEST` and `marshal fleet remove NAME` write the
+file, keeping its comments. A daemon run with `--tunnels` (as `marshal daemon
+install` writes it) runs `marshal daemon tunnels`, which keeps one `ssh -N` per
+host forwarding `<daemon dir>/hosts/<name>.sock` to that host's socket, and
+reports each tunnel in `GET /api/daemon`'s `hosts`. The same `ssh` forwards the
+host's preview listener to a free loopback port, reported as `previewPort`, and
+a preview requested through the tunnel names it in `X-Marshal-Preview-Origin`,
+so the link opens on this machine. `internal/fleetprofile` owns that file, and
+`internal/tunnels` the tunnels.
 
 ### End-to-end and usability suites
 
 ```bash
-python3 scripts/e2e/run_e2e.py --base http://127.0.0.1:7700 --token TOK ...   # see scripts/e2e/README.md
+python3 scripts/e2e/run_e2e.py --base unix:<daemon dir>/web.sock ...   # see scripts/e2e/README.md
+python3 scripts/e2e/run_e2e.py --base http://127.0.0.1:PORT ...       # no token either way
 go test ./test/usability/... -run TestScripted -v -timeout 5m
 ```
 
@@ -176,7 +188,8 @@ App shell & config
   internal/launch/         embedded mode's composition root: the run loop, the agent host on a pipe, the TUI over its client
   internal/daemon/         the local daemon's paths, service units and commands, and its socket's client, attach handshake included
   internal/fleetclient/    the fleet client over the daemon's socket: the fleet screen's read of a bridge
-  internal/fleetprofile/   fleet.toml: server profiles, their token (token_cmd or keychain) and their TLS config
+  internal/fleetprofile/   fleet.toml: the hosts the daemon reaches over SSH, and `[local]`
+  internal/tunnels/        `marshal daemon tunnels`: one ssh forward per fleet.toml host, reported to the daemon
   internal/app/            Embedded() and ServiceDeps(): runtimes, dependency wiring, repo instructions
   internal/app/notify/     the desktop notifier launch gives the fleet's watch (osascript / notify-send)
   internal/app/config/     TOML loading, defaults, merge rules
@@ -251,8 +264,7 @@ Tools & safety
 
 Web control plane
   cmd/webbridge/           HTTP + SSE server supervising `marshal acp` children
-  web/bridge/              bridge subsystems (see the boundary rule below);
-                           `static/` is the embedded Studio build
+  web/bridge/              bridge subsystems (see the boundary rule below)
 
 Native app
   app/                     Flutter app (3.50; Material and Cupertino from the

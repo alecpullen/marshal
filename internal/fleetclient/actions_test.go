@@ -62,14 +62,12 @@ func (b *actionBridge) reply(status int, body string) {
 	b.status, b.answer = status, body
 }
 
-// client is an action client on the recording bridge. token, when not nil, is
-// the transport's bearer-token function.
-func (b *actionBridge) client(token func(ctx context.Context) (string, error)) *Client {
+// client is an action client on the recording bridge.
+func (b *actionBridge) client() *Client {
 	return New(Transport{
 		Server:  "recording",
 		BaseURL: b.srv.URL,
 		HTTP:    b.srv.Client(),
-		Token:   token,
 	})
 }
 
@@ -212,7 +210,7 @@ func TestEachActionSendsItsRoute(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b := newActionBridge(t)
 			b.reply(http.StatusOK, tc.answer)
-			if err := tc.call(t, b.client(nil)); err != nil {
+			if err := tc.call(t, b.client()); err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
 			}
 
@@ -245,7 +243,7 @@ func TestARefusalCarriesTheBridgesSentence(t *testing.T) {
 	b := newActionBridge(t)
 	b.reply(http.StatusConflict, `{"error":"the agent is held by another operator"}`)
 
-	err := b.client(nil).Cancel(context.Background(), "a1")
+	err := b.client().Cancel(context.Background(), "a1")
 
 	var refusal *acpclient.FleetError
 	if !errors.As(err, &refusal) {
@@ -265,7 +263,7 @@ func TestABudgetRefusalSaysWhichBudget(t *testing.T) {
 	b := newActionBridge(t)
 	b.reply(http.StatusTooManyRequests, `{"error":"budget_exceeded","scope":"daily"}`)
 
-	err := b.client(nil).AnswerPermission(context.Background(), "p1", contract.Decision{Approved: true})
+	err := b.client().AnswerPermission(context.Background(), "p1", contract.Decision{Approved: true})
 
 	var refusal *acpclient.FleetError
 	if !errors.As(err, &refusal) {
@@ -284,23 +282,8 @@ func TestALateAnswerIsSettled(t *testing.T) {
 	b := newActionBridge(t)
 	b.reply(http.StatusGone, `{"error":"already answered"}`)
 
-	if err := b.client(nil).DenyIntake(context.Background(), "s1"); !errors.Is(err, acpclient.ErrSettled) {
+	if err := b.client().DenyIntake(context.Background(), "s1"); !errors.Is(err, acpclient.ErrSettled) {
 		t.Fatalf("the late answer is %v, want ErrSettled", err)
-	}
-}
-
-// TestAnActionSendsTheToken: an action carries the transport's bearer token.
-func TestAnActionSendsTheToken(t *testing.T) {
-	b := newActionBridge(t)
-	b.reply(http.StatusOK, `{"status":"cancelled"}`)
-
-	token := func(ctx context.Context) (string, error) { return "tok-1", nil }
-	if err := b.client(token).Cancel(context.Background(), "a1"); err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-
-	if _, _, _, _, auth := b.recorded(); auth != "Bearer tok-1" {
-		t.Fatalf("the action carried %q, want %q", auth, "Bearer tok-1")
 	}
 }
 
@@ -337,7 +320,7 @@ func TestARefusalWithoutASentenceSaysItsStatus(t *testing.T) {
 	b := newActionBridge(t)
 	b.reply(http.StatusConflict, `{}`)
 
-	err := b.client(nil).Cancel(context.Background(), "a1")
+	err := b.client().Cancel(context.Background(), "a1")
 
 	var refusal *acpclient.FleetError
 	if !errors.As(err, &refusal) {
@@ -357,7 +340,7 @@ func TestAnUnreadableAnswerIsAnError(t *testing.T) {
 	b := newActionBridge(t)
 	b.reply(http.StatusOK, `not json`)
 
-	_, err := b.client(nil).Spawn(context.Background(), contract.SpawnRequest{Project: "/repo/a"})
+	_, err := b.client().Spawn(context.Background(), contract.SpawnRequest{Project: "/repo/a"})
 	if err == nil {
 		t.Fatal("an unreadable answer was accepted")
 	}
@@ -406,7 +389,7 @@ func TestAReadRefusesLikeAnActionDoes(t *testing.T) {
 	b := newActionBridge(t)
 	b.reply(http.StatusTooManyRequests, `{"error":"budget_exceeded","scope":"daily"}`)
 
-	_, err := b.client(nil).RecentPrompts(context.Background(), "/repo/a", 5)
+	_, err := b.client().RecentPrompts(context.Background(), "/repo/a", 5)
 
 	var refusal *acpclient.FleetError
 	if !errors.As(err, &refusal) {
@@ -530,7 +513,7 @@ func TestEachFinishingActionSendsItsRoute(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b := newActionBridge(t)
 			b.reply(http.StatusOK, tc.answer)
-			if err := tc.call(t, b.client(nil)); err != nil {
+			if err := tc.call(t, b.client()); err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
 			}
 
@@ -564,7 +547,7 @@ func TestARefusedMergeIsAResult(t *testing.T) {
 	b := newActionBridge(t)
 	b.reply(http.StatusConflict, `{"merged":false,"reason":"dirty"}`)
 
-	got, err := b.client(nil).Merge(context.Background(), "a1", contract.MergeRequest{})
+	got, err := b.client().Merge(context.Background(), "a1", contract.MergeRequest{})
 	if err != nil {
 		t.Fatalf("a refused merge is an error: %v", err)
 	}
@@ -584,7 +567,7 @@ func TestAForeignRefusalKeepsItsSentence(t *testing.T) {
 	b := newActionBridge(t)
 	b.reply(http.StatusConflict, `{"error":"the project is held by another operator"}`)
 
-	got, err := b.client(nil).Merge(context.Background(), "a1", contract.MergeRequest{})
+	got, err := b.client().Merge(context.Background(), "a1", contract.MergeRequest{})
 	if err == nil {
 		t.Fatalf("a foreign 409 answered %+v as a merge result, want an error", got)
 	}
@@ -606,7 +589,7 @@ func TestADiffReadNamesItsPath(t *testing.T) {
 	b := newActionBridge(t)
 	b.reply(http.StatusOK, `{"files":[],"diff":"@@ -1 +1 @@\n-a\n+b\n"}`)
 
-	got, err := b.client(nil).Diff(context.Background(), "a1", "src/a b.go")
+	got, err := b.client().Diff(context.Background(), "a1", "src/a b.go")
 	if err != nil {
 		t.Fatalf("Diff: %v", err)
 	}

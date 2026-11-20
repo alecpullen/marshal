@@ -348,14 +348,6 @@ func NewWorkspace(path string) *Workspace {
 	}
 }
 
-func DefaultWorkspacePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "marshal", "fleet.json"), nil
-}
-
 func (w *Workspace) Load() (string, error) {
 	data, err := os.ReadFile(w.path)
 	if errors.Is(err, os.ErrNotExist) {

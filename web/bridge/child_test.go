@@ -27,6 +27,22 @@ func testContext(t *testing.T) (context.Context, context.CancelFunc) {
 // TestHelperProcess.
 const helperEnv = "GO_WANT_HELPER_PROCESS"
 
+// TestMain sends a re-exec'd helper straight to its fake-child loop.
+//
+// Child.spawn runs the binary as `marshal acp <args>`, so a helper's argv
+// carries "acp" ahead of the -test.run filter. Go's flag parsing stops at that
+// first non-flag argument, so the filter never applies and the whole package
+// would run inside the helper — recursively, because the tests there start
+// helpers of their own. Dispatching here, before m.Run, keeps a helper to the
+// single mode it was started for.
+func TestMain(m *testing.M) {
+	if os.Getenv(helperEnv) == "1" {
+		runHelperChild(os.Getenv("HELPER_MODE"))
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 // TestHelperProcess is not a test: it is the fake ACP child, re-exec'd
 // by the real tests via exec.Command(os.Args[0], ...). Behavior is
 // selected with HELPER_MODE:

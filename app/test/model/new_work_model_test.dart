@@ -185,9 +185,75 @@ void main() {
     expect(model.choices['Permission mode'], 'Act');
     expect(model.choices['Environment'], 'Local');
     expect(model.kind, NewWorkKind.agent);
-    expect(model.canStart, isFalse, reason: 'nothing to start yet');
+    expect(
+      model.canStart,
+      isTrue,
+      reason: 'an agent starts with nothing to do and is told in its thread',
+    );
+    expect(model.promptOptional, isTrue);
     model.dispose();
   });
+
+  test('an agent starts with no prompt at all', () async {
+    final routes = _Routes();
+    final model = routes.model();
+
+    await model.start();
+
+    final request = routes.spawns.single;
+    expect(request.project, '/home/u/marshal');
+    expect(
+      request.prompt,
+      isNull,
+      reason: 'no first turn is sent for an agent that has nothing to do yet',
+    );
+    expect(model.started?.agentID, 'a-9');
+    expect(model.failure, isNull);
+    model.dispose();
+  });
+
+  test('a planning thread and a work item still need the prompt', () async {
+    final routes = _Routes();
+    final model = routes.model();
+
+    for (final kind in [NewWorkKind.planFirst, NewWorkKind.workItem]) {
+      model.selectKind(kind);
+      expect(model.promptOptional, isFalse, reason: '${kind.word} needs text');
+      expect(model.canStart, isFalse, reason: '${kind.word} has none yet');
+
+      await model.start();
+
+      expect(routes.spawns, isEmpty, reason: '${kind.word} started nothing');
+      expect(model.failure, contains('Agent'), reason: '${kind.word} says why');
+    }
+    model.dispose();
+  });
+
+  test(
+    'a missing-prompt message goes when the prompt or kind changes',
+    () async {
+      final model = _Routes().model();
+
+      model.selectKind(NewWorkKind.workItem);
+      await model.start();
+      expect(model.failure, contains('Write what it should do'));
+
+      model.prefill('Review the handoff');
+      expect(
+        model.failure,
+        isNull,
+        reason: 'the prompt now has what Start needs',
+      );
+
+      model.prefill('');
+      await model.start();
+      expect(model.failure, contains('Write what it should do'));
+
+      model.selectKind(NewWorkKind.agent);
+      expect(model.failure, isNull, reason: 'an agent needs no prompt at all');
+      model.dispose();
+    },
+  );
 
   test('the three lists load', () async {
     final model = _Routes().model();

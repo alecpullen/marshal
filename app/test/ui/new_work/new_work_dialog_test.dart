@@ -92,7 +92,9 @@ void main() {
     final (:model, spawns: _) = _dialog();
     await pumpKit(tester, newWorkDialog(model), height: 900);
 
-    final promptY = tester.getTopLeft(find.text('What should it do?')).dy;
+    final promptY = tester
+        .getTopLeft(find.text('What should it do? (optional)'))
+        .dy;
     final chipY = tester.getTopLeft(find.textContaining('Base branch:')).dy;
     expect(promptY, lessThan(chipY));
     expect(find.text('Start'), findsOneWidget);
@@ -131,6 +133,47 @@ void main() {
 
     expect(spawns.single.prompt, 'Fix the login redirect');
     expect(spawns.single.project, '/home/u/marshal');
+
+    model.dispose();
+  });
+
+  testWidgets('Start with the box blank spawns an agent to talk to', (
+    tester,
+  ) async {
+    final (:model, :spawns) = _dialog();
+    await pumpKit(tester, newWorkDialog(model), height: 900);
+
+    // The prompt is optional for an agent: it starts with nothing to do, and
+    // its thread takes the first instruction.
+    await tester.tap(find.text('Start'));
+    await tester.pumpAndSettle();
+
+    expect(spawns.single.project, '/home/u/marshal');
+    expect(spawns.single.prompt, isNull);
+    expect(model.failure, isNull);
+
+    model.dispose();
+  });
+
+  testWidgets('a work item with no text says what it needs', (tester) async {
+    final (:model, :spawns) = _dialog();
+    String? workItem;
+    await pumpKit(
+      tester,
+      newWorkDialog(model, onWorkItem: (prompt) => workItem = prompt),
+      height: 900,
+    );
+
+    // A work item's plan is the prompt, so there is nothing to review yet:
+    // the sheet says so and opens no review.
+    await tester.tap(find.widgetWithText(Btn, 'Work item'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Start'));
+    await tester.pumpAndSettle();
+
+    expect(workItem, isNull, reason: 'no empty plan was handed off');
+    expect(spawns, isEmpty);
+    expect(find.textContaining('Write what it should do'), findsOneWidget);
 
     model.dispose();
   });

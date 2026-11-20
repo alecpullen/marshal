@@ -7,7 +7,9 @@ import '../kit/kit.dart';
 /// The new-work dialog (spec decision 11) as the kit's `Sheet`, ready for
 /// `Sheet.show`:
 ///
-/// - the prompt first, because it is the one thing a person must write;
+/// - the prompt first, because it is the one thing a person must write — and
+///   for an agent it is the one thing they may leave blank, because the thread
+///   can take the first instruction once there is one;
 /// - the kind, with "Plan first" and "Work item" drawn disabled and named as
 ///   F6's;
 /// - the chips, each defaulted from the project and each opening a `Menu`;
@@ -30,6 +32,12 @@ Sheet newWorkDialog(
         if (model.kind == NewWorkKind.workItem) {
           // "Work item" opens the handoff review with the prompt as the
           // plan's starting text (F6 decision 9); nothing is spawned here.
+          // A work item whose box is blank has no plan to review, so the
+          // model says what it needs instead of opening an empty review.
+          if (!model.canStart) {
+            await model.start();
+            return;
+          }
           onWorkItem?.call(model.prompt.trim());
           return;
         }
@@ -114,7 +122,13 @@ class _NewWorkFormState extends State<NewWorkForm> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Field(
-              label: 'What should it do?',
+              // An agent's prompt is optional: the thread takes the first
+              // instruction, so the label says so and Start stays live with
+              // the box blank. A planning thread and a work item use the
+              // prompt as their own text, so theirs is required.
+              label: model.promptOptional
+                  ? 'What should it do? (optional)'
+                  : 'What should it do?',
               controller: _prompt,
               hint: 'Describe the work in a sentence or two',
               onChanged: model.prefill,

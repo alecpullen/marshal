@@ -120,7 +120,14 @@ The stack types are hand-written TypeScript in `lib/stack.ts` today.
     environment, model, permission mode, workspace and host, each defaulted
     from the project and each opening a `Menu`. Issues, recent prompts and
     recipes fill the prompt when chosen. It posts the spawn request and
-    opens the new thread.
+    opens the new thread. For the Agent kind the prompt is **optional**: a
+    person may start with the box blank and say what they want in the new
+    thread, which is what lets them spawn first and talk it through. The
+    request then carries no first turn at all (`prompt` is omitted, not
+    empty), and the bridge spawns an idle agent. "Plan first" and "Work
+    item" use the prompt as their own text — a planning thread's first turn,
+    a work item's plan — so those two still require one, and Start says so
+    on the sheet rather than doing nothing.
 12. **A session the user can only read** — the access route says so — shows
     the transcript with the composer replaced by one line saying why.
 

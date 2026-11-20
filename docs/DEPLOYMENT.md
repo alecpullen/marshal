@@ -104,10 +104,6 @@ marshal.example.com {
 Let `/hooks/`, `/status/` and `/mcp` through without the proxy's login: each
 of them carries its own credential.
 
-Previews are published on a second hostname: `preview_listen` fixes the
-preview listener's loopback port and `preview_url` is the origin preview links
-name (D11).
-
 Set `web_url` to exactly the address the proxy publishes. The web listener
 answers only that host and the loopback names, and refuses a state-changing
 request another site's page made. A misconfigured proxy is recognisable: a
@@ -126,6 +122,36 @@ Keep the proxy's idle timeout above 30 s. The streams send a heartbeat every
 A proxy that answers an expired session with a redirect to its login page is
 read by the Studio as signed out — `signed out: reload to sign in again` — and
 a reload signs in again.
+
+### Previews behind a proxy
+
+Previews are published on a second hostname (D11): set `preview_listen` to a
+fixed loopback port and publish it, and set `preview_url` to the origin
+preview links name.
+
+With wildcard DNS and a wildcard certificate — Caddy on a DNS challenge, or
+Cloudflare — make `preview_url` a template,
+`"https://p{token}.preview.example.com"`, and each preview gets an origin of
+its own:
+
+```
+# wildcard DNS, and one wildcard certificate from a DNS challenge
+*.preview.example.com {
+	tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }
+	reverse_proxy 127.0.0.1:7790
+}
+```
+
+With one hostname, as Tailscale Serve gives, set a plain `preview_url` on a
+second port instead. Previews then share that origin, which is still not the
+Studio's.
+
+Previews carry their own token, so let the preview hostnames past the proxy's
+login, as `/hooks/` is.
+
+A forwarded host's previews come through this daemon, which relays them over
+the host's tunnel, so the host publishes nothing. Both daemons need this
+version.
 
 ## MCP clients
 

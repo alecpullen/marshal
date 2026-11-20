@@ -88,7 +88,10 @@ listener answers only `localhost`, the loopback addresses and `web_url`'s host,
 and refuses a cross-site state-changing request and a non-JSON `/api/` body
 (`web/bridge/webguard.go`). `POST /api/hosts` and `DELETE /api/hosts/<name>`
 run `marshal fleet add` and `remove` on the daemon's machine, so the Studio
-adds hosts in either build.
+adds hosts in either build. `[daemon] preview_url` may be a template,
+`https://p{token}.<domain>`, for a proxy that serves wildcard hostnames, and a
+proxied browser's previews of forwarded hosts are relayed by this daemon's
+preview listener over each host's tunnel.
 
 `webbridge` is the user's daemon (P4; one-daemon D1): a unix socket, and agents
 as host processes unless they have a workspace, which runs them in a container

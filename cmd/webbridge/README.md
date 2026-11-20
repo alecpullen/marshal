@@ -1,11 +1,23 @@
 # webbridge
 
 The fleet control plane. Serves the REST API, the SSE streams, the MCP
-endpoint, and the embedded SPA.
+endpoint, and the Studio.
 
 ```bash
 webbridge --project /path/to/repo --web-listen 127.0.0.1:7700
 ```
+
+The Studio's files are a directory beside the binary, `share/marshal/studio`,
+not an embed: a rebuilt Studio is served at once, with no relink and no
+restart. They are looked for in `<binary dir>/share/marshal/studio`, then
+`<binary dir>/../share/marshal/studio` — so a checkout's `./webbridge` finds the
+build at the repository root, and an installed one finds it under its prefix.
+The binary's symlinks are resolved first, and the first directory holding an
+`index.html` wins. `--studio-dir DIR` overrides the search; a `DIR` without an
+`index.html` is refused at startup. A daemon that finds nothing still serves its
+API, and the Studio's routes answer 503 with a page naming every candidate it
+looked in (one-daemon D12). `GET /api/daemon` reports the resolved directory as
+`studioDir`.
 
 The web listener is off unless you ask for it. It takes `unix` (a `web.sock`
 beside the daemon's own), an absolute socket path, or a loopback `host:port`,
@@ -16,6 +28,7 @@ authenticating a browser (one-daemon D3, D13).
 | Flag | Meaning |
 |---|---|
 | `--web-listen` | the web listener: `unix`, an absolute socket path, or a loopback `host:port` (default: none) |
+| `--studio-dir` | the Studio's files, and must hold an `index.html` (also `WEBBRIDGE_STUDIO_DIR`; default: `<binary dir>/share/marshal/studio`, then `<binary dir>/../share/marshal/studio`) |
 | `--web-group` | share a unix `--web-listen` with this group (`0660`) |
 | `--preview-addr` | loopback address for previews (default: a free port on `127.0.0.1`; `off` disables) |
 | `--preview-url` | the public origin preview links name, for a proxy that publishes previews |

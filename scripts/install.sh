@@ -18,7 +18,8 @@ usage() {
 Usage: install.sh [options]
 
   --version V     install tag V (v0.9.1 or 0.9.1); default: the latest release
-  --prefix DIR    where to put marshal and webbridge (default: ~/.local/bin)
+  --prefix DIR    where to put marshal and webbridge, with the Studio in
+                  DIR/../share/marshal/studio (default: ~/.local/bin)
   --no-daemon     install the binaries only; do not install the daemon
   --uninstall     stop and remove the daemon, then remove the binaries
   -h, --help      this text
@@ -73,6 +74,27 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# PREFIX is a bin directory, so the Studio lives beside it under share/. This
+# is computed once, now that --prefix has had its say.
+STUDIO_DIR="$(dirname "$PREFIX")/share/marshal/studio"
+STUDIO_PARENT="$(dirname "$STUDIO_DIR")"
+
+# The data directory, resolved the way config.DataDir does: MARSHAL_DATA_DIR
+# outright, else XDG_DATA_HOME/marshal, else ~/.local/share/marshal.
+data_dir="${MARSHAL_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/marshal}"
+
+# The default prefix is ~/.local/bin, which puts the Studio in
+# ~/.local/share/marshal/studio — the data directory, and the very path the
+# retired studio daemon (scripts/dev-studio.sh, gone with the one-daemon
+# cutover) kept its state in. Installing there mixes the Studio's files into
+# that state, and --uninstall then removes it with them. A deliberately chosen
+# --prefix is the user's call, so this warns rather than refuses; the prune
+# below, which is this installer's tidying rather than the user's, is skipped.
+studio_in_data=0
+case "$STUDIO_PARENT" in
+"$data_dir" | "$data_dir"/*) studio_in_data=1 ;;
+esac
+
 command -v curl >/dev/null 2>&1 || die "curl is required"
 
 case "$(uname -s)" in
@@ -86,6 +108,15 @@ x86_64 | amd64) arch="amd64" ;;
 arm64 | aarch64) arch="arm64" ;;
 *) die_usage "unsupported architecture: $(uname -m); Marshal ships amd64 and arm64" ;;
 esac
+
+if [ "$studio_in_data" -eq 1 ]; then
+	say "warning: the Studio goes in $STUDIO_DIR, inside Marshal's data directory"
+	say "warning: ($data_dir) — the directory the retired studio daemon kept its state in."
+	say "warning: the one-daemon cutover retires that daemon, whose state was <data>/studio,"
+	say "warning: so an install there mixes the Studio's files into it, and --uninstall"
+	say "warning: removes it with them. Pass --prefix DIR outside the data directory"
+	say "warning: (the default, ~/.local/bin, is not) to keep them apart."
+fi
 
 if [ "$UNINSTALL" -eq 1 ]; then
 	if [ -x "$PREFIX/marshal" ]; then
@@ -111,7 +142,16 @@ if [ "$UNINSTALL" -eq 1 ]; then
 	fi
 	rm -f "$PREFIX/marshal" "$PREFIX/webbridge"
 	say "removed marshal and webbridge from $PREFIX"
-	data_dir="${MARSHAL_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/marshal}"
+	rm -rf "$STUDIO_DIR"
+	say "removed the Studio from $STUDIO_DIR"
+	# Only when they are empty, and only the two directories this installer
+	# created: the Studio's parent (share/marshal) and its grandparent
+	# (share). Neither is pruned when they sit inside the data directory,
+	# which this installer did not create and does not tidy.
+	if [ "$studio_in_data" -eq 0 ]; then
+		rmdir "$STUDIO_PARENT" 2>/dev/null || true
+		rmdir "$(dirname "$STUDIO_PARENT")" 2>/dev/null || true
+	fi
 	say "kept your data in $data_dir"
 	say "delete it with: rm -rf \"$data_dir\""
 	exit 0
@@ -182,6 +222,22 @@ install -m 0755 "$tmp/out/webbridge" "$PREFIX/webbridge" ||
 	die "could not install $PREFIX/webbridge"
 
 say "installed $("$PREFIX/marshal" --version) in $PREFIX"
+
+studio_member="share/marshal/studio/index.html"
+[ -f "$tmp/out/$studio_member" ] ||
+	die "$archive does not contain $studio_member"
+studio_parent="$(dirname "$STUDIO_DIR")"
+mkdir -p "$studio_parent" 2>/dev/null || die "cannot create $studio_parent"
+[ -w "$studio_parent" ] ||
+	die "cannot write to $studio_parent; rerun with a --prefix DIR whose parent you own"
+rm -rf "$STUDIO_DIR.new"
+cp -R "$tmp/out/share/marshal/studio" "$STUDIO_DIR.new" ||
+	die "could not copy the Studio to $STUDIO_DIR.new"
+rm -rf "$STUDIO_DIR"
+mv "$STUDIO_DIR.new" "$STUDIO_DIR" ||
+	die "could not move the Studio into $STUDIO_DIR"
+say "installed the Studio in $STUDIO_DIR"
+
 case ":$PATH:" in
 *":$PREFIX:"*) ;;
 *) say "add $PREFIX to your PATH: export PATH=\"$PREFIX:\$PATH\"" ;;

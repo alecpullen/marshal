@@ -135,6 +135,67 @@ func TestParseConfigReadsTheWebListener(t *testing.T) {
 	}
 }
 
+// studioIndexBody is what writeStudioIndex puts in a Studio's index.html: a
+// marker the tests look for in what GET / answers.
+const studioIndexBody = "<!doctype html><title>Marshal Studio</title>\n"
+
+// writeStudioIndex makes dir a Studio directory — one holding the index.html
+// the daemon serves at / — and answers it.
+func writeStudioIndex(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(studioIndexBody), 0o644); err != nil {
+		t.Fatalf("write the Studio's index.html: %v", err)
+	}
+	return dir
+}
+
+// TestParseConfigReadsTheStudioDir: --studio-dir and WEBBRIDGE_STUDIO_DIR
+// name the Studio's files, and a directory that holds no index.html is
+// refused, naming the path it was given (D12).
+func TestParseConfigReadsTheStudioDir(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	studio := writeStudioIndex(t, t.TempDir())
+
+	cfg, err := parseConfig([]string{"--studio-dir", studio}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig --studio-dir: %v", err)
+	}
+	if cfg.studioDir != studio {
+		t.Errorf("studioDir = %q, want %q", cfg.studioDir, studio)
+	}
+
+	t.Setenv("WEBBRIDGE_STUDIO_DIR", studio)
+	cfg, err = parseConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig WEBBRIDGE_STUDIO_DIR: %v", err)
+	}
+	if cfg.studioDir != studio {
+		t.Errorf("studioDir = %q from the variable, want %q", cfg.studioDir, studio)
+	}
+
+	// A directory with no index.html is not a Studio: it is refused now,
+	// naming the path, rather than serving a 503 over later.
+	empty := t.TempDir()
+	if _, err := parseConfig([]string{"--studio-dir", empty}, io.Discard); err == nil {
+		t.Fatalf("--studio-dir %s accepted with no index.html", empty)
+	} else if !strings.Contains(err.Error(), empty) || !strings.Contains(err.Error(), "index.html") {
+		t.Errorf("error %q does not name %s and the index.html it lacks", err, empty)
+	}
+
+	// Nor is one whose index.html is not a regular file: a directory of that
+	// name stats fine, and would be served as the Studio's front page.
+	notFile := t.TempDir()
+	if err := os.Mkdir(filepath.Join(notFile, "index.html"), 0o755); err != nil {
+		t.Fatalf("make index.html a directory: %v", err)
+	}
+	if _, err := parseConfig([]string{"--studio-dir", notFile}, io.Discard); err == nil {
+		t.Fatalf("--studio-dir %s accepted with a directory called index.html", notFile)
+	} else if !strings.Contains(err.Error(), notFile) || !strings.Contains(err.Error(), "index.html") {
+		t.Errorf("error %q does not name %s and the index.html it refuses", err, notFile)
+	}
+}
+
 // TestTheTokenAndTLSFlagsAreRefused: the token and TLS flags retired with the
 // TCP listener are refused, whether the command line or the variable carried
 // them, naming --web-listen and the proxy that goes in front of it (D2, D3).

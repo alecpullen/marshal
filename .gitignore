@@ -3,6 +3,8 @@ kimi-api
 /marshal
 /webbridge
 /bin/
+# the Studio's web build (flutter build web --output ../share/marshal/studio)
+/share/
 # GoReleaser build output
 /dist/
 /node_modules/

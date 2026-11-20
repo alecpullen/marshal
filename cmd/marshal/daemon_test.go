@@ -738,11 +738,11 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 		t.Errorf("client socket = %q, want %q", gotSocket, socket)
 	}
 	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
-	// The daemon's three lines, then its refresh helper's, then its web line,
-	// then each child's, the held restart and the warned child's warning
-	// included.
-	if len(lines) != 9 {
-		t.Fatalf("status printed %d lines, want 9:\n%s", len(lines), stdout.String())
+	// The daemon's three lines, then its refresh helper's, then its web and
+	// Studio lines, then each child's, the held restart and the warned child's
+	// warning included.
+	if len(lines) != 10 {
+		t.Fatalf("status printed %d lines, want 10:\n%s", len(lines), stdout.String())
 	}
 	if !strings.Contains(lines[0], "running") || !strings.Contains(lines[0], "4242") {
 		t.Errorf("service line = %q, want the running state and its pid", lines[0])
@@ -773,26 +773,31 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 	if want := "web: off"; lines[4] != want {
 		t.Errorf("web line = %q, want %q", lines[4], want)
 	}
+	// The Studio's line follows the web line's; this daemon found no files,
+	// which it says rather than leaving a blank.
+	if want := "studio: no files found (reinstall Marshal, or build them: see AGENTS.md)"; lines[5] != want {
+		t.Errorf("studio line = %q, want %q", lines[5], want)
+	}
 
 	// The first child runs another build with a held restart and carries a
 	// warning: its line names its own version, this marshal's, and its one
 	// session; the restart follows it, then the warning, both indented.
-	if want := "child /work/three: version 2.0.0, 1 session (this marshal 0.9.0)"; lines[5] != want {
-		t.Errorf("child line = %q, want %q", lines[5], want)
+	if want := "child /work/three: version 2.0.0, 1 session (this marshal 0.9.0)"; lines[6] != want {
+		t.Errorf("child line = %q, want %q", lines[6], want)
 	}
-	if want := "  restart pending: a new build, config changed, waiting for 2 sessions"; lines[6] != want {
-		t.Errorf("restart line = %q, want %q under the child's", lines[6], want)
+	if want := "  restart pending: a new build, config changed, waiting for 2 sessions"; lines[7] != want {
+		t.Errorf("restart line = %q, want %q under the child's", lines[7], want)
 	}
-	if want := "  environment: " + warning; lines[7] != want {
-		t.Errorf("warning line = %q, want %q", lines[7], want)
+	if want := "  environment: " + warning; lines[8] != want {
+		t.Errorf("warning line = %q, want %q", lines[8], want)
 	}
 	// The second child runs this marshal's version with no sessions, no
 	// warning and no restart: no "(this marshal ...)" aside, and no second
 	// line.
-	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[8] != want {
-		t.Errorf("child line = %q, want %q", lines[8], want)
+	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[9] != want {
+		t.Errorf("child line = %q, want %q", lines[9], want)
 	}
-	for _, line := range lines[5:] {
+	for _, line := range lines[6:] {
 		if strings.Contains(line, "/work/four") && strings.Contains(line, "this marshal") {
 			t.Errorf("child line = %q, want no version aside for a child running this marshal", line)
 		}
@@ -1967,6 +1972,64 @@ func TestDaemonStatusReportsTheWebListener(t *testing.T) {
 			// It follows the refresh helper's line.
 			if refreshAt < 0 || refreshAt+1 >= len(lines) || lines[refreshAt+1] != tc.want {
 				t.Errorf("web line does not follow the refresh line:\n%s", stdout.String())
+			}
+		})
+	}
+}
+
+// TestDaemonStatusNamesTheStudioDir pins the status's Studio line (D12): the
+// directory the daemon serves it from, and — when it serves none — that there
+// are no files, with the two ways to get them, rather than an empty path.
+func TestDaemonStatusNamesTheStudioDir(t *testing.T) {
+	cases := []struct {
+		name string
+		info daemon.Info
+		want string
+	}{
+		{
+			name: "files",
+			info: daemon.Info{StudioDir: "/usr/share/marshal/studio"},
+			want: "studio: /usr/share/marshal/studio",
+		},
+		{
+			name: "no files",
+			want: "studio: no files found (reinstall Marshal, or build them: see AGENTS.md)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			daemonTestEnv(t)
+			fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+				return []byte("state = running\npid = 4242\n"), nil
+			})
+			fakeDaemonSocket(t, fakeDaemonClient{info: tc.info})
+
+			var stdout, stderr bytes.Buffer
+			if err := runDaemon(context.Background(), []string{"status"},
+				strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("runDaemon status: %v\nstderr: %s", err, stderr.String())
+			}
+
+			lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+			var studioLines []string
+			webAt := -1
+			for i, line := range lines {
+				if strings.HasPrefix(line, "studio:") {
+					studioLines = append(studioLines, line)
+				}
+				if strings.HasPrefix(line, "web:") {
+					webAt = i
+				}
+			}
+			if len(studioLines) != 1 {
+				t.Fatalf("status printed %d studio lines, want 1:\n%s", len(studioLines), stdout.String())
+			}
+			if studioLines[0] != tc.want {
+				t.Errorf("studio line = %q, want %q", studioLines[0], tc.want)
+			}
+			// It follows the web line's.
+			if webAt < 0 || webAt+1 >= len(lines) || lines[webAt+1] != tc.want {
+				t.Errorf("studio line does not follow the web line:\n%s", stdout.String())
 			}
 		})
 	}

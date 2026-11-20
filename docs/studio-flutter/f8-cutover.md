@@ -1,5 +1,8 @@
 # F8 — cutover
 
+Superseded in part by one-daemon D12 (2026-11-20): the Studio is served from
+share/marshal/studio, not embedded.
+
 Status: **done**, 2026-11-17. Authored against `main` at `f2ea2717`, ahead of
 F0–F7, and executed after the trial: decision 1 records the cutover being taken
 and the size exception it accepts. Part of [the Studio programme](programme.md).

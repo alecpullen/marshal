@@ -109,6 +109,9 @@ type config struct {
 	// tunnels runs `<marshal-bin> daemon tunnels` beside the bridge
 	// (one-daemon D7).
 	tunnels bool
+	// studioDir is --studio-dir: the Studio's files, served at /. Empty
+	// means the search beside this binary (bridge.FindStudioDir, D12).
+	studioDir string
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -157,6 +160,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	egress := fs.String("egress", envOr("WEBBRIDGE_EGRESS", "off"), "egress proxy for agents: on or off")
 	baoCAFile := fs.String("bao-ca-file", envOr("WEBBRIDGE_BAO_CA_FILE", ""), "extra CA certificate to trust for OpenBao")
 	publicURL := fs.String("public-url", envOr("WEBBRIDGE_PUBLIC_URL", ""), "externally reachable base URL, used for links in outbound notifications")
+	studioDir := fs.String("studio-dir", envOr("WEBBRIDGE_STUDIO_DIR", ""), "the Studio's files (default: share/marshal/studio beside or above this binary)")
 	// The relay and the joiner are retired (one-daemon D6): a remote daemon
 	// is a host reached over SSH, not a bridge that dials in or is dialled.
 	// --relay-join is refused; it stays declared so the refusal names the
@@ -197,7 +201,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	cfg := config{socket: *socket, webListen: *webListen, webGroup: *webGroup, previewAddr: *previewAddr, previewURL: *previewURL, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
 		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL,
-		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh, tunnels: *tunnels}
+		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh, tunnels: *tunnels, studioDir: *studioDir}
 	pm, err := parseProjectMounts(projectMounts)
 	if err != nil {
 		return config{}, err
@@ -229,6 +233,15 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if cfg.previewURL != "" {
 		if err := bridge.CheckPreviewURL(cfg.previewURL); err != nil {
 			return config{}, err
+		}
+	}
+	// A given Studio directory must be one: the daemon serves these files at
+	// /, so a path with no index.html is a mistake to name now rather than to
+	// answer 503 over later.
+	if cfg.studioDir != "" {
+		info, err := os.Stat(filepath.Join(cfg.studioDir, "index.html"))
+		if err != nil || !info.Mode().IsRegular() {
+			return config{}, fmt.Errorf("--studio-dir %s: no index.html there; that directory must hold the Studio's files", cfg.studioDir)
 		}
 	}
 	if cfg.egress != "on" && cfg.egress != "off" {
@@ -690,6 +703,28 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fleet.StartScheduler(nil)
 
 	api := bridge.NewServer(fleet, cfg.publicURL, bridge.NewFactoryAPI(factoryStore, factoryController, fleet))
+
+	// The Studio is a directory of files, served at / by the one Server the
+	// socket and the web listener share (D12). A given --studio-dir is
+	// served as it is; otherwise the search runs beside this binary. A daemon
+	// that finds none still serves, answering / with the page that says
+	// where it looked.
+	studioDir, studioLooked := cfg.studioDir, []string(nil)
+	if cfg.studioDir != "" {
+		studioLooked = []string{cfg.studioDir}
+	} else if exe, exeErr := ownExecutable(); exeErr != nil {
+		// No binary to look beside: nothing was searched, so there is
+		// nothing to name as looked in.
+		slog.Default().Warn("webbridge: no Studio files found: cannot find the executable to look beside it", "err", exeErr)
+	} else {
+		studioDir, studioLooked = bridge.FindStudioDir(exe)
+	}
+	api.SetStudioDir(studioDir, studioLooked)
+	if studioDir != "" {
+		slog.Default().Info("webbridge: serving the Studio from " + studioDir)
+	} else if studioLooked != nil {
+		slog.Default().Warn("webbridge: no Studio files found; looked in " + strings.Join(studioLooked, ", "))
+	}
 
 	// serveErr carries the first listener to stop serving. The socket and
 	// the web listener can both exist, so it holds two, and each goroutine

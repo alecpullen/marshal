@@ -60,6 +60,10 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 		out.Refresh = &DaemonRefresh{PID: pid, Restarts: restarts}
 	}
 	out.Hosts = s.reportedHosts()
+	// The Studio's directory is read from the server, not the info: a
+	// daemon serves whatever directory it was given, and answers "" when it
+	// found no files (one-daemon D12).
+	out.StudioDir = s.studioDir
 	writeJSON(w, http.StatusOK, out)
 }
 

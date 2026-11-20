@@ -1,25 +1,26 @@
 """Group I — the Studio's shell and the API's boundaries.
 
-The bridge embeds the Studio's web build into its own binary
-(`web/bridge/assets.go`, `//go:embed static`). Since F8's cutover that build is
-the Flutter Studio's; the Svelte one, and the checks that grepped its bundle,
-went with it.
+The daemon serves the Studio's web build from its Studio directory
+(`share/marshal/studio`, found beside or above its binary), naming it in
+`GET /api/daemon`'s `studioDir`. Since F8's cutover that build is the Flutter
+Studio's; the Svelte one, and the checks that grepped its bundle, went with it.
 
 What is still worth pinning at the boundary a browser actually gets:
 
+- the daemon names the directory its Studio comes from;
 - the document at `/` is the Studio's index, never cached, and a client-side
   route falls back to it rather than 404ing;
-- a real build's bootstrap is served by this bridge, and the rendering engine
+- a real build's bootstrap is served by this daemon, and the rendering engine
   is not fetched from a CDN — the one defect that left the Studio blank on a
   private network that cannot reach gstatic;
 - `/api` belongs to the mux: an unknown path is a JSON 404 and never the shell,
   and `/mcp` keeps its own per-client authentication.
 
 The web listener serves /api with no bearer, so nothing here sends one.
-A Go-only checkout embeds a placeholder index instead of a build, so the checks
-that need the real bootstrap skip there rather than passing vacuously. The
-table in `docs/studio-flutter/f8-cutover.md` accounts for each retired Svelte
-check.
+A daemon with no Studio files answers 503 with a page naming where it looked,
+so the checks that need the real bootstrap skip there rather than passing
+vacuously. The table in `docs/studio-flutter/f8-cutover.md` accounts for each
+retired Svelte check.
 """
 
 from __future__ import annotations
@@ -28,13 +29,34 @@ import re
 
 from harness import Skip, Suite
 
-# A real Studio document names its bootstrap; the placeholder names none.
+# A real Studio document names its bootstrap; the no-files page names none.
 _BOOTSTRAP = re.compile(r'<script[^>]+src="([^"]*flutter_bootstrap\.js)"')
 
 # The engine is fetched at run time. With `--no-web-resources-cdn` the build
-# carries it itself; without that flag it points at gstatic, and a network that
-# cannot reach the CDN never starts the Studio.
-_CDN = re.compile(r"gstatic\.com|fonts\.gstatic|cdn\.jsdelivr")
+# ships it itself — canvaskit/canvaskit.wasm beside the shell, and a bootstrap
+# whose build config sets this flag; without that flag the bootstrap leaves the
+# flag false and the engine comes from gstatic, so a network that cannot reach
+# the CDN never starts the Studio.
+#
+# A hostname search cannot ask this question: a *correct* build still spells
+# gstatic out in the bootstrap's dead branch
+# (`useLocalCanvasKit?E("https://www.gstatic.com/flutter-canvaskit",…)`), in
+# flutter.js.map's copied source, and as the engine's default font base. The
+# flag is what separates the two builds, and only the flag: Flutter 3.50 copies
+# canvaskit/ into a default build as well, so the wasm's presence alone says
+# nothing about where the engine is fetched from. Both are still checked here —
+# the flag for the CDN, the bytes for a serve that silently fell back to
+# index.html.
+_LOCAL_CANVASKIT = '"useLocalCanvasKit":true'
+
+# The engine's entry file, as the bootstrap names it for a build that carries
+# its own: a path relative to the document, so a same-origin path here.
+_ENGINE = "/canvaskit/canvaskit.wasm"
+
+# A wasm module starts with this: `\0asm` and the format version. Checking it
+# keeps the check from passing vacuously — a static handler that cannot find a
+# file falls back to index.html with a 200, which is HTML, not the engine.
+_WASM_MAGIC = "\0asm"
 
 
 def _bootstrap_path(html: str) -> str | None:
@@ -48,6 +70,36 @@ def _bootstrap_path(html: str) -> str | None:
 
 def register(s: Suite) -> None:
     s.area("I studio shell")
+
+    def studio_dir_is_named(c) -> None:
+        """The daemon says which directory it serves the Studio from.
+
+        `studioDir` is `omitempty` on the wire, so a current daemon that found
+        no Studio files omits it exactly as a daemon that predates the field
+        does. Absence therefore cannot be read as "old daemon": a check that
+        skipped on it would skip a broken install too, and call a daemon
+        serving nothing old. `webListen` is the marker that separates them —
+        a daemon new enough to serve the Studio from a directory reports the
+        listener it serves it on, so `webListen` without `studioDir` is a
+        failure, and only a daemon without `webListen` skips.
+        """
+        r = c.client.get("/api/daemon")
+        body = s.expect_ok(r, request="GET /api/daemon")
+        if not isinstance(body, dict):
+            s.expect(False, "GET /api/daemon did not answer a JSON object", response=body)
+        if "webListen" not in body:
+            raise Skip(
+                "this daemon reports no webListen, so it predates serving the "
+                "Studio from a directory at all"
+            )
+        s.expect(
+            bool(str(body.get("studioDir") or "").strip()),
+            "the daemon serves no Studio files: it reports webListen "
+            f"({body.get('webListen')!r}) but no studioDir, so GET / answers "
+            "the page naming the directories it looked in",
+            request="GET /api/daemon",
+            response=body,
+        )
 
     def studio_shell_is_served(c) -> None:
         """The root document is the Studio's index, not the retired one."""
@@ -74,10 +126,10 @@ def register(s: Suite) -> None:
         c.set("studio_index", r.raw)
 
     def bootstrap_is_served(c) -> None:
-        """A real build's bootstrap must resolve from this bridge."""
+        """A real build's bootstrap must resolve from this daemon."""
         path = _bootstrap_path(c.get("studio_index") or "")
         if path is None:
-            raise Skip("the embedded tree is the placeholder, not a Studio build")
+            raise Skip("the daemon serves no Studio build, so there is no bootstrap")
         r = c.client.get(path)
         s.expect_status(r, 200, request=f"GET {path}")
         s.expect(
@@ -89,24 +141,41 @@ def register(s: Suite) -> None:
     def engine_is_not_fetched_from_a_cdn(c) -> None:
         """The engine must come from this bridge, or a private network fails.
 
-        A build made without `--no-web-resources-cdn` fetches CanvasKit from
-        gstatic at run time. On a network that cannot reach it the Studio never
-        starts at all, which is invisible on a development host with a route to
-        the internet.
+        A build made without `--no-web-resources-cdn` leaves the local-engine
+        flag false and fetches CanvasKit from gstatic at run time. On a network
+        that cannot reach it the Studio never starts at all, which is invisible
+        on a development host with a route to the internet. Two facts tell the
+        two builds apart, and both must hold: the served bootstrap says the
+        engine is local, and the engine itself is a file this daemon serves.
         """
         path = _bootstrap_path(c.get("studio_index") or "")
         if path is None:
-            raise Skip("the embedded tree is the placeholder, not a Studio build")
+            raise Skip("the daemon serves no Studio build, so there is no bootstrap")
         r = c.client.get(path)
         if r.status != 200:
             raise Skip(f"the bootstrap {path} is not served (HTTP {r.status})")
-        found = _CDN.search(r.raw)
         s.expect(
-            found is None,
-            f"the served Studio fetches {found.group(0) if found else ''} from a "
+            _LOCAL_CANVASKIT in r.raw,
+            f"the served Studio does not name its own CanvasKit engine: {path} "
+            f"carries no {_LOCAL_CANVASKIT}, so the engine is fetched from a "
             "CDN; build it with --no-web-resources-cdn",
             request=f"GET {path}",
-            response=found.group(0) if found else "",
+            response=next(
+                (line for line in r.raw.splitlines() if "CanvasKit" in line),
+                r.raw[:200],
+            ),
+        )
+        # The engine's own first bytes, not just its status: the static handler
+        # falls back to index.html with a 200 for a path it cannot find, so a
+        # status alone would pass vacuously on a build that ships no engine.
+        engine = c.client.get(_ENGINE, headers={"Range": "bytes=0-7"})
+        s.expect(
+            engine.status in (200, 206) and engine.raw.startswith(_WASM_MAGIC),
+            f"the served Studio has no local CanvasKit engine: GET {_ENGINE} "
+            f"answered HTTP {engine.status} with {engine.raw[:8]!r}, so the "
+            "engine is fetched from a CDN; build it with --no-web-resources-cdn",
+            request=f"GET {_ENGINE}",
+            response=engine.raw[:200],
         )
 
     def index_is_not_cached(c) -> None:
@@ -157,6 +226,7 @@ def register(s: Suite) -> None:
             request="GET /preview/anything",
         )
 
+    s.check("the daemon names its Studio directory", studio_dir_is_named)
     s.check("the root document is the Studio's index", studio_shell_is_served)
     s.check("the Studio's bootstrap resolves", bootstrap_is_served)
     s.check("the Studio does not fetch its engine from a CDN", engine_is_not_fetched_from_a_cdn)

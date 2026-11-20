@@ -226,7 +226,9 @@ directory, and with none set the Studio's routes answer the no-files page.
 
 **Verify:**
 - `go test ./web/bridge/... -count=1` passes.
-- `grep -rn 'go:embed' web/` prints nothing.
+- `grep -rn 'go:embed static' web/` prints nothing — the Studio's embed is
+  gone. The status page's template (`web/bridge/status.go`) is the one embed
+  that stays; it is a different feature.
 - `go build ./cmd/webbridge` succeeds on a tree with no `web/bridge/static`.
 
 ## Task 2: `webbridge` finds its Studio

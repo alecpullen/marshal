@@ -666,6 +666,7 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	fmt.Fprintln(stdout, daemonRefreshLine(info))
 	fmt.Fprintln(stdout, daemonWebLine(info))
+	fmt.Fprintln(stdout, daemonStudioLine(info))
 	for _, host := range info.Hosts {
 		fmt.Fprintln(stdout, daemonHostLine(host))
 	}
@@ -932,6 +933,18 @@ func daemonWebLine(info daemon.Info) string {
 		return "web: " + info.WebListen
 	}
 	return fmt.Sprintf("web: %s (loopback: every account on this machine can reach it)", info.WebListen)
+}
+
+// daemonStudioLine renders the Studio's directory for `marshal daemon status`
+// (one-daemon D12): where the daemon serves the Studio from, or — when it
+// found no files — that there are none, with the two ways to get them, because
+// a daemon serving no Studio has nothing to point at and the reader needs to
+// know which of the two situations they are in.
+func daemonStudioLine(info daemon.Info) string {
+	if info.StudioDir == "" {
+		return "studio: no files found (reinstall Marshal, or build them: see AGENTS.md)"
+	}
+	return "studio: " + info.StudioDir
 }
 
 // daemonHostLine renders one host's tunnel for `marshal daemon status`

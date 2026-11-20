@@ -486,6 +486,40 @@ func TestAForwardedPreviewIsRecorded(t *testing.T) {
 	}
 }
 
+// TestAFromThisMachinePreviewIssueIsNotRecorded: a caller on this machine is
+// given the host's own preview port as the way back, so the link it gets back
+// names the tunnel rather than this daemon's preview_url, and nothing is
+// recorded for the relay (one-daemon open question 1).
+func TestAFromThisMachinePreviewIssueIsNotRecorded(t *testing.T) {
+	s := NewServer(testFleet(t), "https://studio.example.com")
+	if err := s.SetPreviewURL("https://p{token}.preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	tok := strings.Repeat("ab", 24)
+	issued := "https://p" + tok + ".preview.example.com/preview/a1/3000/"
+	tunnel := newFakeTunnel(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"url": issued})
+	}))
+	host := liveHost("box", tunnel.socket)
+	host.PreviewPort = 54400
+	reportHosts(t, s, host)
+
+	rec := forwardPreviewIssue(t, s, "localhost:7700", "a1", 3000)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the forwarded issue = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	seen := tunnel.next(t)
+	if got, want := seen.header.Get(contract.PreviewOriginHeader), "http://localhost:54400"; got != want {
+		t.Fatalf("the hop carried %q, want %q: a caller on this machine names the host's own port", got, want)
+	}
+	s.relaysMu.Lock()
+	defer s.relaysMu.Unlock()
+	if len(s.relaysByToken) != 0 || len(s.relaysByAgent) != 0 {
+		t.Fatalf("a from-this-machine issue recorded %d links by token and %d by agent, want none",
+			len(s.relaysByToken), len(s.relaysByAgent))
+	}
+}
+
 // TestASharedOriginPreviewIsRecordedByItsToken: a link on a shared origin
 // carries its token in ?t=, and is recorded under that token (one-daemon open
 // question 1).

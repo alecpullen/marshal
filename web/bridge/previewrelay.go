@@ -11,6 +11,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -30,6 +32,39 @@ const maxPreviewRelays = 1024
 // answers with the link it issued, and nothing larger is one this daemon
 // records.
 const maxPreviewIssueBody = 64 << 10
+
+// maxPreviewRelayToken bounds the token a recorded link may carry: a preview
+// token is 24 bytes of lower-case hex, and nothing longer than this is one this
+// daemon could have issued.
+const maxPreviewRelayToken = 128
+
+// previewRelayDialTimeout bounds a relayed request's dial of the host's preview
+// port on this machine, so a port that does not answer is given up on.
+const previewRelayDialTimeout = 10 * time.Second
+
+// previewRelayHeaderTimeout bounds a relayed request's wait for the host's
+// first response header, and only that: once the headers are in, a preview's
+// event stream or its websocket carries on streaming without a bound.
+const previewRelayHeaderTimeout = 30 * time.Second
+
+// previewRelayTransport carries the relays: one connection pool for every
+// relayed preview, so a page's assets reuse the connection they opened, with
+// the hop's wait for an answer bounded (a tunnel whose far end is wedged would
+// otherwise park the relay's goroutine for as long as it stayed wedged). It is
+// a variable so a test can bound the wait it watches.
+var previewRelayTransport = newPreviewRelayTransport(previewRelayHeaderTimeout)
+
+// newPreviewRelayTransport is the relay's transport, with headerTimeout as the
+// wait for the host's first header.
+func newPreviewRelayTransport(headerTimeout time.Duration) *http.Transport {
+	return &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: previewRelayDialTimeout}).DialContext,
+		ResponseHeaderTimeout: headerTimeout,
+		IdleConnTimeout:       90 * time.Second,
+		// The target is a plain HTTP connection to a loopback port.
+		ForceAttemptHTTP2: false,
+	}
+}
 
 // previewRelay is a preview link a forwarded host issued through this daemon's
 // preview_url, and what this daemon needs to send a request for it back to that
@@ -59,7 +94,10 @@ func (s *Server) previewRelayNow() time.Time {
 
 // recordPreviewRelay records the link a forwarded host issued, so a request for
 // it on this daemon's preview listener is relayed back to that host. A link it
-// cannot read records nothing.
+// cannot read records nothing, and a link that does not name this daemon's own
+// preview origin records nothing either: a host issues its link through the
+// preview_url this daemon gave it, so an entry for any other origin would be a
+// host planting a relay for a link that is not its own.
 func (s *Server) recordPreviewRelay(host, issued string) {
 	u, err := url.Parse(issued)
 	if err != nil {
@@ -69,11 +107,8 @@ func (s *Server) recordPreviewRelay(host, issued string) {
 	if !ok {
 		return
 	}
-	tok, inHost := s.previewHostToken(u.Host)
-	if !inHost {
-		tok = u.Query().Get("t")
-	}
-	if tok == "" {
+	tok, inHost, ok := s.recordablePreviewOrigin(u)
+	if !ok || !usableRelayToken(tok) {
 		return
 	}
 	now := s.previewRelayNow()
@@ -97,9 +132,66 @@ func (s *Server) recordPreviewRelay(host, issued string) {
 	s.relaysByAgent[previewRelayKey(agentID, port)] = rel
 }
 
+// recordablePreviewOrigin reads the token an issued link carries in its own
+// origin, and reports whether that origin is this daemon's preview origin:
+// this daemon's preview_url template with the token in its host, or, for a
+// plain preview_url, the same scheme, host and port with the token in ?t=.
+// inHost reports that the token is in the link's host.
+func (s *Server) recordablePreviewOrigin(u *url.URL) (tok string, inHost bool, ok bool) {
+	if s.previewURL == "" {
+		return "", false, false
+	}
+	if t, templated, err := parsePreviewTemplate(s.previewURL); templated && err == nil {
+		tok, ok := t.Token(u.Host)
+		return tok, ok, ok
+	}
+	base, err := url.Parse(s.previewURL)
+	if err != nil || !samePreviewOrigin(u, base) {
+		return "", false, false
+	}
+	tok = u.Query().Get("t")
+	return tok, false, tok != ""
+}
+
+// samePreviewOrigin reports whether u names the origin base does: the scheme,
+// the host and the port, a scheme's own default port standing for no port.
+func samePreviewOrigin(u, base *url.URL) bool {
+	if !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Hostname(), base.Hostname()) {
+		return false
+	}
+	return previewOriginPort(u) == previewOriginPort(base)
+}
+
+// previewOriginPort is the port u names, its scheme's default when it names
+// none, and -1 for a port that is not a number.
+func previewOriginPort(u *url.URL) int {
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return -1
+		}
+		return n
+	}
+	return defaultPort(strings.ToLower(u.Scheme))
+}
+
+// usableRelayToken reports whether tok is a token this daemon could have
+// issued: lower-case hex, and no longer than a client sends. A token that is
+// anything else is not recorded.
+func usableRelayToken(tok string) bool {
+	return len(tok) <= maxPreviewRelayToken && isLowerHex(tok)
+}
+
 // previewRelayFor is the relay a request on this daemon's preview listener is
 // for, if any. This daemon's own preview always wins: a token it issued itself
-// is served here, and an agent it has is its own.
+// is served here, and an agent it runs is its own.
+//
+// A token is the credential a link carries, whether it rides in the host, in
+// ?t= or in the preview cookie, and all three are the same token, so a request
+// that carries one is resolved through the table keyed by that token and then
+// held to the path it names: an entry recorded for one agent's link is never
+// served for another agent's path. Only a request with no credential at all
+// falls back to the table keyed by agent and port.
 func (s *Server) previewRelayFor(r *http.Request) (previewRelay, bool) {
 	agentID, port, _, ok := parsePreviewPath(r.URL.Path)
 	if !ok {
@@ -107,10 +199,15 @@ func (s *Server) previewRelayFor(r *http.Request) (previewRelay, bool) {
 	}
 	now := s.previewRelayNow()
 	if tok, inHost := s.previewHostToken(r.Host); inHost {
-		if s.previewTokenValid(tok, agentID, port) {
-			return previewRelay{}, false
-		}
-		return s.relayByToken(tok, now)
+		// The host is where the credential is, and on a localhost name it is
+		// the only place one is accepted.
+		return s.relayForCredential(tok, agentID, port, now)
+	}
+	if tok := r.URL.Query().Get("t"); tok != "" {
+		return s.relayForCredential(tok, agentID, port, now)
+	}
+	if c, err := r.Cookie(previewCookieName(agentID, port)); err == nil && c.Value != "" {
+		return s.relayForCredential(c.Value, agentID, port, now)
 	}
 	if s.fleet != nil {
 		if _, exists := s.fleet.ws.Agent(agentID); exists {
@@ -120,6 +217,21 @@ func (s *Server) previewRelayFor(r *http.Request) (previewRelay, bool) {
 		}
 	}
 	return s.relayByAgent(agentID, port, now)
+}
+
+// relayForCredential is the recorded relay whose token is tok, for the agent
+// and port the request's path names. A token this daemon issued is its own
+// preview, served here rather than relayed, and a token recorded for another
+// agent or port is not this path's to serve.
+func (s *Server) relayForCredential(tok, agentID string, port int, now time.Time) (previewRelay, bool) {
+	if tok == "" || s.previewTokenValid(tok, agentID, port) {
+		return previewRelay{}, false
+	}
+	rel, ok := s.relayByToken(tok, now)
+	if !ok || rel.AgentID != agentID || rel.Port != port {
+		return previewRelay{}, false
+	}
+	return rel, true
 }
 
 // previewTokenValid reports whether tok is a token this daemon issued for the
@@ -258,6 +370,9 @@ func (s *Server) relayPreview(w http.ResponseWriter, r *http.Request, rel previe
 	}
 	target := "127.0.0.1:" + strconv.Itoa(host.PreviewPort)
 	proxy := &httputil.ReverseProxy{
+		// The hop's own transport: the wait for the host to answer at all is
+		// bounded, so a wedged tunnel's far end cannot park this goroutine.
+		Transport: previewRelayTransport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			out := pr.Out
 			out.URL.Scheme, out.URL.Host = "http", target
@@ -271,9 +386,21 @@ func (s *Server) relayPreview(w http.ResponseWriter, r *http.Request, rel previe
 				// those are scoped to the host the browser asked for.
 				out.Host = pr.In.Host
 			}
+			// The caller's credentials are the caller's: a proxy's Basic or
+			// bearer token is not the preview's, and the host authenticates
+			// the link's own credential instead. Cookies stay — they are the
+			// preview's own auth.
+			out.Header.Del("Authorization")
 			// No X-Forwarded-*: the host is the only place this request goes,
 			// and it decides everything else.
 		},
+		// Every preview failure is a plain 404, a relayed one included.
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, _ error) {
+			http.NotFound(w, r)
+		},
+		// The proxied error carries the request's URL, its ?t= token included,
+		// so the hop logs nothing rather than the token to the daemon's log.
+		ErrorLog: log.New(io.Discard, "", 0),
 		// The host's answer is passed back as it is, and a stream is flushed
 		// as it is written.
 		FlushInterval: -1,

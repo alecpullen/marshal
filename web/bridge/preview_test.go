@@ -431,9 +431,13 @@ func TestAPreviewTemplateParses(t *testing.T) {
 		base                   string
 		scheme, prefix, suffix string
 		port                   string
+		// folded is set for a base whose host is not all lower case: DNS is
+		// case-insensitive, so the template normalises the name it emits.
+		folded bool
 	}{
-		{"https://p{token}.preview.example.com", "https", "p", ".preview.example.com", ""},
-		{"http://{token}.p.example.com:8445", "http", "", ".p.example.com", "8445"},
+		{"https://p{token}.preview.example.com", "https", "p", ".preview.example.com", "", false},
+		{"http://{token}.p.example.com:8445", "http", "", ".p.example.com", "8445", false},
+		{"https://P{token}.Preview.Example.com", "https", "p", ".preview.example.com", "", true},
 	} {
 		tmpl, ok, err := parsePreviewTemplate(tc.base)
 		if err != nil || !ok {
@@ -447,7 +451,12 @@ func TestAPreviewTemplateParses(t *testing.T) {
 		}
 		// The template names an origin, and reads the token back out of it.
 		origin := tmpl.Origin("ab12cd")
-		if want := strings.Replace(tc.base, "{token}", "ab12cd", 1); origin != want {
+		want := strings.Replace(tc.base, "{token}", "ab12cd", 1)
+		if tc.folded {
+			if !strings.EqualFold(origin, want) {
+				t.Fatalf("Origin(%q) = %q, want %q", tc.base, origin, want)
+			}
+		} else if origin != want {
 			t.Fatalf("Origin(%q) = %q, want %q", tc.base, origin, want)
 		}
 		u, err := url.Parse(origin)
@@ -480,6 +489,8 @@ func TestAPreviewTemplateParses(t *testing.T) {
 		"https://p.preview.example.com/{token}",        // in the path
 		"ftp://p{token}.preview.example.com",           // not http(s)
 		"p{token}.preview.example.com",                 // no scheme at all
+		"https://{token}.*.preview.example.com",        // a wildcard is no label
+		"https://p{token}.preview.example.com:99999",   // a port out of range
 	} {
 		if _, ok, err := parsePreviewTemplate(base); ok || err == nil {
 			t.Errorf("parsePreviewTemplate(%q) = ok %v, err %v", base, ok, err)
@@ -487,6 +498,12 @@ func TestAPreviewTemplateParses(t *testing.T) {
 		if err := CheckPreviewURL(base); err == nil {
 			t.Errorf("CheckPreviewURL(%q) accepted", base)
 		}
+	}
+	// A refusal names what the operator wrote, not what {token} stands in for.
+	if _, _, err := parsePreviewTemplate("https://p{token}.preview.example.com:99999"); err == nil ||
+		!strings.Contains(err.Error(), "https://p{token}.preview.example.com:99999") ||
+		strings.Contains(err.Error(), "p0.preview.example.com") {
+		t.Errorf("refusal names the substituted URL: %v", err)
 	}
 }
 
@@ -554,6 +571,103 @@ func TestThePreviewListenerReadsATemplatedHost(t *testing.T) {
 	}
 	if len(hits) != 1 {
 		t.Fatalf("a refused request reached the agent: %v", hits)
+	}
+}
+
+// TestAPreviewTemplateOnLocalhostAuthenticates: a template that ends in
+// .localhost is a shape the localhost rule knows no token for (it reads only
+// p<token>.localhost), so the template is consulted first. Its link's host
+// authenticates the agent it was issued for, and a wrong token on the same
+// name is no way in.
+func TestAPreviewTemplateOnLocalhostAuthenticates(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	if err := p.srv.SetPreviewURL("https://{token}.preview.localhost"); err != nil {
+		t.Fatal(err)
+	}
+	hits := 0
+	p.f.previewForward = func(w http.ResponseWriter, r *http.Request, id string, port int, rest string) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	}
+	raw := p.issueURL(t)
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	if u.Scheme != "https" || u.RawQuery != "" {
+		t.Fatalf("issued URL %q, want the template's own origin and no ?t=", raw)
+	}
+	host := u.Hostname()
+	if !strings.HasSuffix(host, ".preview.localhost") {
+		t.Fatalf("host = %q, want <token>.preview.localhost", host)
+	}
+	tok := strings.TrimSuffix(host, ".preview.localhost")
+	if !p.f.previewTokenValid(tok, p.id, 3000) {
+		t.Fatalf("the host carries %q, which is not the token issued", tok)
+	}
+	// The link's own host is the credential: no cookie, no ?t=.
+	if rec := p.do("GET", u.Path, func(r *http.Request) { r.Host = u.Host }); rec.Code != http.StatusNoContent {
+		t.Fatalf("the link's own host = %d %s", rec.Code, rec.Body)
+	}
+	if hits != 1 {
+		t.Fatalf("hits = %d, want the agent reached once", hits)
+	}
+	// Another hex token, one wearing the p the localhost rule wants, and the
+	// bare name are all refused.
+	for _, host := range []string{
+		strings.Repeat("0", 48) + ".preview.localhost",
+		"p" + strings.Repeat("0", 48) + ".preview.localhost",
+		"preview.localhost",
+	} {
+		if rec := p.do("GET", u.Path, func(r *http.Request) { r.Host = host }); rec.Code != http.StatusNotFound {
+			t.Errorf("host %s = %d, want 404", host, rec.Code)
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("a refused host reached the agent: %d", hits)
+	}
+}
+
+// TestAPreviewTemplateTokenNeedsItsPrefix: a host carrying a live token but
+// lacking the template's prefix is not a name the template reads a token from,
+// so with no other credential the listener refuses it. A prefix and suffix that
+// overlap on a short name read no token either, and do not run off the string.
+func TestAPreviewTemplateTokenNeedsItsPrefix(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	if err := p.srv.SetPreviewURL("https://p{token}.preview.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	hits := 0
+	p.f.previewForward = func(w http.ResponseWriter, r *http.Request, _ string, _ int, _ string) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	}
+	raw := p.issueURL(t)
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	tok := strings.TrimSuffix(strings.TrimPrefix(u.Hostname(), "p"), ".preview.example.com")
+	if !p.f.previewTokenValid(tok, p.id, 3000) {
+		t.Fatalf("the host carries %q, which is not the token issued", tok)
+	}
+	// The same live token on the template's suffix, with no prefix, is no
+	// host of this template's: it carries no credential, so it is a 404.
+	if rec := p.do("GET", u.Path, func(r *http.Request) { r.Host = tok + ".preview.example.com" }); rec.Code != http.StatusNotFound {
+		t.Errorf("unprefixed host = %d, want 404", rec.Code)
+	}
+	if hits != 0 {
+		t.Fatalf("an unprefixed host reached the agent")
+	}
+
+	over, ok, err := parsePreviewTemplate("https://p{token}p.evil.com")
+	if err != nil || !ok {
+		t.Fatalf("parsePreviewTemplate = %+v, %v, %v", over, ok, err)
+	}
+	for _, host := range []string{"pp.evil.com", "p.evil.com", "pp.evil.com:8443", "p.evil.com:8443"} {
+		if got, ok := over.Token(host); ok {
+			t.Errorf("Token(%q) = %q, want no token", host, got)
+		}
 	}
 }
 

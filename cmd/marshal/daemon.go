@@ -464,8 +464,11 @@ func daemonPublicURL(key, setting string) (string, error) {
 // origin, or a template with {token} once in its first host label.
 //
 // A template is written into the unit as it stands, and the daemon fills the
-// token in per preview. Its {token} is replaced with a plain one before the
-// origin check, so a template cannot smuggle a path, query or fragment past it.
+// token in per preview. Its {token} is replaced with a plain value and the
+// result is checked with bridge.CheckPreviewURL — the check the daemon makes at
+// its own start — so a template that carries userinfo, a path, a query or a
+// fragment is refused now rather than at every start. The refusal names the
+// setting as it was written, not the substituted value the user never wrote.
 func daemonPreviewURL(setting string) (string, error) {
 	base := strings.TrimSpace(setting)
 	if !strings.Contains(base, "{token}") {
@@ -487,8 +490,8 @@ func daemonPreviewURL(setting string) (string, error) {
 	if strings.Count(base, "{token}") != 1 || !strings.Contains(label, "{token}") {
 		return "", fmt.Errorf("daemon.preview_url: {token} goes once, in the first label of the host, as in https://p{token}.preview.example.com")
 	}
-	if _, err := daemonPublicURL("daemon.preview_url", strings.Replace(base, "{token}", "0", 1)); err != nil {
-		return "", err
+	if err := bridge.CheckPreviewURL(strings.Replace(base, "{token}", "0", 1)); err != nil {
+		return "", fmt.Errorf("daemon.preview_url %q: %v", base, err)
 	}
 	return base, nil
 }

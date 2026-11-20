@@ -1840,6 +1840,39 @@ func TestDaemonInstallRefusesABadPreviewTemplate(t *testing.T) {
 	}
 }
 
+// TestDaemonInstallRefusesAPreviewTemplateThatIsNotAnOrigin: the daemon checks
+// its own --preview-url with bridge.CheckPreviewURL at every start, so install
+// checks the same value — the template with a plain token in place of {token} —
+// and refuses a scheme, userinfo, path, query or fragment now, rather than
+// writing a unit the daemon cannot start on. The refusal names the setting as
+// the user wrote it, not the substituted value they never wrote.
+func TestDaemonInstallRefusesAPreviewTemplateThatIsNotAnOrigin(t *testing.T) {
+	for _, c := range []struct{ name, url, detail string }{
+		{name: "a path", url: "https://p{token}.preview.example.com/x", detail: "an origin carries no path"},
+		{name: "a query", url: "https://p{token}.preview.example.com?a=1", detail: "an origin carries no query"},
+		{name: "a fragment", url: "https://p{token}.preview.example.com#x", detail: "an origin carries no fragment"},
+		{name: "userinfo", url: "https://u@p{token}.preview.example.com", detail: "an origin carries no userinfo"},
+		{name: "another scheme", url: "ftp://p{token}.preview.example.com", detail: "scheme is not http or https"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			home := daemonTestEnv(t)
+			t.Setenv("PATH", "/usr/bin:/bin")
+			daemonWriteUserConfig(t, home, "[daemon]\npreview_url = \""+c.url+"\"\n")
+
+			_, _, err := daemonUnitSpec(daemonTestWebbridge(t), home)
+			if err == nil {
+				t.Fatalf("daemonUnitSpec accepted preview_url %q", c.url)
+			}
+			if want := "daemon.preview_url \"" + c.url + "\""; !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %q, want it to name the setting as %q", err, want)
+			}
+			if !strings.Contains(err.Error(), c.detail) {
+				t.Errorf("error = %q, want it to carry %q", err, c.detail)
+			}
+		})
+	}
+}
+
 // TestDaemonInstallRefusesANetworkWebListener: the daemon runs host processes
 // with the user's authority, so D3 makes it listen on a unix socket or a
 // loopback address only, and install refuses anything else rather than

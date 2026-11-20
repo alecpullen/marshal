@@ -68,6 +68,11 @@ const previewPortsTTL = 10 * time.Second
 // name and a URL path unescaped.
 var agentIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// previewHostLabelRe is a DNS label as a name may carry it: letters, digits
+// and hyphens. url.Parse is laxer (a `*`, `<` or `>` is a host byte to it), and
+// a wildcard belongs in the deployment's DNS, not in a template.
+var previewHostLabelRe = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+
 func (f *Fleet) previewTokens() *previewStore {
 	f.previewOnce.Do(func() {
 		f.previews = &previewStore{tokens: make(map[string]previewToken), ports: make(map[string]previewPortsEntry)}
@@ -362,15 +367,32 @@ func parsePreviewTemplate(base string) (t previewHostTemplate, ok bool, err erro
 	if afterFirst != "" {
 		suffix += "." + afterFirst
 	}
+	// Every label has to be one a name can carry: CheckPreviewURL's own parse
+	// is laxer than that (`*`, `<` and `>` are host bytes to url.Parse), and
+	// the port, when there is one, has to be in range — which url.Parse does
+	// not check either.
+	for _, l := range strings.Split(strings.Replace(host, previewTokenMarker, "0", 1), ".") {
+		if !previewHostLabelRe.MatchString(l) {
+			return refuse(fmt.Sprintf("host label %q is not letters, digits and hyphens", l))
+		}
+	}
 	// Everything else about the base is CheckPreviewURL's business: it has
-	// to be an origin once the placeholder is filled in.
+	// to be an origin once the placeholder is filled in. Its answer names the
+	// filled-in URL, so restate it against the base the operator wrote.
 	checked := strings.Replace(base, previewTokenMarker, "0", 1)
 	if err := CheckPreviewURL(checked); err != nil {
-		return previewHostTemplate{}, false, err
+		why := strings.TrimPrefix(err.Error(), fmt.Sprintf("preview URL %q: ", checked))
+		return refuse(why)
 	}
 	u, err := url.Parse(checked)
 	if err != nil {
 		return previewHostTemplate{}, false, fmt.Errorf("preview URL %q: %w", base, err)
+	}
+	if ps := u.Port(); ps != "" {
+		n, err := strconv.Atoi(ps)
+		if err != nil || n < 1 || n > 65535 {
+			return refuse(fmt.Sprintf("port %s is not in 1-65535", ps))
+		}
 	}
 	return previewHostTemplate{
 		Scheme: u.Scheme,
@@ -597,20 +619,25 @@ func hostPreviewToken(reqHost string) (tok string, local bool) {
 	return label[1:], true
 }
 
-// previewHostToken reads a token from a request's host: the localhost rule
-// hostPreviewToken has, or this daemon's preview_url template. inHost reports
-// that the host is where this request's credential is, so no cookie or ?t=
-// need be consulted (and for a localhost name, none is accepted).
+// previewHostToken reads a token from a request's host: this daemon's
+// preview_url template, or the localhost rule hostPreviewToken has. inHost
+// reports that the host is where this request's credential is, so no cookie or
+// ?t= need be consulted (and for a localhost name, none is accepted).
+//
+// The template is read first, because it is the operator's own statement of
+// what a host names. A template that ends in .localhost — the natural
+// no-wildcard-DNS shape, https://{token}.preview.localhost — is a host the
+// localhost rule has no token for (it knows only p<token>.localhost), so
+// reading that rule first would issue links nothing can authenticate.
 func (s *Server) previewHostToken(host string) (tok string, inHost bool) {
-	if tok, local := hostPreviewToken(host); local {
-		return tok, true
-	}
 	if s.previewURL != "" {
 		if t, ok, err := parsePreviewTemplate(s.previewURL); ok && err == nil {
-			return t.Token(host)
+			if tok, ok := t.Token(host); ok {
+				return tok, true
+			}
 		}
 	}
-	return "", false
+	return hostPreviewToken(host)
 }
 
 // preview authenticates a /preview/… request by token or cookie and then

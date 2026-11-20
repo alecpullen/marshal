@@ -739,10 +739,11 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 		t.Errorf("client socket = %q, want %q", gotSocket, socket)
 	}
 	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
-	// The daemon's three lines, then its refresh helper's, then each
-	// child's, the held restart and the warned child's warning included.
-	if len(lines) != 8 {
-		t.Fatalf("status printed %d lines, want 8:\n%s", len(lines), stdout.String())
+	// The daemon's three lines, then its refresh helper's, then its web line,
+	// then each child's, the held restart and the warned child's warning
+	// included.
+	if len(lines) != 9 {
+		t.Fatalf("status printed %d lines, want 9:\n%s", len(lines), stdout.String())
 	}
 	if !strings.Contains(lines[0], "running") || !strings.Contains(lines[0], "4242") {
 		t.Errorf("service line = %q, want the running state and its pid", lines[0])
@@ -769,26 +770,30 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 	if want := "refresh: running (pid 5151), restarted 2 times"; lines[3] != want {
 		t.Errorf("refresh line = %q, want %q", lines[3], want)
 	}
+	// The web listener's line follows it; this daemon reports none.
+	if want := "web: off"; lines[4] != want {
+		t.Errorf("web line = %q, want %q", lines[4], want)
+	}
 
 	// The first child runs another build with a held restart and carries a
 	// warning: its line names its own version, this marshal's, and its one
 	// session; the restart follows it, then the warning, both indented.
-	if want := "child /work/three: version 2.0.0, 1 session (this marshal 0.9.0)"; lines[4] != want {
-		t.Errorf("child line = %q, want %q", lines[4], want)
+	if want := "child /work/three: version 2.0.0, 1 session (this marshal 0.9.0)"; lines[5] != want {
+		t.Errorf("child line = %q, want %q", lines[5], want)
 	}
-	if want := "  restart pending: a new build, config changed, waiting for 2 sessions"; lines[5] != want {
-		t.Errorf("restart line = %q, want %q under the child's", lines[5], want)
+	if want := "  restart pending: a new build, config changed, waiting for 2 sessions"; lines[6] != want {
+		t.Errorf("restart line = %q, want %q under the child's", lines[6], want)
 	}
-	if want := "  environment: " + warning; lines[6] != want {
-		t.Errorf("warning line = %q, want %q", lines[6], want)
+	if want := "  environment: " + warning; lines[7] != want {
+		t.Errorf("warning line = %q, want %q", lines[7], want)
 	}
 	// The second child runs this marshal's version with no sessions, no
 	// warning and no restart: no "(this marshal ...)" aside, and no second
 	// line.
-	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[7] != want {
-		t.Errorf("child line = %q, want %q", lines[7], want)
+	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[8] != want {
+		t.Errorf("child line = %q, want %q", lines[8], want)
 	}
-	for _, line := range lines[4:] {
+	for _, line := range lines[5:] {
 		if strings.Contains(line, "/work/four") && strings.Contains(line, "this marshal") {
 			t.Errorf("child line = %q, want no version aside for a child running this marshal", line)
 		}
@@ -1679,7 +1684,7 @@ func TestDaemonRejectsUnknownSubcommands(t *testing.T) {
 			if !strings.Contains(err.Error(), c.want) {
 				t.Errorf("error = %q, want it to mention %q", err, c.want)
 			}
-			for _, sub := range []string{"install", "start", "stop", "status", "restart", "join-token", "token", "pin", "unpin", "uninstall"} {
+			for _, sub := range []string{"install", "start", "stop", "status", "restart", "pin", "unpin", "uninstall"} {
 				if !strings.Contains(err.Error(), sub) {
 					t.Errorf("error = %q, want it to list %q", err, sub)
 				}
@@ -1712,147 +1717,221 @@ func daemonWriteUserConfig(t *testing.T, home, body string) {
 	}
 }
 
-// TestDaemonJoinTokenStoresTheSecretPrivately holds `marshal daemon
-// join-token`: the secret arrives on stdin and is stored 0600 under the daemon
-// directory, replacing whatever an earlier run left there — mode included.
-func TestDaemonJoinTokenStoresTheSecretPrivately(t *testing.T) {
-	home := daemonTestEnv(t)
-	paths := daemon.PathsFor(home)
-	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// An earlier secret anyone could read: the new one replaces it and its
-	// mode.
-	if err := os.WriteFile(paths.JoinToken, []byte("old\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(paths.JoinToken, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	if err := runDaemon(context.Background(), []string{"join-token"},
-		strings.NewReader("  s3cret-value  \n"), &stdout, &stderr); err != nil {
-		t.Fatalf("runDaemon join-token: %v\nstderr: %s", err, stderr.String())
-	}
-
-	stored, err := os.ReadFile(paths.JoinToken)
-	if err != nil {
-		t.Fatalf("read the join secret: %v", err)
-	}
-	if got, want := strings.TrimSpace(string(stored)), "s3cret-value"; got != want {
-		t.Errorf("stored secret = %q, want %q", got, want)
-	}
-	fi, err := os.Stat(paths.JoinToken)
-	if err != nil {
-		t.Fatalf("stat the join secret: %v", err)
-	}
-	if perm := fi.Mode().Perm(); perm != 0o600 {
-		t.Errorf("join secret mode = %o, want 600", perm)
-	}
-	if want := "Stored the join secret. Run marshal daemon install to apply it."; !strings.Contains(stdout.String(), want) {
-		t.Errorf("stdout = %q, want it to say %q", stdout.String(), want)
-	}
-}
-
-// TestDaemonTokenRefusesATerminal holds the guard `marshal fleet token` has:
-// a terminal would put the credential in scrollback, so nothing is printed.
-func TestDaemonTokenRefusesATerminal(t *testing.T) {
-	daemonTestEnv(t)
-
-	old := fleetStdoutIsTerminal
-	t.Cleanup(func() { fleetStdoutIsTerminal = old })
-	fleetStdoutIsTerminal = func(io.Writer) bool { return true }
-
-	var stdout, stderr bytes.Buffer
-	err := runDaemon(context.Background(), []string{"token"}, strings.NewReader(""), &stdout, &stderr)
-	if err == nil {
-		t.Fatal("runDaemon token printed a token to a terminal")
-	}
-	for _, want := range []string{"terminal", "marshal daemon token | pbcopy"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %q, want it to carry %q", err, want)
-		}
-	}
-	if stdout.Len() != 0 {
-		t.Errorf("stdout = %q, want nothing", stdout.String())
-	}
-}
-
-// TestDaemonTokenWritesTheTokenToAPipe: `marshal daemon token` hands a program
-// the token file's contents and a newline, and says how a daemon gets a token
-// when there is none yet.
-func TestDaemonTokenWritesTheTokenToAPipe(t *testing.T) {
-	home := daemonTestEnv(t)
-	paths := daemon.PathsFor(home)
-	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	err := runDaemon(context.Background(), []string{"token"}, strings.NewReader(""), &stdout, &stderr)
-	if err == nil {
-		t.Fatalf("runDaemon token succeeded with no token file: stdout %q", stdout.String())
-	}
-	for _, want := range []string{"no token yet", "daemon.studio_addr", "daemon.join_url", "marshal daemon install"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %q, want it to carry %q", err, want)
-		}
-	}
-
-	// The bridge writes the token with a newline of its own; a program reads
-	// exactly one line either way.
-	if err := os.WriteFile(paths.Token, []byte("tok-123\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	stdout.Reset()
-	if err := runDaemon(context.Background(), []string{"token"}, strings.NewReader(""), &stdout, &stderr); err != nil {
-		t.Fatalf("runDaemon token: %v\nstderr: %s", err, stderr.String())
-	}
-	if got, want := stdout.String(), "tok-123\n"; got != want {
-		t.Errorf("stdout = %q, want %q", got, want)
-	}
-}
-
-// daemonStatusInfo builds the document the fake daemon answers with: the wire
-// form the bridge sends, carrying the join joinJSON describes, or none when
-// joinJSON is empty.
-func daemonStatusInfo(t *testing.T, joinJSON string) daemon.Info {
+// daemonInstallUnit runs `marshal daemon install` against the fake service
+// manager and answers the unit it wrote, so a test reads what the daemon will
+// run.
+func daemonInstallUnit(t *testing.T, home string) string {
 	t.Helper()
-	doc := `{"version":"1.0.0","profile":"local","pid":4242,"startedAt":1700000000000`
-	if joinJSON != "" {
-		doc += `,"join":` + joinJSON
+	t.Setenv("PATH", "/usr/bin:/bin")
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return nil, nil
+	})
+	// install waits, briefly, for the daemon to answer; nothing is listening
+	// here, which is the "not answering yet" path.
+	fakeDaemonSocket(t, fakeDaemonClient{err: errors.New("dial unix: no such file or directory")})
+	var out, errOut bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"install", "--webbridge", daemonTestWebbridge(t)},
+		strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatalf("runDaemon install: %v\nstderr: %s", err, errOut.String())
 	}
-	doc += "}"
-
-	var info daemon.Info
-	if err := json.Unmarshal([]byte(doc), &info); err != nil {
-		t.Fatalf("unmarshal the daemon document: %v", err)
+	body, err := os.ReadFile(filepath.Join(home, "Library", "LaunchAgents", "dev.marshal.daemon.plist"))
+	if err != nil {
+		t.Fatalf("read the installed unit: %v", err)
 	}
-	return info
+	return string(body)
 }
 
-// TestDaemonStatusPrintsTheJoin: the text status names the relay the daemon
-// joined and whether it is connected, with its last error when it is not — and
-// says nothing at all for a daemon that joins no relay.
-func TestDaemonStatusPrintsTheJoin(t *testing.T) {
-	cases := []struct {
-		name     string
-		joinJSON string
-		want     string
+// TestDaemonInstallWritesTheWebListener: the five [daemon] settings reach the
+// unit as the arguments that serve them (D3, D10).
+func TestDaemonInstallWritesTheWebListener(t *testing.T) {
+	home := daemonTestEnv(t)
+	t.Setenv("PATH", "/usr/bin:/bin")
+	daemonWriteUserConfig(t, home, "[daemon]\n"+
+		"web_listen = \"/run/user/501/marshal/web.sock\"\n"+
+		"web_group = \"marshal\"\n"+
+		"web_url = \"https://box.example.com\"\n"+
+		"preview_listen = \"127.0.0.1:7790\"\n"+
+		"preview_url = \"https://preview.example.com\"\n")
+
+	spec, _, err := daemonUnitSpec(daemonTestWebbridge(t), home)
+	if err != nil {
+		t.Fatalf("daemonUnitSpec: %v", err)
+	}
+	for _, c := range []struct{ name, got, want string }{
+		{name: "WebListen", got: spec.WebListen, want: "/run/user/501/marshal/web.sock"},
+		{name: "WebGroup", got: spec.WebGroup, want: "marshal"},
+		{name: "PublicURL", got: spec.PublicURL, want: "https://box.example.com"},
+		{name: "PreviewListen", got: spec.PreviewListen, want: "127.0.0.1:7790"},
+		{name: "PreviewURL", got: spec.PreviewURL, want: "https://preview.example.com"},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
+		}
+	}
+
+	// And each is written into the unit as the argument that carries it.
+	unit := daemonInstallUnit(t, home)
+	for _, arg := range [][2]string{
+		{"--web-listen", spec.WebListen},
+		{"--web-group", spec.WebGroup},
+		{"--public-url", spec.PublicURL},
+		{"--preview-addr", spec.PreviewListen},
+		{"--preview-url", spec.PreviewURL},
+	} {
+		pair := "<string>" + arg[0] + "</string>\n\t\t<string>" + arg[1] + "</string>"
+		if !strings.Contains(unit, pair) {
+			t.Errorf("unit does not carry %q after %q:\n%s", arg[1], arg[0], unit)
+		}
+	}
+}
+
+// TestDaemonInstallRefusesANetworkWebListener: the daemon runs host processes
+// with the user's authority, so D3 makes it listen on a unix socket or a
+// loopback address only, and install refuses anything else rather than
+// publishing it and being discovered later.
+func TestDaemonInstallRefusesANetworkWebListener(t *testing.T) {
+	home := daemonTestEnv(t)
+	t.Setenv("PATH", "/usr/bin:/bin")
+	daemonWriteUserConfig(t, home, "[daemon]\nweb_listen = \"0.0.0.0:7788\"\n")
+
+	_, _, err := daemonUnitSpec(daemonTestWebbridge(t), home)
+	if err == nil {
+		t.Fatal("daemonUnitSpec accepted a web listener bound to every interface")
+	}
+	for _, want := range []string{"daemon.web_listen", "unix socket or a loopback address only"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to carry %q", err, want)
+		}
+	}
+
+	// install never reaches the service manager with such a unit.
+	calls := 0
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls++
+		return nil, nil
+	})
+	var out, errOut bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"install", "--webbridge", daemonTestWebbridge(t)},
+		strings.NewReader(""), &out, &errOut); err == nil {
+		t.Fatal("install accepted a web listener bound to every interface")
+	}
+	if calls != 0 {
+		t.Errorf("install reached the service manager %d times, want none", calls)
+	}
+}
+
+// TestDaemonInstallRefusesAWebGroupWithUnix: a group needs a socket path of
+// its own to share, so `unix` — whose socket sits in the private daemon
+// directory — and a loopback address are both refused, naming both keys.
+func TestDaemonInstallRefusesAWebGroupWithUnix(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config string
 	}{
+		{name: "unix", config: "web_listen = \"unix\"\nweb_group = \"marshal\"\n"},
+		{name: "loopback address", config: "web_listen = \"127.0.0.1:7788\"\nweb_group = \"marshal\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := daemonTestEnv(t)
+			daemonWriteUserConfig(t, home, "[daemon]\n"+tc.config)
+
+			_, _, err := daemonUnitSpec(daemonTestWebbridge(t), home)
+			if err == nil {
+				t.Fatalf("daemonUnitSpec accepted daemon.web_group with %q", tc.config)
+			}
+			for _, want := range []string{"daemon.web_group", "daemon.web_listen"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want it to name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestDaemonInstallNamesTheRetiredKeys: a retired [daemon] key is read by
+// nothing (D10, D6), so install says so — with what to do instead — and writes
+// the unit anyway.
+func TestDaemonInstallNamesTheRetiredKeys(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\n"+
+		"studio_addr = \"127.0.0.1:7788\"\n"+
+		"join_url = \"https://relay.example.com\"\n")
+
+	t.Setenv("PATH", "/usr/bin:/bin")
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return nil, nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{err: errors.New("dial unix: no such file or directory")})
+
+	var out, errOut bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"install", "--webbridge", daemonTestWebbridge(t)},
+		strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatalf("runDaemon install: %v\nstderr: %s", err, errOut.String())
+	}
+	for _, want := range []string{
+		"marshal daemon install: daemon.studio_addr is retired and ignored; set daemon.web_listen (docs/one-daemon/design.md D10)",
+		"marshal daemon install: daemon.join_url is retired and ignored; a remote daemon is a host: marshal fleet add",
+	} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Errorf("install's stderr = %q, want it to carry %q", errOut.String(), want)
+		}
+	}
+	if !strings.Contains(out.String(), "unit: ") {
+		t.Errorf("install printed %q, want it to have written the unit anyway", out.String())
+	}
+}
+
+// TestDaemonInstallRemovesTheOldTokenFiles: the credentials the retired
+// listeners read go with them (D10, D6). A missing file is not an error, so a
+// daemon directory that never held one installs as before.
+func TestDaemonInstallRemovesTheOldTokenFiles(t *testing.T) {
+	home := daemonTestEnv(t)
+	dir := daemon.PathsFor(home).Dir
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"studio.token", "join.token"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("secret\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	daemonInstallUnit(t, home)
+	for _, name := range []string{"studio.token", "join.token"} {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s survived the install (stat: %v)", path, err)
+		}
+	}
+
+	// Neither file is there now, and that is not an error.
+	daemonInstallUnit(t, home)
+}
+
+// TestDaemonStatusReportsTheWebListener pins the four forms of the status's
+// web line (D10, D13): off, not listening with its reason, a unix socket, and
+// an address — which every account on the machine can reach.
+func TestDaemonStatusReportsTheWebListener(t *testing.T) {
+	cases := []struct {
+		name string
+		info daemon.Info
+		want string
+	}{
+		{name: "off", want: "web: off"},
 		{
-			name:     "connected",
-			joinJSON: `{"url":"https://relay.example.com","name":"box","connected":true}`,
-			want:     "relay: joined https://relay.example.com as box",
+			name: "not listening",
+			info: daemon.Info{WebError: "listen tcp 127.0.0.1:7788: bind: address already in use"},
+			want: "web: not listening (listen tcp 127.0.0.1:7788: bind: address already in use)",
 		},
 		{
-			name:     "not connected",
-			joinJSON: `{"url":"https://relay.example.com","name":"box","lastError":"dial tcp 10.0.0.1:443: connection refused"}`,
-			want:     "relay: https://relay.example.com as box, not connected (dial tcp 10.0.0.1:443: connection refused)",
+			name: "unix socket",
+			info: daemon.Info{WebListen: "unix:/run/user/501/marshal/web.sock"},
+			want: "web: unix:/run/user/501/marshal/web.sock",
 		},
 		{
-			name: "no join",
+			name: "loopback address",
+			info: daemon.Info{WebListen: "127.0.0.1:7788"},
+			want: "web: 127.0.0.1:7788 (loopback: every account on this machine can reach it)",
 		},
 	}
 	for _, tc := range cases {
@@ -1861,7 +1940,7 @@ func TestDaemonStatusPrintsTheJoin(t *testing.T) {
 			fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
 				return []byte("state = running\npid = 4242\n"), nil
 			})
-			fakeDaemonSocket(t, fakeDaemonClient{info: daemonStatusInfo(t, tc.joinJSON)})
+			fakeDaemonSocket(t, fakeDaemonClient{info: tc.info})
 
 			var stdout, stderr bytes.Buffer
 			if err := runDaemon(context.Background(), []string{"status"},
@@ -1870,28 +1949,50 @@ func TestDaemonStatusPrintsTheJoin(t *testing.T) {
 			}
 
 			lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
-			var relayLines []string
-			for _, line := range lines {
-				if strings.HasPrefix(line, "relay:") {
-					relayLines = append(relayLines, line)
+			var webLines []string
+			refreshAt := -1
+			for i, line := range lines {
+				if strings.HasPrefix(line, "web:") {
+					webLines = append(webLines, line)
+				}
+				if strings.HasPrefix(line, "refresh:") {
+					refreshAt = i
 				}
 			}
-			if tc.want == "" {
-				if len(relayLines) != 0 {
-					t.Errorf("status printed %q for a daemon that joins no relay", relayLines)
+			if len(webLines) != 1 {
+				t.Fatalf("status printed %d web lines, want 1:\n%s", len(webLines), stdout.String())
+			}
+			if webLines[0] != tc.want {
+				t.Errorf("web line = %q, want %q", webLines[0], tc.want)
+			}
+			// It follows the refresh helper's line.
+			if refreshAt < 0 || refreshAt+1 >= len(lines) || lines[refreshAt+1] != tc.want {
+				t.Errorf("web line does not follow the refresh line:\n%s", stdout.String())
+			}
+		})
+	}
+}
+
+// TestDaemonTokenAndJoinTokenAreGone: both subcommands went with the listeners
+// they authenticated, so each falls to the unknown-subcommand error rather
+// than quietly doing something else.
+func TestDaemonTokenAndJoinTokenAreGone(t *testing.T) {
+	for _, sub := range []string{"token", "join-token"} {
+		t.Run(sub, func(t *testing.T) {
+			daemonTestEnv(t)
+			var stdout, stderr bytes.Buffer
+			err := runDaemon(context.Background(), []string{sub},
+				strings.NewReader(""), &stdout, &stderr)
+			if err == nil {
+				t.Fatalf("marshal daemon %s is still a subcommand", sub)
+			}
+			for _, want := range []string{"unknown subcommand", sub} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want it to carry %q", err, want)
 				}
-				return
 			}
-			if len(relayLines) != 1 {
-				t.Fatalf("status printed %d relay lines, want 1:\n%s", len(relayLines), stdout.String())
-			}
-			if relayLines[0] != tc.want {
-				t.Errorf("relay line = %q, want %q", relayLines[0], tc.want)
-			}
-			// It sits with the daemon's own lines, under the refresh helper
-			// and above the project children's.
-			if got := lines[4]; got != tc.want {
-				t.Errorf("line 5 = %q, want the relay line %q", got, tc.want)
+			if stdout.Len() != 0 {
+				t.Errorf("stdout = %q, want nothing", stdout.String())
 			}
 		})
 	}

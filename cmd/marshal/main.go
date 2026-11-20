@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/x/term"
-
 	"marshal/internal/acp"
 	"marshal/internal/app/config"
 	"marshal/internal/buildinfo"
@@ -35,14 +33,6 @@ var hostOption = launch.WithHost
 // fleetHostWait is how long `marshal fleet add` and `remove` wait for the local
 // daemon's report to catch up with the file. A test sets it to zero.
 var fleetHostWait = 5 * time.Second
-
-// fleetStdoutIsTerminal reports whether a writer is a terminal. `marshal daemon
-// token` refuses one, so a token never reaches scrollback (F1 decision 3). A
-// test replaces it, because a test binary has no terminal to point at.
-var fleetStdoutIsTerminal = func(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	return ok && term.IsTerminal(f.Fd())
-}
 
 // notifyOption is launch.WithNotify, indirected so a test can read the flag a
 // runner was handed: launch's options are unexported.

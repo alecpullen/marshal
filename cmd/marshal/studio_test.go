@@ -1,131 +1,224 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"errors"
+	"strings"
 	"testing"
 
 	"marshal/internal/daemon"
 )
 
-// TestStudioSignInURLKeepsTheCodeInTheFragment is the whole point: a fragment
-// never leaves the browser, so the code reaches no request line and no access
-// log, and the page can read it without the server seeing it.
-func TestStudioSignInURLKeepsTheCodeInTheFragment(t *testing.T) {
-	got := studioSignInURL("http://127.0.0.1:7788", "a b+c/d")
-	want := "http://127.0.0.1:7788/#code=a+b%2Bc%2Fd"
-	if got != want {
-		t.Fatalf("studioSignInURL = %q, want %q", got, want)
+// studioReplaceApp replaces the app opener: the test says what opening the app
+// does, on a platform that has none to open.
+func studioReplaceApp(t *testing.T, run func(context.Context) error) {
+	t.Helper()
+	old := studioOpenApp
+	t.Cleanup(func() { studioOpenApp = old })
+	studioOpenApp = run
+}
+
+// studioReplaceURL replaces the browser opener and answers the address it was
+// asked for. A test that must not open a browser passes a nil want.
+func studioReplaceURL(t *testing.T) *string {
+	t.Helper()
+	old := studioOpenURL
+	t.Cleanup(func() { studioOpenURL = old })
+	opened := ""
+	studioOpenURL = func(url string) error {
+		opened = url
+		return nil
 	}
-	if got == "http://127.0.0.1:7788/?token=" {
-		t.Fatal("the URL carries a query, not a fragment")
+	return &opened
+}
+
+// runStudioCommand runs the command and answers what it wrote.
+func runStudioCommand(t *testing.T, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	err = runStudio(context.Background(), args, &out, &errOut)
+	return out.String(), errOut.String(), err
+}
+
+// TestStudioOpensTheApp: the native app is the first door (D14), so it is
+// opened and nothing else is read or opened.
+func TestStudioOpensTheApp(t *testing.T) {
+	daemonTestEnv(t)
+
+	appCalls := 0
+	studioReplaceApp(t, func(context.Context) error {
+		appCalls++
+		return nil
+	})
+	url := studioReplaceURL(t)
+
+	stdout, stderr, err := runStudioCommand(t)
+	if err != nil {
+		t.Fatalf("runStudio: %v\nstderr: %s", err, stderr)
+	}
+	if appCalls != 1 {
+		t.Errorf("the app was opened %d times, want once", appCalls)
+	}
+	if want := "studio: opened the Marshal app\n"; stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+	if *url != "" {
+		t.Errorf("opened the browser at %q, want nothing", *url)
 	}
 }
 
-// TestProbeStudioRefusesAnotherDaemon: the launcher reads the daemon's identity
-// over its socket and refuses a port that answers as something else, before a
-// code is sent to it.
-func TestProbeStudioRefusesAnotherDaemon(t *testing.T) {
-	const socket = "/run/user/501/marshal/daemon.sock"
-	want := daemon.Info{PID: 42, StartedAt: 1700000000000, Socket: socket}
+// TestStudioOpensTheWebURLWithoutAnApp: with no app installed, the web Studio
+// daemon.web_url names is opened, and its address is printed.
+func TestStudioOpensTheWebURLWithoutAnApp(t *testing.T) {
+	home := daemonTestEnv(t)
+	studioReplaceApp(t, func(context.Context) error { return errNoStudioApp })
+	url := studioReplaceURL(t)
+	daemonWriteUserConfig(t, home, "[daemon]\nweb_url = \"https://box.example.com\"\n")
+	// The listener is up, so the daemon's answer adds no warning.
+	fakeDaemonSocket(t, fakeDaemonClient{info: daemon.Info{WebListen: "127.0.0.1:7788"}})
 
-	for _, tc := range []struct {
-		name    string
-		answer  studioHello
-		status  int
-		wantErr bool
-	}{
-		{
-			name:   "the same daemon",
-			answer: studioHello{PID: 42, StartedAt: 1700000000000, Socket: socket},
-			status: http.StatusOK,
-		},
-		{
-			name:    "another process on the port",
-			answer:  studioHello{PID: 7, StartedAt: 1, Socket: "/somewhere/else.sock"},
-			status:  http.StatusOK,
-			wantErr: true,
-		},
-		{
-			name:    "the same pid, restarted",
-			answer:  studioHello{PID: 42, StartedAt: 1700000000001, Socket: socket},
-			status:  http.StatusOK,
-			wantErr: true,
-		},
-		{
-			name:    "no sign-in route",
-			status:  http.StatusNotFound,
-			wantErr: true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/api/studio/hello" {
-					t.Errorf("probed %s, want /api/studio/hello", r.URL.Path)
-				}
-				if got := r.Header.Get("Authorization"); got != "" {
-					t.Errorf("probe sent a credential: %q", got)
-				}
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(tc.status)
-				if tc.status == http.StatusOK {
-					_ = json.NewEncoder(w).Encode(tc.answer)
-				}
-			}))
-			defer srv.Close()
-
-			err := probeStudio(context.Background(), srv.URL, want)
-			if tc.wantErr && err == nil {
-				t.Fatal("probe accepted a port that is not this daemon")
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("probe refused this daemon: %v", err)
-			}
-		})
+	stdout, stderr, err := runStudioCommand(t)
+	if err != nil {
+		t.Fatalf("runStudio: %v\nstderr: %s", err, stderr)
+	}
+	if want := "https://box.example.com"; *url != want {
+		t.Errorf("opened %q, want %q", *url, want)
+	}
+	if want := "studio: https://box.example.com\n"; stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing", stderr)
 	}
 }
 
-// TestDaemonStudioAddr pins what daemon.studio_addr accepts. The daemon runs
-// host processes with the user's own authority and authenticates the browser
-// with a single-use code over that listener, so an address that is not
-// loopback must be refused at install time rather than published.
-func TestDaemonStudioAddr(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		setting string
-		want    string
-		wantErr bool
-	}{
-		{name: "default", setting: "127.0.0.1:7788", want: "127.0.0.1:7788"},
-		{name: "another loopback port", setting: "127.0.0.1:9000", want: "127.0.0.1:9000"},
-		{name: "ipv6 loopback", setting: "[::1]:7788", want: "[::1]:7788"},
-		{name: "hostname loopback", setting: "localhost:7788", want: "localhost:7788"},
-		{name: "unset serves nothing", setting: "", want: ""},
-		{name: "off serves nothing", setting: "off", want: ""},
-		{name: "none serves nothing", setting: "none", want: ""},
-		{name: "padded off", setting: "  off  ", want: ""},
-		{name: "wildcard is refused", setting: "0.0.0.0:7788", wantErr: true},
-		{name: "routable address is refused", setting: "192.168.1.5:7788", wantErr: true},
-		{name: "blank host is refused", setting: ":7788", wantErr: true},
-		{name: "no port is refused", setting: "127.0.0.1", wantErr: true},
-		{name: "nonsense is refused", setting: "not an address", wantErr: true},
+// TestStudioPrintsTheWebURL: --print answers the address a script needs, so
+// neither the app nor the browser is opened for it.
+func TestStudioPrintsTheWebURL(t *testing.T) {
+	home := daemonTestEnv(t)
+	studioReplaceApp(t, func(context.Context) error {
+		t.Error("--print opened the app")
+		return errNoStudioApp
+	})
+	studioReplaceURL(t)
+	daemonWriteUserConfig(t, home, "[daemon]\nweb_url = \"https://box.example.com\"\n")
+	fakeDaemonSocket(t, fakeDaemonClient{info: daemon.Info{WebListen: "127.0.0.1:7788"}})
+
+	old := studioOpenURL
+	t.Cleanup(func() { studioOpenURL = old })
+	studioOpenURL = func(url string) error {
+		t.Errorf("--print opened a browser at %q", url)
+		return nil
+	}
+
+	stdout, stderr, err := runStudioCommand(t, "--print")
+	if err != nil {
+		t.Fatalf("runStudio --print: %v\nstderr: %s", err, stderr)
+	}
+	if want := "studio: https://box.example.com\n"; stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+// TestStudioWithNeitherSaysSo: with no app and no daemon.web_url there is
+// nothing to open, and the command says what would set either up.
+func TestStudioWithNeitherSaysSo(t *testing.T) {
+	daemonTestEnv(t)
+	studioReplaceApp(t, func(context.Context) error { return errNoStudioApp })
+	url := studioReplaceURL(t)
+	fakeDaemonSocket(t, fakeDaemonClient{err: errors.New("dial unix: no such file or directory")})
+
+	stdout, _, err := runStudioCommand(t)
+	if err == nil {
+		t.Fatalf("runStudio succeeded with neither an app nor a web Studio: stdout %q", stdout)
+	}
+	for _, want := range []string{
+		"neither the Marshal app nor a web Studio is set up",
+		"daemon.web_listen",
+		"daemon.web_url",
+		"marshal daemon install",
 	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to carry %q", err, want)
+		}
+	}
+	if *url != "" {
+		t.Errorf("opened the browser at %q, want nothing", *url)
+	}
+}
+
+// TestStudioWarnsWhenTheWebListenerIsDown: a set-up web Studio whose listener
+// is not serving gets one warning line naming why, and the address is still
+// opened. A daemon that does not answer adds no line.
+func TestStudioWarnsWhenTheWebListenerIsDown(t *testing.T) {
+	cases := []struct {
+		name   string
+		client fakeDaemonClient
+		want   string
+	}{
+		{
+			name:   "bind failed",
+			client: fakeDaemonClient{info: daemon.Info{WebError: "listen tcp 127.0.0.1:7788: bind: address already in use"}},
+			want:   "marshal studio: the daemon's web listener is not listening (listen tcp 127.0.0.1:7788: bind: address already in use)",
+		},
+		{
+			name:   "no listener at all",
+			client: fakeDaemonClient{info: daemon.Info{}},
+			want:   "marshal studio: the daemon's web listener is not listening (daemon.web_listen is not set)",
+		},
+		{
+			name:   "the daemon does not answer",
+			client: fakeDaemonClient{err: errors.New("dial unix: no such file or directory")},
+		},
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := daemonStudioAddr(tc.setting)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("daemonStudioAddr(%q) = %q, want an error", tc.setting, got)
-				}
-				return
-			}
+			home := daemonTestEnv(t)
+			studioReplaceApp(t, func(context.Context) error { return errNoStudioApp })
+			studioReplaceURL(t)
+			daemonWriteUserConfig(t, home, "[daemon]\nweb_url = \"https://box.example.com\"\n")
+			fakeDaemonSocket(t, tc.client)
+
+			stdout, stderr, err := runStudioCommand(t)
 			if err != nil {
-				t.Fatalf("daemonStudioAddr(%q): %v", tc.setting, err)
+				t.Fatalf("runStudio: %v\nstderr: %s", err, stderr)
 			}
-			if got != tc.want {
-				t.Errorf("daemonStudioAddr(%q) = %q, want %q", tc.setting, got, tc.want)
+			if want := "studio: https://box.example.com\n"; stdout != want {
+				t.Errorf("stdout = %q, want %q", stdout, want)
+			}
+			switch tc.want {
+			case "":
+				if stderr != "" {
+					t.Errorf("stderr = %q, want no line for a daemon that does not answer", stderr)
+				}
+			default:
+				lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
+				if len(lines) != 1 {
+					t.Fatalf("stderr = %q, want one warning line", stderr)
+				}
+				if lines[0] != tc.want {
+					t.Errorf("warning = %q, want %q", lines[0], tc.want)
+				}
 			}
 		})
+	}
+}
+
+// TestStudioRefusesNoOpen: --no-open went with the one-time code it protected,
+// so it is an unknown flag rather than a flag that quietly does nothing.
+func TestStudioRefusesNoOpen(t *testing.T) {
+	daemonTestEnv(t)
+	studioReplaceApp(t, func(context.Context) error {
+		t.Error("--no-open opened the app")
+		return errNoStudioApp
+	})
+
+	_, _, err := runStudioCommand(t, "--no-open")
+	if err == nil {
+		t.Fatal("runStudio accepted --no-open")
+	}
+	if !strings.Contains(err.Error(), "no-open") {
+		t.Errorf("error = %q, want it to name --no-open", err)
 	}
 }

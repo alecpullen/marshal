@@ -118,17 +118,16 @@ func TestHandleSkillGateAllowOnceRespondsAndClears(t *testing.T) {
 	sg := &session.PendingSkillGate{Skill: "x", ResponseChan: ch}
 	stateOf(m).SetPendingSkillGate(sg)
 
-	// First message lazily builds the dialog; second confirms the default
-	// selection (Allow once).
-	updated, _ := m.Update(skillGateKeyPress("enter"))
-	m = updated.(Model)
+	// The first message after the gate opens builds the dialog; Enter then
+	// confirms the default selection (Allow once).
+	m = primePrompt(m)
 	if m.skillGateModel == nil {
-		t.Fatal("first message should lazily build the skill-gate model")
+		t.Fatal("first message should build the skill-gate model")
 	}
 	if stateOf(m).PendingSkillGate() == nil {
-		t.Fatal("lazy build must not clear the pending gate")
+		t.Fatal("building the dialog must not clear the pending gate")
 	}
-	updated, _ = m.Update(skillGateKeyPress("enter"))
+	updated, _ := m.Update(skillGateKeyPress("enter"))
 	m = updated.(Model)
 
 	select {
@@ -157,10 +156,9 @@ func TestHandleSkillGateAllowAllDisablesGate(t *testing.T) {
 	sg := &session.PendingSkillGate{Skill: "x", ResponseChan: ch}
 	stateOf(m).SetPendingSkillGate(sg)
 
-	// Lazy build, jump to option 3 (Allow always (all skills)), confirm.
-	updated, _ := m.Update(skillGateKeyPress("enter"))
-	m = updated.(Model)
-	updated, _ = m.Update(skillGateKeyPress("3"))
+	// Build, jump to option 3 (Allow always (all skills)), confirm.
+	m = primePrompt(m)
+	updated, _ := m.Update(skillGateKeyPress("3"))
 	m = updated.(Model)
 	updated, _ = m.Update(skillGateKeyPress("enter"))
 	m = updated.(Model)
@@ -191,10 +189,9 @@ func TestHandleSkillGateDenyDoesNotRecord(t *testing.T) {
 	sg := &session.PendingSkillGate{Skill: "x", ResponseChan: ch}
 	stateOf(m).SetPendingSkillGate(sg)
 
-	// Lazy build, Esc moves the selection to Deny, Enter confirms.
-	updated, _ := m.Update(skillGateKeyPress("enter"))
-	m = updated.(Model)
-	updated, _ = m.Update(skillGateKeyPress("esc"))
+	// Build, Esc moves the selection to Deny, Enter confirms.
+	m = primePrompt(m)
+	updated, _ := m.Update(skillGateKeyPress("esc"))
 	m = updated.(Model)
 	updated, _ = m.Update(skillGateKeyPress("enter"))
 	m = updated.(Model)

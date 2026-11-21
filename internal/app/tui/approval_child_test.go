@@ -300,3 +300,33 @@ func TestChildDestructiveApprovalAfterAskDoesNotLaunch(t *testing.T) {
 		t.Fatal("the destructive child command was admitted after Ask")
 	}
 }
+
+// TestPromptSurfaceDoesNotChangeOnFirstKey pins that a prompt that opens while
+// the user is idle is drawn by its real surface straight away. The fallback
+// panel lays the request out differently, so building the surface only when
+// the first key arrived made the prompt visibly rearrange on that key.
+func TestPromptSurfaceDoesNotChangeOnFirstKey(t *testing.T) {
+	m := newTestModel(t)
+	stateOf(m).SetPendingApproval(&session.PendingToolCall{
+		ID:           "p1",
+		Name:         "agent.run",
+		Risk:         "model-cost-consent",
+		Reason:       "Subagent will use another model. Approve?",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	})
+
+	// The session's change signal is what announces a new request. It is not
+	// routed to the prompt's handler, so the surface must not depend on one.
+	updated, _ := m.Update(changedMsg{ch: m.sess.Changed()})
+	m = updated.(Model)
+	if m.approvalModel == nil {
+		t.Fatal("the approval surface was not built when the request arrived")
+	}
+	before := stripANSI(m.approvalModel.View())
+
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if after := stripANSI(m.approvalModel.View()); !strings.Contains(after, "Agent wants to call tool") ||
+		!strings.Contains(before, "Agent wants to call tool") {
+		t.Fatalf("surface differs across the first key:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}

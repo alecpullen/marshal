@@ -27,6 +27,7 @@ import 'src/model/hosts_model.dart';
 import 'src/model/inbox_model.dart';
 import 'src/model/inspector_state.dart';
 import 'src/model/library_model.dart';
+import 'src/model/marshal_model.dart';
 import 'src/model/models_model.dart';
 import 'src/model/network_model.dart';
 import 'src/model/notifications_model.dart';
@@ -233,6 +234,17 @@ Future<void> main() async {
           // (F9 B1): the sheet is the Studio's, the client is the host's.
           connectRepoFor: (host) => ConnectRepoModel(
             hosts.hosts.firstWhere((owner) => owner.name == host).client,
+          ),
+          // Marshal's destination (agent-first Studio, task 5): one model per
+          // host, reading that host's coordinated tasks and attention over its
+          // own client. The task it read last is remembered through the same
+          // preference store the project memory uses, so the sidebar entry
+          // resumes it after a reload.
+          marshalFor: (host) => MarshalModel.forClient(
+            host,
+            hosts.hosts.firstWhere((owner) => owner.name == host).client,
+            read: preferenceStore?.read,
+            save: preferenceStore?.write,
           ),
           // A thread's Share mints a read-only status link for its agent on
           // the client that reaches its host (F7 decision 7): a running

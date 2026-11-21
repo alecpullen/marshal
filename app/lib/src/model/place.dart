@@ -9,12 +9,28 @@ enum PlaceKind {
   overview,
   inbox,
   pulls,
+
+  /// Marshal's own destination: the host-local coordinator conversation
+  /// (agent-first Studio, task 5). Its links name a task, so a reload and
+  /// Back land on the conversation they were written for.
+  marshal,
   project,
   thread,
   automations,
   library,
   settings,
 }
+
+/// The path segment that names Marshal's destination: `/marshal`,
+/// `/marshal/<task>`, `/marshal/<host>/<task>`, or `/marshal/new/<draft>`.
+const marshalSegment = 'marshal';
+
+/// The path segment a draft's id follows: `/marshal/new/<draft>`.
+///
+/// It is reserved: the second segment of a Marshal link is a host, and `new`
+/// is never one. A task id cannot collide with it either — the daemon mints
+/// sixteen bytes of hex (`coordinatorRandomID`).
+const marshalNewSegment = 'new';
 
 /// The path segment that names a project's conversation rather than its
 /// board: `/conversation/<host>/<root>`, or `/conversation/<root>` for a
@@ -46,6 +62,7 @@ class Place {
     this.section,
     this.query = const {},
     this.conversation = false,
+    this.draft,
   }) : assert(
          kind != PlaceKind.project || id != null || conversation,
          'a project place names its project, unless it is the conversation '
@@ -65,6 +82,10 @@ class Place {
              kind == PlaceKind.library ||
              kind == PlaceKind.settings,
          'only Automations, Library and Settings have sections',
+       ),
+       assert(
+         draft == null || (kind == PlaceKind.marshal && id == null),
+         'only a Marshal place has a draft, and a draft names no task',
        );
 
   /// The overview: the fleet at a glance.
@@ -83,6 +104,26 @@ class Place {
   /// which offers the last project, a selector, or Connect repository.
   const Place.conversation({String? host, String? id})
     : this(PlaceKind.project, host: host, id: id, conversation: true);
+
+  /// Marshal's destination (agent-first Studio, task 5): the host-local
+  /// coordinated task a person talks to.
+  ///
+  /// [id] names one task and is what makes the link survive a reload and
+  /// Back; [host] names the daemon that holds it, and is omitted by a link
+  /// that was written without knowing which one answers — the fleet is asked
+  /// instead, exactly as a host-less thread link is. Neither is set by the
+  /// sidebar's entry, which restores the selected host's last task.
+  const Place.marshal({String? host, String? id})
+    : this(PlaceKind.marshal, host: host, id: id);
+
+  /// A Marshal conversation that has no task yet: what New opens.
+  ///
+  /// [draft] is its own id, minted by the app rather than the daemon, so two
+  /// drafts never share a composer and the first send's request id is the
+  /// draft's own — a retry creates the task once. The task it becomes is
+  /// `/marshal/<host>/<task>`, and this link never resolves to one.
+  const Place.marshalDraft(String draft)
+    : this(PlaceKind.marshal, draft: draft);
 
   final PlaceKind kind;
 
@@ -107,6 +148,14 @@ class Place {
   /// The project's id (its root) or the thread's id.
   final String? id;
 
+  /// A Marshal draft's own id: a conversation New opened that has not become a
+  /// task on any daemon yet (agent-first Studio, task 5).
+  ///
+  /// It is the app's, not the daemon's, so it survives Back to the draft and
+  /// keys that draft's composer. It becomes the first send's request id, which
+  /// is what keeps a retry from minting a second task.
+  final String? draft;
+
   /// The section of Automations, Library or Settings a link names, in the
   /// vocabulary those places use for it ([automationsSections] and its
   /// siblings). Null is the place's first section.
@@ -126,6 +175,7 @@ class Place {
     section: section,
     query: Map<String, String>.unmodifiable(query),
     conversation: conversation,
+    draft: draft,
   );
 
   @override
@@ -136,6 +186,7 @@ class Place {
       other.id == id &&
       other.section == section &&
       other.conversation == conversation &&
+      other.draft == draft &&
       mapEquals(other.query, query);
 
   @override
@@ -145,6 +196,7 @@ class Place {
     id,
     section,
     conversation,
+    draft,
     Object.hashAllUnordered(
       query.entries.map((entry) => Object.hash(entry.key, entry.value)),
     ),
@@ -155,6 +207,7 @@ class Place {
       'Place(${kind.name}${conversation ? ', conversation' : ''}'
       '${host == null ? '' : ', $host'}'
       '${id == null ? '' : ', $id'}'
+      '${draft == null ? '' : ', draft $draft'}'
       '${section == null ? '' : ', $section'}'
       '${query.isEmpty ? '' : ', $query'})';
 }
@@ -298,6 +351,18 @@ Place _placeOf(List<String> parts) {
       return parts.length == 3
           ? Place(PlaceKind.thread, host: parts[1], id: parts[2])
           : _unknown;
+    case marshalSegment:
+      // `/marshal` is the destination with no task named: the selected host's
+      // last one, or its recent ones and New. `/marshal/<task>` names a task
+      // and asks the hosts which one holds it; `/marshal/<host>/<task>` names
+      // the host as well; `/marshal/new/<draft>` is a draft New opened, which
+      // is no task yet. `new` is a host's position, which is what reserves it.
+      if (parts.length == 1) return const Place.marshal();
+      if (parts.length == 2) return Place.marshal(id: parts[1]);
+      if (parts.length != 3) return _unknown;
+      return parts[1] == marshalNewSegment
+          ? Place.marshalDraft(parts[2])
+          : Place.marshal(host: parts[1], id: parts[2]);
   }
   return _unknown;
 }
@@ -324,6 +389,7 @@ String formatPlace(Place place) {
             ? '/$segment'
             : '/$segment/${Uri.encodeComponent(section)}')
       : switch (place.kind) {
+          PlaceKind.marshal => _marshalPath(place),
           PlaceKind.project when place.conversation => _conversationPath(place),
           PlaceKind.project =>
             '/project/${Uri.encodeComponent(place.id ?? '')}',
@@ -356,4 +422,21 @@ String _conversationPath(Place place) {
   final encoded = Uri.encodeComponent(id);
   if (host == null) return '/$conversationSegment/$encoded';
   return '/$conversationSegment/${Uri.encodeComponent(host)}/$encoded';
+}
+
+/// `/marshal`, `/marshal/new/<draft>`, `/marshal/<task>` or
+/// `/marshal/<host>/<task>`: the path [parsePlace] reads back as a Marshal
+/// place.
+String _marshalPath(Place place) {
+  final draft = place.draft;
+  if (draft != null) {
+    return '/$marshalSegment/$marshalNewSegment/'
+        '${Uri.encodeComponent(draft)}';
+  }
+  final id = place.id;
+  if (id == null) return '/$marshalSegment';
+  final encoded = Uri.encodeComponent(id);
+  final host = place.host;
+  if (host == null) return '/$marshalSegment/$encoded';
+  return '/$marshalSegment/${Uri.encodeComponent(host)}/$encoded';
 }

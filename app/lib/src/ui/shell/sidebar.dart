@@ -415,6 +415,7 @@ class _SidebarState extends State<Sidebar> {
   /// The mark each fixed place carries (§6: a kind is an icon and a tooltip,
   /// and a place is its icon here).
   static IconData _icon(PlaceKind kind) => switch (kind) {
+    PlaceKind.marshal => Glyphs.chat_bubble_2,
     PlaceKind.overview => Glyphs.square_grid_2x2,
     PlaceKind.inbox => Glyphs.tray,
     PlaceKind.pulls => Glyphs.arrow_merge,

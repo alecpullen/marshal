@@ -226,14 +226,24 @@ is open, and the page beside the sidebar draws the open section alone.
 
 The sidebar has two tiers.
 
-**Primary navigation** is the three fleet screens: Overview, **Needs you** and
-Pull requests, in that order. They sit above the project tree in the desktop
-sidebar and in the narrow layout's navigation panel, so each is one action
-away at every width; the narrow layout also keeps its app-bar button to Needs
-you. Needs you is the name of the place the code still calls the inbox: its
-kind, the `#inbox` route, the `/inbox` link and `Place.inbox()` are unchanged,
-so a link written before the rename opens Needs you. The search matches the
-words on a row, so it finds Needs you and no longer finds the old word.
+**Primary navigation** is **Marshal** and the three fleet screens: Marshal,
+Overview, **Needs you** and Pull requests, in that order. They sit above the
+project tree in the desktop sidebar and in the narrow layout's navigation
+panel, so each is one action away at every width; the narrow layout also keeps
+its app-bar button to Needs you. Needs you is the name of the place the code
+still calls the inbox: its kind, the `#inbox` route, the `/inbox` link and
+`Place.inbox()` are unchanged, so a link written before the rename opens Needs
+you. The search matches the words on a row, so it finds Needs you and no longer
+finds the old word.
+
+Marshal is the agent-first Studio's own conversation (task 5): a host-local
+coordinated task whose links name the task (`/marshal/<host>/<task>`) and whose
+drafts name themselves (`/marshal/new/<draft>`), so a reload and Back land on
+the conversation they were written for. Its screen names the recipient above
+the composer, shows the read-only attention result as rows that open the ask or
+review at its own host and project, and never says "nothing needs you" over a
+source it could not read; the transcript and composer are the thread's, not a
+second pair.
 
 **Secondary navigation** is everything else: Automations, Library and Settings
 at the foot of the sidebar, and the boards and management views reached from

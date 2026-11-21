@@ -37,6 +37,14 @@ String placeTitle(Place place, NavModel nav) => _about(place, nav).$1;
         'The Pull requests screen is built; it opens once the shell wires the '
             'per-host bridge',
       );
+    case PlaceKind.marshal:
+      // Marshal's screen is built (agent-first Studio, task 5): a place that
+      // falls here names a host whose bridge the shell does not hold, which is
+      // what the note says rather than promising a later phase.
+      return (
+        'Marshal',
+        'Marshal is built; it opens once the shell wires the host’s bridge',
+      );
     case PlaceKind.automations:
       return (
         'Automations',

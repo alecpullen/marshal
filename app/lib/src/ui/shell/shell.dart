@@ -7,6 +7,7 @@ import '../../model/composer_model.dart';
 import '../../model/connect_repo_model.dart';
 import '../../model/factory_store.dart';
 import '../../model/handoff_model.dart';
+import '../../model/marshal_model.dart';
 import '../../model/new_work_model.dart';
 import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
@@ -40,6 +41,7 @@ import '../factory/revision_sheet.dart';
 import '../factory/run_screen.dart';
 import '../factory/work_item_screen.dart';
 import '../kit/kit.dart';
+import '../marshal/marshal_place.dart';
 import '../overview/overview.dart' show Overview;
 import '../project/project_page.dart';
 import '../pulls/fix_control.dart';
@@ -50,6 +52,7 @@ import '../new_work/project_composer.dart';
 import '../thread/share_sheet.dart';
 import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
+import '../thread/transcript.dart' show Transcript;
 import 'connect_repo_sheet.dart';
 import 'host_switcher.dart';
 import 'keys.dart';
@@ -292,6 +295,7 @@ class _ShellState extends State<Shell> {
     PlaceNavigation(
       go: (place) => _leave(() => widget.onSelect(place)),
       unsaved: widget.unsaved,
+      host: _host,
     ),
   );
 
@@ -611,6 +615,7 @@ class Studio extends StatefulWidget {
     this.threadStore,
     this.composerFor,
     this.newWorkFor,
+    this.marshalFor,
     this.memory,
     this.shareFor,
     this.inspectorFor,
@@ -676,6 +681,15 @@ class Studio extends StatefulWidget {
   /// entry points are the design's (design.md, "Starting work", and the mock's
   /// `Btn('New', primary: true, icon: plus)` in both page headers).
   final NewWorkModel Function(String host, String project)? newWorkFor;
+
+  /// Builds Marshal's model for one host (agent-first Studio, task 5): its
+  /// tasks, the drafts New opened, and the read-only attention result. Null
+  /// leaves the destination planned, so a build with no bridge never draws a
+  /// read that could only fail.
+  ///
+  /// It is keyed by the host because a task is host-local: the same task id on
+  /// another daemon names a different task.
+  final MarshalModel Function(String host)? marshalFor;
 
   /// Where this window remembers the project it selected last and the thread
   /// it read there (agent-first Studio, task 2). Null keeps a memory this
@@ -1156,6 +1170,9 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
   /// never by setting the place here: a row or an ask can no more leave a
   /// dirty place without asking than the sidebar can.
   Widget _content(Place place, NavModel nav, PlaceNavigation navigation) {
+    if (place.kind == PlaceKind.marshal) {
+      return _marshal(place, nav, navigation);
+    }
     if (place.kind == PlaceKind.overview) {
       return Overview(
         overview: buildOverview(
@@ -1533,6 +1550,32 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
       project == null
           ? const Place.conversation()
           : Place.conversation(host: host, id: project),
+    );
+  }
+
+  /// Marshal's destination (agent-first Studio, task 5): the host-local
+  /// conversation, its recent tasks and New, and the read-only attention
+  /// result.
+  ///
+  /// The host is the link's own when it names one — a task lives on one daemon,
+  /// so the same id elsewhere is a different task — and the sidebar's switcher
+  /// scope otherwise. Neither is invented: a fleet that lists no host leaves
+  /// the place planned rather than reading a daemon nobody named.
+  Widget _marshal(Place place, NavModel nav, PlaceNavigation navigation) {
+    final build = widget.marshalFor;
+    if (build == null) return plannedPlace(place, nav);
+    final host = place.host ?? placeHost(widget.store.hosts, navigation.host);
+    if (host == null) return plannedPlace(place, nav);
+    return _MarshalRegion(
+      key: ValueKey('marshal/$host'),
+      host: host,
+      taskId: place.id,
+      draft: place.draft,
+      build: build,
+      threadStore: widget.threadStore,
+      composerFor: widget.composerFor,
+      navigation: navigation,
+      now: widget.store.now,
     );
   }
 
@@ -2046,7 +2089,7 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
 /// asks the unsaved-edit guard first, and the guard itself, so a place that
 /// edits watches the models it holds while it is mounted.
 class PlaceNavigation {
-  const PlaceNavigation({required this.go, required this.unsaved});
+  const PlaceNavigation({required this.go, required this.unsaved, this.host});
 
   /// Opens a place, after asking about an unsaved edit when there is one.
   final void Function(Place place) go;
@@ -2054,6 +2097,214 @@ class PlaceNavigation {
   /// The shell's one guard. A place watches the models it is editing when it
   /// mounts and drops them when it goes.
   final UnsavedGuard? unsaved;
+
+  /// The host the sidebar's switcher has in scope, or null for every host.
+  ///
+  /// A place that reads one bridge — Marshal's tasks are host-local — resolves
+  /// its host from this before falling back to the first host that answers, so
+  /// the sidebar's choice is honoured without every place plumbing a
+  /// switcher of its own.
+  final String? host;
+}
+
+/// Marshal's destination, mounted for one host (agent-first Studio, task 5).
+///
+/// It owns the host's [MarshalModel] and the session the open task's
+/// transcript and composer read: the same [StackStore] and [ComposerModel] a
+/// thread place builds, so Marshal talks to its conversation with the thread's
+/// transcript and the thread's composer rather than a second pair of them.
+class _MarshalRegion extends StatefulWidget {
+  const _MarshalRegion({
+    super.key,
+    required this.host,
+    required this.taskId,
+    required this.draft,
+    required this.build,
+    required this.navigation,
+    this.threadStore,
+    this.composerFor,
+    this.now,
+  });
+
+  final String host;
+
+  /// The task the link names, or null for the host's last one.
+  final String? taskId;
+
+  /// The draft New opened and the link named, or null.
+  final String? draft;
+
+  final MarshalModel Function(String host) build;
+
+  final PlaceNavigation navigation;
+
+  /// Builds the store a task's transcript reads, as a thread place does. Null
+  /// leaves the conversation area saying the bridge is not wired.
+  final StackStore Function(model.ThreadRef thread)? threadStore;
+
+  /// Builds the composer that drives the task's coordinator session.
+  final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
+  composerFor;
+
+  final DateTime? now;
+
+  @override
+  State<_MarshalRegion> createState() => _MarshalRegionState();
+}
+
+class _MarshalRegionState extends State<_MarshalRegion> {
+  /// The host's tasks, drafts and attention result: one per mounted host, so
+  /// switching places inside it keeps each view's draft.
+  late final MarshalModel _model = widget.build(widget.host);
+
+  /// The open task's session, rebuilt when the task changes.
+  StackStore? _store;
+  ComposerModel? _composer;
+  ThreadViewState? _view;
+  String? _sessionId;
+
+  /// A session replaced during a build, released once the frame is done: a
+  /// store is never disposed while a row it built may still be listening.
+  void Function()? _releaseAfterFrame;
+
+  @override
+  void initState() {
+    super.initState();
+    _follow();
+  }
+
+  @override
+  void didUpdateWidget(_MarshalRegion old) {
+    super.didUpdateWidget(old);
+    if (old.taskId != widget.taskId || old.draft != widget.draft) _follow();
+  }
+
+  @override
+  void dispose() {
+    _releaseSession();
+    _model.dispose();
+    super.dispose();
+  }
+
+  /// Follows the place: opens the task or draft it names, or the task this
+  /// host last held when it names none.
+  void _follow() {
+    final draft = widget.draft;
+    if (draft != null) {
+      if (_model.draftId != draft) unawaited(_model.open(draft: draft));
+      return;
+    }
+    if (widget.taskId != null && _model.task?.id == widget.taskId) return;
+    unawaited(_model.open(taskId: widget.taskId));
+  }
+
+  /// The session the open task's transcript and composer read.
+  ///
+  /// It is the thread's: a [StackStore] over the coordinator session, and a
+  /// [ComposerModel] on the same session. Rebuilding one is what a task switch
+  /// costs, and the previous one is released after the frame rather than
+  /// during it.
+  void _session() {
+    final task = _model.task;
+    final id = task?.sessionId;
+    if (id == _sessionId) return;
+    _releaseAfterFrame?.call();
+    _releaseAfterFrame = null;
+    final previousStore = _store;
+    final previousComposer = _composer;
+    _store = null;
+    _composer = null;
+    _view = null;
+    _sessionId = id;
+    final current = task;
+    if (current != null) {
+      _view = _model.viewFor(MarshalModel.viewKeyForTask(current.id));
+      final thread = model.ThreadRef(
+        host: widget.host,
+        id: current.sessionId,
+        project: '',
+        title: current.name,
+        kind: model.ThreadKind.agent,
+        status: model.ThreadStatus.idle,
+        headline: '',
+        lastActive: current.updatedAt,
+      );
+      final buildStore = widget.threadStore;
+      final store = buildStore?.call(thread);
+      if (store != null) {
+        store.start();
+        _store = store;
+      }
+      final composerFor = widget.composerFor;
+      final view = _view;
+      if (composerFor != null && view != null) {
+        _composer = composerFor(thread, view);
+      }
+    }
+    if (previousStore == null && previousComposer == null) return;
+    _releaseAfterFrame = () {
+      previousStore
+        ?..stop()
+        ..dispose();
+      previousComposer?.dispose();
+      _releaseAfterFrame = null;
+    };
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final release = _releaseAfterFrame;
+      _releaseAfterFrame = null;
+      release?.call();
+    });
+  }
+
+  void _releaseSession() {
+    _store
+      ?..stop()
+      ..dispose();
+    _store = null;
+    _composer?.dispose();
+    _composer = null;
+    _view = null;
+    _sessionId = null;
+  }
+
+  /// The destination's data state, in §7's vocabulary. A read this build could
+  /// not refresh is stale rather than failed: the last answer is still what the
+  /// screen shows, marked with its age.
+  StateKind? get _stateKind => switch (_model.status) {
+    MarshalStatus.loading => StateKind.loading,
+    MarshalStatus.empty => StateKind.empty,
+    MarshalStatus.unauthorized => StateKind.unauthorized,
+    MarshalStatus.unavailable => StateKind.unavailable,
+    MarshalStatus.error => StateKind.error,
+    MarshalStatus.ready => null,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    _session();
+    final store = _store;
+    final view = _view;
+    final composer = _composer;
+    return AnimatedBuilder(
+      animation: _model,
+      builder: (context, _) => MarshalPlace(
+        model: _model,
+        host: widget.host,
+        state: _stateKind,
+        now: widget.now,
+        // The thread's transcript, when the shell may build one; the screen
+        // says which state it is in when it may not.
+        transcript: store == null || view == null
+            ? null
+            : Transcript(store: store, view: view, now: widget.now),
+        composer: composer == null || view == null
+            ? null
+            : ThreadComposer(model: composer, view: view),
+        onOpen: widget.navigation.go,
+        onRetry: () => unawaited(_model.refresh()),
+      ),
+    );
+  }
 }
 
 /// One work item's place: the item as the factory store holds it, with the

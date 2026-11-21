@@ -51,6 +51,7 @@ void main() {
     expect(
       [for (final place in model.fixed) place.label],
       [
+        'Marshal',
         'Overview',
         'Needs you',
         'Pull requests',
@@ -62,6 +63,7 @@ void main() {
     expect(
       [for (final place in model.fixed) place.kind],
       [
+        PlaceKind.marshal,
         PlaceKind.overview,
         PlaceKind.inbox,
         PlaceKind.pulls,
@@ -70,10 +72,11 @@ void main() {
         PlaceKind.settings,
       ],
     );
-    // All six open a place now: F5 brought Pull requests and F7 brought
-    // Automations, Library and Settings. The model carries no "planned" flag —
-    // a place that cannot be drawn says so on the screen, not in the sidebar.
-    expect(navAboveProjects, 3);
+    // All seven open a place now: F5 brought Pull requests, F7 brought
+    // Automations, Library and Settings, and the agent-first Studio brought
+    // Marshal. The model carries no "planned" flag — a place that cannot be
+    // drawn says so on the screen, not in the sidebar.
+    expect(navAboveProjects, 4);
   });
 
   test('the current place is the active row', () async {
@@ -281,16 +284,23 @@ void main() {
 
     // Before the first read the queue is empty, and the row says nothing: an
     // empty count is no count, so no `0` is drawn beside the label.
-    expect(
-      buildNavModel(const Place.overview(), fixture.store).fixed[1].count,
-      isNull,
-    );
+    // The row is found by its kind rather than its position: primary
+    // navigation gains a row (Marshal, agent-first Studio task 5) without the
+    // queue's count moving to another place.
+    int? needsYouCount() {
+      for (final row in buildNavModel(
+        const Place.overview(),
+        fixture.store,
+      ).fixed) {
+        if (row.kind == PlaceKind.inbox) return row.count;
+      }
+      return -1;
+    }
+
+    expect(needsYouCount(), isNull);
 
     await fixture.refresh();
-    expect(
-      buildNavModel(const Place.overview(), fixture.store).fixed[1].count,
-      2,
-    );
+    expect(needsYouCount(), 2);
 
     // Nothing else carries the queue's size. Pull requests carries its own
     // count — how many wait for review (F5 decision 14) — and none does
@@ -326,18 +336,19 @@ void main() {
   });
 
   test(
-    'Overview, Needs you and Pull requests are primary navigation',
+    'Marshal, Overview, Needs you and Pull requests are primary navigation',
     () async {
       final fixture = await ModelFixture.start([
         const FixtureHost(name: 'local', projects: []),
       ], now: now);
       final fixed = buildNavModel(const Place.overview(), fixture.store).fixed;
 
-      // The fleet screens sit above the project tree, and the management places
-      // stay reachable at its foot rather than competing with them.
+      // Marshal and the fleet screens sit above the project tree, and the
+      // management places stay reachable at its foot rather than competing
+      // with them.
       expect(
         [for (final row in fixed.take(navAboveProjects)) row.label],
-        ['Overview', 'Needs you', 'Pull requests'],
+        ['Marshal', 'Overview', 'Needs you', 'Pull requests'],
       );
       expect(
         [for (final row in fixed.skip(navAboveProjects)) row.kind],

@@ -58,6 +58,7 @@ import 'package:marshal_app/src/model/fleet_store.dart'
 import 'package:marshal_app/src/model/general_model.dart';
 import 'package:marshal_app/src/model/hosts_model.dart';
 import 'package:marshal_app/src/model/library_model.dart';
+import 'package:marshal_app/src/model/marshal_model.dart';
 import 'package:marshal_app/src/model/models_model.dart';
 import 'package:marshal_app/src/model/network_model.dart';
 import 'package:marshal_app/src/model/secrets_model.dart';
@@ -110,6 +111,7 @@ import 'package:marshal_app/src/ui/settings/notifications_section.dart';
 import 'package:marshal_app/src/ui/settings/access_section.dart';
 import 'package:marshal_app/src/ui/settings/settings_place.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
+import 'package:marshal_app/src/ui/marshal/marshal_place.dart';
 import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
 import 'package:marshal_app/src/ui/inspector/files_tab.dart';
 import 'package:marshal_app/src/ui/inspector/inspect_tab.dart';
@@ -125,6 +127,7 @@ import 'package:marshal_app/src/ui/factory/planning_screen.dart';
 import 'package:marshal_app/src/ui/factory/run_screen.dart';
 import 'package:marshal_app/src/ui/factory/work_item_screen.dart';
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
+import 'package:marshal_app/src/ui/thread/transcript.dart';
 import 'package:marshal_app/src/client/bridge_client.dart'
     show ProjectSettingsVersion;
 import 'package:marshal_app/src/model/project_model.dart';
@@ -215,6 +218,11 @@ model.ThreadRef _shellThread(
 /// The sidebar the shell's fixture draws, at [place].
 NavModel shellNavFor(Place place) => NavModel(
   fixed: [
+    NavPlace(
+      kind: PlaceKind.marshal,
+      label: 'Marshal',
+      active: place.kind == PlaceKind.marshal,
+    ),
     NavPlace(
       kind: PlaceKind.overview,
       label: 'Overview',
@@ -1298,6 +1306,13 @@ final screens = <ScreenCase>[
     },
   ),
   ScreenCase(
+    name: 'marshal',
+    ready: () => _marshalPlace(),
+    states: {
+      for (final kind in requiredStates) kind: () => _marshalPlace(state: kind),
+    },
+  ),
+  ScreenCase(
     name: 'overview',
     ready: () => _overview(),
     states: {
@@ -1851,6 +1866,100 @@ Widget _threadScreen({
   pull: pull,
   state: state,
 );
+
+/// One coordinated task as the Marshal fixture names it.
+MarshalTask _marshalTask(
+  String id,
+  String title, {
+  Duration age = Duration.zero,
+  MarshalTaskState state = MarshalTaskState.open,
+}) => MarshalTask(
+  id: id,
+  sessionId: 'coord-$id',
+  title: title,
+  state: state,
+  updatedAt: shellNow.subtract(age),
+);
+
+/// The attention result the Marshal fixture draws: an ask in a thread, a
+/// review that is ready, and a project whose read was refused — so the case
+/// shows the links beside the limit rather than an all-clear.
+MarshalRead _marshalRead({bool clear = false}) => MarshalRead(
+  entries: clear
+      ? const []
+      : [
+          MarshalEntry(
+            kind: MarshalEntryKind.ask,
+            text: 'Reliable session recovery is waiting for approval',
+            age: const Duration(minutes: 12),
+            source: const MarshalSourceRef(
+              projectId: 'p-alpha',
+              kind: 'agent',
+              id: 'a-1',
+            ),
+            place: const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
+          ),
+          MarshalEntry(
+            kind: MarshalEntryKind.review,
+            text: 'Quiet capture mode is ready to review',
+            age: const Duration(hours: 2),
+            source: const MarshalSourceRef(
+              projectId: 'p-beta',
+              kind: 'review',
+              id: 'pr-2',
+            ),
+            place: const Place(PlaceKind.pulls),
+          ),
+        ],
+  sources: const [
+    MarshalSource(freshness: MarshalFreshness.fresh),
+    MarshalSource(
+      freshness: MarshalFreshness.unauthorized,
+      reason: 'the task’s read access to the project is not granted',
+    ),
+  ],
+  allClear: clear,
+  partial: !clear,
+  observedAt: shellNow,
+);
+
+/// The Marshal destination with its fixture data: one task, its answer, and the
+/// thread's transcript for it.
+Widget _marshalPlace({StateKind? state, MarshalModel? model}) {
+  final m =
+      model ??
+      MarshalModel.seeded(
+        host: 'local',
+        tasks: [
+          _marshalTask(
+            't-1',
+            'Which project needs a decision?',
+            age: const Duration(minutes: 4),
+          ),
+        ],
+        task: _marshalTask(
+          't-1',
+          'Which project needs a decision?',
+          age: const Duration(minutes: 4),
+        ),
+        read: _marshalRead(),
+        readAt: shellNow,
+        now: () => shellNow,
+      );
+  return MarshalPlace(
+    model: m,
+    host: 'local',
+    state: state,
+    now: shellNow,
+    transcript: Transcript(
+      store: StackStore.seeded(_threadSnapshot()),
+      view: ThreadViewState(),
+      now: shellNow,
+    ),
+    onOpen: (_) {},
+    onRetry: () {},
+  );
+}
 
 /// One work item as the enforcement tests pump it: a decision pending, one
 /// worker, a round with a passing check and a review finding, and its history.

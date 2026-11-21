@@ -160,6 +160,10 @@ const (
 	// CoordinatorFailureUserDirectionRequired means the target asked to steer an
 	// existing thread and no person's direction for that thread was verified.
 	CoordinatorFailureUserDirectionRequired = "user_direction_required"
+	// CoordinatorFailureWithdrawn means the assignment's unconfirmed submission
+	// was withdrawn or denied before a person confirmed it: nothing was
+	// started, and the ask it named is gone.
+	CoordinatorFailureWithdrawn = "withdrawn"
 )
 
 // CoordinatorWorkerRef names the worker an assignment created.

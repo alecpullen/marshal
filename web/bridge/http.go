@@ -1729,7 +1729,11 @@ func (s *Server) approvePending(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
 		return
 	}
-	agentID, err := s.fleet.Approve(r.Context(), id)
+	// A coordinated assignment's confirmation waits for the assignment's own
+	// dispatch lock — the one a stop holds while it withdraws the submission
+	// — so an approval can never start a worker the stop had already
+	// withdrawn and settled (approveCoordinatorPending).
+	agentID, err := s.approveCoordinatorPending(r.Context(), id)
 	if err != nil {
 		writeErr(w, err)
 		return

@@ -230,6 +230,13 @@ type Fleet struct {
 	blockedSeen map[string]time.Time
 	// blockedPending holds blocks no decision has answered yet.
 	blockedPending map[string]networkBlockDelta
+	// claimMu guards spawnClaimLocks, one lock per first-send claim key.
+	// The claim, the check for the agent it names and the spawn are one
+	// serialized step (SpawnClaimed), so two callers of one request resolve
+	// it in order instead of both finding no agent yet and spawning the
+	// claimed identity a second time beside the first.
+	claimMu         sync.Mutex
+	spawnClaimLocks map[string]*sync.Mutex
 	// stateDir is where git mirrors and agent working trees live, and the
 	// host directory every state mount binds under.
 	stateDir string
@@ -524,6 +531,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	f.netlog = NewNetLog(stateDir)
 	f.blockedSeen = make(map[string]time.Time)
 	f.blockedPending = make(map[string]networkBlockDelta)
+	f.spawnClaimLocks = make(map[string]*sync.Mutex)
 	f.creds = NewCredentialStore(ws.Credentials())
 	f.secrets = NewEnvProvider()
 	f.creds.SetProvider(f.secrets)
@@ -1425,6 +1433,12 @@ func spawnRequestDigest(root string, opts SpawnOptions) string {
 // false for a replay of a request that already delivered. The claim records
 // the dispatch before it happens, so a retry cannot send the same first
 // message twice.
+//
+// The claim, the check for the agent it names and the spawn are one serialized
+// step per claim key: a second caller of the same request waits for the first
+// to finish — the first is often still spawning, so both would otherwise find
+// no agent yet and spawn the claimed identity a second time beside it — and
+// then finds the agent it started.
 func (f *Fleet) SpawnClaimed(ctx context.Context, root string, opts SpawnOptions, requestID string) (string, bool, error) {
 	if requestID == "" {
 		id, err := f.spawn(ctx, root, opts, nil)
@@ -1436,6 +1450,10 @@ func (f *Fleet) SpawnClaimed(ctx context.Context, root string, opts SpawnOptions
 	}
 	scope := spawnRequestScope(origin, root)
 	digest := spawnRequestDigest(root, opts)
+	// The serialized step: nothing a second caller could race is touched
+	// before this lock is held.
+	release := f.lockSpawnClaim(scope, requestID)
+	defer release()
 	claim, created, err := f.ws.ClaimSpawnRequest(scope, requestID, digest, newAgentID())
 	if err != nil {
 		return "", false, err
@@ -1470,6 +1488,24 @@ func (f *Fleet) SpawnClaimed(ctx context.Context, root string, opts SpawnOptions
 		return id, false, fmt.Errorf("agent created but recording its request failed: %w", merr)
 	}
 	return id, opts.Prompt != "", spawnErr
+}
+
+// lockSpawnClaim returns the release of one first-send claim's lock, creating
+// it on first ask. Entries are kept for the process lifetime: the claims are
+// a bounded, durable set — one per request id that ever resolved to an agent
+// — and dropping a lock a waiter still holds would let a second spawn of a
+// claimed identity run beside the first.
+func (f *Fleet) lockSpawnClaim(scope, requestID string) func() {
+	key := spawnClaimKey(scope, requestID)
+	f.claimMu.Lock()
+	lock, ok := f.spawnClaimLocks[key]
+	if !ok {
+		lock = &sync.Mutex{}
+		f.spawnClaimLocks[key] = lock
+	}
+	f.claimMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }
 
 type factorySpawnTag struct {

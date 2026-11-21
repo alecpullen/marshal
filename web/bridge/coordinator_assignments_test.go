@@ -354,6 +354,42 @@ func TestCoordinatorUnconfirmedAssignmentStaysPending(t *testing.T) {
 	}
 }
 
+// TestCoordinatorWithdrawnSubmissionReadsAsWithdrawn pins the machine-readable
+// side of a denied submission: the assignment reads failed with the withdrawn
+// failure — the ask was taken away, which is nothing wrong with the target
+// project — and nothing started.
+func TestCoordinatorWithdrawnSubmissionReadsAsWithdrawn(t *testing.T) {
+	fx := newAssignmentFixture(t)
+	fx.grant(fx.projectA, asksFirst())
+	task := fx.createTask("req-deny", fx.projectA)
+
+	out := fx.dispatch(task, contract.CoordinatorAssignRequest{
+		RequestID: "dispatch-deny",
+		Targets:   []contract.CoordinatorAssignTarget{{ProjectID: fx.projectA, Instruction: "Ship the parser fix"}},
+	})
+	got := out.Assignments[0]
+	if got.State != contract.CoordinatorAssignmentPending {
+		t.Fatalf("assignment = %s (%s), want pending", got.State, got.Reason)
+	}
+	if err := fx.f.Deny(got.IntakeID); err != nil {
+		t.Fatalf("deny the submission: %v", err)
+	}
+
+	denied := fx.only(task)
+	if denied.State != contract.CoordinatorAssignmentFailed {
+		t.Fatalf("a denied submission reads %s, want failed", denied.State)
+	}
+	if denied.Failure != contract.CoordinatorFailureWithdrawn {
+		t.Fatalf("the failure code is %q, want %q", denied.Failure, contract.CoordinatorFailureWithdrawn)
+	}
+	if !strings.Contains(denied.Reason, "denied") {
+		t.Fatalf("the denied assignment says %q", denied.Reason)
+	}
+	if workers := fx.agentsIn(fx.rootA); len(workers) != 0 {
+		t.Fatalf("a denied submission started %d workers", len(workers))
+	}
+}
+
 // TestCoordinatorExpiredIntakeReconcilesToOneOutcome pins the second review
 // focus on the other side: a submission nobody confirmed lapses, and the
 // assignment reads expired with nothing started — not pending forever, and not a

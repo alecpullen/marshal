@@ -14,8 +14,11 @@ package bridge
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/web/bridge/contract"
 )
@@ -507,5 +510,127 @@ func TestCoordinatorStopAnswersItsRoute(t *testing.T) {
 	// nowhere.
 	if rec := doReq(t, fx.srv, "POST", "/api/coordinator/tasks/nope/stop", nil, nil); rec.Code != 404 {
 		t.Fatalf("stopping an unknown task = %d %s, want 404", rec.Code, rec.Body)
+	}
+}
+
+// TestCoordinatorApprovalWaitsForTheStopThatBeatIt pins the confirmation's
+// serialization with the stop: an approval that arrives while the stop holds
+// the assignment's dispatch lock cannot approve beside it, so the interleaving
+// that would start a worker the stop had already withdrawn and settled starts
+// nothing.
+func TestCoordinatorApprovalWaitsForTheStopThatBeatIt(t *testing.T) {
+	fx := newAssignmentFixture(t)
+	fx.grant(fx.projectA, asksFirst())
+	task := fx.createTask("req-race", fx.projectA)
+
+	out := fx.dispatch(task, contract.CoordinatorAssignRequest{
+		RequestID: "dispatch-race",
+		Targets:   []contract.CoordinatorAssignTarget{{ProjectID: fx.projectA, Instruction: "Ship the parser fix"}},
+	})
+	asg := out.Assignments[0]
+	if asg.State != contract.CoordinatorAssignmentPending {
+		t.Fatalf("assignment = %s (%s), want pending", asg.State, asg.Reason)
+	}
+	if _, held := fx.ws.PendingByID(asg.ID); !held {
+		t.Fatal("the pending submission is not in the queue under the assignment's identity")
+	}
+
+	svc, err := fx.srv.coordinatorAvailable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The stop holds the assignment's dispatch lock while it withdraws the
+	// submission and settles the task; the test holds the same lock to place
+	// the HTTP approval inside that window.
+	release := svc.lockAssignment(asg.ID)
+	started := make(chan struct{})
+	type posted struct{ code int }
+	done := make(chan posted, 1)
+	go func() {
+		close(started)
+		req := httptest.NewRequest(http.MethodPost, "/api/pending/"+asg.ID+"/approve", nil)
+		// Addressed to localhost, the name the listener answers: the guard
+		// refuses another site's name (webguard.go, D13) before the handler.
+		req.Host = "localhost"
+		rec := httptest.NewRecorder()
+		fx.srv.ServeHTTP(rec, req)
+		done <- posted{code: rec.Code}
+	}()
+	<-started
+	// Parked on the lock. (An approval without it is long since done, and the
+	// wait below is what catches the one that ran beside the stop.)
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		select {
+		case r := <-done:
+			t.Fatalf("the approval ran beside the stop instead of waiting on the assignment's lock: HTTP %d", r.code)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	// What the stop writes under that same lock: the submission is withdrawn
+	// and the task and its assignment are settled stopped.
+	if err := fx.ws.DeletePending(asg.ID); err != nil {
+		t.Fatalf("withdraw the submission: %v", err)
+	}
+	if _, _, err := svc.store.SetTaskStatus(task.ID, contract.CoordinatorTaskStopped); err != nil {
+		t.Fatalf("settle the task: %v", err)
+	}
+	if _, err := svc.store.UpdateAssignment(task.ID, asg.ID, func(r *coordinatorAssignmentRecord) bool {
+		r.Assignment.State = contract.CoordinatorAssignmentStopped
+		r.Assignment.Reason = coordinatorStopReasonWithdrawn
+		r.Assignment.IntakeID = ""
+		return true
+	}); err != nil {
+		t.Fatalf("settle the assignment: %v", err)
+	}
+	release()
+	r := <-done
+	if r.code == http.StatusOK {
+		t.Fatal("an approval of a withdrawn submission answered 200")
+	}
+	if workers := fx.agentsIn(fx.rootA); len(workers) != 0 {
+		t.Fatalf("the racing approval started %d workers", len(workers))
+	}
+	if current := fx.only(task); current.State != contract.CoordinatorAssignmentStopped {
+		t.Fatalf("the settled assignment reads %s (%s), want stopped", current.State, current.Reason)
+	}
+}
+
+// TestCoordinatorCrashedIntentUnderAStoppedTaskReadsStopped pins what a read
+// answers when the daemon died after recording a dispatch intent and the task
+// was then stopped: no stop pass ever saw the intent, so the read settles it as
+// stopped before any work started rather than leaving "starting" under a
+// stopped task.
+func TestCoordinatorCrashedIntentUnderAStoppedTaskReadsStopped(t *testing.T) {
+	fx := newAssignmentFixture(t)
+	fx.grant(fx.projectA, standing())
+	task := fx.createTask("req-crash", fx.projectA)
+	targets := []contract.CoordinatorAssignTarget{{ProjectID: fx.projectA, Instruction: "Fix the redirect bug"}}
+
+	svc, err := fx.srv.coordinatorAvailable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := svc.store.BeginDispatch(task.ID, "dispatch-crash", coordinatorDispatchDigest(targets), targets); err != nil || !created {
+		t.Fatalf("record the intent: created=%v err=%v", created, err)
+	}
+	// The task is stopped with no worker and no submission: exactly what a stop
+	// that landed after the crash left.
+	if _, _, err := svc.store.SetTaskStatus(task.ID, contract.CoordinatorTaskStopped); err != nil {
+		t.Fatal(err)
+	}
+
+	got := fx.only(task)
+	if got.State != contract.CoordinatorAssignmentStopped {
+		t.Fatalf("the crashed intent reads %s (%s), want stopped", got.State, got.Reason)
+	}
+	if got.Reason != coordinatorStopReasonUnstarted {
+		t.Fatalf("the crashed intent says %q, want the not-started reason", got.Reason)
+	}
+	if got.Worker != nil || got.IntakeID != "" {
+		t.Fatalf("the crashed intent carries %+v", got)
+	}
+	if workers := fx.agentsIn(fx.rootA); len(workers) != 0 {
+		t.Fatalf("the crashed intent started %d workers", len(workers))
 	}
 }

@@ -233,10 +233,15 @@ func openCoordinatorStore(dir string, now func() time.Time) (*coordinatorStore, 
 		s.dispatches[key] = rec
 	}
 	// Deliveries are additive too: a version 2 document holds none, which is a
-	// task that has posted no result yet.
+	// task that has posted no result yet. One record per task: a document with
+	// two for one task is corrupt, and keeping the last one silently would
+	// answer a question about a record nobody wrote.
 	for _, rec := range doc.Deliveries {
 		if rec.TaskID == "" || rec.EventID == "" {
 			return nil, fmt.Errorf("%w: coordinator delivery with no identity", ErrCoordinatorUnavailable)
+		}
+		if _, dup := s.deliveries[rec.TaskID]; dup {
+			return nil, fmt.Errorf("%w: coordinator delivery for task %s appears twice", ErrCoordinatorUnavailable, rec.TaskID)
 		}
 		s.deliveries[rec.TaskID] = rec
 	}

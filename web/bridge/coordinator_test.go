@@ -439,6 +439,28 @@ func TestCoordinatorStoreLoadsOldDocumentsWithNoTasks(t *testing.T) {
 	}
 }
 
+// TestCoordinatorStoreRefusesDuplicateDeliveries pins the load's shape: one
+// delivery record per task. A document holding two for one task is corrupt,
+// and the last one silently winning would make the store answer with a record
+// nobody wrote.
+func TestCoordinatorStoreRefusesDuplicateDeliveries(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), coordinatorStateSubpath)
+	if err := os.MkdirAll(dir, coordinatorDirMode); err != nil {
+		t.Fatal(err)
+	}
+	doc := `{"version":3,"deliveries":[` +
+		`{"taskId":"t1","eventId":"e1","text":"first"},` +
+		`{"taskId":"t1","eventId":"e1","text":"second"}]}`
+	if err := os.WriteFile(filepath.Join(dir, coordinatorTasksName), []byte(doc), coordinatorFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openCoordinatorStore(dir, nil); err == nil {
+		t.Fatal("a document holding two deliveries for one task loaded instead of being refused")
+	} else if !errors.Is(err, ErrCoordinatorUnavailable) {
+		t.Fatalf("duplicate deliveries failed as %v, want unavailable", err)
+	}
+}
+
 // recordReadyReview records one pull request whose checks have settled, so the
 // attention read sees it as a review that is ready.
 func (fx *coordinatorFixture) recordReadyReview(repoID, root string, number int, title string, observed time.Time) {

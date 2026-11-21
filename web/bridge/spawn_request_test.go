@@ -187,6 +187,51 @@ func TestALegacySpawnStillStartsEveryRequest(t *testing.T) {
 	}
 }
 
+// TestConcurrentFirstSendsSerializeTheirClaim pins the serialization between
+// one request's claim and the spawn it guards: a racing caller of the same
+// request has claimed nothing durably while the first caller still holds the
+// claim's lock, so the claimed identity can never be spawned twice, however
+// close the two calls are.
+func TestConcurrentFirstSendsSerializeTheirClaim(t *testing.T) {
+	f, _, _ := agentFleet(t)
+	root := t.TempDir()
+	if err := f.ws.AddProject(root); err != nil {
+		t.Fatal(err)
+	}
+	scope := spawnRequestScope(OriginUI, root)
+	release := f.lockSpawnClaim(scope, "req-serialize")
+	started := make(chan struct{})
+	done := make(chan struct{})
+	var spawnErr error
+	go func() {
+		close(started)
+		_, _, spawnErr = f.SpawnClaimed(context.Background(), root, SpawnOptions{Prompt: "one attempt"}, "req-serialize")
+		close(done)
+	}()
+	<-started
+	// The racing caller has minted nothing durably: the claim is written inside
+	// the same serialized step as the spawn it guards, so it cannot exist while
+	// the first caller holds the lock.
+	if _, held := f.ws.SpawnClaim(scope, "req-serialize"); held {
+		t.Fatal("a racing caller claimed the request while another held the claim's lock")
+	}
+	release()
+	<-done
+	if spawnErr != nil {
+		t.Fatalf("the racing caller's resolution failed: %v", spawnErr)
+	}
+	// And once it ran, the claim and its one agent both exist: the wait let the
+	// second caller resolve the agent the first started instead of starting
+	// another.
+	claim, held := f.ws.SpawnClaim(scope, "req-serialize")
+	if !held || claim.AgentID == "" {
+		t.Fatalf("the racing caller left no claim: %+v", claim)
+	}
+	if got := agentsOf(f, root); len(got) != 1 {
+		t.Fatalf("agents = %d, want 1", len(got))
+	}
+}
+
 // TestConcurrentIdenticalRequestsYieldOneAgent: submissions that arrive
 // together are one request, so they resolve to one agent.
 func TestConcurrentIdenticalRequestsYieldOneAgent(t *testing.T) {

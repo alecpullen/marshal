@@ -207,9 +207,9 @@ func (s *Server) coordinatorDispatch(ctx context.Context, task contract.Coordina
 	for _, rec := range records {
 		updated, rerr := s.coordinatorReconcileAssignment(ctx, task, rec, byProject[rec.Assignment.ProjectID], true)
 		if rerr != nil {
-			if errors.Is(rerr, ErrCoordinatorUnavailable) {
-				return out, rerr
-			}
+			// A target's own failure never returns here — it is recorded in
+			// its assignment — so an error here is the store's, and it
+			// unwinds the whole request.
 			return out, rerr
 		}
 		out.Assignments = append(out.Assignments, updated.Assignment)
@@ -445,11 +445,11 @@ func (s *Server) coordinatorObserveInto(task contract.CoordinatorTask, rec *coor
 		a := &rec.Assignment
 		changed := false
 		if rec.IntakeExpiresAt.IsZero() || now.Before(rec.IntakeExpiresAt) {
-			if a.State != contract.CoordinatorAssignmentFailed || a.Failure != contract.CoordinatorFailureUnknownProject {
+			if a.State != contract.CoordinatorAssignmentFailed || a.Failure != contract.CoordinatorFailureWithdrawn {
 				changed = true
 			}
 			a.State = contract.CoordinatorAssignmentFailed
-			a.Failure = contract.CoordinatorFailureUnknownProject
+			a.Failure = contract.CoordinatorFailureWithdrawn
 			a.Reason = "the submission was withdrawn or denied before it was confirmed"
 		} else {
 			if a.State != contract.CoordinatorAssignmentExpired || a.Failure != "" {
@@ -464,6 +464,19 @@ func (s *Server) coordinatorObserveInto(task contract.CoordinatorTask, rec *coor
 			changed = true
 		}
 		return changed
+	}
+	// The intent a crash left behind: recorded durably and never resolved. A
+	// task that stopped while it stood — no stop pass ever saw this record, so
+	// nothing settles it but a read — is answered the way the stop itself
+	// answers an unstarted assignment: stopped before any work started, never
+	// "starting" under a stopped task.
+	if rec.Assignment.State == contract.CoordinatorAssignmentDispatching &&
+		task.Status != contract.CoordinatorTaskOpen {
+		rec.Assignment.State = contract.CoordinatorAssignmentStopped
+		rec.Assignment.Failure = ""
+		rec.Assignment.Reason = coordinatorStopReasonUnstarted
+		rec.Assignment.IntakeID = ""
+		return true
 	}
 	return false
 }
@@ -1096,6 +1109,33 @@ func (s *Server) coordinatorCancelWorker(ctx context.Context, worker Agent) erro
 	return nil
 }
 
+// approveCoordinatorPending confirms one submission and, when it belongs to a
+// coordinated assignment, holds that assignment's dispatch lock while it does.
+//
+// A stop withdraws the owned submission and settles the task while it holds
+// the same lock (coordinatorStopAssignment). Confirming must therefore wait
+// for it: either the stop settled first and the submission is already gone —
+// the confirmation fails, and nothing starts — or the confirmation wins and
+// the worker it starts is there for the stop to find and cancel. Without the
+// lock an approval that raced a stop could start a worker the task had
+// already stopped, and nothing would ever cancel it.
+func (s *Server) approveCoordinatorPending(ctx context.Context, pendingID string) (string, error) {
+	if s.fleet == nil {
+		return "", ErrCoordinatorUnavailable
+	}
+	if p, ok := s.fleet.ws.PendingByID(pendingID); ok && strings.TrimSpace(p.TaskID) != "" {
+		if svc, err := s.coordinatorAvailable(); err == nil {
+			assignmentID := strings.TrimSpace(p.AssignmentID)
+			if assignmentID == "" {
+				assignmentID = p.ID
+			}
+			release := svc.lockAssignment(assignmentID)
+			defer release()
+		}
+	}
+	return s.fleet.Approve(ctx, pendingID)
+}
+
 // coordinatorAssignmentFailureOf classifies one dispatch error for a tool
 // caller, so a client can tell "ask the person" from "this target failed".
 func coordinatorAssignmentFailureOf(err error) factoryToolFailure {
@@ -1548,7 +1588,7 @@ func (s *Server) coordinatorDeliverSource(task contract.CoordinatorTask, assignm
 	if !s.coordinatorSourceVisible(task) {
 		return nil, nil
 	}
-	delivery, changed, err := svc.store.PutDelivery(contract.CoordinatorDelivery{
+	delivery, _, err := svc.store.PutDelivery(contract.CoordinatorDelivery{
 		TaskID:  task.ID,
 		Source:  source,
 		EventID: coordinatorDeliveryID(task.ID),
@@ -1557,10 +1597,9 @@ func (s *Server) coordinatorDeliverSource(task contract.CoordinatorTask, assignm
 	if err != nil {
 		return nil, err
 	}
-	if !changed {
-		// The record already said this: no second summary is posted.
-		return &delivery, nil
-	}
+	// Whether this attempt changed the record or the store already held the
+	// same text, the one record under the stable event id is the answer, so a
+	// retry posts no second summary.
 	return &delivery, nil
 }
 

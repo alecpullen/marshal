@@ -125,9 +125,11 @@ The stack types are hand-written TypeScript in `lib/stack.ts` today.
     thread, which is what lets them spawn first and talk it through. The
     request then carries no first turn at all (`prompt` is omitted, not
     empty), and the bridge spawns an idle agent. "Plan first" and "Work
-    item" use the prompt as their own text — a planning thread's first turn,
-    a work item's plan — so those two still require one, and Start says so
-    on the sheet rather than doing nothing.
+    item" keep their existing prompt requirement: a work item's plan is the
+    prompt, and the Plan-first handoff stays prompt-gated. Those two still
+    say so on the sheet rather than doing nothing. The Plan-first prompt is
+    not sent to the planner today; its thread takes the first instruction,
+    and changing that is outside this agent-prompt change.
 12. **A session the user can only read** — the access route says so — shows
     the transcript with the composer replaced by one line saying why.
 

@@ -246,6 +246,29 @@ Future<void> main() async {
             read: preferenceStore?.read,
             save: preferenceStore?.write,
           ),
+          // A project thread's handoff (agent-first Studio, tasks 7-8): the
+          // coordinated task its work was handed to, the assignments and the
+          // result reported back. The route is keyed by the project's canonical
+          // daemon id, which the fleet's project list is what carries, so a
+          // project this host does not list draws no band rather than a link
+          // that could not resolve.
+          sourceHandoffFor: (host, thread) {
+            final client = hosts.hosts
+                .firstWhere((owner) => owner.name == host)
+                .client;
+            for (final project in store.projects(host: host)) {
+              if (project.root != thread.project) continue;
+              final projectID = project.mcpProjectID;
+              if (projectID == null || projectID.isEmpty) return null;
+              return SourceHandoffModel.forClient(
+                client,
+                host: host,
+                projectId: projectID,
+                threadId: thread.id,
+              );
+            }
+            return null;
+          },
           // A thread's Share mints a read-only status link for its agent on
           // the client that reaches its host (F7 decision 7): a running
           // thread's id is its agent id, which the route takes.

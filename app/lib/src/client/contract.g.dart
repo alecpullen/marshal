@@ -1830,10 +1830,10 @@ class CoordinatorThreadRef {
   }
 }
 
-/// CoordinatorTaskStatus is where a coordinated task stands. Only "open" is
-/// written by this phase; a stopped task arrives with the stop scope.
+/// CoordinatorTaskStatus is where a coordinated task stands.
 enum CoordinatorTaskStatus {
   coordinatorTaskOpen('open'),
+  coordinatorTaskStopping('stopping'),
   coordinatorTaskStopped('stopped'),
   unknown('unknown');
 
@@ -2387,6 +2387,56 @@ class CoordinatorAssignResult {
     json['assignments'] = [
       for (final value in assignments) value.toJson(),
     ];
+    return json;
+  }
+}
+
+/// CoordinatorStopResult is POST /api/coordinator/tasks/{id}/stop's answer: the
+/// task as the stop left it, what each of its assignments settled to, and the
+/// result reported back into the source thread.
+///
+/// Stopping is one request and one answer, so a screen shows the stop as pending
+/// until this arrives: Task.Status is stopping when the daemon recorded the
+/// intent but could not confirm the cancellation of every worker it created, and
+/// stopped when it did. Both answers carry the same fields, so a repeat after a
+/// reconnect reads the settled state rather than inventing one.
+class CoordinatorStopResult {
+  const CoordinatorStopResult({
+    required this.task,
+    required this.assignments,
+    this.delivery,
+  });
+
+  final CoordinatorTask task;
+  final List<CoordinatorAssignment> assignments;
+  final CoordinatorDelivery? delivery;
+
+  factory CoordinatorStopResult.fromJson(Map<String, dynamic> json) {
+    return CoordinatorStopResult(
+      task: _object(
+        json['task'],
+        CoordinatorTask.fromJson,
+      ),
+      assignments: _list(
+        json['assignments'],
+        (value) => _object(value, CoordinatorAssignment.fromJson),
+      ),
+      delivery: _objectOrNull(
+        json['delivery'],
+        CoordinatorDelivery.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['task'] = task.toJson();
+    json['assignments'] = [
+      for (final value in assignments) value.toJson(),
+    ];
+    if (delivery != null) {
+      json['delivery'] = delivery!.toJson();
+    }
     return json;
   }
 }

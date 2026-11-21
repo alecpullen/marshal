@@ -58,11 +58,30 @@ type coordinatorService struct {
 // lockAssignment serializes one assignment's dispatch attempts and returns the
 // release.
 func (svc *coordinatorService) lockAssignment(assignmentID string) func() {
+	return svc.lock("assignment\x00" + assignmentID)
+}
+
+// lockTask serializes one task's stop attempts and returns the release.
+//
+// A stop is one operation per task however many times it is asked for: a repeat
+// after a reconnect — or a second press — waits for the one in flight and then
+// reads the state it settled, rather than cancelling the same workers beside it.
+// It is a distinct key space from the assignment locks, so a stop waiting on an
+// assignment's dispatch and a dispatch waiting on its own lock can never be the
+// same waiter.
+func (svc *coordinatorService) lockTask(taskID string) func() {
+	return svc.lock("task\x00" + taskID)
+}
+
+// lock returns the release of the mutex named by a key, creating it on first
+// ask. Entries are kept for the process lifetime: a lock dropped while a waiter
+// still held it would let a third attempt run beside the second.
+func (svc *coordinatorService) lock(key string) func() {
 	svc.dispatchMu.Lock()
-	lock, ok := svc.dispatchLocks[assignmentID]
+	lock, ok := svc.dispatchLocks[key]
 	if !ok {
 		lock = &sync.Mutex{}
-		svc.dispatchLocks[assignmentID] = lock
+		svc.dispatchLocks[key] = lock
 	}
 	svc.dispatchMu.Unlock()
 	lock.Lock()
@@ -113,6 +132,10 @@ func (s *Server) coordinatorRoutes() {
 	s.mux.HandleFunc("GET /api/coordinator/tasks/{id}/assignments", s.coordinatorTaskAssignmentList)
 	s.mux.HandleFunc("GET /api/coordinator/sources/{project}/{thread}", s.coordinatorSourceView)
 	s.mux.HandleFunc("POST /api/coordinator/tasks/{id}/assignments/{assignment}/retry", s.coordinatorRetry)
+	// The scoped stop (agent-first Studio, task 8): one task's own work, with the
+	// intent made durable before a child is cancelled. It is one request and one
+	// answer, so a screen shows the stop as pending until this returns.
+	s.mux.HandleFunc("POST /api/coordinator/tasks/{id}/stop", s.coordinatorStop)
 }
 
 // available reports the service and its store, or why it cannot answer.
@@ -360,6 +383,33 @@ func (s *Server) coordinatorRetry(w http.ResponseWriter, r *http.Request) {
 	out := contract.CoordinatorAssignmentList{TaskID: task.ID, Host: task.Host, Assignments: assignments}
 	if delivery, held, derr := svc.store.Delivery(task.ID); derr == nil && held {
 		out.Delivery = &delivery
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// coordinatorStop answers POST /api/coordinator/tasks/{id}/stop: one task's own
+// work stopped at the scope the person asked for.
+//
+// The intent is durable before a worker is cancelled, so a request that fails
+// part-way leaves a task that reads stopping — pending until the daemon confirms —
+// rather than a stopped task whose children may still be running. A repeat is
+// answered with the state the first stop left.
+func (s *Server) coordinatorStop(w http.ResponseWriter, r *http.Request) {
+	svc, err := s.coordinatorAvailable()
+	if err != nil {
+		writeCoordinatorError(w, err)
+		return
+	}
+	task, err := svc.store.Get(r.PathValue("id"))
+	if err != nil {
+		writeCoordinatorError(w, err)
+		return
+	}
+	task.Host = s.coordinatorHost()
+	out, err := s.coordinatorStopTask(r.Context(), task)
+	if err != nil {
+		writeCoordinatorError(w, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }

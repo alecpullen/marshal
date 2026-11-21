@@ -15,7 +15,11 @@ import 'place.dart';
 import 'thread_view_state.dart';
 
 /// Where one coordinated task stands, as the destination draws it.
-enum MarshalTaskState { open, stopped }
+///
+/// `stopping` is a stop the daemon has recorded and not yet confirmed; it is what
+/// the screen shows while a stop is pending, so a person is never told a task
+/// stopped before the daemon says it did.
+enum MarshalTaskState { open, stopping, stopped }
 
 /// One coordinated task, as Marshal's destination lists and restores it.
 ///
@@ -43,9 +47,11 @@ class MarshalTask {
     id: task.id,
     sessionId: task.sessionID,
     title: (task.title ?? '').trim(),
-    state: task.status == CoordinatorTaskStatus.coordinatorTaskStopped
-        ? MarshalTaskState.stopped
-        : MarshalTaskState.open,
+    state: switch (task.status) {
+      CoordinatorTaskStatus.coordinatorTaskStopped => MarshalTaskState.stopped,
+      CoordinatorTaskStatus.coordinatorTaskStopping => MarshalTaskState.stopping,
+      _ => MarshalTaskState.open,
+    },
     updatedAt:
         DateTime.tryParse(task.updatedAt) ??
         DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
@@ -340,6 +346,7 @@ class MarshalModel extends ChangeNotifier {
       String assignmentId,
     )?
     retryAssignment,
+    Future<CoordinatorStopResult> Function(String taskId)? stopTask,
     String? Function(String key)? read,
     void Function(String key, String value)? save,
     DateTime Function()? now,
@@ -348,6 +355,7 @@ class MarshalModel extends ChangeNotifier {
        _create = create,
        _assignments = assignments,
        _retryAssignment = retryAssignment,
+       _stop = stopTask,
        _read = read,
        _save = save,
        _now = now ?? DateTime.now,
@@ -371,8 +379,13 @@ class MarshalModel extends ChangeNotifier {
     tasks: client.coordinatorTasks,
     attention: client.coordinatorAttention,
     create: client.createCoordinatorTask,
-    assignments: assignments,
-    retryAssignment: retryAssignment,
+    // The assignment read, the scoped retry and the scoped stop are the host's
+    // own routes (agent-first Studio, tasks 7-8): wired here so a running Studio
+    // draws the handoff band, offers the retry and can stop the task, rather
+    // than only the fixtures doing so.
+    assignments: assignments ?? client.coordinatorAssignments,
+    retryAssignment: retryAssignment ?? client.retryCoordinatorAssignment,
+    stopTask: client.stopCoordinatorTask,
     read: read,
     save: save,
     now: now,
@@ -430,6 +443,7 @@ class MarshalModel extends ChangeNotifier {
        _create = _noCreate,
        _assignments = null,
        _retryAssignment = null,
+       _stop = null,
        _read = null,
        _save = null,
        _now = now ?? DateTime.now,
@@ -478,6 +492,12 @@ class MarshalModel extends ChangeNotifier {
     String assignmentId,
   )?
   _retryAssignment;
+
+  /// The scoped stop: one task's own work stopped, with the intent made durable
+  /// before anything is cancelled (agent-first Studio, task 8). A host this build
+  /// wired no route for leaves the stop control out rather than drawing one that
+  /// goes nowhere.
+  final Future<CoordinatorStopResult> Function(String taskId)? _stop;
   final String? Function(String key)? _read;
   final void Function(String key, String value)? _save;
   final DateTime Function() _now;
@@ -510,6 +530,12 @@ class MarshalModel extends ChangeNotifier {
   String? _assignmentsFailure;
   bool _readingAssignments = false;
   String? _retrying;
+
+  /// The stop in flight, and what the last one answered with when it failed: a
+  /// stop shows as pending until the daemon answers, and a refusal is the
+  /// daemon's own words rather than a task the screen claims is stopped.
+  bool _stopping = false;
+  String? _stopFailure;
 
   /// Whether a seeded model's handoff is stale: a fixture's way of drawing the
   /// state a failed read leaves, without a route to fail.
@@ -564,6 +590,24 @@ class MarshalModel extends ChangeNotifier {
   /// The assignment a scoped retry is running for, or null when none is.
   String? get retrying => _retrying;
 
+  /// Whether a scoped stop is in flight: the screen shows the stop as pending
+  /// until the daemon answers.
+  bool get stopping => _stopping;
+
+  /// What the last stop answered with, when it was refused. The task is not
+  /// reported stopped on a refusal — the daemon's own words are.
+  String? get stopFailure => _stopFailure;
+
+  /// Whether the open task may be stopped at all: it has a route, it is open or
+  /// already stopping, and no stop is in flight.
+  bool get canStop {
+    final task = _task;
+    return _stop != null &&
+        task != null &&
+        task.state != MarshalTaskState.stopped &&
+        !_stopping;
+  }
+
   /// The open task's handoff as its transcript and this destination draw it, or
   /// null when no task is open or no route read one.
   ///
@@ -578,26 +622,10 @@ class MarshalModel extends ChangeNotifier {
         _assignmentsFailure == null) {
       return null;
     }
-    final rows = <HandoffAssignmentRow>[
-      for (final row in _assignmentRows)
-        HandoffAssignmentRow(
-          id: row.id,
-          project: row.projectName,
-          state: _handoffStateOf(row.state),
-          instruction: row.instruction,
-          thread: row.threadId == null || row.threadId!.trim().isEmpty
-              ? null
-              : Place(PlaceKind.thread, host: host, id: row.threadId),
-          failure: row.failure,
-          reason: row.reason,
-          updatedAt: row.updatedAt,
-        ),
-    ];
-    return HandoffView(
-      taskId: task.id,
-      taskTitle: task.title,
-      task: Place.marshal(host: host, id: task.id),
-      rows: rows,
+    return handoffViewOf(
+      host: host,
+      task: task,
+      rows: _assignmentRows,
       result: _resultText,
       resultAt: _resultAt,
       observedAt: _assignmentsAt,
@@ -606,7 +634,7 @@ class MarshalModel extends ChangeNotifier {
   }
 
   /// Where one wire state stands, in the value the thread model draws.
-  static HandoffAssignmentState _handoffStateOf(MarshalAssignmentState state) =>
+  static HandoffAssignmentState handoffStateOf(MarshalAssignmentState state) =>
       switch (state) {
         MarshalAssignmentState.dispatching =>
           HandoffAssignmentState.dispatching,
@@ -885,7 +913,7 @@ class MarshalModel extends ChangeNotifier {
   /// Keeps one assignment read: the rows, and the result it carried.
   void _applyAssignmentList(CoordinatorAssignmentList list) {
     _assignmentRows = List.unmodifiable([
-      for (final assignment in list.assignments) _assignmentOf(assignment),
+      for (final assignment in list.assignments) assignmentOf(assignment),
     ]);
     final delivery = list.delivery;
     _resultText = (delivery?.text ?? '').trim().isEmpty
@@ -895,7 +923,7 @@ class MarshalModel extends ChangeNotifier {
   }
 
   /// Projects one wire assignment into what the destination draws.
-  static MarshalAssignment _assignmentOf(CoordinatorAssignment a) {
+  static MarshalAssignment assignmentOf(CoordinatorAssignment a) {
     final thread = a.worker?.agentID ?? a.thread?.id;
     return MarshalAssignment(
       id: a.id,
@@ -955,6 +983,54 @@ class MarshalModel extends ChangeNotifier {
     }
     _retrying = null;
     notifyListeners();
+  }
+
+  /// Stops the open task at the requested scope (agent-first Studio, task 8).
+  ///
+  /// The daemon makes the stop durable before it cancels the task's own workers,
+  /// so this is one request and one answer: while it is in flight the screen shows
+  /// the stop as pending, and the answer is what settles it. A stopped task
+  /// answers the same state again, so a repeat after a reconnect — or a second
+  /// press — is harmless.
+  Future<void> stopTask() async {
+    final stop = _stop;
+    final task = _task;
+    if (stop == null || task == null || _stopping || task.state == MarshalTaskState.stopped) {
+      return;
+    }
+    _stopping = true;
+    _stopFailure = null;
+    notifyListeners();
+    try {
+      final answer = await stop(task.id);
+      if (_disposed) return;
+      _applyStopResult(answer);
+    } catch (error) {
+      if (_disposed) return;
+      _stopFailure = describeFailure(error);
+    }
+    _stopping = false;
+    notifyListeners();
+  }
+
+  /// Keeps one stop answer: the task as the daemon left it, the assignments it
+  /// settled, and the result it reported back into the source thread.
+  void _applyStopResult(CoordinatorStopResult answer) {
+    final stopped = MarshalTask.of(answer.task);
+    _task = stopped;
+    _list = List.unmodifiable([
+      for (final task in _list) task.id == stopped.id ? stopped : task,
+    ]);
+    _applyAssignmentList(
+      CoordinatorAssignmentList(
+        taskID: answer.task.id,
+        host: answer.task.host,
+        assignments: answer.assignments,
+        delivery: answer.delivery,
+      ),
+    );
+    _assignmentsFailure = null;
+    _assignmentsAt = _now();
   }
 
   /// Projects the wire answer into what the destination draws, attaching this
@@ -1039,6 +1115,239 @@ class MarshalModel extends ChangeNotifier {
       view.dispose();
     }
     _views.clear();
+    super.dispose();
+  }
+
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
+  }
+}
+
+/// Projects one task's assignments and delivered result into what a thread's
+/// handoff band draws (agent-first Studio, tasks 7-8).
+///
+/// Both surfaces that draw it read it here — Marshal's own destination and the
+/// thread the work came from — so the two can never describe one handoff
+/// differently. Every link is built from [host] and a durable id the daemon
+/// minted; nothing here guesses a destination.
+HandoffView handoffViewOf({
+  required String host,
+  required MarshalTask task,
+  required List<MarshalAssignment> rows,
+  String? result,
+  DateTime? resultAt,
+  DateTime? observedAt,
+  bool stale = false,
+}) => HandoffView(
+  taskId: task.id,
+  taskTitle: task.title,
+  task: Place.marshal(host: host, id: task.id),
+  rows: [
+    for (final row in rows)
+      HandoffAssignmentRow(
+        id: row.id,
+        project: row.projectName,
+        state: MarshalModel.handoffStateOf(row.state),
+        instruction: row.instruction,
+        thread: row.threadId == null || row.threadId!.trim().isEmpty
+            ? null
+            : Place(PlaceKind.thread, host: host, id: row.threadId),
+        failure: row.failure,
+        reason: row.reason,
+        updatedAt: row.updatedAt,
+      ),
+  ],
+  result: result,
+  resultAt: resultAt,
+  observedAt: observedAt,
+  stale: stale,
+);
+
+/// The handoff one project thread is the source of, as that thread's own screen
+/// draws it (agent-first Studio, tasks 7-8).
+///
+/// It reads the host's source view rather than a task's: a thread is the source
+/// of at most one open task, and the view is what tells it whether it is one at
+/// all. A thread nothing was handed off from reads an empty view, which is a
+/// valid answer — the screen then draws no handoff rather than an error.
+class SourceHandoffModel extends ChangeNotifier {
+  SourceHandoffModel({
+    required this.host,
+    required this.projectId,
+    required this.threadId,
+    required Future<CoordinatorSourceView> Function(
+      String projectId,
+      String threadId,
+    )
+    read,
+    Future<CoordinatorAssignmentList> Function(String taskId, String assignmentId)?
+    retry,
+    DateTime Function()? now,
+  }) : _read = read,
+       _retry = retry,
+       _now = now ?? DateTime.now;
+
+  /// The model one project thread's client backs.
+  factory SourceHandoffModel.forClient(
+    BridgeClient client, {
+    required String host,
+    required String projectId,
+    required String threadId,
+    DateTime Function()? now,
+  }) => SourceHandoffModel(
+    host: host,
+    projectId: projectId,
+    threadId: threadId,
+    read: client.coordinatorSourceView,
+    retry: client.retryCoordinatorAssignment,
+    now: now,
+  );
+
+  /// The host whose daemon holds the task: a task is host-local, so every link
+  /// this projects is built for this host.
+  final String host;
+
+  /// The target project's canonical daemon id, and the thread's own id: both are
+  /// what the source-view route is keyed by.
+  final String projectId;
+  final String threadId;
+
+  final Future<CoordinatorSourceView> Function(
+    String projectId,
+    String threadId,
+  )
+  _read;
+  final Future<CoordinatorAssignmentList> Function(
+    String taskId,
+    String assignmentId,
+  )?
+  _retry;
+  final DateTime Function() _now;
+
+  HandoffView? _handoff;
+  String? _failure;
+  bool _loading = false;
+  bool _disposed = false;
+  bool _stale = false;
+
+  /// The newest source view this model read. It is kept so a read that fails can
+  /// redraw the same handoff marked as possibly behind, rather than losing it.
+  CoordinatorSourceView? _view;
+
+  /// The handoff as the thread draws it, or null when this thread handed nothing
+  /// off — and until the first read answers, which is a handoff nobody has said
+  /// exists.
+  HandoffView? get handoff => _handoff;
+
+  /// What the last read answered with, when it failed: the bridge's own words.
+  /// The band then says what it draws may be behind rather than disappearing.
+  String? get failure => _failure;
+
+  /// Whether a read is in flight.
+  bool get loading => _loading;
+
+  /// Reads the source view. The first read is what a thread place starts; a
+  /// later one is what a reconnect or the person's own refresh asks for.
+  Future<void> start() => _load();
+
+  /// Reads again: what a resumed screen does once its connection is back.
+  Future<void> refresh() => _load();
+
+  Future<void> _load() async {
+    if (_loading) return;
+    _loading = true;
+    notifyListeners();
+    try {
+      final view = await _read(projectId, threadId);
+      if (_disposed) return;
+      _apply(view);
+      _failure = null;
+      _stale = false;
+    } catch (error) {
+      if (_disposed) return;
+      _failure = describeFailure(error);
+      // A read that failed keeps what it had and says it may be behind: a
+      // handoff nobody could re-read is not a handoff that ended.
+      final last = _view;
+      if (last != null) {
+        _stale = true;
+        _apply(last);
+      }
+    }
+    _loading = false;
+    notifyListeners();
+  }
+
+  /// Keeps one source view: the task, its assignments and the result it
+  /// reported back into this thread.
+  void _apply(CoordinatorSourceView view) {
+    _view = view;
+    final task = view.task;
+    if (task == null) {
+      _handoff = null;
+      return;
+    }
+    final delivery = view.delivery;
+    _handoff = handoffViewOf(
+      host: host,
+      task: MarshalTask.of(task),
+      rows: [
+        for (final assignment in view.assignments)
+          MarshalModel.assignmentOf(assignment),
+      ],
+      result: (delivery?.text ?? '').trim().isEmpty
+          ? null
+          : delivery!.text.trim(),
+      resultAt: delivery == null ? null : DateTime.tryParse(delivery.at),
+      observedAt: _now(),
+      stale: _stale,
+    );
+  }
+
+  /// Retries one failed assignment, under its own identity, and keeps the view
+  /// the daemon answers with. Only the assignment that was named is retried.
+  Future<void> retryAssignment(String assignmentId) async {
+    final retry = _retry;
+    final current = _handoff;
+    if (retry == null || current == null) return;
+    try {
+      final answer = await retry(current.taskId, assignmentId);
+      if (_disposed) return;
+      _apply(
+        CoordinatorSourceView(
+          host: host,
+          task: _taskOf(answer),
+          assignments: answer.assignments,
+          delivery: answer.delivery,
+        ),
+      );
+      _failure = null;
+      _stale = false;
+    } catch (error) {
+      if (_disposed) return;
+      _failure = describeFailure(error);
+    }
+    notifyListeners();
+  }
+
+  /// The task a retried assignment list belongs to: the one the handoff already
+  /// names, since a retry never moves a task.
+  CoordinatorTask _taskOf(CoordinatorAssignmentList answer) =>
+      CoordinatorTask(
+        id: answer.taskID,
+        sessionID: '',
+        status: CoordinatorTaskStatus.coordinatorTaskOpen,
+        revision: 1,
+        projects: const [],
+        createdAt: _now().toIso8601String(),
+        updatedAt: _now().toIso8601String(),
+      );
+
+  @override
+  void dispose() {
+    _disposed = true;
     super.dispose();
   }
 

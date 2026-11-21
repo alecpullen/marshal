@@ -152,7 +152,13 @@ func (s *Server) coordinatorDispatch(ctx context.Context, task contract.Coordina
 		return contract.CoordinatorAssignResult{}, ErrCoordinatorUnavailable
 	}
 	// A stopped task dispatches nothing. The stop itself arrives with the stop
-	// scope; refusing here is what keeps this phase from widening it.
+	// scope; refusing here is what keeps this phase from widening it, and the
+	// status is re-read from the record so a stop recorded a moment ago — by
+	// another request, or by a person pressing Stop during this dispatch — is
+	// not missed because the caller's copy is older than it.
+	if status, gerr := svc.store.Get(task.ID); gerr == nil {
+		task = status
+	}
 	if task.Status != contract.CoordinatorTaskOpen {
 		return contract.CoordinatorAssignResult{}, ErrCoordinatorConflict
 	}
@@ -223,6 +229,13 @@ func (s *Server) coordinatorTaskAssignments(ctx context.Context, task contract.C
 	svc, err := s.coordinatorAvailable()
 	if err != nil {
 		return nil, err
+	}
+	// The status an assignment is observed under comes from the record, not the
+	// caller's copy: a read taken before a stop would otherwise report a stopped
+	// assignment running again, and the stop's own summary would then be the only
+	// place that said it stopped.
+	if current, gerr := svc.store.Get(task.ID); gerr == nil {
+		task.Status = current.Status
 	}
 	records, err := svc.store.Assignments(task.ID)
 	if err != nil {
@@ -328,6 +341,14 @@ func (s *Server) coordinatorObserveAssignment(task contract.CoordinatorTask, rec
 // observation, and a read that sees one must not look like progress.
 func (s *Server) coordinatorObserveInto(task contract.CoordinatorTask, rec *coordinatorAssignmentRecord, now time.Time) bool {
 	if s.fleet == nil || s.fleet.ws == nil {
+		return false
+	}
+	// A settled stop is not something an observation may undo. A worker this task
+	// cancelled still has its agent record, so observing it would otherwise report
+	// the assignment running again the moment the stop was answered — and the
+	// record would then disagree with the summary the stop posted.
+	if rec.Assignment.State == contract.CoordinatorAssignmentStopped &&
+		task.Status != contract.CoordinatorTaskOpen {
 		return false
 	}
 	// A worker is the strongest evidence there is, and it is found by the
@@ -566,6 +587,27 @@ func (s *Server) coordinatorResolveAssignment(ctx context.Context, task contract
 	if err != nil {
 		return rec, err
 	}
+	// A task that stopped while this dispatch was being attempted starts nothing.
+	// The caller took this assignment's dispatch lock, so the stop either finished
+	// before it (and the assignment already reads stopped) or waits for it — and
+	// the status is read from the record rather than the caller's copy, which may
+	// predate the stop.
+	if latest, gerr := svc.store.Get(task.ID); gerr == nil {
+		task = latest
+	}
+	if task.Status != contract.CoordinatorTaskOpen {
+		return svc.store.UpdateAssignment(task.ID, rec.Assignment.ID, func(r *coordinatorAssignmentRecord) bool {
+			if r.Assignment.State == contract.CoordinatorAssignmentStopped &&
+				r.Assignment.Reason == coordinatorStopReasonUnstarted {
+				return false
+			}
+			r.Assignment.State = contract.CoordinatorAssignmentStopped
+			r.Assignment.Failure = ""
+			r.Assignment.Reason = coordinatorStopReasonUnstarted
+			r.Assignment.IntakeID = ""
+			return true
+		})
+	}
 	fail := func(code, reason string) (coordinatorAssignmentRecord, error) {
 		return svc.store.UpdateAssignment(task.ID, rec.Assignment.ID, func(r *coordinatorAssignmentRecord) bool {
 			r.Assignment.State = contract.CoordinatorAssignmentFailed
@@ -713,6 +755,345 @@ func (s *Server) coordinatorLinkThread(task contract.CoordinatorTask, rec coordi
 		return rec, err
 	}
 	return observed, nil
+}
+
+// The stop path: one coordinated task asked to stop, at the scope that request
+// names.
+//
+// It has the same three jobs a dispatch has, in the order that makes a stop
+// trustworthy.
+//
+// First, durability. The stop is written to the task before anything is
+// cancelled (coordinatorStore.SetTaskStatus): while the record says stopping no
+// new assignment may be dispatched for the task, and a bridge that dies here
+// resumes from the record rather than from a cancellation that may never have
+// been sent. Only then are children touched.
+//
+// Second, scope. A stop cancels the workers *this task created* — the agents
+// whose own records carry this task's and assignment's identity — and withdraws
+// the pending intake whose identity is this task's. A linked thread was not
+// started by the task, and a person who directed it owns its Stop: stopping a
+// coordinated task leaves that thread running, and its assignment keeps reading
+// linked. A failed assignment is likewise a settled outcome and keeps its
+// failure, so the summary can name it.
+//
+// Third, reconciliation. A dispatch racing the stop is an acknowledgment racing
+// it: the resolve path re-reads the task under the assignment's lock before it
+// starts a worker and again before it delivers the instruction, and the stop
+// takes the same per-assignment lock, so whatever order they interleave in, one
+// outcome is written — a worker that appeared during the stop is cancelled
+// rather than left running under a stopped task.
+
+// coordinatorStopTask stops one coordinated task: durable intent first, then the
+// task's own children, then the settled state and the result it reports back.
+//
+// It is idempotent. A task already stopped answers with the state the first stop
+// left, so a repeat after a reconnect — or a second press — cancels nothing a
+// second time and posts no second summary.
+func (s *Server) coordinatorStopTask(ctx context.Context, task contract.CoordinatorTask) (contract.CoordinatorStopResult, error) {
+	svc, err := s.coordinatorAvailable()
+	if err != nil {
+		return contract.CoordinatorStopResult{}, err
+	}
+	if s.fleet == nil || s.fleet.ws == nil {
+		return contract.CoordinatorStopResult{}, ErrCoordinatorUnavailable
+	}
+	// One stop per task at a time: a repeat waits for the one in flight and then
+	// answers with what it settled, rather than cancelling the same workers
+	// beside it.
+	release := svc.lockTask(task.ID)
+	defer release()
+	current, err := svc.store.Get(task.ID)
+	if err != nil {
+		return contract.CoordinatorStopResult{}, err
+	}
+	current.Host = s.coordinatorHost()
+	if current.Status != contract.CoordinatorTaskOpen && current.Status != contract.CoordinatorTaskStopping {
+		// Already stopped: the answer is the state the stop left, not a second
+		// one. This is what makes a repeat after a reconnect idempotent.
+		return s.coordinatorStopSnapshot(ctx, current)
+	}
+	// The intent is durable before a child is touched.
+	stopping, _, err := svc.store.SetTaskStatus(task.ID, contract.CoordinatorTaskStopping)
+	if err != nil {
+		return contract.CoordinatorStopResult{}, err
+	}
+	stopping.Host = current.Host
+	unconfirmed := s.coordinatorStopOwnedWork(ctx, stopping)
+	settled := stopping
+	if !unconfirmed {
+		settled, _, err = svc.store.SetTaskStatus(task.ID, contract.CoordinatorTaskStopped)
+		if err != nil {
+			return contract.CoordinatorStopResult{}, err
+		}
+	}
+	settled.Host = current.Host
+	// The assignments as the stop left them, and the result the source thread
+	// reads.
+	//
+	// The summary is posted here rather than inferred from the read that follows:
+	// the stop wrote the assignment states before this read, so the read sees no
+	// change and would post nothing. PutDelivery is idempotent on the task's
+	// stable event id, so the first stop posts one summary and a repeat — even one
+	// resumed after a restart — updates that record rather than adding another.
+	assignments, err := s.coordinatorTaskAssignments(ctx, settled)
+	if err != nil {
+		return contract.CoordinatorStopResult{}, err
+	}
+	delivery, derr := s.coordinatorDeliverSource(settled, assignments)
+	if derr != nil {
+		slog.Default().Warn("webbridge: coordinator stop summary not stored", "task", settled.ID, "err", derr)
+	}
+	if delivery == nil {
+		if rec, held, rerr := svc.store.Delivery(settled.ID); rerr == nil && held {
+			delivery = &rec
+		}
+	}
+	s.coordinatorEmitUpdate(settled, assignments, delivery)
+	out := contract.CoordinatorStopResult{Task: settled, Assignments: assignments, Delivery: delivery}
+	return out, nil
+}
+
+// coordinatorStopSnapshot is the answer a repeat stop gets: the settled task, its
+// assignments as they stand, and the result it already reported.
+//
+// It announces nothing new — the summary is the one the first stop wrote — so a
+// repeat after a reconnect costs a read and no event.
+func (s *Server) coordinatorStopSnapshot(ctx context.Context, task contract.CoordinatorTask) (contract.CoordinatorStopResult, error) {
+	svc, err := s.coordinatorAvailable()
+	if err != nil {
+		return contract.CoordinatorStopResult{}, err
+	}
+	assignments, err := s.coordinatorTaskAssignments(ctx, task)
+	if err != nil {
+		return contract.CoordinatorStopResult{}, err
+	}
+	out := contract.CoordinatorStopResult{Task: task, Assignments: assignments}
+	if delivery, held, derr := svc.store.Delivery(task.ID); derr == nil && held {
+		out.Delivery = &delivery
+	}
+	return out, nil
+}
+
+// coordinatorStopOwnedWork cancels the workers this task created and withdraws
+// the pending intake it owns, reporting whether every cancellation could be
+// confirmed.
+//
+// It takes each assignment's dispatch lock, so a dispatch racing the stop either
+// finished before this pass (and its worker is cancelled here) or runs after it
+// and reads the stopped task (and starts nothing). A linked thread is not
+// touched at all: the task did not start it, and its own Stop is its own.
+func (s *Server) coordinatorStopOwnedWork(ctx context.Context, task contract.CoordinatorTask) (unconfirmed bool) {
+	svc, err := s.coordinatorAvailable()
+	if err != nil {
+		return true
+	}
+	records, err := svc.store.Assignments(task.ID)
+	if err != nil {
+		return true
+	}
+	for _, rec := range records {
+		if s.coordinatorStopAssignment(ctx, task, rec.Assignment.ID) {
+			unconfirmed = true
+		}
+	}
+	return unconfirmed
+}
+
+// coordinatorStopAssignment settles one assignment of a stopping task and
+// reports whether its cancellation could not be confirmed.
+//
+// A settled outcome is left alone: a failed or expired assignment keeps the
+// failure it already has, and a linked thread keeps its link, because neither is
+// work the task may cancel.
+func (s *Server) coordinatorStopAssignment(ctx context.Context, task contract.CoordinatorTask, assignmentID string) (unconfirmed bool) {
+	svc, err := s.coordinatorAvailable()
+	if err != nil {
+		return true
+	}
+	release := svc.lockAssignment(assignmentID)
+	defer release()
+	rec, held, err := svc.store.Assignment(task.ID, assignmentID)
+	if err != nil || !held {
+		return err != nil
+	}
+	if rec.Assignment.Relationship == contract.CoordinatorAssignmentThread {
+		// A linked thread was not started by this task, and — directed or only
+		// observed — it keeps its own Stop. Nothing here touches it.
+		return false
+	}
+	if rec.Assignment.State == contract.CoordinatorAssignmentFailed ||
+		rec.Assignment.State == contract.CoordinatorAssignmentExpired {
+		return false
+	}
+	// The submission this task stored for the assignment is withdrawn, not left
+	// for a person to confirm into a stopped task. Its identity is the
+	// assignment's own, so a submission that belongs to another task is never
+	// touched.
+	if withdrawn := s.coordinatorWithdrawSubmission(task, rec); withdrawn {
+		_, uerr := svc.store.UpdateAssignment(task.ID, assignmentID, func(r *coordinatorAssignmentRecord) bool {
+			if r.Assignment.State == contract.CoordinatorAssignmentStopped {
+				return false
+			}
+			r.Assignment.State = contract.CoordinatorAssignmentStopped
+			r.Assignment.Failure = ""
+			r.Assignment.Reason = coordinatorStopReasonWithdrawn
+			r.Assignment.IntakeID = ""
+			return true
+		})
+		if uerr != nil {
+			return true
+		}
+		return false
+	}
+	worker, hasWorker := s.coordinatorWorkerFor(task.ID, assignmentID)
+	if hasWorker {
+		// A worker whose work already left the workspace has finished: its turn is
+		// not cancelled, because cancelling it would name delivered work as
+		// cancelled. The assignment settles as stopped and says what it delivered,
+		// so the summary names completed work as completed.
+		if coordinatorWorkerDelivered(worker) {
+			_, uerr := svc.store.UpdateAssignment(task.ID, assignmentID, func(r *coordinatorAssignmentRecord) bool {
+				if r.Assignment.State == contract.CoordinatorAssignmentStopped &&
+					r.Assignment.Reason == coordinatorStopReasonDelivered {
+					return false
+				}
+				r.Assignment.State = contract.CoordinatorAssignmentStopped
+				r.Assignment.Failure = ""
+				r.Assignment.Reason = coordinatorStopReasonDelivered
+				r.Assignment.IntakeID = ""
+				return true
+			})
+			return uerr != nil
+		}
+		if cerr := s.coordinatorCancelWorker(ctx, worker); cerr != nil {
+			// The cancellation could not be confirmed, so the task stays
+			// stopping and the assignment keeps what it said: a stopped task
+			// whose worker may still be running would be a claim nothing
+			// supports.
+			return true
+		}
+		_, uerr := svc.store.UpdateAssignment(task.ID, assignmentID, func(r *coordinatorAssignmentRecord) bool {
+			if r.Assignment.State == contract.CoordinatorAssignmentStopped &&
+				r.Assignment.Reason == coordinatorStopReasonWorker {
+				return false
+			}
+			r.Assignment.State = contract.CoordinatorAssignmentStopped
+			r.Assignment.Failure = ""
+			r.Assignment.Reason = coordinatorStopReasonWorker
+			r.Assignment.IntakeID = ""
+			return true
+		})
+		if uerr != nil {
+			return true
+		}
+		return false
+	}
+	// Neither a submission nor a worker: an assignment the task had not started.
+	// Stopping it spends its dispatch identity, which is why it is written rather
+	// than left dispatching for a later dispatch to resume.
+	_, err = svc.store.UpdateAssignment(task.ID, assignmentID, func(r *coordinatorAssignmentRecord) bool {
+		if r.Assignment.State == contract.CoordinatorAssignmentStopped &&
+			r.Assignment.Reason == coordinatorStopReasonUnstarted {
+			return false
+		}
+		r.Assignment.State = contract.CoordinatorAssignmentStopped
+		r.Assignment.Failure = ""
+		r.Assignment.Reason = coordinatorStopReasonUnstarted
+		r.Assignment.IntakeID = ""
+		r.IntakeExpiresAt = time.Time{}
+		return true
+	})
+	return err != nil
+}
+
+// The reasons a stopped assignment carries. They are display text a person reads
+// in the row and in the summary, and they are compared when a repeat stop decides
+// whether it changed anything.
+const (
+	coordinatorStopReasonWorker    = "its worker was cancelled when the task stopped"
+	coordinatorStopReasonWithdrawn = "its submission was withdrawn when the task stopped"
+	coordinatorStopReasonUnstarted = "it was stopped before any work started"
+	coordinatorStopReasonDelivered = "its work was already delivered when the task stopped"
+)
+
+// coordinatorWorkerDelivered reports whether one worker's work already left the
+// workspace: it pushed its branch or opened a pull request.
+//
+// A stop settles such an assignment as stopped — the task is over — but names what
+// it delivered rather than counting it as cancelled, because cancelling a finished
+// turn would report completed work as work that was stopped.
+func coordinatorWorkerDelivered(worker Agent) bool {
+	return !worker.PushedAt.IsZero() || strings.TrimSpace(worker.PRUrl) != ""
+}
+
+// coordinatorWithdrawSubmission removes the pending submission one assignment's
+// stop withdraws, reporting whether there was one.
+//
+// Ownership is checked against the submission's own identity: a submission that
+// names another task or another assignment is not this task's to withdraw, and is
+// left where it is.
+func (s *Server) coordinatorWithdrawSubmission(task contract.CoordinatorTask, rec coordinatorAssignmentRecord) bool {
+	if s.fleet == nil || s.fleet.ws == nil {
+		return false
+	}
+	id := strings.TrimSpace(rec.Assignment.IntakeID)
+	if id == "" {
+		id = strings.TrimSpace(rec.Assignment.ID)
+	}
+	pending, held := s.fleet.ws.PendingByID(id)
+	if !held {
+		return false
+	}
+	if pending.TaskID != task.ID || (pending.AssignmentID != "" && pending.AssignmentID != rec.Assignment.ID) {
+		return false
+	}
+	if err := s.fleet.ws.DeletePending(pending.ID); err != nil {
+		return false
+	}
+	s.fleet.auditf(AuditEvent{Event: AuditPendingDenied, OwnerID: DefaultOwnerID,
+		AgentID: pending.AssignmentID, ClientID: pending.ClientID, RepoID: pending.RepoID,
+		Origin: pending.Origin})
+	return true
+}
+
+// coordinatorCancelWorker cancels the in-flight turn of one worker this task
+// created, so a stop reaches the work rather than only the record.
+//
+// The worker's own record is the authority for what may be cancelled: an agent
+// that carries another task's or another assignment's identity is not this
+// stop's, and cancel is never sent to it. A worker with no running runtime has
+// nothing in flight, which is a cancellation that is already true.
+func (s *Server) coordinatorCancelWorker(ctx context.Context, worker Agent) error {
+	agent, held := s.fleet.ws.Agent(worker.ID)
+	if !held {
+		// The record is gone, so there is no turn left to cancel.
+		return nil
+	}
+	if agent.CoordinatorTaskID != worker.CoordinatorTaskID || agent.CoordinatorAssignmentID != worker.CoordinatorAssignmentID ||
+		strings.TrimSpace(agent.CoordinatorAssignmentID) == "" {
+		return fmt.Errorf("%w: worker ownership unconfirmed", ErrCoordinatorConflict)
+	}
+	if strings.TrimSpace(agent.SessionID) == "" {
+		// It acknowledged no session, so it is running nothing.
+		return nil
+	}
+	rt, err := s.fleet.runtimeForAgent(agent.ID)
+	if err != nil {
+		if errors.Is(err, ErrUnknownAgent) {
+			// No runtime: the worker is paused or ended, and there is no turn in
+			// flight to cancel.
+			return nil
+		}
+		return err
+	}
+	if err := rt.reg.Cancel(ctx, agent.SessionID); err != nil {
+		if errors.Is(err, ErrUnknownSession) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // coordinatorAssignmentFailureOf classifies one dispatch error for a tool
@@ -1236,8 +1617,20 @@ func (s *Server) coordinatorDeliveryText(task contract.CoordinatorTask, assignme
 		}
 		parts = append(parts, row)
 	}
-	return fmt.Sprintf("Marshal: %d %s. %s", len(assignments),
-		plural(len(assignments), "assignment", "assignments"), strings.Join(parts, "; ")+".")
+	// A stopped task says so first, because the stop is what the person did and
+	// every row below it stands in that light: a cancelled worker, a withdrawn
+	// submission, a failure that stays a failure and a linked thread that keeps
+	// running under its own Stop are different outcomes, and the sentence names
+	// each as the one it is.
+	count := fmt.Sprintf("%d %s", len(assignments), plural(len(assignments), "assignment", "assignments"))
+	body := strings.Join(parts, "; ") + "."
+	switch task.Status {
+	case contract.CoordinatorTaskStopping:
+		return fmt.Sprintf("Marshal: stopping this task, with %s. %s", count, body)
+	case contract.CoordinatorTaskStopped:
+		return fmt.Sprintf("Marshal: this task stopped, with %s. %s", count, body)
+	}
+	return fmt.Sprintf("Marshal: %s. %s", count, body)
 }
 
 // coordinatorAssignmentStateWords is one assignment's state in a sentence.
@@ -1259,6 +1652,13 @@ func coordinatorAssignmentStateWords(a contract.CoordinatorAssignment) string {
 	case contract.CoordinatorAssignmentExpired:
 		return "expired before anyone confirmed it"
 	case contract.CoordinatorAssignmentStopped:
+		// A stopped assignment carries why it stopped: a cancelled worker, a
+		// withdrawn submission, work that had already been delivered and an
+		// assignment that never started are different outcomes, and the summary
+		// names each as the one it is.
+		if strings.TrimSpace(a.Reason) != "" {
+			return "stopped: " + a.Reason
+		}
 		return "stopped"
 	}
 	return string(a.State)

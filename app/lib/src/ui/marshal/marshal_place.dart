@@ -27,6 +27,8 @@ class MarshalPlace extends StatelessWidget {
     this.composer,
     this.onOpen,
     this.onRetry,
+    this.onStop,
+    this.stopping = false,
   });
 
   /// The host-local tasks, drafts and attention result.
@@ -59,6 +61,19 @@ class MarshalPlace extends StatelessWidget {
   /// Reads the host again, for the one action a state offers.
   final VoidCallback? onRetry;
 
+  /// Stops the open task at the requested scope (agent-first Studio, task 8).
+  ///
+  /// It is deliberately not the composer's Stop: that ends one turn in the
+  /// coordinator conversation, while this stops the coordinated task — no further
+  /// dispatch, its owned submissions withdrawn and the workers it created
+  /// cancelled — and leaves a linked thread its own Stop. Null leaves the control
+  /// out, for a host this build wired no route for.
+  final VoidCallback? onStop;
+
+  /// Whether the stop above is in flight: the control shows the stop as pending
+  /// until the daemon confirms it.
+  final bool stopping;
+
   DateTime get _now => now ?? DateTime.now();
 
   @override
@@ -82,6 +97,15 @@ class MarshalPlace extends StatelessWidget {
           onRetry: onRetry,
         ),
         const Hairline(),
+        // The task's own scope control, apart from the composer's turn Stop: it
+        // stops further dispatch and the workers this task created, and shows
+        // that as pending until the daemon answers.
+        if (model.task != null && (onStop != null || stopping))
+          _TaskActions(
+            model: model,
+            stopping: stopping,
+            onStop: onStop,
+          ),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -164,11 +188,16 @@ class MarshalPlace extends StatelessWidget {
     if (task != null) {
       final transcript = this.transcript;
       if (transcript != null) return transcript;
-      return _Empty(
-        message:
-            'The conversation opens once this host’s bridge is wired; the '
-            'read above is what Marshal found.',
-        action: onRetry,
+      // Scrollable rather than a bare Column: the task's actions, the read and
+      // the band above are fixed height, so a short window leaves this little
+      // room and its message must not overflow it.
+      return SingleChildScrollView(
+        child: _Empty(
+          message:
+              'The conversation opens once this host’s bridge is wired; the '
+              'read above is what Marshal found.',
+          action: onRetry,
+        ),
       );
     }
     if (model.draftId != null) {
@@ -295,6 +324,69 @@ class MarshalPlace extends StatelessWidget {
             'bridge',
       ),
     };
+  }
+}
+
+/// The task's own scope control (agent-first Studio, task 8).
+///
+/// It is the coordinated task's Stop, not the conversation's: the composer above
+/// ends one turn, while this stops further dispatch, withdraws the task's owned
+/// submissions and cancels the workers it created — and says so as pending until
+/// the daemon confirms it, so a person is never told a task stopped before it
+/// did. A linked thread keeps its own Stop, which the sentence here says.
+class _TaskActions extends StatelessWidget {
+  const _TaskActions({
+    required this.model,
+    required this.stopping,
+    this.onStop,
+  });
+
+  final MarshalModel model;
+
+  /// Whether the stop is in flight: the control is pending and says so.
+  final bool stopping;
+
+  final VoidCallback? onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = Ember.of(context);
+    final failure = model.stopFailure;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        Layout.pageSide,
+        Space.s8,
+        Layout.pageSide,
+        0,
+      ),
+      child: Row(
+        children: [
+          Flexible(
+            child: Tip(
+              message:
+                  'Stops this coordinated task: no further dispatch, its waiting '
+                  'submissions withdrawn and the workers it started cancelled. A '
+                  'linked thread keeps its own Stop.',
+              child: Btn(
+                stopping ? 'Stopping…' : 'Stop task',
+                onTap: stopping ? null : onStop,
+              ),
+            ),
+          ),
+          if (failure != null) ...[
+            const SizedBox(width: Space.s8),
+            Flexible(
+              child: Text(
+                failure,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: e.small.tint(e.err),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 }
 

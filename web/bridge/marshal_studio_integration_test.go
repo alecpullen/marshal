@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/web/bridge/contract"
 )
@@ -752,32 +753,55 @@ type handoffFlowFixture struct {
 	sourceID, sourceSession, token       string
 }
 
+// registerProject creates one disposable project directory under the fixture's
+// parent and registers it, reporting its root and the opaque id this daemon
+// minted for it.
+func (fx *handoffFlowFixture) registerProject(t *testing.T, name string) (string, string) {
+	t.Helper()
+	root := filepath.Join(fx.parent, name)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("create %s: %v", name, err)
+	}
+	if err := fx.ws.AddProject(root); err != nil {
+		t.Fatalf("register %s: %v", name, err)
+	}
+	id, ok := fx.ws.ProjectID(root)
+	if !ok {
+		t.Fatalf("%s has no project id", name)
+	}
+	return root, id
+}
+
 // newHandoffFlowFixture builds that daemon and enrolls the API thread's session,
 // exactly as the owner-only socket handler enrolls a Marshal session.
 func newHandoffFlowFixture(t *testing.T) *handoffFlowFixture {
 	t.Helper()
 	fx := &handoffFlowFixture{assignmentFixture: newAssignmentFixture(t)}
 	fx.parent = t.TempDir()
-	register := func(name string) (string, string) {
-		root := filepath.Join(fx.parent, name)
-		if err := os.MkdirAll(root, 0o755); err != nil {
-			t.Fatalf("create %s: %v", name, err)
-		}
-		if err := fx.ws.AddProject(root); err != nil {
-			t.Fatalf("register %s: %v", name, err)
-		}
-		id, ok := fx.ws.ProjectID(root)
-		if !ok {
-			t.Fatalf("%s has no project id", name)
-		}
-		return root, id
-	}
-	fx.apiRoot, fx.apiProject = register("api")
-	fx.cliRoot, fx.cliProject = register("cli-frontend")
-	fx.cliBackendRoot, fx.cliBackendID = register("cli-backend")
+	fx.apiRoot, fx.apiProject = fx.registerProject(t, "api")
+	fx.cliRoot, fx.cliProject = fx.registerProject(t, "cli-frontend")
+	fx.cliBackendRoot, fx.cliBackendID = fx.registerProject(t, "cli-backend")
+	fx.bindSource(t)
+	return fx
+}
 
-	// The source thread: an existing conversation in the API project. It is the
-	// session the handoff is invoked from, so the source is never an argument.
+// newJourneyFixture is the joined journey's daemon: exactly two disposable
+// projects, and the thread in the first that hands work to the second.
+func newJourneyFixture(t *testing.T) *handoffFlowFixture {
+	t.Helper()
+	fx := &handoffFlowFixture{assignmentFixture: newAssignmentFixture(t)}
+	fx.parent = t.TempDir()
+	fx.apiRoot, fx.apiProject = fx.registerProject(t, "api")
+	fx.cliRoot, fx.cliProject = fx.registerProject(t, "cli")
+	fx.bindSource(t)
+	return fx
+}
+
+// bindSource gives the fixture its source thread — an existing conversation in
+// the API project — and enrolls that session's binding, so the handoff's source
+// is never an argument.
+func (fx *handoffFlowFixture) bindSource(t *testing.T) {
+	t.Helper()
 	threadID, err := fx.f.Spawn(context.Background(), fx.apiRoot, SpawnOptions{Prompt: "Investigate the client compatibility issue"})
 	if err != nil {
 		t.Fatalf("spawn the source thread: %v", err)
@@ -788,7 +812,6 @@ func newHandoffFlowFixture(t *testing.T) *handoffFlowFixture {
 	}
 	fx.sourceID, fx.sourceSession = threadID, agent.SessionID
 	fx.token = fx.enroll(t)
-	return fx
 }
 
 // enroll posts the enrollment the owner-only socket handler serves and requires a
@@ -1102,5 +1125,298 @@ func TestMarshalStudioHandoffStartsOneWorkerAndReportsBack(t *testing.T) {
 	}
 	if len(all) != 1 {
 		t.Fatalf("the reopened store holds %d tasks for one handoff, want 1", len(all))
+	}
+}
+
+// ── The joined journey ──────────────────────────────────────────────────
+
+// recordJourneyReview records one pull request whose checks have settled in a
+// project, so the review the Pull requests screen lists is also what Marshal's
+// attention read reports.
+func recordJourneyReview(t *testing.T, fx *handoffFlowFixture, repoID, root string, number int, title string) {
+	t.Helper()
+	observed := fx.now
+	if err := fx.ws.PutPull(contract.PullRecord{
+		ID:          pullID(repoID, number),
+		RepoID:      repoID,
+		ProjectRoot: root,
+		Number:      number,
+		Title:       title,
+		HeadRef:     "feature",
+		BaseRef:     "main",
+		Checks:      []contract.PullCheck{{Name: "build", State: contract.CheckPassed}},
+		Origin:      contract.PullOriginAgent,
+		State:       contract.PullReady,
+		UpdatedAt:   observed.UnixMilli(),
+		ObservedAt:  observed.UnixMilli(),
+	}); err != nil {
+		t.Fatalf("record the ready review: %v", err)
+	}
+}
+
+// TestMarshalStudioJoinedJourney is task 8's joined test: the complete journey
+// from a project conversation to a delivered result, on a real bridge with the
+// fake fleet standing in for the provider, across two disposable projects.
+//
+// The shape is the one the design describes. A person working in the API thread
+// finds the client incompatibility and has Marshal coordinate it with the CLI
+// project. Marshal links the source thread, hands the CLI project the
+// compatibility requirement, and the target's own policy is what puts the
+// submission in the Needs you queue — so the journey's queue answer is a real
+// answer, not a shortcut: the person confirms it in Needs you and the worker
+// starts from that confirmation. The CLI worker's own result comes back into the
+// source thread, and the pull request it opened is the one the review screen
+// lists.
+//
+// The three preserved screens are checked throughout — Overview's project list,
+// the Needs you queue and its answer, and the Pull requests list — and again
+// after the coordinated task is stopped at the requested scope, because the
+// acceptance is a delivered result with those screens still usable.
+func TestMarshalStudioJoinedJourney(t *testing.T) {
+	fx := newJourneyFixture(t)
+	// The CLI project may create work but asks a person before starting it, so
+	// the assignment reaches the queue the way an ordinary submission does.
+	fx.grant(fx.cliProject, asksFirst())
+	recordJourneyReview(t, fx, "repo-cli", fx.cliRoot, 7, "Harden the parser")
+
+	// Overview: both disposable projects are listed, each with the opaque id a
+	// link is built from.
+	projects := doReq(t, fx.srv, http.MethodGet, "/api/projects", nil, nil)
+	if projects.Code != http.StatusOK {
+		t.Fatalf("GET /api/projects = %d %s", projects.Code, projects.Body)
+	}
+	var listed []contract.ProjectStatus
+	decodeBody(t, projects, &listed)
+	ids := map[string]string{}
+	for _, project := range listed {
+		if project.MCPProjectID != "" {
+			ids[project.Root] = project.MCPProjectID
+		}
+	}
+	if ids[fx.apiRoot] != fx.apiProject || ids[fx.cliRoot] != fx.cliProject {
+		t.Fatalf("the Overview lists %v, want both projects with their own ids", ids)
+	}
+
+	// Direct PR review: the review screen's list already carries the ready pull.
+	readyPulls := func(step string) {
+		t.Helper()
+		rec := doReq(t, fx.srv, http.MethodGet, "/api/pulls", nil, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/pulls after %s = %d %s", step, rec.Code, rec.Body)
+		}
+		var out struct {
+			Pulls []contract.PullRecord `json:"pulls"`
+		}
+		decodeBody(t, rec, &out)
+		found := false
+		for _, pull := range out.Pulls {
+			if pull.Number == 7 && pull.ProjectRoot == fx.cliRoot && pull.State == contract.PullReady {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("the ready review is missing from the Pull requests screen after %s: %+v", step, out.Pulls)
+		}
+	}
+	readyPulls("the opening frame")
+
+	// Needs you: nothing is waiting before the handoff, which is what makes the
+	// answer that follows the journey's own.
+	inboxOf := func() contract.Inbox {
+		t.Helper()
+		rec := doReq(t, fx.srv, http.MethodGet, "/api/inbox", nil, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/inbox = %d %s", rec.Code, rec.Body)
+		}
+		var inbox contract.Inbox
+		decodeBody(t, rec, &inbox)
+		return inbox
+	}
+	if queue := inboxOf().Queue; len(queue) != 0 {
+		t.Fatalf("the queue already holds %d items before the handoff", len(queue))
+	}
+
+	// The journey proper: the API thread hands the work to Marshal.
+	value, isError := fx.handoff(t, fx.token, map[string]any{
+		"requestId": "journey-handoff",
+		"outcome":   "Make the CLI accept the new parser flags",
+		"findings":  "The API now emits --compat=2; the CLI rejects it.",
+		"targets":   []map[string]any{{"projectId": fx.cliProject, "instruction": "Accept the new parser flags"}},
+	})
+	if isError {
+		t.Fatalf("the handoff failed: %v", value)
+	}
+	taskID, _ := value["taskId"].(string)
+	if taskID == "" {
+		t.Fatalf("the handoff opened no task: %v", value)
+	}
+
+	// Needs you: the CLI project's ask is the assignment, and the person answers
+	// it in the queue. Nothing has been started until they do.
+	var submissionID string
+	for _, item := range inboxOf().Queue {
+		if item.Kind == contract.InboxItemIntake && item.Submission != nil {
+			submissionID = item.Submission.ID
+		}
+	}
+	if submissionID == "" {
+		t.Fatal("the handoff queued no submission for the person to answer")
+	}
+	if agents := fx.agentsIn(fx.cliRoot); len(agents) != 0 {
+		t.Fatalf("the handoff started %d CLI workers before anyone answered", len(agents))
+	}
+
+	answered := doReq(t, fx.srv, http.MethodPost, "/api/pending/"+submissionID+"/approve", nil, nil)
+	if answered.Code != http.StatusOK {
+		t.Fatalf("answering the queue = %d %s", answered.Code, answered.Body)
+	}
+
+	// The worker the answer started is the assignment's own, and it has the
+	// instruction with the findings the source gathered.
+	workers := fx.agentsIn(fx.cliRoot)
+	if len(workers) != 1 {
+		t.Fatalf("the answered queue started %d CLI workers, want 1", len(workers))
+	}
+	workerID := workers[0].ID
+	if workers[0].CoordinatorTaskID != taskID || workers[0].CoordinatorAssignmentID == "" {
+		t.Fatalf("the CLI worker does not carry the task's identity: %+v", workers[0])
+	}
+	instructions := waitForPrompt(t, fx.agentFor(workerID), 1)
+	if len(instructions) != 1 || !strings.Contains(instructions[0], "--compat=2") {
+		t.Fatalf("the CLI worker received %v, want the findings the source gathered", instructions)
+	}
+	if queue := inboxOf().Queue; len(queue) != 0 {
+		t.Fatalf("the answered submission is still queued: %+v", queue)
+	}
+	readyPulls("the queue was answered")
+
+	// Marshal follows the worker's own result, not the instruction it was handed.
+	worker, ok := fx.ws.Agent(workerID)
+	if !ok {
+		t.Fatal("the CLI worker's record is gone")
+	}
+	worker.Branch = "fix/compat-negotiation"
+	worker.PRUrl = "https://forge.invalid/cli/pull/7"
+	worker.PushedAt = fx.now
+	if err := fx.ws.PutAgent(worker); err != nil {
+		t.Fatal(err)
+	}
+
+	// The result is delivered into the source thread the work came from, under
+	// the task's stable event id, and it is not another agent turn there.
+	sourceFake := fx.agentFor(fx.sourceID)
+	sourcePrompts := prompts(sourceFake)
+	view := fx.sourceView(t, fx.srv)
+	if view.Task == nil || view.Task.ID != taskID || view.Task.Status != contract.CoordinatorTaskOpen {
+		t.Fatalf("the source view names %+v, want the open task the handoff opened", view.Task)
+	}
+	if view.Delivery == nil || view.Delivery.EventID != coordinatorDeliveryID(taskID) {
+		t.Fatalf("the source thread holds %+v, want the task's one delivered result", view.Delivery)
+	}
+	for _, want := range []string{"cli", worker.Branch} {
+		if !strings.Contains(view.Delivery.Text, want) {
+			t.Fatalf("the delivered result does not report %q: %q", want, view.Delivery.Text)
+		}
+	}
+	if got := prompts(sourceFake); got != sourcePrompts {
+		t.Fatalf("delivering the result started %d turns in the source thread", got-sourcePrompts)
+	}
+
+	// Marshal's own read of the same host agrees with the screens: the ready
+	// review and the CLI project are what it reports, with links that resolve.
+	attention := doReq(t, fx.srv, http.MethodGet, "/api/coordinator/tasks/"+taskID+"/attention", nil, nil)
+	if attention.Code != http.StatusOK {
+		t.Fatalf("GET the task attention = %d %s", attention.Code, attention.Body)
+	}
+	var read contract.CoordinatorAttention
+	decodeBody(t, attention, &read)
+	reviewed := false
+	for _, entry := range read.Entries {
+		if entry.Kind == contract.CoordinatorAttentionReview && entry.Source.ProjectID == fx.cliProject {
+			reviewed = true
+			if entry.Destination != "/pulls" {
+				t.Fatalf("the review entry opens %q, want the Pull requests screen", entry.Destination)
+			}
+		}
+	}
+	if !reviewed {
+		t.Fatalf("Marshal's read reports %+v, want the ready review in the CLI project", read.Entries)
+	}
+	readyPulls("Marshal read the host")
+
+	// Stop at the requested scope: the worker this task created is cancelled, and
+	// the source thread it came from keeps its own conversation.
+	stopped := doReq(t, fx.srv, http.MethodPost, "/api/coordinator/tasks/"+taskID+"/stop", nil, nil)
+	if stopped.Code != http.StatusOK {
+		t.Fatalf("stopping the task = %d %s", stopped.Code, stopped.Body)
+	}
+	var stop contract.CoordinatorStopResult
+	decodeBody(t, stopped, &stop)
+	if stop.Task.Status != contract.CoordinatorTaskStopped {
+		t.Fatalf("the stopped task reads %s", stop.Task.Status)
+	}
+	for _, assignment := range stop.Assignments {
+		if assignment.ProjectID != fx.cliProject {
+			continue
+		}
+		// The worker had already delivered, so the stop names what it delivered
+		// rather than reporting completed work as cancelled.
+		if assignment.State != contract.CoordinatorAssignmentStopped || assignment.Reason != coordinatorStopReasonDelivered {
+			t.Fatalf("the delivered assignment reads %s (%s)", assignment.State, assignment.Reason)
+		}
+	}
+	waitFor(t, 3*time.Second, "the CLI worker's record to stay", func() bool {
+		_, held := fx.ws.Agent(workerID)
+		return held
+	})
+	// The source thread was not the task's to stop, and it still takes its own.
+	if cancels := sourceFake.calls("session/cancel"); len(cancels) != 0 {
+		t.Fatalf("stopping the task cancelled the source thread %d times", len(cancels))
+	}
+	sourceRuntime, err := fx.f.RuntimeForSession(fx.sourceID)
+	if err != nil {
+		t.Fatalf("the source thread has no runtime after the stop: %v", err)
+	}
+	if err := sourceRuntime.reg.Prompt(context.Background(), fx.f.sessionIDFor(sourceRuntime), "thanks"); err != nil {
+		t.Fatalf("the source thread is not usable after the stop: %v", err)
+	}
+
+	// The delivered result now says the task stopped, under the same event id:
+	// one summary, updated, never a second one.
+	afterStop := fx.sourceView(t, fx.srv)
+	if afterStop.Delivery == nil {
+		t.Fatal("the stopped task lost its delivered result")
+	}
+	if afterStop.Delivery.EventID != coordinatorDeliveryID(taskID) {
+		t.Fatalf("the stop posted delivery %q, want the stable %q", afterStop.Delivery.EventID, coordinatorDeliveryID(taskID))
+	}
+	if !strings.Contains(afterStop.Delivery.Text, "stopped") {
+		t.Fatalf("the delivered result does not report the stop: %q", afterStop.Delivery.Text)
+	}
+
+	// The three preserved screens are still usable after the journey: Overview
+	// still lists both projects the journey used, the answered queue is empty, and
+	// the review is still there to be reviewed directly.
+	again := doReq(t, fx.srv, http.MethodGet, "/api/projects", nil, nil)
+	if again.Code != http.StatusOK {
+		t.Fatalf("GET /api/projects after the stop = %d %s", again.Code, again.Body)
+	}
+	var after []contract.ProjectStatus
+	decodeBody(t, again, &after)
+	stillListed := map[string]bool{}
+	for _, project := range after {
+		stillListed[project.Root] = true
+	}
+	for _, root := range []string{fx.apiRoot, fx.cliRoot} {
+		if !stillListed[root] {
+			t.Fatalf("Overview no longer lists %s after the journey: %+v", root, after)
+		}
+	}
+	if queue := inboxOf().Queue; len(queue) != 0 {
+		t.Fatalf("the queue holds %+v after the journey, want nothing left unanswered", queue)
+	}
+	readyPulls("the task was stopped")
+	if rec := doReq(t, fx.srv, http.MethodGet, "/api/pulls", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/pulls after the stop = %d %s", rec.Code, rec.Body)
 	}
 }

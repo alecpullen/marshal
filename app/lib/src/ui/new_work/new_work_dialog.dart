@@ -116,6 +116,7 @@ class _NewWorkFormState extends State<NewWorkForm> {
       builder: (context, _) {
         final model = widget.model;
         final e = Ember.of(context);
+        final promptError = model.promptError;
         final failure = model.failure;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -131,6 +132,7 @@ class _NewWorkFormState extends State<NewWorkForm> {
                   : 'What should it do?',
               controller: _prompt,
               hint: 'Describe the work in a sentence or two',
+              error: promptError,
               onChanged: model.prefill,
             ),
             const SizedBox(height: Space.s16),

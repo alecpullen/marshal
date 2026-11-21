@@ -120,6 +120,80 @@ void main() {
     model.dispose();
   });
 
+  testWidgets('the prompt is optional only for an Agent', (tester) async {
+    final (:model, spawns: _) = _dialog();
+    await pumpKit(tester, newWorkDialog(model), height: 900);
+
+    expect(find.text('What should it do? (optional)'), findsOneWidget);
+
+    for (final word in ['Plan first', 'Work item']) {
+      await tester.tap(find.widgetWithText(Btn, word));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('What should it do?'),
+        findsOneWidget,
+        reason: '$word requires a prompt',
+      );
+      expect(find.text('What should it do? (optional)'), findsNothing);
+    }
+
+    await tester.tap(find.widgetWithText(Btn, 'Agent'));
+    await tester.pumpAndSettle();
+    expect(find.text('What should it do? (optional)'), findsOneWidget);
+
+    model.dispose();
+  });
+
+  testWidgets('a blank required prompt is the field error and clears', (
+    tester,
+  ) async {
+    final (:model, spawns: _) = _dialog();
+    await pumpKit(tester, newWorkDialog(model), height: 900);
+
+    for (final word in ['Plan first', 'Work item']) {
+      await tester.tap(find.widgetWithText(Btn, word));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Start'));
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.widget<Field>(find.byType(Field)).error,
+        contains('Write what it should do'),
+        reason: '$word puts the refusal on the prompt',
+      );
+      expect(
+        find.textContaining('Write what it should do'),
+        findsOneWidget,
+        reason: 'the refusal is drawn once, under the prompt',
+      );
+
+      await tester.enterText(find.byType(EditableText), 'Review the handoff');
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<Field>(find.byType(Field)).error,
+        isNull,
+        reason: 'typing clears the refusal',
+      );
+      expect(find.textContaining('Write what it should do'), findsNothing);
+
+      await tester.enterText(find.byType(EditableText), '');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Start'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Write what it should do'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(Btn, 'Agent'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Write what it should do'),
+        findsNothing,
+        reason: 'an agent needs no prompt at all',
+      );
+    }
+
+    model.dispose();
+  });
+
   testWidgets('typing fills the prompt, and Start posts it', (tester) async {
     final (:model, :spawns) = _dialog();
     await pumpKit(tester, newWorkDialog(model), height: 900);

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
@@ -207,8 +209,14 @@ void main() {
       isNull,
       reason: 'no first turn is sent for an agent that has nothing to do yet',
     );
+    expect(
+      jsonEncode(request),
+      isNot(contains('"prompt"')),
+      reason: 'the wire request carries no prompt key at all',
+    );
     expect(model.started?.agentID, 'a-9');
     expect(model.failure, isNull);
+    expect(model.promptError, isNull);
     model.dispose();
   });
 
@@ -224,7 +232,16 @@ void main() {
       await model.start();
 
       expect(routes.spawns, isEmpty, reason: '${kind.word} started nothing');
-      expect(model.failure, contains('Agent'), reason: '${kind.word} says why');
+      expect(
+        model.promptError,
+        contains('Write what it should do'),
+        reason: '${kind.word} says why',
+      );
+      expect(
+        model.failure,
+        isNull,
+        reason: '${kind.word} did not fail at the bridge',
+      );
     }
     model.dispose();
   });
@@ -236,21 +253,25 @@ void main() {
 
       model.selectKind(NewWorkKind.workItem);
       await model.start();
-      expect(model.failure, contains('Write what it should do'));
+      expect(model.promptError, contains('Write what it should do'));
 
       model.prefill('Review the handoff');
       expect(
-        model.failure,
+        model.promptError,
         isNull,
         reason: 'the prompt now has what Start needs',
       );
 
       model.prefill('');
       await model.start();
-      expect(model.failure, contains('Write what it should do'));
+      expect(model.promptError, contains('Write what it should do'));
 
       model.selectKind(NewWorkKind.agent);
-      expect(model.failure, isNull, reason: 'an agent needs no prompt at all');
+      expect(
+        model.promptError,
+        isNull,
+        reason: 'an agent needs no prompt at all',
+      );
       model.dispose();
     },
   );

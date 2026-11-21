@@ -148,6 +148,74 @@ class MarshalEntry {
   String toString() => 'MarshalEntry(${kind.name}, ${age.inMinutes}m)';
 }
 
+/// Where one handoff assignment stands, as the destination draws it (contract
+/// `CoordinatorAssignment.state`).
+enum MarshalAssignmentState {
+  dispatching,
+  pending,
+  running,
+  linked,
+  failed,
+  expired,
+  stopped,
+}
+
+/// One assignment of the open task: the project it went to, where it stands, and
+/// the thread it resolved to.
+///
+/// It is the Marshal destination's own value rather than the bridge's
+/// `CoordinatorAssignment`, for the same reason [MarshalTask] is: `ui/` reads
+/// `model/` and never `client/`, and the destination draws only what it needs.
+@immutable
+class MarshalAssignment {
+  const MarshalAssignment({
+    required this.id,
+    required this.projectId,
+    this.projectName = '',
+    required this.state,
+    this.instruction = '',
+    this.threadId,
+    this.failure,
+    this.reason,
+    this.updatedAt,
+  });
+
+  /// The assignment's identity: what a scoped retry names.
+  final String id;
+
+  /// The target project's canonical id, never a name or a path.
+  final String projectId;
+
+  /// What the daemon calls that project. Empty when it named none, and the row
+  /// then falls back to the id.
+  final String projectName;
+
+  final MarshalAssignmentState state;
+
+  /// What the project was asked to do.
+  final String instruction;
+
+  /// The agent whose thread this assignment resolved to: the worker's, or the
+  /// linked thread's. Null before either exists.
+  final String? threadId;
+
+  /// The machine-readable failure, when the state is failed.
+  final String? failure;
+
+  /// The daemon's sentence for a failure, an expiry or a link it could not make.
+  final String? reason;
+
+  /// When the daemon last changed this assignment.
+  final DateTime? updatedAt;
+
+  /// What the row is called: the project's name, or its id when it has none.
+  String get name =>
+      projectName.trim().isEmpty ? projectId : projectName.trim();
+
+  @override
+  String toString() => 'MarshalAssignment($id, ${state.name})';
+}
+
 /// One project's contribution to an attention read.
 enum MarshalFreshness { fresh, stale, unavailable, unauthorized }
 
@@ -266,20 +334,35 @@ class MarshalModel extends ChangeNotifier {
     required Future<CoordinatorAttention> Function(String taskId) attention,
     required Future<CoordinatorCreateResult> Function(CoordinatorCreateRequest)
     create,
+    Future<CoordinatorAssignmentList> Function(String taskId)? assignments,
+    Future<CoordinatorAssignmentList> Function(
+      String taskId,
+      String assignmentId,
+    )?
+    retryAssignment,
     String? Function(String key)? read,
     void Function(String key, String value)? save,
     DateTime Function()? now,
   }) : _tasks = tasks,
        _attention = attention,
        _create = create,
+       _assignments = assignments,
+       _retryAssignment = retryAssignment,
        _read = read,
        _save = save,
-       _now = now ?? DateTime.now;
+       _now = now ?? DateTime.now,
+       _handoffStale = false;
 
   /// The model one host's bridge backs.
   factory MarshalModel.forClient(
     String host,
     BridgeClient client, {
+    Future<CoordinatorAssignmentList> Function(String taskId)? assignments,
+    Future<CoordinatorAssignmentList> Function(
+      String taskId,
+      String assignmentId,
+    )?
+    retryAssignment,
     String? Function(String key)? read,
     void Function(String key, String value)? save,
     DateTime Function()? now,
@@ -288,6 +371,8 @@ class MarshalModel extends ChangeNotifier {
     tasks: client.coordinatorTasks,
     attention: client.coordinatorAttention,
     create: client.createCoordinatorTask,
+    assignments: assignments,
+    retryAssignment: retryAssignment,
     read: read,
     save: save,
     now: now,
@@ -296,9 +381,9 @@ class MarshalModel extends ChangeNotifier {
   /// A model holding what a fixture hands it, with no route behind it.
   ///
   /// It is the same shape [`PreviewModel.seeded`] and [`StackStore.seeded`]
-  /// take: a screen case draws a real state — a task, its answer, its limits —
-  /// without a socket, and every route it does not need fails loudly rather
-  /// than answering something invented.
+  /// take: a screen case draws a real state — a task, its answer, its limits,
+  /// the assignments it dispatched — without a socket, and every route it does
+  /// not need fails loudly rather than answering something invented.
   factory MarshalModel.seeded({
     required String host,
     List<MarshalTask> tasks = const [],
@@ -306,6 +391,11 @@ class MarshalModel extends ChangeNotifier {
     MarshalRead? read,
     DateTime? readAt,
     String? draft,
+    List<MarshalAssignment> assignments = const [],
+    String? result,
+    DateTime? resultAt,
+    DateTime? observedAt,
+    bool handoffStale = false,
     DateTime Function()? now,
   }) => MarshalModel._seeded(
     host,
@@ -314,6 +404,11 @@ class MarshalModel extends ChangeNotifier {
     read: read,
     readAt: readAt,
     draft: draft,
+    assignments: assignments,
+    result: result,
+    resultAt: resultAt,
+    observedAt: observedAt,
+    handoffStale: handoffStale,
     now: now,
   );
 
@@ -324,10 +419,17 @@ class MarshalModel extends ChangeNotifier {
     MarshalRead? read,
     DateTime? readAt,
     String? draft,
+    List<MarshalAssignment> assignments = const [],
+    String? result,
+    DateTime? resultAt,
+    DateTime? observedAt,
+    bool handoffStale = false,
     DateTime Function()? now,
   }) : _tasks = _noTasks,
        _attention = _noAttention,
        _create = _noCreate,
+       _assignments = null,
+       _retryAssignment = null,
        _read = null,
        _save = null,
        _now = now ?? DateTime.now,
@@ -335,7 +437,12 @@ class MarshalModel extends ChangeNotifier {
        _task = task,
        _draft = draft,
        _attentionRead = read,
-       _readAt = readAt;
+       _readAt = readAt,
+       _assignmentRows = List.unmodifiable(assignments),
+       _resultText = result,
+       _resultAt = resultAt,
+       _assignmentsAt = observedAt,
+       _handoffStale = handoffStale;
 
   static Future<CoordinatorTaskList> _noTasks() =>
       Future.error(StateError('a seeded MarshalModel reads no host'));
@@ -361,6 +468,16 @@ class MarshalModel extends ChangeNotifier {
   final Future<CoordinatorAttention> Function(String taskId) _attention;
   final Future<CoordinatorCreateResult> Function(CoordinatorCreateRequest)
   _create;
+
+  /// The task's assignments and the one scoped retry, when this build was wired
+  /// with those routes (agent-first Studio, task 7). A host that wired neither
+  /// leaves the handoff band off rather than drawing an invented one.
+  final Future<CoordinatorAssignmentList> Function(String taskId)? _assignments;
+  final Future<CoordinatorAssignmentList> Function(
+    String taskId,
+    String assignmentId,
+  )?
+  _retryAssignment;
   final String? Function(String key)? _read;
   final void Function(String key, String value)? _save;
   final DateTime Function() _now;
@@ -383,6 +500,20 @@ class MarshalModel extends ChangeNotifier {
   bool _starting = false;
   int _drafts = 0;
   bool _disposed = false;
+
+  /// The open task's assignments and the one result it reported back into this
+  /// thread (agent-first Studio, task 7).
+  List<MarshalAssignment> _assignmentRows = const [];
+  String? _resultText;
+  DateTime? _resultAt;
+  DateTime? _assignmentsAt;
+  String? _assignmentsFailure;
+  bool _readingAssignments = false;
+  String? _retrying;
+
+  /// Whether a seeded model's handoff is stale: a fixture's way of drawing the
+  /// state a failed read leaves, without a route to fail.
+  final bool _handoffStale;
 
   /// The tasks a person can reopen on this host, newest first.
   List<MarshalTask> get tasks => List.unmodifiable(_list);
@@ -408,6 +539,84 @@ class MarshalModel extends ChangeNotifier {
 
   /// Whether a first send is creating a task.
   bool get starting => _starting;
+
+  /// The open task's assignments, oldest first. Empty for a task that has
+  /// dispatched nothing, and for a host this build wired no route for.
+  List<MarshalAssignment> get assignments => List.unmodifiable(_assignmentRows);
+
+  /// What the daemon last reported back into the source thread, or null when it
+  /// has reported nothing yet.
+  String? get resultText => _resultText;
+
+  /// When that result was delivered.
+  DateTime? get resultAt => _resultAt;
+
+  /// When the assignments were last observed, or null when they never were.
+  DateTime? get assignmentsAt => _assignmentsAt;
+
+  /// What the last assignments read answered with, when it failed: the bridge's
+  /// words. The handoff band then says what it shows may be behind.
+  String? get assignmentsFailure => _assignmentsFailure;
+
+  /// Whether the assignments read is in flight.
+  bool get readingAssignments => _readingAssignments;
+
+  /// The assignment a scoped retry is running for, or null when none is.
+  String? get retrying => _retrying;
+
+  /// The open task's handoff as its transcript and this destination draw it, or
+  /// null when no task is open or no route read one.
+  ///
+  /// Every link is built from this host and a durable id the daemon minted: the
+  /// task is Marshal's own destination on this host, and an assignment's thread
+  /// is the agent its record names. Nothing here guesses a destination.
+  HandoffView? get handoff {
+    final task = _task;
+    if (task == null) return null;
+    if (_assignmentRows.isEmpty &&
+        _resultText == null &&
+        _assignmentsFailure == null) {
+      return null;
+    }
+    final rows = <HandoffAssignmentRow>[
+      for (final row in _assignmentRows)
+        HandoffAssignmentRow(
+          id: row.id,
+          project: row.projectName,
+          state: _handoffStateOf(row.state),
+          instruction: row.instruction,
+          thread: row.threadId == null || row.threadId!.trim().isEmpty
+              ? null
+              : Place(PlaceKind.thread, host: host, id: row.threadId),
+          failure: row.failure,
+          reason: row.reason,
+          updatedAt: row.updatedAt,
+        ),
+    ];
+    return HandoffView(
+      taskId: task.id,
+      taskTitle: task.title,
+      task: Place.marshal(host: host, id: task.id),
+      rows: rows,
+      result: _resultText,
+      resultAt: _resultAt,
+      observedAt: _assignmentsAt,
+      stale: _handoffStale || _assignmentsFailure != null,
+    );
+  }
+
+  /// Where one wire state stands, in the value the thread model draws.
+  static HandoffAssignmentState _handoffStateOf(MarshalAssignmentState state) =>
+      switch (state) {
+        MarshalAssignmentState.dispatching =>
+          HandoffAssignmentState.dispatching,
+        MarshalAssignmentState.pending => HandoffAssignmentState.pending,
+        MarshalAssignmentState.running => HandoffAssignmentState.running,
+        MarshalAssignmentState.linked => HandoffAssignmentState.linked,
+        MarshalAssignmentState.failed => HandoffAssignmentState.failed,
+        MarshalAssignmentState.expired => HandoffAssignmentState.expired,
+        MarshalAssignmentState.stopped => HandoffAssignmentState.stopped,
+      };
 
   /// Whether the answer on screen covers less than the task's scope: a source
   /// that was not fresh, a partial read, or a refresh that failed. It is never
@@ -641,6 +850,110 @@ class MarshalModel extends ChangeNotifier {
       _readError = error;
     }
     _reading = false;
+    notifyListeners();
+    // The handoff this task dispatched, read beside the attention result: the
+    // destination draws both, and neither is served from a cache (task 7).
+    await _readAssignmentsFor(task);
+  }
+
+  /// Reads one task's assignments and the result it reported back, and keeps
+  /// what it found.
+  ///
+  /// A read that fails keeps the last answer and says it may be behind: the
+  /// handoff band then draws its age rather than pretending the list is current.
+  /// A host this build wired no route for reads nothing, so the band is simply
+  /// absent.
+  Future<void> _readAssignmentsFor(MarshalTask task) async {
+    final read = _assignments;
+    if (read == null) return;
+    _readingAssignments = true;
+    notifyListeners();
+    try {
+      final answer = await read(task.id);
+      if (_disposed) return;
+      _applyAssignmentList(answer);
+      _assignmentsFailure = null;
+      _assignmentsAt = _now();
+    } catch (error) {
+      if (_disposed) return;
+      _assignmentsFailure = describeFailure(error);
+    }
+    _readingAssignments = false;
+    notifyListeners();
+  }
+
+  /// Keeps one assignment read: the rows, and the result it carried.
+  void _applyAssignmentList(CoordinatorAssignmentList list) {
+    _assignmentRows = List.unmodifiable([
+      for (final assignment in list.assignments) _assignmentOf(assignment),
+    ]);
+    final delivery = list.delivery;
+    _resultText = (delivery?.text ?? '').trim().isEmpty
+        ? null
+        : delivery!.text.trim();
+    _resultAt = delivery == null ? null : DateTime.tryParse(delivery.at);
+  }
+
+  /// Projects one wire assignment into what the destination draws.
+  static MarshalAssignment _assignmentOf(CoordinatorAssignment a) {
+    final thread = a.worker?.agentID ?? a.thread?.id;
+    return MarshalAssignment(
+      id: a.id,
+      projectId: a.projectID,
+      projectName: (a.projectName ?? '').trim(),
+      state: switch (a.state) {
+        CoordinatorAssignmentState.coordinatorAssignmentPending =>
+          MarshalAssignmentState.pending,
+        CoordinatorAssignmentState.coordinatorAssignmentRunning =>
+          MarshalAssignmentState.running,
+        CoordinatorAssignmentState.coordinatorAssignmentLinked =>
+          MarshalAssignmentState.linked,
+        CoordinatorAssignmentState.coordinatorAssignmentFailed =>
+          MarshalAssignmentState.failed,
+        CoordinatorAssignmentState.coordinatorAssignmentExpired =>
+          MarshalAssignmentState.expired,
+        CoordinatorAssignmentState.coordinatorAssignmentStopped =>
+          MarshalAssignmentState.stopped,
+        _ => MarshalAssignmentState.dispatching,
+      },
+      instruction: (a.instruction ?? '').trim(),
+      threadId: thread,
+      failure: a.failure,
+      reason: a.reason,
+      updatedAt: DateTime.tryParse(a.updatedAt),
+    );
+  }
+
+  /// Reads the open task's assignments again: what a person's retry, and a
+  /// screen's re-read, both start from.
+  Future<void> refreshAssignments() async {
+    final task = _task;
+    if (task == null) return;
+    await _readAssignmentsFor(task);
+  }
+
+  /// Retries one failed or expired assignment, under its own identity, and
+  /// keeps the list the daemon answers with.
+  ///
+  /// Only the assignment that was named is retried: its siblings keep what they
+  /// are doing, which is why this takes an id rather than retrying the task.
+  Future<void> retryAssignment(String assignmentId) async {
+    final retry = _retryAssignment;
+    final task = _task;
+    if (retry == null || task == null || _retrying != null) return;
+    _retrying = assignmentId;
+    notifyListeners();
+    try {
+      final answer = await retry(task.id, assignmentId);
+      if (_disposed) return;
+      _applyAssignmentList(answer);
+      _assignmentsFailure = null;
+      _assignmentsAt = _now();
+    } catch (error) {
+      if (_disposed) return;
+      _assignmentsFailure = describeFailure(error);
+    }
+    _retrying = null;
     notifyListeners();
   }
 

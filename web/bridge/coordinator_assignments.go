@@ -2,8 +2,12 @@ package bridge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -204,6 +208,7 @@ func (s *Server) coordinatorDispatch(ctx context.Context, task contract.Coordina
 		}
 		out.Assignments = append(out.Assignments, updated.Assignment)
 	}
+	out.Assignments = s.coordinatorStampNames(out.Assignments)
 	return out, nil
 }
 
@@ -223,6 +228,10 @@ func (s *Server) coordinatorTaskAssignments(ctx context.Context, task contract.C
 	if err != nil {
 		return nil, err
 	}
+	before := make([]contract.CoordinatorAssignment, 0, len(records))
+	for _, rec := range records {
+		before = append(before, rec.Assignment)
+	}
 	out := make([]contract.CoordinatorAssignment, 0, len(records))
 	for _, rec := range records {
 		observed, oerr := s.coordinatorReconcileAssignment(ctx, task, rec, contract.CoordinatorAssignTarget{}, false)
@@ -230,6 +239,24 @@ func (s *Server) coordinatorTaskAssignments(ctx context.Context, task contract.C
 			return nil, oerr
 		}
 		out = append(out, observed.Assignment)
+	}
+	// An observation that learned something is announced on the fleet stream, so
+	// a client that is watching receives it without asking again, and the source
+	// thread's summary is refreshed to what the worker now reports — a correction
+	// made in the worker's own thread is what the eventual result says. A read
+	// that changed nothing emits nothing and rewrites nothing.
+	out = s.coordinatorStampNames(out)
+	if coordinatorAssignmentsDigest(before) != coordinatorAssignmentsDigest(out) {
+		delivery, derr := s.coordinatorDeliverSource(task, out)
+		if derr != nil {
+			slog.Default().Warn("webbridge: coordinator delivery not refreshed", "task", task.ID, "err", derr)
+		}
+		if delivery == nil {
+			if rec, held, rerr := svc.store.Delivery(task.ID); rerr == nil && held {
+				delivery = &rec
+			}
+		}
+		s.coordinatorEmitUpdate(task, out, delivery)
 	}
 	return out, nil
 }
@@ -751,6 +778,23 @@ func coordinatorAssignmentRows(assignments []contract.CoordinatorAssignment) []m
 	return rows
 }
 
+// coordinatorStampNames fills each assignment's display project name from this
+// host's catalog.
+//
+// The name is derived rather than stored, so an assignment reads under whatever
+// the project is called now, and the daemon — which owns the catalog — is the one
+// that answers it. A project this host no longer holds keeps its id and no name.
+func (s *Server) coordinatorStampNames(assignments []contract.CoordinatorAssignment) []contract.CoordinatorAssignment {
+	if len(assignments) == 0 {
+		return assignments
+	}
+	catalog := s.coordinatorProjectCatalog()
+	for i := range assignments {
+		assignments[i].ProjectName = catalog[assignments[i].ProjectID]
+	}
+	return assignments
+}
+
 // coordinatorAssignmentIDs is the sorted identity list of a set of assignments.
 // It exists so a test can say "these are the same assignments" without caring
 // about their order.
@@ -761,4 +805,576 @@ func coordinatorAssignmentIDs(assignments []contract.CoordinatorAssignment) []st
 	}
 	sort.Strings(out)
 	return out
+}
+
+// The handoff path: a project thread's work handed to Marshal, reported back to
+// the thread it came from.
+//
+// A handoff is the assignment path with a source. The invoking session supplies
+// the source — never an argument — and the task the handoff opens (or joins, when
+// that thread already hands work off) is the identity every assignment, every
+// delivery and every read resolves against. A request made in Marshal's own
+// conversation is the same path with no source: it dispatches onto the task that
+// session already owns and reports back to nobody.
+//
+// Targets are names a person used ("the CLI") or canonical project ids. A name is
+// resolved here against the projects this host registered; a name that matches
+// more than one — or none — asks one question and dispatches nothing, so an
+// ambiguous target never starts work in the wrong project.
+
+// coordinatorProjectCatalog is every project this host registered, by canonical
+// id, with the display name a person reads (the last segment of its root).
+//
+// It is what a handoff target's name is resolved against. An empty catalog is an
+// empty host, which is not the same as a project with no name.
+func (s *Server) coordinatorProjectCatalog() map[string]string {
+	out := map[string]string{}
+	if s.fleet == nil || s.fleet.ws == nil {
+		return out
+	}
+	for _, root := range s.fleet.ws.Projects() {
+		id, ok := s.fleet.ws.ProjectID(root)
+		if !ok {
+			continue
+		}
+		out[id] = coordinatorProjectName(root)
+	}
+	return out
+}
+
+// coordinatorProjectName is the display name of one project root: its last
+// segment, which is what a person says and what a handoff target may quote.
+func coordinatorProjectName(root string) string {
+	cleaned := filepath.Clean(root)
+	// A root that is a filesystem root has no last segment to name; the whole
+	// path is then the name, which is still no path disclosure because it came
+	// from the person.
+	if base := filepath.Base(cleaned); base != "" && base != string(filepath.Separator) {
+		return base
+	}
+	return cleaned
+}
+
+// coordinatorNameKey is what a target name is compared by: lowercased, trimmed,
+// with the leading article a person puts in front of a project dropped, so "the
+// CLI", "CLI" and "cli" are one name.
+func coordinatorNameKey(name string) string {
+	key := strings.ToLower(strings.TrimSpace(name))
+	key = strings.TrimPrefix(key, "the ")
+	key = strings.TrimSuffix(key, "'s")
+	return strings.TrimSpace(key)
+}
+
+// coordinatorResolveHandoffTargets resolves the targets a handoff names to
+// canonical dispatch targets.
+//
+// A target that already names a canonical id is used as it is, provided this host
+// registered it. A target that names a project is matched by display name: an
+// exact match wins, then the single project whose name contains what was said. A
+// name that matches more than one project, or none, is the one clarifying
+// question this handoff asks, and its candidates are the projects it could mean —
+// so the person's answer can name one by id.
+//
+// Nothing here dispatches, and nothing here reads a path: a target resolved to a
+// project id is the only thing the dispatch path is given.
+func (s *Server) coordinatorResolveHandoffTargets(targets []contract.CoordinatorHandoffTarget, outcome, findings string) ([]contract.CoordinatorAssignTarget, *contract.CoordinatorClarification, error) {
+	if len(targets) == 0 {
+		return nil, nil, fmt.Errorf("%w: a handoff names at least one target", ErrCoordinatorInput)
+	}
+	catalog := s.coordinatorProjectCatalog()
+	names := make([]string, 0, len(catalog))
+	for id, name := range catalog {
+		names = append(names, id+"\x00"+name)
+	}
+	sort.Strings(names)
+	candidates := make([]contract.CoordinatorTargetCandidate, 0, len(names))
+	for _, entry := range names {
+		parts := strings.SplitN(entry, "\x00", 2)
+		candidates = append(candidates, contract.CoordinatorTargetCandidate{ProjectID: parts[0], Name: parts[1]})
+	}
+
+	resolved := make([]contract.CoordinatorAssignTarget, 0, len(targets))
+	seen := map[string]bool{}
+	for _, target := range targets {
+		projectID := strings.TrimSpace(target.ProjectID)
+		name := strings.TrimSpace(target.Project)
+		if projectID == "" {
+			matched, askedName := coordinatorMatchProject(catalog, name)
+			if matched == "" || askedName {
+				// An ambiguous or unknown name is answered, not guessed at and
+				// not widened: the question names the projects it could mean.
+				return nil, coordinatorClarificationFor(name, matched, candidates), nil
+			}
+			projectID = matched
+		} else if _, ok := catalog[projectID]; !ok {
+			return nil, coordinatorClarificationFor(projectID, "", candidates), nil
+		}
+		if seen[projectID] {
+			// One project is one assignment, however many times it was named.
+			continue
+		}
+		seen[projectID] = true
+		resolved = append(resolved, contract.CoordinatorAssignTarget{
+			ProjectID:   projectID,
+			Instruction: coordinatorHandoffInstruction(outcome, findings, target),
+			ThreadID:    strings.TrimSpace(target.ThreadID),
+			Steer:       target.Steer && strings.TrimSpace(target.ThreadID) != "",
+		})
+	}
+	if len(resolved) == 0 {
+		return nil, nil, fmt.Errorf("%w: a handoff names at least one target this host holds", ErrCoordinatorInput)
+	}
+	return resolved, nil, nil
+}
+
+// coordinatorMatchProject resolves one display name to exactly one project.
+//
+// It returns the match and whether the match was ambiguous (which the caller
+// turns into a question). An exact name wins over a partial one, and a partial
+// name that matches two projects is ambiguous rather than the first of them.
+func coordinatorMatchProject(catalog map[string]string, name string) (string, bool) {
+	key := coordinatorNameKey(name)
+	if key == "" {
+		return "", false
+	}
+	exact := ""
+	for id, display := range catalog {
+		if coordinatorNameKey(display) != key {
+			continue
+		}
+		if exact != "" && exact != id {
+			return "", true
+		}
+		exact = id
+	}
+	if exact != "" {
+		return exact, false
+	}
+	partial := make([]string, 0, 2)
+	for id, display := range catalog {
+		if strings.Contains(coordinatorNameKey(display), key) {
+			partial = append(partial, id)
+		}
+	}
+	switch len(partial) {
+	case 0:
+		return "", false
+	case 1:
+		return partial[0], false
+	default:
+		return "", true
+	}
+}
+
+// coordinatorClarificationFor is the one question a handoff asks about a target
+// it could not resolve, with the projects it could have meant.
+func coordinatorClarificationFor(name, matched string, candidates []contract.CoordinatorTargetCandidate) *contract.CoordinatorClarification {
+	listed := candidates
+	if len(listed) > 12 {
+		listed = listed[:12]
+	}
+	labels := make([]string, 0, len(listed))
+	for _, candidate := range listed {
+		labels = append(labels, fmt.Sprintf("%s (%s)", candidate.Name, candidate.ProjectID))
+	}
+	question := fmt.Sprintf("Which project did you mean by %q? This host holds: %s", name, strings.Join(labels, ", "))
+	if matched == "" && len(labels) == 0 {
+		question = fmt.Sprintf("Which project did you mean by %q? This host holds no project yet.", name)
+	}
+	return &contract.CoordinatorClarification{Name: name, Question: question, Candidates: listed}
+}
+
+// coordinatorHandoffInstruction is what one target is asked to do: its own
+// instruction when it stated one, the handoff's outcome when it did not, and the
+// findings the source gathered beneath it.
+//
+// The findings travel with every target because they are the evidence the source
+// already collected: a target that has to rediscover it would duplicate work the
+// handoff exists to avoid. They are text the source wrote, never markup.
+func coordinatorHandoffInstruction(outcome, findings string, target contract.CoordinatorHandoffTarget) string {
+	body := strings.TrimSpace(target.Instruction)
+	if body == "" {
+		body = strings.TrimSpace(outcome)
+	}
+	if evidence := strings.TrimSpace(findings); evidence != "" {
+		body += "\n\nWhat the source found:\n" + evidence
+	}
+	return body
+}
+
+// coordinatorSourceFor is the source thread one built-in session hands work off
+// from: the fleet agent whose session this is, in the project its binding names.
+//
+// The binding is the identity the transport verified, so a caller cannot hand
+// work off from a thread it does not hold. A session no agent owns has no thread
+// to link, and asks the caller to use the task it already has instead.
+func (s *Server) coordinatorSourceFor(binding MarshalSessionBinding) (*contract.CoordinatorThreadRef, error) {
+	if s.fleet == nil || s.fleet.ws == nil {
+		return nil, ErrCoordinatorUnavailable
+	}
+	root, ok := s.fleet.ws.ProjectRootByID(binding.ProjectID)
+	if !ok {
+		return nil, errFactoryDenied
+	}
+	for _, agent := range s.fleet.ws.Agents() {
+		if agent.SessionID != binding.SessionID || agent.Project != root {
+			continue
+		}
+		return &contract.CoordinatorThreadRef{ProjectID: binding.ProjectID, Kind: "agent", ID: agent.ID}, nil
+	}
+	return nil, fmt.Errorf("%w: this session is not a thread in its project", ErrCoordinatorInput)
+}
+
+// coordinatorHandoff is one structured handoff: a source thread's request for
+// work in the projects it names.
+//
+// It is the same assignment path the coordinator's own dispatch takes. The only
+// differences are where the identity comes from and what happens after: the
+// source is the invoking session (or, for a request made in Marshal's own
+// conversation, no source at all), and a task with a source posts one
+// informational update back to it.
+func (s *Server) coordinatorHandoff(ctx context.Context, binding MarshalSessionBinding, req contract.CoordinatorHandoffRequest, receiptID string) (contract.CoordinatorHandoffResult, error) {
+	svc, err := s.coordinatorAvailable()
+	if err != nil {
+		return contract.CoordinatorHandoffResult{}, err
+	}
+	if s.fleet == nil || s.fleet.ws == nil {
+		return contract.CoordinatorHandoffResult{}, ErrCoordinatorUnavailable
+	}
+	outcome := strings.TrimSpace(req.Outcome)
+	if outcome == "" {
+		return contract.CoordinatorHandoffResult{}, fmt.Errorf("%w: a handoff says what it asks for", ErrCoordinatorInput)
+	}
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		return contract.CoordinatorHandoffResult{}, fmt.Errorf("%w: requestId is required", ErrCoordinatorInput)
+	}
+
+	// A request made in Marshal's own conversation already has its task: it is
+	// the same assignment path with no source, so nothing is linked and nothing
+	// is reported back.
+	if task, ok := svc.store.BySession(binding.SessionID); ok {
+		task.Host = s.coordinatorHost()
+		resolved, clarification, rerr := s.coordinatorResolveHandoffTargets(req.Targets, outcome, req.Findings)
+		if rerr != nil {
+			return contract.CoordinatorHandoffResult{}, rerr
+		}
+		if clarification != nil {
+			return contract.CoordinatorHandoffResult{TaskID: task.ID, Host: task.Host, Clarification: clarification, Assignments: []contract.CoordinatorAssignment{}}, nil
+		}
+		result, derr := s.coordinatorDispatch(ctx, task, contract.CoordinatorAssignRequest{RequestID: requestID, Targets: resolved}, receiptID)
+		if derr != nil {
+			return contract.CoordinatorHandoffResult{TaskID: task.ID, Assignments: result.Assignments}, derr
+		}
+		s.coordinatorEmitUpdate(task, result.Assignments, nil)
+		return contract.CoordinatorHandoffResult{TaskID: task.ID, Host: task.Host, Assignments: result.Assignments}, nil
+	}
+
+	source, err := s.coordinatorSourceFor(binding)
+	if err != nil {
+		return contract.CoordinatorHandoffResult{}, err
+	}
+	resolved, clarification, err := s.coordinatorResolveHandoffTargets(req.Targets, outcome, req.Findings)
+	if err != nil {
+		return contract.CoordinatorHandoffResult{}, err
+	}
+	if clarification != nil {
+		return contract.CoordinatorHandoffResult{Host: s.coordinatorHost(), Source: source, Clarification: clarification, Assignments: []contract.CoordinatorAssignment{}}, nil
+	}
+	projectIDs := make([]string, 0, len(resolved))
+	for _, target := range resolved {
+		projectIDs = append(projectIDs, target.ProjectID)
+	}
+	task, err := s.coordinatorHandoffTask(svc, *source, requestID, outcome, projectIDs)
+	if err != nil {
+		return contract.CoordinatorHandoffResult{Host: s.coordinatorHost(), Source: source}, err
+	}
+	task.Host = s.coordinatorHost()
+	result, err := s.coordinatorDispatch(ctx, task, contract.CoordinatorAssignRequest{RequestID: requestID, Targets: resolved}, receiptID)
+	if err != nil {
+		return contract.CoordinatorHandoffResult{TaskID: task.ID, Host: task.Host, Source: source, Assignments: result.Assignments}, err
+	}
+	// Reporting back is part of the handoff, but it is not allowed to undo one:
+	// the work is already dispatched, and a delivery the store could not write
+	// is logged rather than reported as a dispatch failure.
+	delivery, derr := s.coordinatorDeliverSource(task, result.Assignments)
+	if derr != nil {
+		slog.Default().Warn("webbridge: coordinator delivery not stored", "task", task.ID, "err", derr)
+	}
+	s.coordinatorEmitUpdate(task, result.Assignments, delivery)
+	out := contract.CoordinatorHandoffResult{TaskID: task.ID, Host: task.Host, Source: source, Assignments: result.Assignments}
+	if delivery != nil {
+		out.Delivery = delivery
+	}
+	return out, nil
+}
+
+// coordinatorHandoffTask is the task one source thread's handoff runs under: the
+// open task that thread already handed work to, widened to cover the targets it
+// names now, or a new one.
+//
+// The source is linked once. A second handoff from the same thread joins the
+// existing task, so the assignments, the delivery and the Studio's view of the
+// thread all keep resolving to one identity; the task's scope is widened rather
+// than a second task opened beside it.
+func (s *Server) coordinatorHandoffTask(svc *coordinatorService, source contract.CoordinatorThreadRef, requestID, outcome string, projectIDs []string) (contract.CoordinatorTask, error) {
+	if existing, ok := svc.store.SourceTask(source); ok {
+		widened, err := svc.store.WidenScope(existing.ID, projectIDs)
+		if err != nil {
+			return contract.CoordinatorTask{}, err
+		}
+		return widened, nil
+	}
+	created, _, err := svc.store.Create(contract.CoordinatorCreateRequest{
+		// The handoff's own request id is the idempotency key, prefixed so it
+		// cannot collide with a create a Studio's first send made.
+		RequestID: "handoff:" + requestID,
+		Title:     outcome,
+		Source:    &source,
+		Projects:  projectIDs,
+	})
+	return created, err
+}
+
+// coordinatorDeliveryID is the stable event identity of one task's source
+// delivery.
+//
+// It is derived from the task alone, so every attempt at reporting the same task
+// posts one event: a retry, a reconnect and a second observation all resolve to
+// this id, and the store replaces the record instead of appending a summary.
+func coordinatorDeliveryID(taskID string) string {
+	sum := sha256.Sum256([]byte(taskID))
+	return "coord-delivery-" + hex.EncodeToString(sum[:12])
+}
+
+// coordinatorDeliverSource records (and announces) the informational update one
+// task posts back to its source thread.
+//
+// It is not an agent turn: nothing is prompted, no worker is started and no
+// session is created, so the delivery reaches a thread with no viewer attached
+// and an idle one alike. Visibility is rechecked here, immediately before the
+// record is written: a source project whose access was revoked, or whose thread
+// the project no longer holds, gets no summary rather than a stale one.
+func (s *Server) coordinatorDeliverSource(task contract.CoordinatorTask, assignments []contract.CoordinatorAssignment) (*contract.CoordinatorDelivery, error) {
+	svc, err := s.coordinatorAvailable()
+	if err != nil {
+		return nil, err
+	}
+	source := task.Source
+	if source == nil {
+		return nil, nil
+	}
+	if !s.coordinatorSourceVisible(task) {
+		return nil, nil
+	}
+	delivery, changed, err := svc.store.PutDelivery(contract.CoordinatorDelivery{
+		TaskID:  task.ID,
+		Source:  source,
+		EventID: coordinatorDeliveryID(task.ID),
+		Text:    s.coordinatorDeliveryText(task, assignments),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		// The record already said this: no second summary is posted.
+		return &delivery, nil
+	}
+	return &delivery, nil
+}
+
+// coordinatorSourceVisible rechecks that one task's source is still the thing a
+// summary may be written about: the project is one this host holds, the task may
+// still read it, and — for a thread — the project still holds that agent.
+func (s *Server) coordinatorSourceVisible(task contract.CoordinatorTask) bool {
+	source := task.Source
+	if source == nil || s.fleet == nil || s.fleet.ws == nil {
+		return false
+	}
+	root, ok := s.fleet.ws.ProjectRootByID(source.ProjectID)
+	if !ok {
+		return false
+	}
+	if !s.coordinatorReadAllowed(task, source.ProjectID) {
+		return false
+	}
+	if source.Kind != "agent" {
+		return true
+	}
+	agent, held := s.fleet.ws.Agent(source.ID)
+	return held && agent.Project == root
+}
+
+// coordinatorDeliveryText is one task's result as the source thread reads it:
+// what each assignment's project is called, where it stands, and what its
+// newest observed result says.
+//
+// It is written for a person and names no host path. A worker's latest facts come
+// from the record it wrote itself — its branch, its pull request, whether it has
+// pushed, what it is doing — so a correction the person made in the worker's own
+// thread is what the summary reports, not what the assignment originally asked
+// for.
+func (s *Server) coordinatorDeliveryText(task contract.CoordinatorTask, assignments []contract.CoordinatorAssignment) string {
+	catalog := s.coordinatorProjectCatalog()
+	projectName := func(id string) string {
+		if name := catalog[id]; name != "" {
+			return name
+		}
+		if len(id) <= 8 {
+			return id
+		}
+		return id[:8]
+	}
+	if len(assignments) == 0 {
+		return "Marshal is linked to this thread; no assignment has been dispatched yet."
+	}
+	parts := make([]string, 0, len(assignments))
+	for _, a := range assignments {
+		row := projectName(a.ProjectID) + ": " + coordinatorAssignmentStateWords(a)
+		if facts := s.coordinatorAssignmentFacts(a); len(facts) > 0 {
+			row += " — " + strings.Join(facts, ", ")
+		}
+		parts = append(parts, row)
+	}
+	return fmt.Sprintf("Marshal: %d %s. %s", len(assignments),
+		plural(len(assignments), "assignment", "assignments"), strings.Join(parts, "; ")+".")
+}
+
+// coordinatorAssignmentStateWords is one assignment's state in a sentence.
+func coordinatorAssignmentStateWords(a contract.CoordinatorAssignment) string {
+	switch a.State {
+	case contract.CoordinatorAssignmentDispatching:
+		return "starting"
+	case contract.CoordinatorAssignmentPending:
+		return "waiting for your confirmation"
+	case contract.CoordinatorAssignmentRunning:
+		return "running"
+	case contract.CoordinatorAssignmentLinked:
+		return "linked and observed"
+	case contract.CoordinatorAssignmentFailed:
+		if strings.TrimSpace(a.Reason) != "" {
+			return "failed: " + a.Reason
+		}
+		return "failed"
+	case contract.CoordinatorAssignmentExpired:
+		return "expired before anyone confirmed it"
+	case contract.CoordinatorAssignmentStopped:
+		return "stopped"
+	}
+	return string(a.State)
+}
+
+// coordinatorAssignmentFacts is what one assignment's newest result says, in the
+// few words a summary can carry: where its worker is, where it pushed, and what
+// it is doing now.
+func (s *Server) coordinatorAssignmentFacts(a contract.CoordinatorAssignment) []string {
+	agentID := ""
+	if a.Worker != nil {
+		agentID = a.Worker.AgentID
+	} else if a.Thread != nil {
+		agentID = a.Thread.ID
+	}
+	if agentID == "" || s.fleet == nil || s.fleet.ws == nil {
+		return nil
+	}
+	agent, ok := s.fleet.ws.Agent(agentID)
+	if !ok {
+		return nil
+	}
+	facts := make([]string, 0, 4)
+	if branch := strings.TrimSpace(agent.Branch); branch != "" {
+		facts = append(facts, "on "+branch)
+	}
+	if pr := strings.TrimSpace(agent.PRUrl); pr != "" {
+		facts = append(facts, "pull request "+pr)
+	}
+	if !agent.PushedAt.IsZero() {
+		facts = append(facts, "pushed")
+	}
+	if live := s.fleet.live.get(agentID); strings.TrimSpace(live.activity) != "" {
+		fact := "last " + live.activity
+		if live.changedFiles > 0 {
+			fact += fmt.Sprintf(" (%d %s changed)", live.changedFiles, plural(live.changedFiles, "file", "files"))
+		}
+		facts = append(facts, fact)
+	}
+	if a.ResultRevision > 0 {
+		facts = append(facts, fmt.Sprintf("result %d", a.ResultRevision))
+	}
+	return facts
+}
+
+// plural picks the singular or plural word for a count.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// coordinatorRetryAssignment attempts one failed or expired assignment again,
+// under its existing identity.
+//
+// It is the scoped retry a person's failure row offers: only this assignment is
+// reset, its siblings are untouched, and the dispatch identity is the one it
+// already has — so the retry can start one worker, never a second. A steering
+// target owes the person's direction again, verified before anything is reset.
+func (s *Server) coordinatorRetryAssignment(ctx context.Context, task contract.CoordinatorTask, assignmentID, receiptID string) (contract.CoordinatorAssignment, error) {
+	svc, err := s.coordinatorAvailable()
+	if err != nil {
+		return contract.CoordinatorAssignment{}, err
+	}
+	if task.Status != contract.CoordinatorTaskOpen {
+		return contract.CoordinatorAssignment{}, ErrCoordinatorConflict
+	}
+	rec, held, err := svc.store.Assignment(task.ID, assignmentID)
+	if err != nil {
+		return contract.CoordinatorAssignment{}, err
+	}
+	if !held {
+		return contract.CoordinatorAssignment{}, ErrCoordinatorNotFound
+	}
+	if rec.Assignment.State != contract.CoordinatorAssignmentFailed &&
+		rec.Assignment.State != contract.CoordinatorAssignmentExpired {
+		return contract.CoordinatorAssignment{}, ErrCoordinatorConflict
+	}
+	target := contract.CoordinatorAssignTarget{ProjectID: rec.Assignment.ProjectID, Instruction: rec.Assignment.Instruction}
+	if rec.Assignment.Thread != nil {
+		target.ThreadID = rec.Assignment.Thread.ID
+		target.Steer = rec.Steer
+	}
+	if err := s.coordinatorAuthorizeSteering(task, []contract.CoordinatorAssignTarget{target}, assignmentID+"-retry", receiptID); err != nil {
+		return contract.CoordinatorAssignment{}, err
+	}
+	reset, err := svc.store.UpdateAssignment(task.ID, rec.Assignment.ID, func(r *coordinatorAssignmentRecord) bool {
+		if r.Assignment.State != contract.CoordinatorAssignmentFailed &&
+			r.Assignment.State != contract.CoordinatorAssignmentExpired {
+			return false
+		}
+		r.Assignment.State = contract.CoordinatorAssignmentDispatching
+		r.Assignment.Failure, r.Assignment.Reason, r.Assignment.IntakeID = "", "", ""
+		r.IntakeExpiresAt = time.Time{}
+		// The attempt that failed delivered nothing, so the resumed dispatch
+		// may hand the instruction over once.
+		r.Prompted = false
+		return true
+	})
+	if err != nil {
+		return contract.CoordinatorAssignment{}, err
+	}
+	if reset.Assignment.State != contract.CoordinatorAssignmentDispatching {
+		return contract.CoordinatorAssignment{}, ErrCoordinatorConflict
+	}
+	observed, err := s.coordinatorReconcileAssignment(ctx, task, reset, target, true)
+	if err != nil {
+		return contract.CoordinatorAssignment{}, err
+	}
+	if assignments, lerr := svc.store.Assignments(task.ID); lerr == nil {
+		rows := make([]contract.CoordinatorAssignment, 0, len(assignments))
+		for _, row := range assignments {
+			rows = append(rows, row.Assignment)
+		}
+		s.coordinatorEmitUpdate(task, rows, nil)
+	}
+	return observed.Assignment, nil
 }

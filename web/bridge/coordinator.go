@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -105,6 +106,13 @@ func (s *Server) coordinatorRoutes() {
 	s.mux.HandleFunc("POST /api/coordinator/tasks", s.coordinatorCreateTask)
 	s.mux.HandleFunc("GET /api/coordinator/tasks/{id}", s.coordinatorGetTask)
 	s.mux.HandleFunc("GET /api/coordinator/tasks/{id}/attention", s.coordinatorTaskAttention)
+	// The assignment snapshot, the source thread's handoff, and the one retry a
+	// failed assignment offers (agent-first Studio, task 7). They are reads plus
+	// one task-scoped action: the live updates arrive as fleet events, so a client
+	// that reconnects reads these instead of replaying.
+	s.mux.HandleFunc("GET /api/coordinator/tasks/{id}/assignments", s.coordinatorTaskAssignmentList)
+	s.mux.HandleFunc("GET /api/coordinator/sources/{project}/{thread}", s.coordinatorSourceView)
+	s.mux.HandleFunc("POST /api/coordinator/tasks/{id}/assignments/{assignment}/retry", s.coordinatorRetry)
 }
 
 // available reports the service and its store, or why it cannot answer.
@@ -221,6 +229,184 @@ func (s *Server) coordinatorTaskAttention(w http.ResponseWriter, r *http.Request
 	}
 	task.Host = s.coordinatorHost()
 	writeJSON(w, http.StatusOK, s.coordinatorAttention(task))
+}
+
+// coordinatorTaskAssignmentList answers GET
+// /api/coordinator/tasks/{id}/assignments: the task's assignments, reconciled
+// against what the daemon now holds, and the newest result it delivered to its
+// source thread.
+//
+// It is the snapshot a Studio reads on reconnect. The live updates arrive as
+// fleet events (DeltaCoordinator), so a client that missed them reads this and
+// cannot disagree with what the stream would have said.
+func (s *Server) coordinatorTaskAssignmentList(w http.ResponseWriter, r *http.Request) {
+	svc, err := s.coordinatorAvailable()
+	if err != nil {
+		writeCoordinatorError(w, err)
+		return
+	}
+	task, err := svc.store.Get(r.PathValue("id"))
+	if err != nil {
+		writeCoordinatorError(w, err)
+		return
+	}
+	task.Host = s.coordinatorHost()
+	assignments, err := s.coordinatorTaskAssignments(r.Context(), task)
+	if err != nil {
+		writeCoordinatorError(w, err)
+		return
+	}
+	out := contract.CoordinatorAssignmentList{TaskID: task.ID, Host: task.Host, Assignments: assignments}
+	if delivery, held, derr := svc.store.Delivery(task.ID); derr == nil && held {
+		out.Delivery = &delivery
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// coordinatorSourceView answers GET /api/coordinator/sources/{project}/{thread}:
+// the handoff one project thread is the source of, as the thread screen reads it.
+//
+// It is the read that keeps a delivered result available to a thread nobody was
+// watching: the task, its assignments and the newest delivery are all durable, so
+// opening the thread later draws the result rather than depending on a stream
+// that was not attached when it was ready. A thread nothing was handed off from
+// answers an empty view — that is a valid answer, not an error.
+func (s *Server) coordinatorSourceView(w http.ResponseWriter, r *http.Request) {
+	svc, err := s.coordinatorAvailable()
+	if err != nil {
+		writeCoordinatorError(w, err)
+		return
+	}
+	projectID := r.PathValue("project")
+	threadID := r.PathValue("thread")
+	if _, ok := svc.fleet.ws.ProjectRootByID(projectID); !ok {
+		writeCoordinatorError(w, errCoordinatorUnknownProject)
+		return
+	}
+	out := contract.CoordinatorSourceView{Host: s.coordinatorHost(), Assignments: []contract.CoordinatorAssignment{}}
+	source := contract.CoordinatorThreadRef{ProjectID: projectID, Kind: "agent", ID: threadID}
+	var task contract.CoordinatorTask
+	found := false
+	// The newest task the thread handed work to is the one its screen shows; a
+	// stopped one is still shown, because its result is what the thread carries.
+	tasks, err := svc.store.List()
+	if err != nil {
+		writeCoordinatorError(w, err)
+		return
+	}
+	for _, candidate := range tasks {
+		if candidate.Source == nil || *candidate.Source != source {
+			continue
+		}
+		task, found = candidate, true
+		break
+	}
+	if !found {
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	task.Host = s.coordinatorHost()
+	assignments, err := s.coordinatorTaskAssignments(r.Context(), task)
+	if err != nil {
+		writeCoordinatorError(w, err)
+		return
+	}
+	out.Task = &task
+	out.Assignments = assignments
+	if delivery, held, derr := svc.store.Delivery(task.ID); derr == nil && held {
+		out.Delivery = &delivery
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// coordinatorRetry answers POST
+// /api/coordinator/tasks/{id}/assignments/{assignment}/retry: one failed or
+// expired assignment attempted again under its existing identity.
+//
+// It is the scoped retry a person's failure row offers, so it retries exactly
+// that assignment: its siblings are untouched, and a steering target owes the
+// person's direction again, which travels in the header the trusted transport
+// sets rather than in the body a model writes.
+func (s *Server) coordinatorRetry(w http.ResponseWriter, r *http.Request) {
+	svc, err := s.coordinatorAvailable()
+	if err != nil {
+		writeCoordinatorError(w, err)
+		return
+	}
+	task, err := svc.store.Get(r.PathValue("id"))
+	if err != nil {
+		writeCoordinatorError(w, err)
+		return
+	}
+	task.Host = s.coordinatorHost()
+	if _, err := s.coordinatorRetryAssignment(r.Context(), task, r.PathValue("assignment"), marshalUserDirectionReceiptID(r)); err != nil {
+		var challenge *marshalUserDirectionChallenge
+		if errors.As(err, &challenge) {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error":            factoryCodeUserDirectionRequired,
+				"receipt":          challenge.Receipt,
+				"receiptExpiresAt": challenge.ExpiresAt.UTC().Format(time.RFC3339),
+			})
+			return
+		}
+		writeCoordinatorError(w, err)
+		return
+	}
+	assignments, err := s.coordinatorTaskAssignments(r.Context(), task)
+	if err != nil {
+		writeCoordinatorError(w, err)
+		return
+	}
+	out := contract.CoordinatorAssignmentList{TaskID: task.ID, Host: task.Host, Assignments: assignments}
+	if delivery, held, derr := svc.store.Delivery(task.ID); derr == nil && held {
+		out.Delivery = &delivery
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// coordinatorEmitUpdate announces one task's assignments, and its newest source
+// delivery, on the fleet stream.
+//
+// It is a fleet delta rather than a second subscription: a Studio already
+// following the fleet receives assignment progress without asking, and the
+// snapshot reads (CoordinatorAssignmentList, CoordinatorSourceView) are what a
+// client that reconnects reads instead of replaying. SessionID is the source
+// thread's agent id, so a screen watching that thread can tell the delta is
+// about it.
+func (s *Server) coordinatorEmitUpdate(task contract.CoordinatorTask, assignments []contract.CoordinatorAssignment, delivery *contract.CoordinatorDelivery) {
+	if s == nil || s.fleet == nil {
+		return
+	}
+	if assignments == nil {
+		assignments = []contract.CoordinatorAssignment{}
+	}
+	delta := contract.CoordinatorDelta{
+		Kind:        contract.DeltaCoordinator,
+		TaskID:      task.ID,
+		Host:        firstNonEmpty(task.Host, s.coordinatorHost()),
+		Source:      task.Source,
+		Assignments: assignments,
+	}
+	if task.Source != nil {
+		delta.SessionID = task.Source.ID
+	}
+	if delivery != nil {
+		delta.Delivery = delivery
+	}
+	s.fleet.emit(delta)
+}
+
+// coordinatorAssignmentsDigest is the shape of one assignment list, so a read can
+// tell "nothing changed" from "this observation learned something".
+func coordinatorAssignmentsDigest(assignments []contract.CoordinatorAssignment) string {
+	payload := make([]string, 0, len(assignments))
+	for _, a := range assignments {
+		payload = append(payload, strings.Join([]string{
+			a.ID, a.ProjectID, string(a.State), a.Failure, a.Reason,
+			fmt.Sprint(a.ResultRevision), a.IntakeID,
+		}, "\x00"))
+	}
+	return strings.Join(payload, "\x01")
 }
 
 // errCoordinatorUnknownProject is a create naming a project this daemon did not

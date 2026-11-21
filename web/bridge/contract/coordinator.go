@@ -172,6 +172,10 @@ type CoordinatorAssignment struct {
 	// ProjectID is the target project's canonical daemon ID, never a display
 	// name or a path.
 	ProjectID string `json:"projectId"`
+	// ProjectName is what the daemon calls that project: the last segment of its
+	// root, which is what a person says. It is display text, filled on every read
+	// rather than stored, so a renamed project reads under its new name.
+	ProjectName string `json:"projectName,omitempty"`
 	// Instruction is what the task asked this project to do, as the task wrote
 	// it. It is display text in the caller's own words, never markup.
 	Instruction  string                            `json:"instruction,omitempty"`
@@ -233,10 +237,140 @@ type CoordinatorAssignResult struct {
 }
 
 // CoordinatorAssignmentList is one task's assignments, as a read reports them.
+//
+// Delivery is the newest informational update this task posted back to its
+// source thread. It is carried by the read rather than pushed only, so a
+// source whose viewer was not attached when the result was ready still shows
+// it: the record is durable and the next read is what draws it.
 type CoordinatorAssignmentList struct {
 	TaskID      string                  `json:"taskId"`
 	Host        string                  `json:"host,omitempty"`
 	Assignments []CoordinatorAssignment `json:"assignments"`
+	Delivery    *CoordinatorDelivery    `json:"delivery,omitempty"`
+}
+
+// CoordinatorDelivery is one coordinated task's informational update to the
+// source thread it was handed off from.
+//
+// It is not an agent turn: nothing is prompted and no session is started, so a
+// delivery reaches a thread that has no viewer attached and one whose agent is
+// idle alike. EventID is stable for the task, which is what makes a retry, a
+// reconnect or a second observation update the one delivered result instead of
+// posting a duplicate summary.
+type CoordinatorDelivery struct {
+	TaskID string                `json:"taskId"`
+	Source *CoordinatorThreadRef `json:"source,omitempty"`
+	// EventID is the delivery's stable identity. A second attempt with the same
+	// EventID replaces the record rather than appending another result.
+	EventID string `json:"eventId"`
+	// Text is display text: what the task's assignments did, in the daemon's
+	// own words. It is never markup, and it names no host path.
+	Text string    `json:"text"`
+	At   time.Time `json:"at"`
+}
+
+// CoordinatorSourceView is one source thread's handoff as a thread screen reads
+// it: the coordinated task opened from that thread (when there is one), its
+// assignments, and the newest delivered result.
+//
+// Task is absent for a thread nothing was handed off from, which is a valid
+// answer — the screen then draws no handoff rather than an error.
+type CoordinatorSourceView struct {
+	Host        string                  `json:"host,omitempty"`
+	Task        *CoordinatorTask        `json:"task,omitempty"`
+	Assignments []CoordinatorAssignment `json:"assignments"`
+	Delivery    *CoordinatorDelivery    `json:"delivery,omitempty"`
+}
+
+// CoordinatorTargetCandidate is one project a handoff target could have meant:
+// the canonical id to name it by, and the display name a person reads.
+type CoordinatorTargetCandidate struct {
+	ProjectID string `json:"projectId"`
+	Name      string `json:"name"`
+}
+
+// CoordinatorHandoffTarget is one target a handoff names. It is a canonical
+// project id, or the project's display name as the person said it ("the CLI");
+// the bridge resolves a name against the projects this host registered and
+// asks one question when it cannot.
+type CoordinatorHandoffTarget struct {
+	ProjectID string `json:"projectId,omitempty"`
+	// Project is the display name a person used. It is resolved here, never
+	// passed through as a path.
+	Project     string `json:"project,omitempty"`
+	Instruction string `json:"instruction"`
+	// ThreadID links an existing thread in the target project instead of
+	// starting a worker, and Steer asks that it be given the instruction —
+	// admitted only with the person's verified direction.
+	ThreadID string `json:"threadId,omitempty"`
+	Steer    bool   `json:"steer,omitempty"`
+}
+
+// CoordinatorHandoffRequest is the handoff tool's arguments: what the source
+// session asks for, the projects it asks, and the findings they need.
+//
+// The source is never here. It is the session the transport authenticated, so
+// a caller cannot hand work off from a thread it does not hold.
+type CoordinatorHandoffRequest struct {
+	RequestID string `json:"requestId"`
+	// Outcome is what the handoff asks for, in the source's words. It names the
+	// task and is the instruction of a target that states none of its own.
+	Outcome string `json:"outcome"`
+	// Findings is what the target projects need to know to act: the evidence
+	// the source gathered. It travels with every target's instruction.
+	Findings string                     `json:"findings,omitempty"`
+	Targets  []CoordinatorHandoffTarget `json:"targets"`
+}
+
+// CoordinatorClarification is the one question a handoff asks before it
+// dispatches to a target it could not resolve to exactly one project.
+//
+// Nothing is dispatched while it stands: an ambiguous name is answered with the
+// projects it could mean, and the person's answer is a target that names one.
+type CoordinatorClarification struct {
+	// Name is the target as the handoff wrote it, quoted in the question.
+	Name string `json:"name"`
+	// Question is the whole question, in words meant for a person.
+	Question   string                       `json:"question"`
+	Candidates []CoordinatorTargetCandidate `json:"candidates"`
+}
+
+// CoordinatorHandoffResult is the handoff tool's answer: the task the source is
+// linked to, the assignments each target resolved to, and either the one
+// clarifying question that held the dispatch back or the delivery that
+// reported it.
+type CoordinatorHandoffResult struct {
+	TaskID string                `json:"taskId,omitempty"`
+	Host   string                `json:"host,omitempty"`
+	Source *CoordinatorThreadRef `json:"source,omitempty"`
+	// Assignments is empty when a clarification held the dispatch back.
+	Assignments   []CoordinatorAssignment   `json:"assignments"`
+	Clarification *CoordinatorClarification `json:"clarification,omitempty"`
+	Delivery      *CoordinatorDelivery      `json:"delivery,omitempty"`
+}
+
+// DeltaCoordinator announces a coordinated task's assignments, or the delivery
+// it posted to its source, on the fleet stream.
+//
+// It is a fleet delta like any other, so a Studio already following the fleet
+// receives it without a second subscription, and a client that reconnects reads
+// the snapshot (CoordinatorAssignmentList, CoordinatorSourceView) rather than
+// replaying. SessionID is the source thread's agent id when the task has one.
+const DeltaCoordinator DeltaKind = "coordinator"
+
+// CoordinatorDelta is a "coordinator" fleet delta: one task's assignments and
+// its newest source delivery.
+//
+// It carries whole assignment rows rather than a count, so a live client
+// updates the same fields a snapshot would give it and the two cannot disagree.
+type CoordinatorDelta struct {
+	Kind        DeltaKind               `json:"kind"`
+	SessionID   string                  `json:"sessionId,omitempty"`
+	TaskID      string                  `json:"taskId"`
+	Host        string                  `json:"host,omitempty"`
+	Source      *CoordinatorThreadRef   `json:"source,omitempty"`
+	Assignments []CoordinatorAssignment `json:"assignments"`
+	Delivery    *CoordinatorDelivery    `json:"delivery,omitempty"`
 }
 
 // CoordinatorAttentionKind is what an attention entry is: an ask that needs a

@@ -643,6 +643,58 @@ func TestCoordinatorSteeringNeedsTheUsersDirection(t *testing.T) {
 	}
 }
 
+// TestCoordinatorHandoffFromMarshalUsesTheSamePathWithoutASource pins the other
+// half of the handoff: a request made in Marshal's own conversation is the same
+// assignment path with no source at all — it opens no task, links no thread and
+// reports back to nobody.
+func TestCoordinatorHandoffFromMarshalUsesTheSamePathWithoutASource(t *testing.T) {
+	fx := newAssignmentFixture(t)
+	fx.grant(fx.projectA, standing())
+	task := fx.createTask("req-a", fx.projectA)
+	instanceID, generation, ok := fx.srv.marshalInstance()
+	if !ok {
+		t.Fatal("the fixture daemon has no identity")
+	}
+	binding := MarshalSessionBinding{
+		InstanceID: instanceID, ProjectID: fx.projectA, SessionID: task.SessionID, Generation: generation,
+	}
+
+	out, err := fx.srv.coordinatorHandoff(context.Background(), binding, contract.CoordinatorHandoffRequest{
+		RequestID: "direct-1",
+		Outcome:   "Harden the parser",
+		Targets:   []contract.CoordinatorHandoffTarget{{ProjectID: fx.projectA, Instruction: "Harden the parser"}},
+	}, "")
+	if err != nil {
+		t.Fatalf("a handoff from Marshal's own conversation: %v", err)
+	}
+	if out.Source != nil {
+		t.Fatalf("a request from Marshal's own conversation linked a source: %+v", out.Source)
+	}
+	if out.TaskID != task.ID {
+		t.Fatalf("the request ran under task %q, want the conversation's own %q", out.TaskID, task.ID)
+	}
+	if len(out.Assignments) != 1 || out.Assignments[0].State != contract.CoordinatorAssignmentRunning {
+		t.Fatalf("the request answered %+v, want one running assignment", out.Assignments)
+	}
+	if out.Delivery != nil {
+		t.Fatalf("a request with no source reported back to nobody: %+v", out.Delivery)
+	}
+	if _, held, derr := fx.srv.coordinator.store.Delivery(task.ID); derr != nil || held {
+		t.Fatalf("a request with no source stored a delivery: held=%v err=%v", held, derr)
+	}
+	if workers := fx.agentsIn(fx.rootA); len(workers) != 1 {
+		t.Fatalf("the request started %d workers, want 1", len(workers))
+	}
+	// One task, not a second opened beside the conversation's own.
+	tasks, err := fx.srv.coordinator.store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("a source-less handoff opened %d tasks, want the one it ran under", len(tasks))
+	}
+}
+
 // TestCoordinatorAssignmentsBelongToTheCoordinatorSession pins the boundary: the
 // assignment operations are offered and served only to a verified built-in
 // session whose session a coordinated task minted. A project session and an
@@ -674,11 +726,24 @@ func TestCoordinatorAssignmentsBelongToTheCoordinatorSession(t *testing.T) {
 		}
 	}
 
-	// A built-in session that no task minted is a project session: it gets none.
+	// A built-in session that no task minted is a project session: it is offered
+	// the handoff (the one way it can ask Marshal to carry work elsewhere) and
+	// none of the task-scoped tools, because it has no task to act on.
 	projectBinding := coordinatorBinding
 	projectBinding.SessionID = "project-session"
-	if got := fx.srv.coordinatorToolDefinitions(mcpPrincipal{Binding: projectBinding, Builtin: true}); len(got) != 0 {
-		t.Fatalf("a project session was offered coordinator tools: %v", got)
+	projectTools := fx.srv.coordinatorToolDefinitions(mcpPrincipal{Binding: projectBinding, Builtin: true})
+	projectNames := map[string]bool{}
+	for _, definition := range projectTools {
+		name, _ := definition["name"].(string)
+		projectNames[name] = true
+	}
+	if !projectNames[coordinatorToolHandoff] {
+		t.Fatalf("a project session is offered no handoff: %v", projectNames)
+	}
+	for _, forbidden := range []string{coordinatorToolAttention, coordinatorToolAssign, coordinatorToolAssignments} {
+		if projectNames[forbidden] {
+			t.Fatalf("a project session was offered the task-scoped %s: %v", forbidden, projectNames)
+		}
 	}
 	// An external client holds no binding at all.
 	if got := fx.srv.coordinatorToolDefinitions(mcpPrincipal{Builtin: false}); len(got) != 0 {

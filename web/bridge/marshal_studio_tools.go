@@ -41,6 +41,10 @@ const (
 	// coordinatorToolAssignments reads the task's assignments and how far each
 	// got.
 	coordinatorToolAssignments = "coordinator_assignments"
+	// coordinatorToolHandoff is the structured handoff a built-in project
+	// session hands work to Marshal with. Its source is the invoking session,
+	// never an argument.
+	coordinatorToolHandoff = "marshal_handoff"
 )
 
 // coordinatorMCPToolDefinitions returns the tools only a coordinator
@@ -96,9 +100,44 @@ func coordinatorMCPToolDefinitions() []map[string]any {
 	}
 }
 
-// coordinatorToolDefinitions returns the coordinator tool definitions this
-// caller may be offered: none for an external client, and the read tool for a
-// verified built-in session whose session a coordinated task minted.
+// coordinatorHandoffToolDefinitions is the handoff a built-in Studio project
+// session is offered, and nothing else: it hands work to Marshal, it cannot read
+// another task's assignments, and it cannot act as one.
+//
+// The source is not an argument. It is the session the transport authenticated,
+// so a model cannot hand work off from a thread it does not hold, and the only
+// identity the call resolves against is that binding.
+func coordinatorHandoffToolDefinitions() []map[string]any {
+	return []map[string]any{
+		{
+			"name":        coordinatorToolHandoff,
+			"description": "Hand this thread's work to Marshal, so a coordinated task can carry it into the projects it names. Give the outcome you need and the projects it belongs to; the source is this conversation, which the bridge links itself. A target names a canonical project id or the project's name as a person says it (\"the CLI\"); a name that could be more than one project is answered with one question and nothing is dispatched. A target the task's access does not cover fails on its own and its siblings still dispatch. Marshal reports the eventual result back into this thread as an update, without starting another turn here.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"requestId": map[string]any{"type": "string", "description": "This handoff's idempotency key. Reuse it for every retry of the same handoff."},
+					"outcome":   map[string]any{"type": "string", "description": "What the handoff must achieve, in this thread's words"},
+					"findings":  map[string]any{"type": "string", "description": "What the targets need to know: the evidence this thread gathered"},
+					"targets": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"projectId":   map[string]any{"type": "string", "description": "The target project's canonical id, when one is known"},
+								"project":     map[string]any{"type": "string", "description": "The target project's name, as a person says it"},
+								"instruction": map[string]any{"type": "string", "description": "What that project should do; the outcome when it states none"},
+								"threadId":    map[string]any{"type": "string", "description": "Link this existing thread in the project instead of starting a worker"},
+								"steer":       map[string]any{"type": "boolean", "description": "Give the linked thread the instruction. Only valid when the user directed it; the bridge verifies the direction and refuses otherwise."},
+							},
+						},
+					},
+				},
+				"required": []string{"requestId", "outcome", "targets"},
+			},
+		},
+	}
+}
+
 func (s *Server) coordinatorToolDefinitions(principal mcpPrincipal) []map[string]any {
 	if !principal.Builtin {
 		return nil
@@ -107,10 +146,13 @@ func (s *Server) coordinatorToolDefinitions(principal mcpPrincipal) []map[string
 	if svc == nil || svc.store == nil || svc.openErr != nil {
 		return nil
 	}
-	if _, ok := svc.store.BySession(principal.Binding.SessionID); !ok {
-		return nil
+	if _, ok := svc.store.BySession(principal.Binding.SessionID); ok {
+		return coordinatorMCPToolDefinitions()
 	}
-	return coordinatorMCPToolDefinitions()
+	// A built-in session no task minted is an ordinary project conversation: it
+	// is offered the handoff — the one way it can ask Marshal to carry work into
+	// other projects — and nothing task-scoped, because it has no task to act on.
+	return coordinatorHandoffToolDefinitions()
 }
 
 // coordinatorToolCall serves one coordinator tool, reporting whether the name
@@ -125,7 +167,7 @@ func (s *Server) coordinatorToolDefinitions(principal mcpPrincipal) []map[string
 // being widened by a request body.
 func (s *Server) coordinatorToolCall(w http.ResponseWriter, r *http.Request, c MCPClient, id json.RawMessage, name string, args json.RawMessage) bool {
 	switch name {
-	case coordinatorToolAttention, coordinatorToolAssign, coordinatorToolAssignments:
+	case coordinatorToolAttention, coordinatorToolAssign, coordinatorToolAssignments, coordinatorToolHandoff:
 	default:
 		return false
 	}
@@ -137,6 +179,13 @@ func (s *Server) coordinatorToolCall(w http.ResponseWriter, r *http.Request, c M
 	svc, err := s.coordinatorAvailable()
 	if err != nil {
 		writeFactoryToolFailure(w, id, factoryToolFailure{Code: factoryCodeUnavailable, Message: "coordinator unavailable"})
+		return true
+	}
+	if name == coordinatorToolHandoff {
+		// A handoff is the one coordinator tool an ordinary project session is
+		// offered: the source is the binding's own thread, and the task it
+		// joins (or opens) is resolved here rather than named by the caller.
+		s.coordinatorHandoffTool(w, r, id, binding, args)
 		return true
 	}
 	task, ok := svc.store.BySession(binding.SessionID)
@@ -157,6 +206,77 @@ func (s *Server) coordinatorToolCall(w http.ResponseWriter, r *http.Request, c M
 		s.coordinatorAssignmentsTool(w, id, task)
 	}
 	return true
+}
+
+// coordinatorHandoffTool answers one structured handoff from a built-in project
+// session.
+//
+// The only identity it accepts is the one the transport verified: the caller's
+// binding, whose session is the source thread. A steering receipt travels beside
+// the arguments in the header the trusted transport sets, exactly as the
+// coordinator's own dispatch reads it — a model cannot write one, which is why a
+// linked thread is only steered when a person actually directed it.
+func (s *Server) coordinatorHandoffTool(w http.ResponseWriter, r *http.Request, id json.RawMessage, binding MarshalSessionBinding, args json.RawMessage) {
+	var req contract.CoordinatorHandoffRequest
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &req); err != nil {
+			writeFactoryToolFailure(w, id, factoryToolFailure{Code: factoryCodeInvalidInput, Message: "parse arguments"})
+			return
+		}
+	}
+	result, err := s.coordinatorHandoff(r.Context(), binding, req, marshalUserDirectionReceiptID(r))
+	if err != nil {
+		writeFactoryToolFailure(w, id, coordinatorAssignmentFailureOf(err))
+		return
+	}
+	out := map[string]any{
+		"host":        result.Host,
+		"assignments": coordinatorAssignmentRows(result.Assignments),
+	}
+	if result.TaskID != "" {
+		out["taskId"] = result.TaskID
+	}
+	if result.Source != nil {
+		out["source"] = map[string]any{
+			"projectId": result.Source.ProjectID,
+			"kind":      result.Source.Kind,
+			"id":        result.Source.ID,
+		}
+	}
+	if result.Clarification != nil {
+		candidates := make([]map[string]any, 0, len(result.Clarification.Candidates))
+		for _, candidate := range result.Clarification.Candidates {
+			candidates = append(candidates, map[string]any{"projectId": candidate.ProjectID, "name": candidate.Name})
+		}
+		out["clarification"] = map[string]any{
+			"name":       result.Clarification.Name,
+			"question":   result.Clarification.Question,
+			"candidates": candidates,
+		}
+	}
+	if result.Delivery != nil {
+		out["delivery"] = coordinatorDeliveryRow(*result.Delivery)
+	}
+	writeFactoryToolResult(w, id, out)
+}
+
+// coordinatorDeliveryRow renders one delivered result for a tool result, so the
+// source's conversation reads the same fields the Studio does.
+func coordinatorDeliveryRow(delivery contract.CoordinatorDelivery) map[string]any {
+	row := map[string]any{
+		"taskId":  delivery.TaskID,
+		"eventId": delivery.EventID,
+		"text":    delivery.Text,
+		"at":      delivery.At.Format(time.RFC3339),
+	}
+	if delivery.Source != nil {
+		row["source"] = map[string]any{
+			"projectId": delivery.Source.ProjectID,
+			"kind":      delivery.Source.Kind,
+			"id":        delivery.Source.ID,
+		}
+	}
+	return row
 }
 
 // coordinatorAttentionTool answers the attention read.

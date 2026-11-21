@@ -200,9 +200,10 @@ class ThreadScreen extends StatefulWidget {
   /// Opens one handoff assignment's thread. Null leaves the row without a link.
   final void Function(Place place)? onOpenAssignment;
 
-  /// Retries one failed assignment, by its identity. Null leaves the failure a
-  /// fact rather than an action.
-  final void Function(String assignmentId)? onRetryAssignment;
+  /// Retries one failed assignment, by its identity; the future finishing is
+  /// what the retry control shows as pending. Null leaves the failure a fact
+  /// rather than an action.
+  final Future<void> Function(String assignmentId)? onRetryAssignment;
 
   @override
   State<ThreadScreen> createState() => _ThreadScreenState();

@@ -114,7 +114,7 @@ Future<void> pumpThread(
   DateTime? now,
   void Function(Place place)? onOpenHandoff,
   void Function(Place place)? onOpenAssignment,
-  void Function(String assignmentId)? onRetryAssignment,
+  Future<void> Function(String assignmentId)? onRetryAssignment,
 }) async {
   tester.view.physicalSize = const Size(900, 700);
   tester.view.devicePixelRatio = 1;

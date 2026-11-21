@@ -9,7 +9,7 @@ import '../settings/settings_place.dart';
 import 'host_switcher.dart';
 
 /// The Studio's navigation (design-system.md §2's layout and the mock's
-/// sidebar): the host switcher, the search field, the three fixed places
+/// sidebar): the host switcher, the search field, the four fixed places
 /// above the tree, the projects with their threads, and the three at its
 /// foot. In Settings the tree and those rows are replaced by the ten sections
 /// under a Back row (F7 decision 7).

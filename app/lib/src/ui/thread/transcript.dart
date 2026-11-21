@@ -146,9 +146,11 @@ class Transcript extends StatefulWidget {
   /// linked. Null leaves a row without a link.
   final void Function(Place place)? onOpenAssignment;
 
-  /// Retries one failed assignment, by its identity, and nothing else. Null
-  /// leaves the failure a fact rather than an action.
-  final void Function(String assignmentId)? onRetryAssignment;
+  /// Retries one failed assignment, by its identity, and nothing else. The
+  /// future finishing is what the band's control waits on, so the retry shows
+  /// as pending until the answer comes. Null leaves the failure a fact
+  /// rather than an action.
+  final Future<void> Function(String assignmentId)? onRetryAssignment;
 
   @override
   State<Transcript> createState() => _TranscriptState();
@@ -406,7 +408,7 @@ class _HandoffHeader extends StatelessWidget {
   final DateTime now;
   final void Function(Place place)? onOpenTask;
   final void Function(Place place)? onOpenAssignment;
-  final void Function(String assignmentId)? onRetry;
+  final Future<void> Function(String assignmentId)? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -448,7 +450,7 @@ class _HandoffHeader extends StatelessWidget {
 /// assignment shows the ask it is waiting on; a failed one offers a retry that
 /// names exactly that assignment; a view whose read failed says how old it is
 /// rather than presenting it as current.
-class HandoffBand extends StatelessWidget {
+class HandoffBand extends StatefulWidget {
   const HandoffBand({
     super.key,
     required this.handoff,
@@ -470,11 +472,40 @@ class HandoffBand extends StatelessWidget {
   /// Opens an assignment's thread; null leaves the row without a link.
   final void Function(Place place)? onOpenAssignment;
 
-  /// Retries one failed assignment; null leaves the failure a fact.
-  final void Function(String assignmentId)? onRetry;
+  /// Starts one failed assignment's retry. The future completing is the
+  /// answer the control waits on, so the retry reads as pending until the
+  /// daemon answers; null leaves the failure a fact.
+  final Future<void> Function(String assignmentId)? onRetry;
+
+  @override
+  State<HandoffBand> createState() => _HandoffBandState();
+}
+
+/// One retry at a time: while a retry waits for its answer, its own button
+/// reads *Retrying…* and nothing else can be asked, so a second press cannot
+/// send the same assignment twice (§9: an action taken is acknowledged at
+/// once and shows as pending until the daemon confirms it).
+class _HandoffBandState extends State<HandoffBand> {
+  /// The assignment whose retry is in flight, by id; null when none is.
+  String? _retrying;
+
+  Future<void> _retry(String assignmentId) async {
+    final retry = widget.onRetry;
+    if (retry == null || _retrying != null) return;
+    setState(() => _retrying = assignmentId);
+    try {
+      await retry(assignmentId);
+    } finally {
+      if (mounted) setState(() => _retrying = null);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final handoff = widget.handoff;
+    final now = widget.now;
+    final onOpenTask = widget.onOpenTask;
+    final onOpenAssignment = widget.onOpenAssignment;
     final e = Ember.of(context);
     final task = handoff.task;
     final result = (handoff.result ?? '').trim();
@@ -490,10 +521,7 @@ class HandoffBand extends StatelessWidget {
             count: handoff.rows.length,
             link: task == null || onOpenTask == null
                 ? null
-                : LabelLink(
-                    'Open Marshal task',
-                    onTap: () => onOpenTask!(task),
-                  ),
+                : LabelLink('Open Marshal task', onTap: () => onOpenTask(task)),
           ),
           const SizedBox(height: Space.s8),
           if (task == null)
@@ -523,19 +551,19 @@ class HandoffBand extends StatelessWidget {
                       : relativeAge(row.updatedAt!, now),
                   onTap: row.thread == null || onOpenAssignment == null
                       ? null
-                      : () => onOpenAssignment!(row.thread!),
+                      : () => onOpenAssignment(row.thread!),
                 ),
             ]),
           for (final row in handoff.rows)
-            if (row.retryable && onRetry != null)
+            if (row.retryable && widget.onRetry != null)
               Padding(
                 padding: const EdgeInsets.only(top: Space.s8),
                 child: Align(
                   alignment: Alignment.centerLeft,
                   child: Btn(
-                    'Retry ${row.name}',
+                    row.id == _retrying ? 'Retrying…' : 'Retry ${row.name}',
                     icon: Glyphs.arrow_clockwise,
-                    onTap: () => onRetry!(row.id),
+                    onTap: _retrying == null ? () => _retry(row.id) : null,
                   ),
                 ),
               ),

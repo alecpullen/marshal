@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/thread_view_state.dart';
@@ -84,7 +86,7 @@ void main() {
       now: now,
       onOpenHandoff: (place) => openedTask = place,
       onOpenAssignment: (place) => openedThread = place,
-      onRetryAssignment: (id) => retried = id,
+      onRetryAssignment: (id) async => retried = id,
     );
 
     // One group, named for what it is, with a row per project and the state in
@@ -144,7 +146,7 @@ void main() {
       store: fixtureStore(),
       view: view,
       now: now,
-      onRetryAssignment: (id) => retried = id,
+      onRetryAssignment: (id) async => retried = id,
     );
 
     expect(find.textContaining('Waiting for you'), findsWidgets);
@@ -188,5 +190,52 @@ void main() {
     expect(find.text('Open Marshal task'), findsNothing);
     expect(find.textContaining('cli-frontend'), findsWidgets);
     expect(openedTask, isNull);
+  });
+
+  testWidgets('a retry in flight reads as pending and cannot be asked twice', (
+    tester,
+  ) async {
+    final view = ThreadViewState()
+      ..handoff = handoff(
+        rows: [
+          row(
+            id: 'asg-api',
+            project: 'api',
+            state: HandoffAssignmentState.failed,
+            reason: 'the daemon refused the dispatch',
+          ),
+        ],
+      );
+    final retries = <String>[];
+    final inFlight = Completer<void>();
+    await pumpThread(
+      tester,
+      store: fixtureStore(),
+      view: view,
+      now: now,
+      onRetryAssignment: (id) async {
+        retries.add(id);
+        await inFlight.future;
+      },
+    );
+
+    await tester.tap(find.text('Retry api'));
+    await tester.pump();
+    // The action the person took is acknowledged at once: the row's button
+    // names what it waits on, and no second retry can be asked while it is
+    // (§9: an action taken shows as pending until the daemon confirms it).
+    expect(retries, ['asg-api']);
+    expect(find.text('Retrying…'), findsOneWidget);
+
+    // A second press while the first waits asks nothing more: one retry per
+    // row, whichever press it was.
+    await tester.tap(find.text('Retrying…'));
+    await tester.pump();
+    expect(retries, ['asg-api']);
+
+    // The answer arrives: the control is ready for the row again.
+    inFlight.complete();
+    await tester.pumpAndSettle();
+    expect(find.text('Retry api'), findsOneWidget);
   });
 }

@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import '../../model/age.dart';
 import '../../model/marshal_model.dart';
 import '../../model/place.dart';
@@ -101,11 +99,7 @@ class MarshalPlace extends StatelessWidget {
         // stops further dispatch and the workers this task created, and shows
         // that as pending until the daemon answers.
         if (model.task != null && (onStop != null || stopping))
-          _TaskActions(
-            model: model,
-            stopping: stopping,
-            onStop: onStop,
-          ),
+          _TaskActions(model: model, stopping: stopping, onStop: onStop),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -163,9 +157,7 @@ class MarshalPlace extends StatelessWidget {
                           now: _now,
                           onOpenTask: onOpen,
                           onOpenAssignment: onOpen,
-                          onRetry: model.retrying == null
-                              ? (id) => unawaited(model.retryAssignment(id))
-                              : null,
+                          onRetry: (id) => model.retryAssignment(id),
                         ),
                       ),
                     ),

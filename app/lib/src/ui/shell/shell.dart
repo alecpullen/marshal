@@ -340,7 +340,7 @@ class _ShellState extends State<Shell> {
   }
 
   /// The bar the narrow layout needs: the way into the navigation, the place
-  /// it is showing, and the Inbox one tap away.
+  /// it is showing, and Needs you one tap away.
   Widget _appBar() {
     final e = Ember.of(context);
     return Column(
@@ -2067,7 +2067,7 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
       onOpenAssignment: widget.onOpen,
       onRetryAssignment: _handoff == null
           ? null
-          : (id) => unawaited(_handoff!.retryAssignment(id)),
+          : (id) => _handoff!.retryAssignment(id),
       composer: composer == null
           ? null
           : ThreadComposer(model: composer, view: _view),

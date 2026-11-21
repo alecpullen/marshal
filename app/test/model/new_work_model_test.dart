@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -710,6 +711,94 @@ void main() {
     expect(studio.spawns.single.project, '/home/u/studio');
     expect(studio.spawns.single.prompt, 'Do the work');
     expect(model.started?.agentID, 'a-studio');
+    model.dispose();
+  });
+
+  test('a retry of the same draft sends the same request ID', () async {
+    // A spawn that records what was asked before it refuses, then answers:
+    // the shape of a bridge whose first answer was lost.
+    var fail = true;
+    final sent = <SpawnRequest>[];
+    final model = NewWorkModel(
+      defaults: NewWorkDefaults.fromProject(
+        const ProjectStatus(
+          root: '/home/u/marshal',
+          available: true,
+          trust: TrustState.trustTrusted,
+          isolation: 'available',
+        ),
+      ),
+      recentPrompts: () async => RecentPrompts(prompts: const []),
+      issues: (project) async => const [],
+      recipes: () async => const [],
+      spawn: (request) async {
+        sent.add(request);
+        if (fail) throw Exception('refused');
+        return const SpawnResult(agentID: 'a-9');
+      },
+      options: const {},
+    );
+    model.prefill('Fix the login redirect');
+    await model.start();
+    expect(sent, hasLength(1));
+    // An exception says nothing about what the bridge did, so the outcome is
+    // unknown and the draft is kept for the retry.
+    expect(model.outcomeUnknown, isTrue);
+    fail = false;
+    await model.start();
+    expect(sent, hasLength(2));
+    // The second attempt carries the id the first sent, so the bridge
+    // resolves the original request instead of starting a second agent.
+    expect(sent[1].requestID, sent[0].requestID);
+    expect(sent[0].requestID, isNotEmpty);
+    model.dispose();
+  });
+
+  test('an edited draft is different work and gets a new request ID', () async {
+    final routes = _Routes();
+    final model = routes.model();
+    model.prefill('Fix the login redirect');
+    await model.start();
+    model.prefill('Fix the login redirect, and add a test');
+    await model.start();
+    expect(routes.spawns, hasLength(2));
+    expect(routes.spawns[1].prompt, 'Fix the login redirect, and add a test');
+    expect(routes.spawns[1].requestID, isNot(routes.spawns[0].requestID));
+    model.dispose();
+  });
+
+  test('a second Send while the first is in flight starts nothing', () async {
+    var calls = 0;
+    final gate = Completer<SpawnResult>();
+    final model = NewWorkModel(
+      defaults: NewWorkDefaults.fromProject(
+        const ProjectStatus(
+          root: '/home/u/marshal',
+          available: true,
+          trust: TrustState.trustTrusted,
+          isolation: 'available',
+        ),
+      ),
+      recentPrompts: () async => RecentPrompts(prompts: const []),
+      issues: (project) async => const [],
+      recipes: () async => const [],
+      spawn: (request) {
+        calls++;
+        return gate.future;
+      },
+      options: const {},
+    );
+    model.prefill('Fix the login redirect');
+    final first = model.start();
+    expect(model.starting, isTrue);
+    // The in-flight guard refuses a second send instead of racing it.
+    await model.start();
+    expect(calls, 1);
+    gate.complete(const SpawnResult(agentID: 'a-9'));
+    await first;
+    expect(calls, 1);
+    expect(model.starting, isFalse);
+    expect(model.started?.agentID, 'a-9');
     model.dispose();
   });
 }

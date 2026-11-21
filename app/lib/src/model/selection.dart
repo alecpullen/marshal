@@ -232,10 +232,13 @@ class ProjectMemory {
     final cut = kept.indexOf('/');
     if (cut <= 0 || cut == kept.length - 1) return null;
     try {
-      return (
-        host: Uri.decodeComponent(kept.substring(0, cut)),
-        project: Uri.decodeComponent(kept.substring(cut + 1)),
-      );
+      final host = Uri.decodeComponent(kept.substring(0, cut));
+      final project = Uri.decodeComponent(kept.substring(cut + 1));
+      // A root is a canonical directory: nothing ends in a separator, and an
+      // empty host names no machine. What cannot be a selection names none,
+      // so the Studio opens as it would on a first visit.
+      if (host.isEmpty || project.isEmpty || project.endsWith('/')) return null;
+      return (host: host, project: project);
     } on ArgumentError {
       // A malformed escape names no project; the Studio opens as it would on
       // a first visit rather than failing.

@@ -516,10 +516,27 @@ class MarshalModel extends ChangeNotifier {
   String? _readFailure;
   Object? _readError;
   bool _loading = false;
-  bool _reading = false;
   bool _starting = false;
   int _drafts = 0;
   bool _disposed = false;
+
+  /// How many attention reads are in flight: [reading] is true while this is
+  /// not zero, so a read whose answer arrived too late to keep cannot leave
+  /// the screen saying a read still runs.
+  int _attendInFlight = 0;
+
+  /// How many handoff reads are in flight, as [_attendInFlight] is for the
+  /// attention reads.
+  int _assignInFlight = 0;
+
+  /// The answer an attention read may keep: one step up for each read asked.
+  /// An answer keeps only while its read is still the newest, so a late
+  /// answer for one task can never land under another task's name.
+  int _attentionEpoch = 0;
+
+  /// The same bound for the handoff reads, the scoped retries and the stop:
+  /// whichever was asked last owns what the handoff draws.
+  int _assignmentsEpoch = 0;
 
   /// The open task's assignments and the one result it reported back into this
   /// thread (agent-first Studio, task 7).
@@ -528,7 +545,6 @@ class MarshalModel extends ChangeNotifier {
   DateTime? _resultAt;
   DateTime? _assignmentsAt;
   String? _assignmentsFailure;
-  bool _readingAssignments = false;
   String? _retrying;
 
   /// The stop in flight, and what the last one answered with when it failed: a
@@ -560,8 +576,8 @@ class MarshalModel extends ChangeNotifier {
   /// What the last read answered with, when it failed: the bridge's words.
   String? get failure => _readFailure;
 
-  /// Whether the attention read is in flight.
-  bool get reading => _reading;
+  /// Whether an attention read is in flight.
+  bool get reading => _attendInFlight > 0;
 
   /// Whether a first send is creating a task.
   bool get starting => _starting;
@@ -584,8 +600,8 @@ class MarshalModel extends ChangeNotifier {
   /// words. The handoff band then says what it shows may be behind.
   String? get assignmentsFailure => _assignmentsFailure;
 
-  /// Whether the assignments read is in flight.
-  bool get readingAssignments => _readingAssignments;
+  /// Whether an assignments read is in flight.
+  bool get readingAssignments => _assignInFlight > 0;
 
   /// The assignment a scoped retry is running for, or null when none is.
   String? get retrying => _retrying;
@@ -730,8 +746,11 @@ class MarshalModel extends ChangeNotifier {
   /// afresh for a task — a cached all-clear is never served as today's answer.
   Future<void> open({String? taskId, String? draft}) async {
     if (draft != null) {
+      // The draft is the destination now: the task a person came from keeps
+      // its reads to itself, and an answer still in flight cannot land here.
+      _leaveTask();
+      _adoptTask(null);
       _draft = draft;
-      _task = null;
       notifyListeners();
       return;
     }
@@ -744,6 +763,9 @@ class MarshalModel extends ChangeNotifier {
     _loading = true;
     _readFailure = null;
     _readError = null;
+    // The destination is being read again: a read still in flight belongs to
+    // the entry a person is leaving, never to the one that appears.
+    _leaveTask();
     notifyListeners();
     try {
       final answer = await _tasks();
@@ -766,14 +788,9 @@ class MarshalModel extends ChangeNotifier {
       _save?.call(taskKey(host), '');
     }
     _draft = null;
-    _task = chosen;
-    if (chosen == null) {
-      _attentionRead = null;
-      _readAt = null;
-      notifyListeners();
-      return;
-    }
+    _adoptTask(chosen);
     notifyListeners();
+    if (chosen == null) return;
     await _readAttentionFor(chosen);
   }
 
@@ -782,11 +799,13 @@ class MarshalModel extends ChangeNotifier {
   Future<void> selectTask(String id) async {
     final task = _taskNamed(id);
     if (task == null) return;
+    // One task's attention and handoff must never read as another's: the
+    // reads of the task being left stop applying, and what it kept on screen
+    // is set aside until the new task's own reads answer.
+    _leaveTask();
     _draft = null;
-    _task = task;
+    _adoptTask(task);
     _save?.call(taskKey(host), task.id);
-    _attentionRead = null;
-    _readAt = null;
     notifyListeners();
     await _readAttentionFor(task);
   }
@@ -820,16 +839,19 @@ class MarshalModel extends ChangeNotifier {
       final result = await _create(
         CoordinatorCreateRequest(requestID: draft, title: titleOf(message)),
       );
+      if (_disposed) return null;
       final created = MarshalTask.of(result.task);
       if (!_list.any((task) => task.id == created.id)) {
         _list = List.unmodifiable([created, ..._list]);
       }
       _starting = false;
+      // The draft has become a task: the task a person came from keeps its
+      // reads to itself, and whatever is still in flight cannot land under
+      // the new one's name.
+      _leaveTask();
+      _adoptTask(created);
       _draft = null;
-      _task = created;
       _save?.call(taskKey(host), created.id);
-      _attentionRead = null;
-      _readAt = null;
       notifyListeners();
       await _readAttentionFor(created);
       return created;
@@ -850,6 +872,30 @@ class MarshalModel extends ChangeNotifier {
     return line.length <= 72 ? line : '${line.substring(0, 71)}…';
   }
 
+  /// Bumps both read generations: the destination has moved to another task,
+  /// or to the entry or a draft, so a read still in flight for the one a
+  /// person left can no longer land.
+  void _leaveTask() {
+    _attentionEpoch++;
+    _assignmentsEpoch++;
+  }
+
+  /// Sets the destination's task and leaves the previous task's reads behind:
+  /// one task's attention and handoff must never read as another's. Null is
+  /// the entry or a draft, which hold no conversation and no reads.
+  void _adoptTask(MarshalTask? task) {
+    _task = task;
+    _attentionRead = null;
+    _readAt = null;
+    _readFailure = null;
+    _readError = null;
+    _assignmentRows = const [];
+    _resultText = null;
+    _resultAt = null;
+    _assignmentsAt = null;
+    _assignmentsFailure = null;
+  }
+
   MarshalTask? _taskNamed(String id) {
     for (final task in _list) {
       if (task.id == id) return task;
@@ -863,24 +909,30 @@ class MarshalModel extends ChangeNotifier {
   /// answer this build could not refresh is never an all-clear, and its age is
   /// what the screen offers instead.
   Future<void> _readAttentionFor(MarshalTask task) async {
-    _reading = true;
+    final seq = ++_attentionEpoch;
+    _attendInFlight++;
     notifyListeners();
     try {
-      final attention = await _attention(task.id);
-      if (_disposed) return;
-      _attentionRead = _project(attention);
-      _readAt = _now();
-      _readFailure = null;
-      _readError = null;
-    } catch (error) {
-      if (_disposed) return;
-      _readFailure = describeFailure(error);
-      _readError = error;
+      try {
+        final attention = await _attention(task.id);
+        if (_disposed || seq != _attentionEpoch) return;
+        _attentionRead = _project(attention);
+        _readAt = _now();
+        _readFailure = null;
+        _readError = null;
+      } catch (error) {
+        if (_disposed || seq != _attentionEpoch) return;
+        _readFailure = describeFailure(error);
+        _readError = error;
+      }
+    } finally {
+      _attendInFlight--;
+      if (!_disposed && seq == _attentionEpoch) notifyListeners();
     }
-    _reading = false;
-    notifyListeners();
     // The handoff this task dispatched, read beside the attention result: the
     // destination draws both, and neither is served from a cache (task 7).
+    // A stale read was dropped above, so only the newest read chains.
+    if (_disposed || seq != _attentionEpoch) return;
     await _readAssignmentsFor(task);
   }
 
@@ -894,20 +946,24 @@ class MarshalModel extends ChangeNotifier {
   Future<void> _readAssignmentsFor(MarshalTask task) async {
     final read = _assignments;
     if (read == null) return;
-    _readingAssignments = true;
+    final seq = ++_assignmentsEpoch;
+    _assignInFlight++;
     notifyListeners();
     try {
-      final answer = await read(task.id);
-      if (_disposed) return;
-      _applyAssignmentList(answer);
-      _assignmentsFailure = null;
-      _assignmentsAt = _now();
-    } catch (error) {
-      if (_disposed) return;
-      _assignmentsFailure = describeFailure(error);
+      try {
+        final answer = await read(task.id);
+        if (_disposed || seq != _assignmentsEpoch) return;
+        _applyAssignmentList(answer);
+        _assignmentsFailure = null;
+        _assignmentsAt = _now();
+      } catch (error) {
+        if (_disposed || seq != _assignmentsEpoch) return;
+        _assignmentsFailure = describeFailure(error);
+      }
+    } finally {
+      _assignInFlight--;
+      if (!_disposed && seq == _assignmentsEpoch) notifyListeners();
     }
-    _readingAssignments = false;
-    notifyListeners();
   }
 
   /// Keeps one assignment read: the rows, and the result it carried.
@@ -970,19 +1026,25 @@ class MarshalModel extends ChangeNotifier {
     final task = _task;
     if (retry == null || task == null || _retrying != null) return;
     _retrying = assignmentId;
+    // The retry's answer is the settled list (task 7), the newest word on the
+    // handoff: a read asked before it does not overwrite what it reports.
+    final seq = ++_assignmentsEpoch;
     notifyListeners();
     try {
-      final answer = await retry(task.id, assignmentId);
-      if (_disposed) return;
-      _applyAssignmentList(answer);
-      _assignmentsFailure = null;
-      _assignmentsAt = _now();
-    } catch (error) {
-      if (_disposed) return;
-      _assignmentsFailure = describeFailure(error);
+      try {
+        final answer = await retry(task.id, assignmentId);
+        if (_disposed || seq != _assignmentsEpoch) return;
+        _applyAssignmentList(answer);
+        _assignmentsFailure = null;
+        _assignmentsAt = _now();
+      } catch (error) {
+        if (_disposed || seq != _assignmentsEpoch) return;
+        _assignmentsFailure = describeFailure(error);
+      }
+    } finally {
+      _retrying = null;
+      if (!_disposed && seq == _assignmentsEpoch) notifyListeners();
     }
-    _retrying = null;
-    notifyListeners();
   }
 
   /// Stops the open task at the requested scope (agent-first Studio, task 8).
@@ -995,22 +1057,31 @@ class MarshalModel extends ChangeNotifier {
   Future<void> stopTask() async {
     final stop = _stop;
     final task = _task;
-    if (stop == null || task == null || _stopping || task.state == MarshalTaskState.stopped) {
+    if (stop == null ||
+        task == null ||
+        _stopping ||
+        task.state == MarshalTaskState.stopped) {
       return;
     }
     _stopping = true;
     _stopFailure = null;
+    // The stop's answer is the settled state (task 8), the newest word on this
+    // task's handoff: a read asked before it does not overwrite what it left.
+    final seq = ++_assignmentsEpoch;
     notifyListeners();
     try {
-      final answer = await stop(task.id);
-      if (_disposed) return;
-      _applyStopResult(answer);
-    } catch (error) {
-      if (_disposed) return;
-      _stopFailure = describeFailure(error);
+      try {
+        final answer = await stop(task.id);
+        if (_disposed || seq != _assignmentsEpoch) return;
+        _applyStopResult(answer);
+      } catch (error) {
+        if (_disposed || seq != _assignmentsEpoch) return;
+        _stopFailure = describeFailure(error);
+      }
+    } finally {
+      _stopping = false;
+      if (!_disposed && seq == _assignmentsEpoch) notifyListeners();
     }
-    _stopping = false;
-    notifyListeners();
   }
 
   /// Keeps one stop answer: the task as the daemon left it, the assignments it
@@ -1232,6 +1303,11 @@ class SourceHandoffModel extends ChangeNotifier {
   bool _disposed = false;
   bool _stale = false;
 
+  /// The answer a read or a retry may keep: one step up for each one asked,
+  /// and it keeps only while its ask is still the newest, so a late view can
+  /// never bury a retry that was made after it.
+  int _viewEpoch = 0;
+
   /// The newest source view this model read. It is kept so a read that fails can
   /// redraw the same handoff marked as possibly behind, rather than losing it.
   CoordinatorSourceView? _view;
@@ -1258,26 +1334,32 @@ class SourceHandoffModel extends ChangeNotifier {
   Future<void> _load() async {
     if (_loading) return;
     _loading = true;
+    // The read starting now is the newest word on this handoff; a retry asked
+    // while it runs is newer still, and its answer is the one that stays.
+    final seq = ++_viewEpoch;
     notifyListeners();
     try {
-      final view = await _read(projectId, threadId);
-      if (_disposed) return;
-      _apply(view);
-      _failure = null;
-      _stale = false;
-    } catch (error) {
-      if (_disposed) return;
-      _failure = describeFailure(error);
-      // A read that failed keeps what it had and says it may be behind: a
-      // handoff nobody could re-read is not a handoff that ended.
-      final last = _view;
-      if (last != null) {
-        _stale = true;
-        _apply(last);
+      try {
+        final view = await _read(projectId, threadId);
+        if (_disposed || seq != _viewEpoch) return;
+        _apply(view);
+        _failure = null;
+        _stale = false;
+      } catch (error) {
+        if (_disposed || seq != _viewEpoch) return;
+        _failure = describeFailure(error);
+        // A read that failed keeps what it had and says it may be behind: a
+        // handoff nobody could re-read is not a handoff that ended.
+        final last = _view;
+        if (last != null) {
+          _stale = true;
+          _apply(last);
+        }
       }
+    } finally {
+      _loading = false;
+      if (!_disposed && seq == _viewEpoch) notifyListeners();
     }
-    _loading = false;
-    notifyListeners();
   }
 
   /// Keeps one source view: the task, its assignments and the result it
@@ -1312,28 +1394,43 @@ class SourceHandoffModel extends ChangeNotifier {
     final retry = _retry;
     final current = _handoff;
     if (retry == null || current == null) return;
+    // The retry's answer is the newest word on this handoff (task 7): a read
+    // asked before it does not overwrite what it reports.
+    final seq = ++_viewEpoch;
     try {
-      final answer = await retry(current.taskId, assignmentId);
-      if (_disposed) return;
-      _apply(
-        CoordinatorSourceView(
-          host: host,
-          task: _taskOf(answer),
-          assignments: answer.assignments,
-          delivery: answer.delivery,
-        ),
-      );
-      _failure = null;
-      _stale = false;
-    } catch (error) {
-      if (_disposed) return;
-      _failure = describeFailure(error);
+      try {
+        final answer = await retry(current.taskId, assignmentId);
+        if (_disposed || seq != _viewEpoch) return;
+        _apply(_sourceViewAfter(answer));
+        _failure = null;
+        _stale = false;
+      } catch (error) {
+        if (_disposed || seq != _viewEpoch) return;
+        _failure = describeFailure(error);
+      }
+    } finally {
+      if (!_disposed && seq == _viewEpoch) notifyListeners();
     }
-    notifyListeners();
   }
 
-  /// The task a retried assignment list belongs to: the one the handoff already
-  /// names, since a retry never moves a task.
+  /// The source view a retried assignment list leaves: the task the source
+  /// view named — a retry never moves the task, and building one without its
+  /// title would rename it to nothing — with the assignments the retry
+  /// answered and the delivery it carried.
+  CoordinatorSourceView _sourceViewAfter(CoordinatorAssignmentList answer) {
+    final last = _view;
+    return CoordinatorSourceView(
+      host: last?.host ?? host,
+      task: last?.task ?? _taskOf(answer),
+      assignments: answer.assignments,
+      delivery: answer.delivery,
+    );
+  }
+
+  /// The task a retried assignment list names, when no source read kept one:
+  /// the retry answer carries only the id, so this invents nothing else. It
+  /// is the fallback of [_sourceViewAfter], which prefers the task the source
+  /// view read — where the handoff's title comes from.
   CoordinatorTask _taskOf(CoordinatorAssignmentList answer) =>
       CoordinatorTask(
         id: answer.taskID,

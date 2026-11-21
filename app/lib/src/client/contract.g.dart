@@ -13829,6 +13829,7 @@ class SessionRow {
 class SpawnRequest {
   const SpawnRequest({
     required this.project,
+    this.requestID,
     this.name,
     this.mode,
     this.auto,
@@ -13841,6 +13842,14 @@ class SpawnRequest {
   });
 
   final String project;
+  /// RequestID is the caller's own idempotency key for a first send
+  /// (agent-first Studio, task 3). A caller that names one is promising that
+  /// every retry of the same content carries the same value, so a lost
+  /// answer or a second press resolves to the agent the request already
+  /// started instead of starting another. It is scoped to the project, and
+  /// reusing it for different content is refused. Empty is today's
+  /// behaviour: every request spawns.
+  final String? requestID;
   final String? name;
   final String? mode;
   /// Auto accompanies Mode as a starting default. It is a pointer so an
@@ -13858,6 +13867,7 @@ class SpawnRequest {
   factory SpawnRequest.fromJson(Map<String, dynamic> json) {
     return SpawnRequest(
       project: json['project'] as String,
+      requestID: json['requestId'] as String?,
       name: json['name'] as String?,
       mode: json['mode'] as String?,
       auto: json['auto'] as bool?,
@@ -13873,6 +13883,9 @@ class SpawnRequest {
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{};
     json['project'] = project;
+    if (requestID != null) {
+      json['requestId'] = requestID;
+    }
     if (name != null) {
       json['name'] = name;
     }

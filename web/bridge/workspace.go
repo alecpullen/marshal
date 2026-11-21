@@ -112,6 +112,12 @@ type Agent struct {
 	SocketSubpath string `json:"socketSubpath,omitempty"`
 	// Recipe names the recipe this agent was started from (v11).
 	Recipe string `json:"recipe,omitempty"`
+	// SpawnRequestID is the caller's own idempotency key for the first send
+	// that started this agent (agent-first Studio, task 3). It is persisted
+	// with the agent so a retried request, or one that arrives after a
+	// restart, resolves to the agent the original request started rather
+	// than starting a second one. Empty for every agent started without one.
+	SpawnRequestID string `json:"spawnRequestId,omitempty"`
 }
 
 // AgentWorkspace is contract.AgentWorkspace; see that declaration.
@@ -210,6 +216,49 @@ type PendingSpawn struct {
 	IssueURL    string `json:"issueUrl,omitempty"`
 }
 
+// SpawnRequestClaim is one caller-generated first-send request ID and the
+// agent it resolved to (agent-first Studio, task 3).
+//
+// It is the durable half of exactly-once delivery: the claim is written
+// before the spawn has any side effect, so a request that is retried — after
+// a lost answer, a second press, or a daemon restart — finds the claim and
+// resolves to the agent it names instead of starting another. The agent ID is
+// chosen at claim time and handed to the spawn, so at most one agent can ever
+// carry a request ID, even when the first attempt died mid-spawn.
+type SpawnRequestClaim struct {
+	// RequestID is the caller's own key, unique within Scope.
+	RequestID string `json:"requestId"`
+	// Scope is the caller/project the request was made in: the origin and the
+	// project root. The same key in another project is another request.
+	Scope string `json:"scope"`
+	// Digest is the canonical digest of the payload the request named. A
+	// claim replayed with a different digest is a conflict, not a retry.
+	Digest string `json:"digest"`
+	// AgentID is the agent this request started, chosen when the claim was
+	// taken and persisted with the spawn.
+	AgentID string `json:"agentId"`
+	// Prompted records that the request's first prompt was dispatched to the
+	// agent. A replay whose claim is not prompted yet dispatches it, so a
+	// daemon that died between the spawn and the first turn does not lose the
+	// message; one that is prompted never sends it again.
+	Prompted  bool      `json:"prompted,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// spawnClaimKey is one claim's collection key: the scope and the request ID.
+// The scope already names the project, so two projects cannot collide.
+func spawnClaimKey(scope, requestID string) string { return scope + "\x00" + requestID }
+
+// spawnRequestScope is the caller/project a request ID is scoped to. The
+// caller is its origin (the UI acting directly, or a client of another kind),
+// and the project is the canonical root the spawn runs in.
+func spawnRequestScope(origin, projectRoot string) string {
+	if origin == "" {
+		origin = OriginUI
+	}
+	return origin + "\x00" + filepath.Clean(projectRoot)
+}
+
 type workspaceFile struct {
 	Version         int              `json:"version"`
 	Projects        []string         `json:"projects"`
@@ -218,6 +267,10 @@ type workspaceFile struct {
 	Clients         []MCPClient      `json:"clients,omitempty"`
 	Pending         []PendingSpawn   `json:"pending,omitempty"`
 	SubmittedIssues map[string][]int `json:"submittedIssues,omitempty"`
+	// SpawnClaims are the first-send request IDs that already resolved to an
+	// agent. They are optional: a file written before they existed loads with
+	// none, so a v12 file simply has no claims and no format change is owed.
+	SpawnClaims []SpawnRequestClaim `json:"spawnClaims,omitempty"`
 	// MarshalFactoryDefaults are the built-in factory access defaults, one
 	// record per project, keyed by project ID. They sit beside the clients
 	// because they are the same kind of record — an actor's authority — held
@@ -322,7 +375,12 @@ type Workspace struct {
 	// pullAsks maps a pull record id to the ask the Inbox still shows about
 	// its fix (v12). One ask per pull request: a new dispatch replaces it.
 	pullAsks map[string]contract.PullAsk
-	pinned   []string
+	// spawnClaims maps a caller's first-send request ID, within its scope, to
+	// the agent it resolved to (agent-first Studio, task 3). It is keyed by
+	// spawnClaimKey because a request ID is only unique within one caller and
+	// project.
+	spawnClaims map[string]SpawnRequestClaim
+	pinned      []string
 }
 
 func NewWorkspace(path string) *Workspace {
@@ -345,6 +403,7 @@ func NewWorkspace(path string) *Workspace {
 		statusLinks:       make(map[string]StatusLink),
 		pulls:             make(map[string]contract.PullRecord),
 		pullAsks:          make(map[string]contract.PullAsk),
+		spawnClaims:       make(map[string]SpawnRequestClaim),
 	}
 }
 
@@ -446,6 +505,16 @@ func (w *Workspace) Load() (string, error) {
 	w.pullAsks = make(map[string]contract.PullAsk, len(f.PullAsks))
 	for _, a := range f.PullAsks {
 		w.pullAsks[a.Pull] = a
+	}
+	// A claim without its request ID, scope or agent says nothing, so it is
+	// skipped rather than kept as a key that could never resolve. An older
+	// file has no claims at all and loads with none.
+	w.spawnClaims = make(map[string]SpawnRequestClaim, len(f.SpawnClaims))
+	for _, c := range f.SpawnClaims {
+		if c.RequestID == "" || c.Scope == "" || c.AgentID == "" {
+			continue
+		}
+		w.spawnClaims[spawnClaimKey(c.Scope, c.RequestID)] = c
 	}
 	w.pinned = make([]string, 0, len(f.Pinned))
 	seenPins := make(map[string]bool, len(f.Pinned))
@@ -719,6 +788,17 @@ func (w *Workspace) save() error {
 		f.PullAsks = append(f.PullAsks, a)
 	}
 	sort.Slice(f.PullAsks, func(i, j int) bool { return f.PullAsks[i].Pull < f.PullAsks[j].Pull })
+	// Claims are sorted by scope and request ID, so an unchanged collection
+	// writes the same bytes on every save.
+	for _, c := range w.spawnClaims {
+		f.SpawnClaims = append(f.SpawnClaims, c)
+	}
+	sort.Slice(f.SpawnClaims, func(i, j int) bool {
+		if f.SpawnClaims[i].Scope != f.SpawnClaims[j].Scope {
+			return f.SpawnClaims[i].Scope < f.SpawnClaims[j].Scope
+		}
+		return f.SpawnClaims[i].RequestID < f.SpawnClaims[j].RequestID
+	})
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode workspace: %w", err)
@@ -1604,6 +1684,96 @@ func (w *Workspace) PendingByID(id string) (PendingSpawn, bool) {
 	defer w.mu.Unlock()
 	p, ok := w.pending[id]
 	return p, ok
+}
+
+// ErrSpawnRequestConflict is one request ID reused for a different payload.
+var ErrSpawnRequestConflict = errors.New("bridge: spawn request id reused with a different payload")
+
+// ClaimSpawnRequest records a caller's first-send request ID durably, before
+// the spawn has any side effect, and reports whether this call created it.
+//
+// The first caller's claim names the agent the request will start, so the
+// agent ID is settled before anything runs: a retry, a second press or a
+// request that arrives after a restart resolves to that one agent instead of
+// starting another, even if the first attempt died mid-spawn. A claim replayed
+// with the same digest is the same request; with a different one it is a
+// conflict, because the same ID then means two different asks.
+func (w *Workspace) ClaimSpawnRequest(scope, requestID, digest, agentID string) (SpawnRequestClaim, bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if scope == "" || requestID == "" {
+		return SpawnRequestClaim{}, false, errors.New("bridge: a spawn claim needs a scope and a request id")
+	}
+	if digest == "" || agentID == "" {
+		return SpawnRequestClaim{}, false, errors.New("bridge: a spawn claim needs a payload digest and an agent id")
+	}
+	key := spawnClaimKey(scope, requestID)
+	if existing, ok := w.spawnClaims[key]; ok {
+		if existing.Digest != digest {
+			return SpawnRequestClaim{}, false, fmt.Errorf("%w: %s", ErrSpawnRequestConflict, requestID)
+		}
+		return existing, false, nil
+	}
+	claim := SpawnRequestClaim{RequestID: requestID, Scope: scope, Digest: digest, AgentID: agentID, CreatedAt: time.Now().UTC()}
+	w.spawnClaims[key] = claim
+	if err := w.save(); err != nil {
+		delete(w.spawnClaims, key)
+		return SpawnRequestClaim{}, false, err
+	}
+	return claim, true, nil
+}
+
+// SpawnClaim returns the claim one request ID holds in a scope.
+func (w *Workspace) SpawnClaim(scope, requestID string) (SpawnRequestClaim, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	claim, ok := w.spawnClaims[spawnClaimKey(scope, requestID)]
+	return claim, ok
+}
+
+// MarkSpawnClaimPrompted records that a claim's first prompt has been handed
+// to its agent, so a replay never sends it twice. It writes before the prompt
+// is dispatched: one that is lost to a crash is recovered from the thread,
+// where a duplicate turn would be a second instruction nobody gave.
+func (w *Workspace) MarkSpawnClaimPrompted(scope, requestID string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := spawnClaimKey(scope, requestID)
+	claim, ok := w.spawnClaims[key]
+	if !ok {
+		return fmt.Errorf("bridge: no spawn claim for %s", requestID)
+	}
+	if claim.Prompted {
+		return nil
+	}
+	previous := claim
+	claim.Prompted = true
+	w.spawnClaims[key] = claim
+	if err := w.save(); err != nil {
+		w.spawnClaims[key] = previous
+		return err
+	}
+	return nil
+}
+
+// ReleaseSpawnClaim forgets a claim whose spawn definitely started nothing,
+// so an edited draft retried under the same ID is not refused as a conflict
+// with a request that never happened. Releasing an absent claim is not an
+// error.
+func (w *Workspace) ReleaseSpawnClaim(scope, requestID string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := spawnClaimKey(scope, requestID)
+	claim, ok := w.spawnClaims[key]
+	if !ok {
+		return nil
+	}
+	delete(w.spawnClaims, key)
+	if err := w.save(); err != nil {
+		w.spawnClaims[key] = claim
+		return err
+	}
+	return nil
 }
 
 // SweepExpired drops pending spawns past their deadline and reports how

@@ -42,6 +42,7 @@ import 'src/model/route_translation.dart';
 import 'src/model/schedules_model.dart';
 import 'src/model/secrets_model.dart';
 import 'src/model/section_model.dart';
+import 'src/model/selection.dart' show ProjectMemory;
 import 'src/model/share_model.dart';
 import 'src/model/signals_store.dart';
 import 'src/model/stack_store.dart';
@@ -104,6 +105,15 @@ Future<void> main() async {
     density: preferenceStore?.read('density'),
     save: preferenceStore?.write,
   );
+  // What this window remembers about where a person was working (agent-first
+  // Studio, task 2): the project selected last, and the thread read there
+  // last, per host and project. It is this device's, kept through the same
+  // store appearance and density use, so a reload or a reopened window comes
+  // back to the conversation it left.
+  final memory = ProjectMemory(
+    read: preferenceStore?.read,
+    save: preferenceStore?.write,
+  );
   // Every host's tripped watches, blocked requests and held drafts (spec D4).
   // It is built after the inbox so an answer can ask for a re-read of the host
   // it answered on, and its reads are what the Overview's card and the inbox's
@@ -161,6 +171,7 @@ Future<void> main() async {
           // Svelte Studio, or this build's own path (F8 decision 2). A
           // desktop has no page, so its window opens the Overview.
           startPage: kIsWeb ? startPlaceFromPage(Uri.base) : null,
+          memory: memory,
           automationsFor: sections.automations,
           libraryFor: sections.library,
           settingsFor: sections.settings,

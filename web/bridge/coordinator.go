@@ -474,6 +474,8 @@ func writeCoordinatorError(w http.ResponseWriter, err error) {
 		status, code = http.StatusConflict, "conflict"
 	case errors.Is(err, ErrCoordinatorUnavailable):
 		status, code = http.StatusServiceUnavailable, "unavailable"
+	case errors.Is(err, ErrCoordinatorTooLarge):
+		status, code = http.StatusInsufficientStorage, "store_full"
 	case errors.Is(err, errCoordinatorUnknownProject):
 		status, code = http.StatusBadRequest, "unknown_project"
 	}

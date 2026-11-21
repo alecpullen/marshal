@@ -47,10 +47,25 @@ const (
 	// document loads with none of what it predates.
 	coordinatorVersion = 3
 	// coordinatorDocumentLimit bounds the document this build will read, so a
-	// corrupt or hostile file cannot allocate without limit.
+	// corrupt or hostile file cannot allocate without limit. It is also the
+	// bound a mutation is refused at (see persistLocked): a document this build
+	// could not read back is never written, so a full store keeps serving what
+	// it has instead of turning every route into a 503 on the next start.
 	coordinatorDocumentLimit = 8 << 20
-	coordinatorFileMode      = 0o600
-	coordinatorDirMode       = 0o700
+	// Per-field bounds on what a caller can store. Every mutation rewrites the
+	// whole document, so one unbounded title or instruction would make each
+	// write cost whatever the caller chose to send.
+	coordinatorTitleLimit       = 200
+	coordinatorInstructionLimit = 16 << 10
+	coordinatorOutcomeLimit     = 4 << 10
+	coordinatorFindingsLimit    = 32 << 10
+	// coordinatorRequestIDLimit bounds a create's idempotency key, as
+	// validSpawnRequestID bounds the spawn path's: it is stored, compared and
+	// echoed in a refusal, so it is short, printable and space-free, and a
+	// hostile caller cannot grow the store with the key alone.
+	coordinatorRequestIDLimit = 128
+	coordinatorFileMode       = 0o600
+	coordinatorDirMode        = 0o700
 )
 
 // Coordinator store errors. Each maps onto one HTTP status in
@@ -65,6 +80,10 @@ var (
 	// ErrCoordinatorInput is a request this store refuses before it writes:
 	// a missing request id, or a scope that is not a canonical project list.
 	ErrCoordinatorInput = errors.New("bridge: invalid coordinator request")
+	// ErrCoordinatorTooLarge is a mutation refused because the document it
+	// would write has outgrown what this build reads back. Nothing is written,
+	// so the store keeps answering with what it already holds.
+	ErrCoordinatorTooLarge = errors.New("bridge: coordinator store is full")
 )
 
 // coordinatorRecord is one task as the store holds it.
@@ -345,6 +364,8 @@ func canonicalCoordinatorTargets(targets []contract.CoordinatorAssignTarget) ([]
 			return nil, fmt.Errorf("%w: linking a thread needs the instruction it should be observed for", ErrCoordinatorInput)
 		case threadID == "" && instruction == "":
 			return nil, fmt.Errorf("%w: a target names an instruction", ErrCoordinatorInput)
+		case len(instruction) > coordinatorInstructionLimit:
+			return nil, fmt.Errorf("%w: a target's instruction is longer than %d characters", ErrCoordinatorInput, coordinatorInstructionLimit)
 		}
 		out = append(out, contract.CoordinatorAssignTarget{
 			ProjectID:   projectID,
@@ -375,6 +396,22 @@ func canonicalCoordinatorProjects(projects []string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// validCoordinatorRequestID reports whether id is usable as a create's
+// idempotency key: non-empty, printable, space-free and short. It is stored,
+// compared and echoed in a conflict, so a hostile caller must not be able to
+// grow the store with the key alone or put control characters into it.
+func validCoordinatorRequestID(id string) bool {
+	if id == "" || len(id) > coordinatorRequestIDLimit {
+		return false
+	}
+	for _, r := range id {
+		if r <= ' ' || r == 0x7f || r > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 // validCoordinatorSource checks an optional source reference.
@@ -475,8 +512,8 @@ func (s *coordinatorStore) Create(req contract.CoordinatorCreateRequest) (contra
 		return contract.CoordinatorTask{}, false, err
 	}
 	requestID := strings.TrimSpace(req.RequestID)
-	if requestID == "" {
-		return contract.CoordinatorTask{}, false, fmt.Errorf("%w: requestId is required", ErrCoordinatorInput)
+	if !validCoordinatorRequestID(requestID) {
+		return contract.CoordinatorTask{}, false, fmt.Errorf("%w: requestId is required, printable and at most %d characters", ErrCoordinatorInput, coordinatorRequestIDLimit)
 	}
 	if err := validCoordinatorSource(req.Source); err != nil {
 		return contract.CoordinatorTask{}, false, err
@@ -486,6 +523,9 @@ func (s *coordinatorStore) Create(req contract.CoordinatorCreateRequest) (contra
 		return contract.CoordinatorTask{}, false, err
 	}
 	title := strings.TrimSpace(req.Title)
+	if len(title) > coordinatorTitleLimit {
+		return contract.CoordinatorTask{}, false, fmt.Errorf("%w: title is longer than %d characters", ErrCoordinatorInput, coordinatorTitleLimit)
+	}
 	digest := coordinatorDigest(title, req.Source, projects)
 	if existing, ok := s.requests[requestID]; ok {
 		rec, held := s.tasks[existing]
@@ -921,6 +961,12 @@ func (s *coordinatorStore) persistLocked(mutate func(doc *coordinatorDocument) b
 	data, err := json.Marshal(doc)
 	if err != nil {
 		return fmt.Errorf("%w: encode coordinator tasks: %v", ErrCoordinatorUnavailable, err)
+	}
+	if len(data) > coordinatorDocumentLimit {
+		// Refuse the mutation rather than write a document this build could no
+		// longer read: the store keeps serving what it has, where writing it
+		// would turn every route — and every restart — into a 503.
+		return ErrCoordinatorTooLarge
 	}
 	if err := os.MkdirAll(s.dir, coordinatorDirMode); err != nil {
 		return fmt.Errorf("%w: create coordinator directory: %v", ErrCoordinatorUnavailable, err)

@@ -700,11 +700,14 @@ func (s *Server) coordinatorResolveAssignment(ctx context.Context, task contract
 		s.fleet.deliverInstruction(agentID, rec.Assignment.Instruction)
 	}
 	if agentID == "" {
-		reason := "the worker could not be started"
+		// The reason is shown in the handoff band and kept in the store, and a
+		// spawn's error carries host paths, repository URLs and credential
+		// references. The person gets a fixed word; the detail is logged for
+		// the operator, on this machine.
 		if serr != nil {
-			reason += ": " + serr.Error()
+			slog.Default().Warn("webbridge: coordinator worker did not start", "task", task.ID, "assignment", rec.Assignment.ID, "err", serr)
 		}
-		return fail(contract.CoordinatorFailureUnavailable, reason)
+		return fail(contract.CoordinatorFailureUnavailable, "the worker could not be started")
 	}
 	// The worker exists; its state is written from the same evidence a later
 	// read would see, so running means acknowledged and nothing else.
@@ -1381,7 +1384,11 @@ func coordinatorMatchProject(catalog map[string]string, name string) (string, bo
 	case 0:
 		return "", false
 	case 1:
-		return partial[0], false
+		// One partial match is still a guess: "the CLI" contains one project's
+		// name, and under standing authority a guess would start work there
+		// with no confirmation. It is answered as a question, and the person
+		// picks the project the words meant.
+		return partial[0], true
 	default:
 		return "", true
 	}

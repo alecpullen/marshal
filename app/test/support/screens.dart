@@ -222,7 +222,7 @@ NavModel shellNavFor(Place place) => NavModel(
     ),
     NavPlace(
       kind: PlaceKind.inbox,
-      label: 'Inbox',
+      label: 'Needs you',
       count: 3,
       active: place.kind == PlaceKind.inbox,
     ),

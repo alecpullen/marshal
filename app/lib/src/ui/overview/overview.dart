@@ -225,7 +225,7 @@ class Overview extends StatelessWidget {
   }
 
   /// What is waiting: the cards the model hands over, the true total beside
-  /// them, and the Inbox one link away.
+  /// them, and Needs you one link away.
   List<Widget> _needsYou(BuildContext context) {
     final asks = overview.needsYou;
     final more = overview.needsYouTotal - asks.length;
@@ -234,7 +234,7 @@ class Overview extends StatelessWidget {
         'Needs you',
         count: overview.needsYouTotal,
         link: LabelLink(
-          'Open inbox',
+          'Open Needs you',
           onTap: _open(const Place(PlaceKind.inbox)) ?? () {},
         ),
       ),
@@ -243,7 +243,7 @@ class Overview extends StatelessWidget {
         StateMessage.empty(
           message: 'Nothing is waiting on you.',
           action: StateAction(
-            'Open the inbox',
+            'Open the Needs you queue',
             onTap: _open(const Place(PlaceKind.inbox)) ?? () {},
           ),
         )
@@ -262,7 +262,7 @@ class Overview extends StatelessWidget {
         ],
       if (more > 0)
         Text(
-          '$more more in the inbox.',
+          '$more more in Needs you.',
           style: Ember.of(context).small.tint(Ember.of(context).muted),
         ),
     ];

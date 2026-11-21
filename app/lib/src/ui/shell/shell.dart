@@ -342,7 +342,7 @@ class _ShellState extends State<Shell> {
                 ],
                 IconBtn(
                   Glyphs.tray,
-                  tooltip: 'Inbox',
+                  tooltip: 'Needs you',
                   onTap: () => _leave(
                     () => widget.onSelect(const Place(PlaceKind.inbox)),
                   ),

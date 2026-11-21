@@ -27,7 +27,10 @@ String placeTitle(Place place, NavModel nav) => _about(place, nav).$1;
         'The Overview arrives with the next step of this phase',
       );
     case PlaceKind.inbox:
-      return ('Inbox', 'The Inbox arrives with the next step of this phase');
+      return (
+        'Needs you',
+        'The Needs you screen arrives with the next step of this phase',
+      );
     case PlaceKind.pulls:
       return (
         'Pull requests',

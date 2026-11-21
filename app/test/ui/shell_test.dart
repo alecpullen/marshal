@@ -496,9 +496,12 @@ void main() {
     );
 
     // Back returns wherever the person came from, not only where the Studio
-    // opened: from the Inbox, it goes back to the Inbox.
+    // opened: from Needs you, it goes back to Needs you.
     await tester.tap(
-      find.descendant(of: find.byType(Sidebar), matching: find.text('Inbox')),
+      find.descendant(
+        of: find.byType(Sidebar),
+        matching: find.text('Needs you'),
+      ),
     );
     await tester.pump();
     await tester.tap(
@@ -521,7 +524,7 @@ void main() {
           )
           .where((row) => row.selected)
           .map((row) => row.label),
-      ['Inbox'],
+      ['Needs you'],
     );
   });
 
@@ -531,7 +534,7 @@ void main() {
       EmberApp(brightness: Brightness.light, home: shell),
     );
 
-    await tester.tap(find.text('Inbox'));
+    await tester.tap(find.text('Needs you'));
     await tester.pump();
 
     expect(opened, [const Place(PlaceKind.inbox)]);
@@ -673,14 +676,14 @@ void main() {
 
     // The navigation is behind the app bar's button, not beside the content.
     expect(find.text('PROJECTS'), findsNothing);
-    expect(find.text('Inbox'), findsNothing);
+    expect(find.text('Needs you'), findsNothing);
 
     await tester.tap(find.byTooltip('Projects and threads').first);
     await tester.pump();
     expect(find.text('PROJECTS'), findsOneWidget);
 
     // Choosing a place closes the panel and opens it.
-    await tester.tap(find.text('Inbox'));
+    await tester.tap(find.text('Needs you'));
     await tester.pump();
     expect(opened, [const Place(PlaceKind.inbox)]);
     expect(find.text('PROJECTS'), findsNothing);
@@ -822,7 +825,7 @@ void main() {
     // drawn at all.
     expect(find.text('PROJECTS'), findsNothing);
     expect(find.text('PLACES'), findsNothing);
-    expect(find.text('Inbox'), findsNothing);
+    expect(find.text('Needs you'), findsNothing);
   });
 
   testWidgets('Enter opens the first match', (tester) async {

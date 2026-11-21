@@ -102,6 +102,14 @@ value is never shown after it is written.
    - Connections: forges with the credential's kind and what it permits,
      and model providers with health. An SSH-only forge credential says
      plainly that it can push but cannot open pull requests or read checks.
+     The section is also where a connection is made, not only read: a
+     repository and a provider are added from the foot of the list; a
+     repository's credential is chosen or created in its detail (a pasted
+     token is stored in the bridge's secrets as `vault:git/<id>`, before the
+     credential that names it); a provider's key is set in its detail; and
+     removing either confirms, naming what is lost. A row leads with what is
+     wrong — "No credential — cannot push" — and a note above the rows counts
+     them. Tokens and keys go one way: nothing reads them back.
    - Models and routing: role to model, presets, budgets and what happens
      at the cap. A note states these save to the user's global config.
    - Secrets: references and where each is used; values write-only.

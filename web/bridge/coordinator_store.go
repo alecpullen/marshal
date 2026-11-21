@@ -41,8 +41,10 @@ const (
 	// coordinatorTasksName is the store's one document.
 	coordinatorTasksName = "tasks.json"
 	// coordinatorVersion is the document's format. A document written by a
-	// newer build is refused rather than guessed at.
-	coordinatorVersion = 1
+	// newer build is refused rather than guessed at. Version 2 added
+	// assignments and their dispatch identity; a version 1 document holds tasks
+	// only and loads with no assignments.
+	coordinatorVersion = 2
 	// coordinatorDocumentLimit bounds the document this build will read, so a
 	// corrupt or hostile file cannot allocate without limit.
 	coordinatorDocumentLimit = 8 << 20
@@ -78,10 +80,53 @@ type coordinatorRecord struct {
 	Digest    string `json:"digest,omitempty"`
 }
 
+// coordinatorAssignmentRecord is one assignment as the store holds it.
+//
+// The assignment's own ID is its dispatch identity: it is minted and written
+// here before the dispatch has any side effect, and the pending submission, the
+// spawn claim and the worker's agent record all carry it. That is what makes a
+// retry, a confirmation, a reconnect and a daemon restart resolve to one
+// outcome instead of a second worker.
+type coordinatorAssignmentRecord struct {
+	Assignment contract.CoordinatorAssignment `json:"assignment"`
+	// RequestID and Digest are the dispatch request that minted this assignment.
+	// A request id replayed with the same digest is the same dispatch; with a
+	// different one it is a conflict, because the id would then mean two things.
+	RequestID string `json:"requestId,omitempty"`
+	Digest    string `json:"digest,omitempty"`
+	// Prompted records that the assignment's instruction was handed to its
+	// target. It is written before the prompt is dispatched, so a resumed
+	// dispatch never sends the same instruction twice.
+	Prompted bool `json:"prompted,omitempty"`
+	// Steer records that the dispatch asked for a linked thread to take on the
+	// instruction, which only a person's verified direction admits. It is
+	// persisted so a resumed dispatch completes the delivery the person already
+	// directed instead of losing it.
+	Steer bool `json:"steer,omitempty"`
+	// IntakeExpiresAt is when a pending submission lapses. A submission that
+	// disappears before then was withdrawn or denied, which is a different
+	// outcome from one that ran out of time.
+	IntakeExpiresAt time.Time `json:"intakeExpiresAt,omitempty"`
+	// ObservedDigest is the shape of the newest observed result. ResultRevision
+	// advances only when this changes.
+	ObservedDigest string `json:"observedDigest,omitempty"`
+}
+
+// coordinatorDispatchRecord is one dispatch request's idempotency record: its
+// content digest and the assignments it minted, in request order.
+type coordinatorDispatchRecord struct {
+	TaskID        string   `json:"taskId"`
+	RequestID     string   `json:"requestId"`
+	Digest        string   `json:"digest"`
+	AssignmentIDs []string `json:"assignmentIds"`
+}
+
 // coordinatorDocument is the store's file.
 type coordinatorDocument struct {
-	Version int                 `json:"version"`
-	Tasks   []coordinatorRecord `json:"tasks,omitempty"`
+	Version     int                           `json:"version"`
+	Tasks       []coordinatorRecord           `json:"tasks,omitempty"`
+	Assignments []coordinatorAssignmentRecord `json:"assignments,omitempty"`
+	Dispatches  []coordinatorDispatchRecord   `json:"dispatches,omitempty"`
 }
 
 // coordinatorStore owns coordinated tasks on disk. Every mutation is serialized
@@ -94,7 +139,12 @@ type coordinatorStore struct {
 	mu       sync.Mutex
 	tasks    map[string]coordinatorRecord
 	requests map[string]string // request id -> task id
-	closed   bool
+	// assignments holds every assignment by the ID that is also its dispatch
+	// identity, and dispatches holds one record per task-scoped dispatch request
+	// so a retried dispatch never mints its assignments twice.
+	assignments map[string]coordinatorAssignmentRecord
+	dispatches  map[string]coordinatorDispatchRecord
+	closed      bool
 }
 
 // openCoordinatorStore opens or creates the store in dir. A missing directory
@@ -105,11 +155,13 @@ func openCoordinatorStore(dir string, now func() time.Time) (*coordinatorStore, 
 		now = time.Now
 	}
 	s := &coordinatorStore{
-		dir:      dir,
-		path:     filepath.Join(dir, coordinatorTasksName),
-		now:      now,
-		tasks:    map[string]coordinatorRecord{},
-		requests: map[string]string{},
+		dir:         dir,
+		path:        filepath.Join(dir, coordinatorTasksName),
+		now:         now,
+		tasks:       map[string]coordinatorRecord{},
+		requests:    map[string]string{},
+		assignments: map[string]coordinatorAssignmentRecord{},
+		dispatches:  map[string]coordinatorDispatchRecord{},
 	}
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -149,6 +201,27 @@ func openCoordinatorStore(dir string, now func() time.Time) (*coordinatorStore, 
 		}
 		s.tasks[rec.Task.ID] = rec
 	}
+	// Assignments and their dispatch records are additive: a version 1 document
+	// holds none, which is an empty assignment list rather than an error.
+	for _, rec := range doc.Assignments {
+		if rec.Assignment.ID == "" || rec.Assignment.TaskID == "" {
+			return nil, fmt.Errorf("%w: coordinator assignment with no identity", ErrCoordinatorUnavailable)
+		}
+		if _, dup := s.assignments[rec.Assignment.ID]; dup {
+			return nil, fmt.Errorf("%w: coordinator assignment %s appears twice", ErrCoordinatorUnavailable, rec.Assignment.ID)
+		}
+		s.assignments[rec.Assignment.ID] = rec
+	}
+	for _, rec := range doc.Dispatches {
+		key := coordinatorDispatchKey(rec.TaskID, rec.RequestID)
+		if rec.TaskID == "" || rec.RequestID == "" {
+			return nil, fmt.Errorf("%w: coordinator dispatch with no identity", ErrCoordinatorUnavailable)
+		}
+		if _, dup := s.dispatches[key]; dup {
+			return nil, fmt.Errorf("%w: coordinator dispatch %s appears twice", ErrCoordinatorUnavailable, rec.RequestID)
+		}
+		s.dispatches[key] = rec
+	}
 	return s, nil
 }
 
@@ -179,6 +252,85 @@ func coordinatorDigest(title string, source *contract.CoordinatorThreadRef, proj
 	}{title, source, projects})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
+}
+
+// coordinatorDispatchKey is one task-scoped dispatch request's key. A dispatch
+// request id is unique within its task: the same id in another task is another
+// request.
+func coordinatorDispatchKey(taskID, requestID string) string {
+	return taskID + "\x00" + requestID
+}
+
+// coordinatorAssignmentID is one assignment's stable identity.
+//
+// It is derived from the task, the dispatch request and the target project, so
+// the same dispatch always resolves to the same assignment however many times it
+// is sent, and two targets are two assignments. The ID is also the assignment's
+// dispatch identity: it is persisted before any side effect and carried by the
+// pending submission, the spawn claim and the worker's agent record, so every
+// retry, confirmation and restart resolves one outcome.
+func coordinatorAssignmentID(taskID, requestID, projectID string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{taskID, requestID, projectID}, "\x00")))
+	return coordinatorAssignmentPrefix + hex.EncodeToString(sum[:12])
+}
+
+// coordinatorAssignmentPrefix marks an assignment ID. The ID also names the
+// assignment in the intake queue (a pending submission's id), so the prefix keeps
+// it apart from the ids the queue mints for itself.
+const coordinatorAssignmentPrefix = "asg-"
+
+// coordinatorDispatchDigest is the canonical identity of one dispatch's content.
+// The request id is not part of it: that is the key, and this is what it must
+// have been used for. Targets are digested in canonical project order so two
+// requests naming the same targets in another order are the same dispatch.
+func coordinatorDispatchDigest(targets []contract.CoordinatorAssignTarget) string {
+	canonical := append([]contract.CoordinatorAssignTarget(nil), targets...)
+	sort.Slice(canonical, func(i, j int) bool { return canonical[i].ProjectID < canonical[j].ProjectID })
+	payload, _ := json.Marshal(struct {
+		Targets []contract.CoordinatorAssignTarget `json:"targets"`
+	}{canonical})
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+// canonicalCoordinatorTargets checks a dispatch's targets and returns them in
+// request order with their project IDs canonicalised.
+//
+// Distinct targets are distinct canonical project IDs: a display name or a path
+// names no project, a repeated project is one target, and a target that names
+// both an instruction and a thread to link is ambiguous. Everything here is
+// refused before anything is written.
+func canonicalCoordinatorTargets(targets []contract.CoordinatorAssignTarget) ([]contract.CoordinatorAssignTarget, error) {
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("%w: a dispatch names at least one target", ErrCoordinatorInput)
+	}
+	seen := make(map[string]bool, len(targets))
+	out := make([]contract.CoordinatorAssignTarget, 0, len(targets))
+	for _, target := range targets {
+		projectID := strings.TrimSpace(target.ProjectID)
+		if projectID == "" {
+			return nil, fmt.Errorf("%w: a target names a project id", ErrCoordinatorInput)
+		}
+		if seen[projectID] {
+			continue
+		}
+		seen[projectID] = true
+		threadID := strings.TrimSpace(target.ThreadID)
+		instruction := strings.TrimSpace(target.Instruction)
+		switch {
+		case threadID != "" && instruction == "":
+			return nil, fmt.Errorf("%w: linking a thread needs the instruction it should be observed for", ErrCoordinatorInput)
+		case threadID == "" && instruction == "":
+			return nil, fmt.Errorf("%w: a target names an instruction", ErrCoordinatorInput)
+		}
+		out = append(out, contract.CoordinatorAssignTarget{
+			ProjectID:   projectID,
+			Instruction: instruction,
+			ThreadID:    threadID,
+			Steer:       target.Steer && threadID != "",
+		})
+	}
+	return out, nil
 }
 
 // canonicalCoordinatorProjects checks a scope and returns it in one canonical
@@ -365,13 +517,218 @@ func (s *coordinatorStore) Create(req contract.CoordinatorCreateRequest) (contra
 	return rec.Task, true, nil
 }
 
+// BeginDispatch records one dispatch request's assignment intents and returns
+// them, reporting whether this call minted them.
+//
+// The intents are durable before the caller attempts any side effect, and the
+// assignment IDs they carry are the dispatch identities every later step
+// resolves: the pending submission, the spawn claim and the worker's record. A
+// replayed request id answers the assignments the original request minted —
+// never a second set — and the same id with different content is a conflict.
+// Two racing identical dispatches cannot both mint, because both are decided
+// under this one lock.
+func (s *coordinatorStore) BeginDispatch(taskID, requestID, digest string, targets []contract.CoordinatorAssignTarget) ([]coordinatorAssignmentRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.writable(); err != nil {
+		return nil, false, err
+	}
+	if _, ok := s.tasks[taskID]; !ok {
+		return nil, false, ErrCoordinatorNotFound
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return nil, false, fmt.Errorf("%w: requestId is required", ErrCoordinatorInput)
+	}
+	canonical, err := canonicalCoordinatorTargets(targets)
+	if err != nil {
+		return nil, false, err
+	}
+	if digest == "" {
+		digest = coordinatorDispatchDigest(canonical)
+	}
+	key := coordinatorDispatchKey(taskID, requestID)
+	if existing, ok := s.dispatches[key]; ok {
+		if existing.Digest != digest {
+			return nil, false, ErrCoordinatorConflict
+		}
+		out := make([]coordinatorAssignmentRecord, 0, len(existing.AssignmentIDs))
+		for _, id := range existing.AssignmentIDs {
+			rec, held := s.assignments[id]
+			if !held {
+				return nil, false, fmt.Errorf("%w: dispatch %s names no stored assignment", ErrCoordinatorUnavailable, requestID)
+			}
+			out = append(out, rec)
+		}
+		return out, false, nil
+	}
+
+	now := s.now().UTC()
+	records := make([]coordinatorAssignmentRecord, 0, len(canonical))
+	ids := make([]string, 0, len(canonical))
+	for _, target := range canonical {
+		relationship := contract.CoordinatorAssignmentWorker
+		if target.ThreadID != "" {
+			relationship = contract.CoordinatorAssignmentThread
+		}
+		rec := coordinatorAssignmentRecord{
+			Assignment: contract.CoordinatorAssignment{
+				ID:           coordinatorAssignmentID(taskID, requestID, target.ProjectID),
+				TaskID:       taskID,
+				ProjectID:    target.ProjectID,
+				Instruction:  target.Instruction,
+				Relationship: relationship,
+				State:        contract.CoordinatorAssignmentDispatching,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			},
+			RequestID: requestID,
+			Digest:    digest,
+		}
+		if target.ThreadID != "" {
+			rec.Assignment.Thread = &contract.CoordinatorThreadRef{
+				ProjectID: target.ProjectID, Kind: "agent", ID: target.ThreadID,
+			}
+			rec.Steer = target.Steer
+		}
+		records = append(records, rec)
+		ids = append(ids, rec.Assignment.ID)
+	}
+	dispatch := coordinatorDispatchRecord{TaskID: taskID, RequestID: requestID, Digest: digest, AssignmentIDs: ids}
+	// Write first, then publish: an intent that could not be made durable is
+	// never reported as one that was.
+	if err := s.persistLocked(func(doc *coordinatorDocument) bool {
+		doc.Assignments = append(doc.Assignments, records...)
+		doc.Dispatches = append(doc.Dispatches, dispatch)
+		return true
+	}); err != nil {
+		return nil, false, err
+	}
+	for _, rec := range records {
+		s.assignments[rec.Assignment.ID] = rec
+	}
+	s.dispatches[key] = dispatch
+	return records, true, nil
+}
+
+// Assignments returns one task's assignments, oldest first. An empty list is a
+// valid answer: the task has dispatched nothing.
+func (s *coordinatorStore) Assignments(taskID string) ([]coordinatorAssignmentRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s == nil || s.closed {
+		return nil, ErrCoordinatorUnavailable
+	}
+	out := make([]coordinatorAssignmentRecord, 0)
+	for _, rec := range s.assignments {
+		if rec.Assignment.TaskID == taskID {
+			out = append(out, rec)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i].Assignment, out[j].Assignment
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return a.ID < b.ID
+	})
+	return out, nil
+}
+
+// Assignment returns one assignment, by the ID that is also its dispatch
+// identity.
+func (s *coordinatorStore) Assignment(taskID, assignmentID string) (coordinatorAssignmentRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s == nil || s.closed {
+		return coordinatorAssignmentRecord{}, false, ErrCoordinatorUnavailable
+	}
+	rec, ok := s.assignments[assignmentID]
+	if !ok || rec.Assignment.TaskID != taskID {
+		return coordinatorAssignmentRecord{}, false, nil
+	}
+	return rec, true, nil
+}
+
+// DispatchRequest returns the dispatch one task-scoped request id already made.
+//
+// It is how a dispatch tells a retry from a fresh request before it records
+// anything: a replay resumes what the original recorded, and a caller that gets
+// no record here is the one that mints the assignments.
+func (s *coordinatorStore) DispatchRequest(taskID, requestID string) (coordinatorDispatchRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s == nil || s.closed {
+		return coordinatorDispatchRecord{}, false, ErrCoordinatorUnavailable
+	}
+	rec, ok := s.dispatches[coordinatorDispatchKey(taskID, strings.TrimSpace(requestID))]
+	if !ok {
+		return coordinatorDispatchRecord{}, false, nil
+	}
+	return rec, true, nil
+}
+
+// UpdateAssignment applies mutate to one assignment and writes it atomically.
+//
+// mutate reports whether it changed anything; an unchanged assignment is not
+// rewritten, so a read that observes nothing new costs no disk write. The
+// returned record is what the store now holds.
+func (s *coordinatorStore) UpdateAssignment(taskID, assignmentID string, mutate func(*coordinatorAssignmentRecord) bool) (coordinatorAssignmentRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.writable(); err != nil {
+		return coordinatorAssignmentRecord{}, err
+	}
+	rec, ok := s.assignments[assignmentID]
+	if !ok || rec.Assignment.TaskID != taskID {
+		return coordinatorAssignmentRecord{}, ErrCoordinatorNotFound
+	}
+	previous := rec
+	if mutate != nil && !mutate(&rec) {
+		return previous, nil
+	}
+	rec.Assignment.UpdatedAt = s.now().UTC()
+	if err := s.persistLocked(func(doc *coordinatorDocument) bool {
+		for n := range doc.Assignments {
+			if doc.Assignments[n].Assignment.ID == assignmentID {
+				doc.Assignments[n] = rec
+				return true
+			}
+		}
+		doc.Assignments = append(doc.Assignments, rec)
+		return true
+	}); err != nil {
+		return previous, err
+	}
+	s.assignments[assignmentID] = rec
+	return rec, nil
+}
+
 // persistLocked writes the document with mutate applied, atomically.
 func (s *coordinatorStore) persistLocked(mutate func(doc *coordinatorDocument) bool) error {
-	doc := coordinatorDocument{Version: coordinatorVersion, Tasks: make([]coordinatorRecord, 0, len(s.tasks)+1)}
+	doc := coordinatorDocument{
+		Version:     coordinatorVersion,
+		Tasks:       make([]coordinatorRecord, 0, len(s.tasks)+1),
+		Assignments: make([]coordinatorAssignmentRecord, 0, len(s.assignments)+1),
+		Dispatches:  make([]coordinatorDispatchRecord, 0, len(s.dispatches)+1),
+	}
 	for _, rec := range s.tasks {
 		doc.Tasks = append(doc.Tasks, rec)
 	}
 	sort.Slice(doc.Tasks, func(i, j int) bool { return doc.Tasks[i].Task.ID < doc.Tasks[j].Task.ID })
+	for _, rec := range s.assignments {
+		doc.Assignments = append(doc.Assignments, rec)
+	}
+	sort.Slice(doc.Assignments, func(i, j int) bool {
+		return doc.Assignments[i].Assignment.ID < doc.Assignments[j].Assignment.ID
+	})
+	for _, rec := range s.dispatches {
+		doc.Dispatches = append(doc.Dispatches, rec)
+	}
+	sort.Slice(doc.Dispatches, func(i, j int) bool {
+		return coordinatorDispatchKey(doc.Dispatches[i].TaskID, doc.Dispatches[i].RequestID) <
+			coordinatorDispatchKey(doc.Dispatches[j].TaskID, doc.Dispatches[j].RequestID)
+	})
 	if !mutate(&doc) {
 		return nil
 	}

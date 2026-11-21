@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -27,18 +28,66 @@ import (
 // tool argument: it is the client the transport authenticated, resolved against
 // the live enrollment the same way authenticateMCPPrincipal resolved it.
 
-// coordinatorToolAttention is the coordinator conversation's one read tool.
-const coordinatorToolAttention = "coordinator_attention"
+// The coordinator conversation's tools. Each is offered only to a verified
+// built-in session whose session a coordinated task minted (see
+// coordinatorToolDefinitions), so no external client and no ordinary project
+// session is shown one, and none carries a task argument a caller could forge:
+// the task is resolved from the session the transport authenticated.
+const (
+	// coordinatorToolAttention is the read-only attention summary.
+	coordinatorToolAttention = "coordinator_attention"
+	// coordinatorToolAssign dispatches a task's work to its target projects.
+	coordinatorToolAssign = "coordinator_assign"
+	// coordinatorToolAssignments reads the task's assignments and how far each
+	// got.
+	coordinatorToolAssignments = "coordinator_assignments"
+)
 
 // coordinatorMCPToolDefinitions returns the tools only a coordinator
-// conversation is offered. The list is separate from the fleet and factory
-// tools on purpose: it is read-only, and a client that is not a coordinator
-// session is refused the call rather than shown a tool it cannot use.
+// conversation is offered.
+//
+// The list is separate from the fleet and factory tools on purpose. The
+// attention read is read-only, and the assignment pair is task-scoped: a client
+// that is not a coordinator session is refused the call rather than shown a tool
+// it cannot use. None of them carries a task argument — the task is the session
+// the transport authenticated.
 func coordinatorMCPToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        coordinatorToolAttention,
 			"description": "Read what needs a person across this host's accessible projects: pending asks, submissions awaiting confirmation and reviews that are ready, each with where it opens, plus per-source freshness. Read-only: it starts no work and changes nothing. An allClear answer means every source was read and fresh; partial means the answer covers less than the whole scope.",
+			"inputSchema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		{
+			"name":        coordinatorToolAssign,
+			"description": "Hand this coordinated task's work to its target projects. Each target names a canonical project id and the instruction for it; a target may instead name an existing thread in that project to link for observation. A target the task's access does not cover fails on its own and its siblings still dispatch. A project whose policy authorises this session to start work begins immediately; otherwise the instruction is stored as a submission awaiting the user's confirmation and the assignment reports pending, never running. Linking is observation: an existing thread is given the instruction only when the user explicitly directed it.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"requestId": map[string]any{"type": "string", "description": "This dispatch's idempotency key. Reuse it for every retry of the same targets."},
+					"targets": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"projectId":   map[string]any{"type": "string", "description": "The target project's canonical id"},
+								"instruction": map[string]any{"type": "string", "description": "What that project should do"},
+								"threadId":    map[string]any{"type": "string", "description": "Link this existing thread in the project instead of starting a worker"},
+								"steer":       map[string]any{"type": "boolean", "description": "Give the linked thread the instruction. Only valid when the user directed that thread; the bridge verifies the direction and refuses otherwise."},
+							},
+							"required": []string{"projectId", "instruction"},
+						},
+					},
+				},
+				"required": []string{"requestId", "targets"},
+			},
+		},
+		{
+			"name":        coordinatorToolAssignments,
+			"description": "Read this coordinated task's assignments: each target project, what it was asked, whether it created a worker or linked an existing thread, its state (dispatching, pending, running, linked, failed or expired), the worker or submission it resolved to, and the revision of its newest observed result. Read-only: it starts no work.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -69,12 +118,15 @@ func (s *Server) coordinatorToolDefinitions(principal mcpPrincipal) []map[string
 //
 // The only identity it accepts is the one the transport established: the
 // caller's verified built-in binding. Its session is resolved to the task this
-// daemon minted for it, and that task supplies both the project scope and the
-// session the access policy is checked against. An external MCP client holds no
-// binding, so it cannot name a task at all — there is no task argument to forge,
-// which is what keeps the read from being widened by a request body.
+// daemon minted for it, and that task supplies the project scope, the session
+// the access policy is checked against, and the scope of every assignment
+// operation. An external MCP client holds no binding, so it cannot name a task at
+// all — there is no task argument to forge, which is what keeps a dispatch from
+// being widened by a request body.
 func (s *Server) coordinatorToolCall(w http.ResponseWriter, r *http.Request, c MCPClient, id json.RawMessage, name string, args json.RawMessage) bool {
-	if name != coordinatorToolAttention {
+	switch name {
+	case coordinatorToolAttention, coordinatorToolAssign, coordinatorToolAssignments:
+	default:
 		return false
 	}
 	binding, ok := s.marshalBindingFor(c.ID)
@@ -91,11 +143,24 @@ func (s *Server) coordinatorToolCall(w http.ResponseWriter, r *http.Request, c M
 	if !ok {
 		// A bound session no task minted is refused rather than answered with an
 		// empty all-clear: there is no scope to read, so there is nothing to
-		// report.
+		// report and nothing to dispatch.
 		writeFactoryToolFailure(w, id, factoryToolFailure{Code: factoryCodeDenied, Message: "this session is not a coordinated task"})
 		return true
 	}
 	task.Host = s.coordinatorHost()
+	switch name {
+	case coordinatorToolAttention:
+		s.coordinatorAttentionTool(w, id, task)
+	case coordinatorToolAssign:
+		s.coordinatorAssignTool(w, r, id, task, args)
+	case coordinatorToolAssignments:
+		s.coordinatorAssignmentsTool(w, id, task)
+	}
+	return true
+}
+
+// coordinatorAttentionTool answers the attention read.
+func (s *Server) coordinatorAttentionTool(w http.ResponseWriter, id json.RawMessage, task contract.CoordinatorTask) {
 	attention := s.coordinatorAttention(task)
 	entries := make([]map[string]any, 0, len(attention.Entries))
 	for _, entry := range attention.Entries {
@@ -128,7 +193,44 @@ func (s *Server) coordinatorToolCall(w http.ResponseWriter, r *http.Request, c M
 		"partial":    attention.Partial,
 		"observedAt": attention.ObservedAt.Format(time.RFC3339),
 	})
-	return true
+}
+
+// coordinatorAssignTool answers one task-scoped dispatch.
+//
+// The steering receipt travels beside the arguments, in the header the trusted
+// transport sets, and is read from there: a model cannot write one, which is why
+// a linked thread is only steered when a person actually directed it.
+func (s *Server) coordinatorAssignTool(w http.ResponseWriter, r *http.Request, id json.RawMessage, task contract.CoordinatorTask, args json.RawMessage) {
+	var req contract.CoordinatorAssignRequest
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &req); err != nil {
+			writeFactoryToolFailure(w, id, factoryToolFailure{Code: factoryCodeInvalidInput, Message: "parse arguments"})
+			return
+		}
+	}
+	result, err := s.coordinatorDispatch(r.Context(), task, req, marshalUserDirectionReceiptID(r))
+	if err != nil {
+		writeFactoryToolFailure(w, id, coordinatorAssignmentFailureOf(err))
+		return
+	}
+	writeFactoryToolResult(w, id, map[string]any{
+		"taskId":      result.TaskID,
+		"assignments": coordinatorAssignmentRows(result.Assignments),
+	})
+}
+
+// coordinatorAssignmentsTool answers the task's assignment list.
+func (s *Server) coordinatorAssignmentsTool(w http.ResponseWriter, id json.RawMessage, task contract.CoordinatorTask) {
+	assignments, err := s.coordinatorTaskAssignments(context.Background(), task)
+	if err != nil {
+		writeFactoryToolFailure(w, id, coordinatorAssignmentFailureOf(err))
+		return
+	}
+	writeFactoryToolResult(w, id, map[string]any{
+		"taskId":      task.ID,
+		"host":        task.Host,
+		"assignments": coordinatorAssignmentRows(assignments),
+	})
 }
 
 // toolPrincipal is the identity a tool call from this client acts as: a built-in
@@ -248,19 +350,7 @@ func (s *Server) coordinatorScope(task contract.CoordinatorTask) []string {
 // stored defaults, then any override for this session. Resolved on every read,
 // so a revocation needs no invalidation to take effect.
 func (s *Server) coordinatorReadAllowed(task contract.CoordinatorTask, projectID string) bool {
-	if s.factoryAuth == nil || strings.TrimSpace(task.SessionID) == "" {
-		return false
-	}
-	instanceID, generation, ok := s.marshalInstance()
-	if !ok {
-		return false
-	}
-	status, err := s.factoryAuth.marshalStatus(MarshalSessionBinding{
-		InstanceID: instanceID,
-		ProjectID:  projectID,
-		SessionID:  task.SessionID,
-		Generation: generation,
-	})
+	status, err := s.coordinatorTargetStatus(task, projectID)
 	if err != nil {
 		return false
 	}
@@ -319,7 +409,14 @@ func (s *Server) coordinatorEvidence(now time.Time) (map[string][]contract.Coord
 	// An intake submission awaiting confirmation. It names a repo, which this
 	// host maps to a project; one it cannot attribute is not reported.
 	for _, p := range s.fleet.ws.Pending() {
-		add(s.fleet.ws.ProjectRootByRepo(p.RepoID), p.CreatedAt, now, contract.CoordinatorAttentionEntry{
+		// A coordinated assignment's submission names the project it targets
+		// directly (task 6); every other submission names the repository it
+		// clones, which this host maps to a project.
+		root := p.Project
+		if root == "" {
+			root = s.fleet.ws.ProjectRootByRepo(p.RepoID)
+		}
+		add(root, p.CreatedAt, now, contract.CoordinatorAttentionEntry{
 			Source:      contract.CoordinatorThreadRef{Kind: "intake", ID: p.ID},
 			Kind:        contract.CoordinatorAttentionAsk,
 			Text:        fmt.Sprintf("Submission %q is waiting for confirmation", p.Title),

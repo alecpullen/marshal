@@ -1326,6 +1326,14 @@ type SpawnOptions struct {
 	// recorded on the agent so the request can be resolved from the agent
 	// record itself. Empty for every spawn that named none.
 	RequestID string
+	// CoordinatorTaskID and CoordinatorAssignmentID bind the agent to the
+	// coordinated assignment that dispatched it (agent-first Studio, task 6).
+	// They are persisted on the agent so a dispatch whose response was lost, or
+	// one that resumes after a restart, is reconciled from the worker's own
+	// record rather than by spawning a second one. Both empty for every spawn no
+	// coordinated task asked for.
+	CoordinatorTaskID       string
+	CoordinatorAssignmentID string
 }
 
 // gitSource is the resolved remote source for a spawn, or a local path.
@@ -1508,6 +1516,11 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 		OwnerID:        DefaultOwnerID,
 		Origin:         origin,
 		SpawnRequestID: opts.RequestID,
+		// The assignment identity is written with the agent itself: a dispatch
+		// that lost this response, or one that resumes after a restart, finds
+		// its worker here instead of starting a second one.
+		CoordinatorTaskID:       opts.CoordinatorTaskID,
+		CoordinatorAssignmentID: opts.CoordinatorAssignmentID,
 	}
 	if tag != nil {
 		a.FactoryItemID, a.FactoryRole, a.FactorySpawnEffectID = tag.itemID, tag.role, tag.effectID

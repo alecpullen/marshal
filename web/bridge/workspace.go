@@ -44,6 +44,11 @@ const (
 	OriginSchedule  = "schedule"
 	OriginReviewBot = "review-bot"
 	OriginCI        = "ci"
+	// OriginCoordinator marks an agent a coordinated task delegated to a
+	// project. It is deliberately not OriginUI: a model asking for work is not
+	// the operator acting directly, so intake's usual confirmation applies and
+	// no operator identity is claimed on its behalf.
+	OriginCoordinator = "coordinator"
 )
 
 type Agent struct {
@@ -118,6 +123,14 @@ type Agent struct {
 	// restart, resolves to the agent the original request started rather
 	// than starting a second one. Empty for every agent started without one.
 	SpawnRequestID string `json:"spawnRequestId,omitempty"`
+	// CoordinatorTaskID and CoordinatorAssignmentID bind this agent to the
+	// coordinated task that delegated to it (agent-first Studio, task 6). They
+	// are the worker's half of the durable effect identity: the assignment
+	// writes them before its spawn resolves, so a lost response or a restart
+	// finds the worker it already created instead of starting a second one.
+	// Empty for every agent no coordinated task created.
+	CoordinatorTaskID       string `json:"coordinatorTaskId,omitempty"`
+	CoordinatorAssignmentID string `json:"coordinatorAssignmentId,omitempty"`
 }
 
 // AgentWorkspace is contract.AgentWorkspace; see that declaration.
@@ -214,6 +227,17 @@ type PendingSpawn struct {
 	// issue, so the exit path can link the pull request back to it.
 	IssueNumber int    `json:"issueNumber,omitempty"`
 	IssueURL    string `json:"issueUrl,omitempty"`
+	// Project is the project root a coordinated assignment targets (agent-first
+	// Studio, task 6). It is set only by a coordinator dispatch, which names a
+	// registered project rather than a repository; a submission from every other
+	// adapter leaves it empty and spawns from RepoID as it always has.
+	Project string `json:"project,omitempty"`
+	// TaskID and AssignmentID are the coordinated assignment this submission is
+	// waiting on. They are the assignment's dispatch identity, carried from the
+	// intent through this confirmation to the worker it starts, so approving one
+	// submission can never start a worker another assignment owns.
+	TaskID       string `json:"taskId,omitempty"`
+	AssignmentID string `json:"assignmentId,omitempty"`
 }
 
 // SpawnRequestClaim is one caller-generated first-send request ID and the

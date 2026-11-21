@@ -447,9 +447,15 @@ class NewWorkModel extends ChangeNotifier {
 
   bool get loading => _loading;
 
-  /// Why Start was refused: the prompt this kind needs is missing, or the
-  /// bridge's words for the last spawn.
-  String? get failure => _promptMissing ? _promptRequired : _failure;
+  /// What is wrong with the prompt, when Start refused it.
+  ///
+  /// This is the field's own error, kept apart from [failure] so it is drawn
+  /// under the prompt and clears when the prompt or the kind changes, without
+  /// discarding the bridge's words for a spawn that actually failed.
+  String? get promptError => _promptMissing ? _promptRequired : null;
+
+  /// The bridge's words for the last spawn, once it has failed.
+  String? get failure => _failure;
 
   static const _promptRequired =
       'Write what it should do first, or start an Agent and tell it '
@@ -467,9 +473,9 @@ class NewWorkModel extends ChangeNotifier {
   ///
   /// An agent's prompt is optional: it can be started with nothing to do and
   /// told what to do from its own thread, so the dialog posts a spawn with no
-  /// first turn rather than asking for words before the thread exists. A
-  /// planning thread's first turn and a work item's plan *are* the prompt, so
-  /// those two still need one.
+  /// first turn rather than asking for words before the thread exists. A work
+  /// item's plan is its prompt, and "Plan first" keeps its existing prompt
+  /// requirement, so those two still need one.
   bool get canStart =>
       !_kind.planned &&
       (_kind == NewWorkKind.agent || _prompt.trim().isNotEmpty);
@@ -606,9 +612,9 @@ class NewWorkModel extends ChangeNotifier {
   /// default), and the workspace choice as the `isolated` flag the bridge
   /// reads — not as a made-up workspace name.
   ///
-  /// "Plan first" starts a planner instead (F6 decision 8): the prompt becomes
-  /// the planner's first turn, and the thread the dialog opens is a planning
-  /// thread.
+  /// "Plan first" starts a planner instead (F6 decision 8), and the thread the
+  /// dialog opens is a planning thread. That handoff keeps its existing prompt
+  /// requirement; the planner's own thread takes the first instruction.
   Future<void> start() async {
     if (!canStart) {
       // An agent starts with a blank box, so this is a planning thread's first

@@ -7,13 +7,15 @@ import 'package:marshal_app/src/model/pulls_model.dart';
 import 'package:marshal_app/src/model/source_state.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
+import 'package:marshal_app/src/ui/pulls/pulls_place.dart';
 
 import '../support/pulls.dart';
 import '../support/screens.dart';
 
-/// The Inbox (F2 decision 7): every ask answered from its own card, a reply
+/// Needs you (F2 decision 7): every ask answered from its own card, a reply
 /// that carries its words, a failure that keeps the card with a retry, and
-/// the three filters.
+/// the three filters. The place the code calls the inbox is called Needs you
+/// on screen; its links, filters and answers are unchanged.
 void main() {
   final answers = <String>[];
   final replies = <String?>[];
@@ -567,5 +569,137 @@ void main() {
     expect(find.text('The daemon is unreachable'), findsOneWidget);
     expect(find.text('Not seen yet'), findsOneWidget);
     expect(find.textContaining('ago'), findsNothing);
+  });
+
+  testWidgets('the page is called Needs you', (tester) async {
+    await tester.pumpWidget(show(const []));
+
+    // The visible name of the place is Needs you wherever it is written: no
+    // title, empty state or planned note still says the old word.
+    expect(find.widgetWithText(PageBody, 'Needs you'), findsOneWidget);
+    expect(find.text('Inbox'), findsNothing);
+    expect(find.text('Nothing is waiting on you.'), findsOneWidget);
+  });
+
+  testWidgets('an inline answer removes the ask only after confirmation', (
+    tester,
+  ) async {
+    var sending = false;
+    var confirmed = false;
+    late StateSetter host;
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: StatefulBuilder(
+          builder: (context, setState) {
+            host = setState;
+            return Inbox(
+              asks: confirmed
+                  ? const []
+                  : [
+                      ask(
+                        id: 'tc-1',
+                        kind: model.AskKind.approval,
+                        actions: ['Approve once', 'Deny'],
+                        state: sending
+                            ? model.AskState.sending
+                            : model.AskState.waiting,
+                      ),
+                    ],
+              now: shellNow,
+              onSelect: (_) {},
+              onAnswer: (ask, action, {reply, answers}) {
+                posted.add('${ask.id}:${action.label}');
+                host(() => sending = true);
+              },
+              onRetry: () {},
+            );
+          },
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Approve once'));
+    await tester.pump();
+
+    // The answer is acknowledged at once and shows as pending (§7): the card
+    // is still where it was, and the ask has not silently vanished.
+    expect(posted, ['tc-1:Approve once']);
+    expect(find.byType(AskCard), findsOneWidget);
+    expect(find.text('waiting sending…'), findsOneWidget);
+
+    // Only the model's confirmation takes the ask away.
+    host(() => confirmed = true);
+    await tester.pump();
+    expect(find.byType(AskCard), findsNothing);
+  });
+
+  testWidgets('Ready links to the same pull request as Pull requests', (
+    tester,
+  ) async {
+    final pull = pullView(
+      number: 131,
+      title: 'Quiet capture mode',
+      thread: threadRef(title: 'Relay the capture'),
+    );
+
+    // What the Ready filter draws is the card the dedicated place draws, for
+    // the same pull request: same number, same checks, same source.
+    final fromInbox = <Place>[];
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Inbox(
+          asks: const [],
+          now: shellNow,
+          pulls: [pull],
+          onSelect: fromInbox.add,
+          onAnswer: (ask, action, {reply, answers}) {},
+          onRetry: () {},
+        ),
+      ),
+    );
+    await tester.tap(find.text('Ready'));
+    await tester.pump();
+
+    expect(find.text('#131'), findsOneWidget);
+    expect(find.text('2 of 2 checks passed'), findsOneWidget);
+    await tester.tap(find.text('Relay the capture'));
+    await tester.pump();
+
+    final fromPulls = <Place>[];
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: PullsPlace(
+          groups: {
+            PullGroup.ready: [pull],
+          },
+          now: shellNow,
+          actionsFor: (context, view) => PrActions(
+            openSource: () {
+              final thread = view.thread!;
+              fromPulls.add(
+                Place(PlaceKind.thread, host: thread.host, id: thread.id),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('#131'), findsOneWidget);
+    expect(find.text('2 of 2 checks passed'), findsOneWidget);
+    await tester.tap(find.text('Relay the capture'));
+    await tester.pump();
+
+    // One pull request, one destination: the Ready link resolves to the same
+    // thread the dedicated screen's card does.
+    expect(fromInbox.single, fromPulls.single);
+    expect(
+      fromInbox.single,
+      const Place(PlaceKind.thread, host: 'local', id: 'a-1'),
+    );
   });
 }

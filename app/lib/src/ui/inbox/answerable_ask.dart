@@ -13,7 +13,7 @@ typedef AnswerAsk = void Function(
 
 /// One ask a person can answer where it is drawn: the AskCard, a reply
 /// field, one field per question of a multi-question ask, and the failure
-/// with Try again. The Inbox, the Overview and a thread's pinned ask all
+/// with Try again. Needs you, the Overview and a thread's pinned ask all
 /// draw this.
 ///
 /// Answering it is one action wherever the card is drawn (design-system.md
@@ -21,7 +21,7 @@ typedef AnswerAsk = void Function(
 /// question, and a failure says why and offers the same answer again. What
 /// the card itself offers differs by place, and only there: the Overview has
 /// no room for a request that asks several questions, so it sends the person
-/// to the Inbox, and a work item's ask is answered in the item's own thread.
+/// to Needs you, and a work item's ask is answered in the item's own thread.
 class AnswerableAsk extends StatefulWidget {
   const AnswerableAsk({
     super.key,
@@ -40,7 +40,7 @@ class AnswerableAsk extends StatefulWidget {
   final VoidCallback? onOpenSource;
 
   /// The Overview's way out for an ask it has no room to collect: a
-  /// multi-question ask offers Open inbox instead of its fields.
+  /// multi-question ask offers Open Needs you instead of its fields.
   final VoidCallback? onOpenInbox;
 
   @override
@@ -133,12 +133,12 @@ class _AnswerableAskState extends State<AnswerableAsk> {
     if (_many) {
       if (widget.placement == AskPlacement.overview) {
         // Several questions need an answer for each, and the Overview has no
-        // room to collect them: the card sends the person to the Inbox,
+        // room to collect them: the card sends the person to Needs you,
         // which draws every question of the request. Answering here would
         // post a partial shape, which the agent reads as declined
         // (internal/acp/questions.go).
         return [
-          AskAction('Open inbox', primary: true, onTap: widget.onOpenInbox),
+          AskAction('Open Needs you', primary: true, onTap: widget.onOpenInbox),
         ];
       }
       // The fields under the card carry the actions that post them.

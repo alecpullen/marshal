@@ -9,7 +9,7 @@ import 'support.dart';
 /// The sidebar's rules (F2 decision 3), ported from
 /// `web/ui/src/lib/nav/model.test.ts`: the fixed places in the design's
 /// order, projects in name order, each project's threads split into current
-/// and earlier, and the inbox count from the store.
+/// and earlier, and the Needs you count from the store.
 void main() {
   final now = DateTime.utc(2026, 11, 17, 12);
 
@@ -52,7 +52,7 @@ void main() {
       [for (final place in model.fixed) place.label],
       [
         'Overview',
-        'Inbox',
+        'Needs you',
         'Pull requests',
         'Automations',
         'Library',
@@ -263,7 +263,7 @@ void main() {
     expect([for (final row in model.projects) row.active], [false, true]);
   });
 
-  test('inbox count follows the store', () async {
+  test('the Needs you count follows the store', () async {
     InboxItem ask(String id, DateTime at) => InboxItem(
       kind: InboxItemKind.inboxItemAgent,
       agentID: id,
@@ -294,7 +294,7 @@ void main() {
 
     // Nothing else carries the queue's size. Pull requests carries its own
     // count — how many wait for review (F5 decision 14) — and none does
-    // here, so only the Inbox rows with something waiting are counted.
+    // here, so only the Needs you row with something waiting is counted.
     expect(
       [
         for (final row in buildNavModel(
@@ -303,9 +303,48 @@ void main() {
         ).fixed)
           if (row.count != null) row.label,
       ],
-      ['Inbox'],
+      ['Needs you'],
     );
   });
+
+  test('an old Inbox link opens Needs you', () async {
+    final fixture = await ModelFixture.start([
+      const FixtureHost(name: 'local', projects: []),
+    ], now: now);
+
+    // The link written before the rename is the same place: the kind, the
+    // route and `Place.inbox()` are untouched, and only the visible words
+    // changed. Opening it lights the Needs you row and nothing else.
+    const legacy = Place.inbox();
+    expect(legacy.kind, PlaceKind.inbox);
+    final active = [
+      for (final row in buildNavModel(legacy, fixture.store).fixed)
+        if (row.active) row,
+    ];
+    expect(active.single.kind, PlaceKind.inbox);
+    expect(active.single.label, 'Needs you');
+  });
+
+  test(
+    'Overview, Needs you and Pull requests are primary navigation',
+    () async {
+      final fixture = await ModelFixture.start([
+        const FixtureHost(name: 'local', projects: []),
+      ], now: now);
+      final fixed = buildNavModel(const Place.overview(), fixture.store).fixed;
+
+      // The fleet screens sit above the project tree, and the management places
+      // stay reachable at its foot rather than competing with them.
+      expect(
+        [for (final row in fixed.take(navAboveProjects)) row.label],
+        ['Overview', 'Needs you', 'Pull requests'],
+      );
+      expect(
+        [for (final row in fixed.skip(navAboveProjects)) row.kind],
+        [PlaceKind.automations, PlaceKind.library, PlaceKind.settings],
+      );
+    },
+  );
 
   test('two hosts are one tree', () async {
     final fixture = await ModelFixture.start([
@@ -480,7 +519,7 @@ void main() {
 
     final fixed = [
       place(PlaceKind.overview, 'Overview'),
-      place(PlaceKind.inbox, 'Inbox'),
+      place(PlaceKind.inbox, 'Needs you'),
       place(PlaceKind.pulls, 'Pull requests'),
     ];
 
@@ -560,6 +599,19 @@ void main() {
         ],
         ['a-1', 'a-2', 'a-3', 'b-1'],
       );
+    });
+
+    test('a place is found by its visible name', () {
+      // The place the code still calls the inbox is called Needs you on
+      // screen, so that is what the search finds — and the old word finds
+      // nothing at all, because no row says it any more.
+      final needsYou = searchNav(fixed, projects, 'needs you');
+      expect(
+        [for (final place in needsYou.places) place.kind],
+        [PlaceKind.inbox],
+      );
+      expect(needsYou.places.single.label, 'Needs you');
+      expect(searchNav(fixed, projects, 'inbox').places, isEmpty);
     });
 
     test('a blank query finds nothing', () {

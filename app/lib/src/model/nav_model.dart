@@ -9,8 +9,8 @@ import 'work_item_model.dart' show threadOfItem;
 
 /// The fixed places that sit above the projects in the sidebar; the rest of
 /// [NavModel.fixed] sits below them, as the mock's sidebar does (Overview,
-/// Inbox and Pull requests above the tree; Automations, Library and Settings
-/// at its foot).
+/// Needs you and Pull requests above the tree; Automations, Library and
+/// Settings at its foot).
 const navAboveProjects = 3;
 
 /// How old an idle thread must be to count as earlier (F2 Decisions): an
@@ -30,9 +30,9 @@ class NavPlace {
   final PlaceKind kind;
   final String label;
 
-  /// What the row shows beside its label: the Inbox's queue length. Null when
-  /// there is nothing to say — an empty inbox, no pull request waiting — so
-  /// the row draws no count at all.
+  /// What the row shows beside its label: the Needs you queue's length. Null
+  /// when there is nothing to say — an empty queue, no pull request waiting —
+  /// so the row draws no count at all.
   final int? count;
 
   /// This place is where the person is.
@@ -209,7 +209,7 @@ NavModel buildNavModel(
     ),
     NavPlace(
       kind: PlaceKind.inbox,
-      label: 'Inbox',
+      label: 'Needs you',
       count: _countOrNull(inboxCount),
       active: place.kind == PlaceKind.inbox,
     ),
@@ -283,10 +283,12 @@ NavModel buildNavModel(
 /// carries information).
 int? _countOrNull(int count) => count == 0 ? null : count;
 
-/// What each fixed place is called.
+/// What each fixed place is called. The place the code calls the inbox is
+/// called Needs you on screen: its kind, its route and `Place.inbox()` keep
+/// their names, and only the visible words say Needs you.
 String _label(PlaceKind kind) => switch (kind) {
   PlaceKind.overview => 'Overview',
-  PlaceKind.inbox => 'Inbox',
+  PlaceKind.inbox => 'Needs you',
   PlaceKind.pulls => 'Pull requests',
   PlaceKind.project => 'Project',
   PlaceKind.thread => 'Thread',

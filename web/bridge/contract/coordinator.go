@@ -25,13 +25,25 @@ type CoordinatorThreadRef struct {
 	ID   string `json:"id"`
 }
 
-// CoordinatorTaskStatus is where a coordinated task stands. Only "open" is
-// written by this phase; a stopped task arrives with the stop scope.
+// CoordinatorTaskStatus is where a coordinated task stands.
 type CoordinatorTaskStatus string
 
 // The task states.
 const (
-	CoordinatorTaskOpen    CoordinatorTaskStatus = "open"
+	// CoordinatorTaskOpen means the task may still dispatch work: it is open
+	// and nothing has asked it to stop.
+	CoordinatorTaskOpen CoordinatorTaskStatus = "open"
+	// CoordinatorTaskStopping means a stop is durable and not yet confirmed:
+	// no new assignment may be dispatched for the task, its owned pending intake
+	// is being withdrawn, and the workers the task created are being cancelled.
+	// It is the state a screen shows as pending until the daemon answers that
+	// the stop took. A bridge that dies while stopping resumes it from this
+	// record rather than from a cancellation that may never have been sent.
+	CoordinatorTaskStopping CoordinatorTaskStatus = "stopping"
+	// CoordinatorTaskStopped means the stop settled: every worker the task
+	// created is cancelled or gone, every owned submission is withdrawn, and
+	// the work a linked thread or a failed assignment represents keeps its own
+	// outcome. A stopped task dispatches nothing.
 	CoordinatorTaskStopped CoordinatorTaskStatus = "stopped"
 )
 
@@ -234,6 +246,21 @@ type CoordinatorAssignResult struct {
 	TaskID       string                  `json:"taskId"`
 	TaskRevision uint64                  `json:"taskRevision,omitempty"`
 	Assignments  []CoordinatorAssignment `json:"assignments"`
+}
+
+// CoordinatorStopResult is POST /api/coordinator/tasks/{id}/stop's answer: the
+// task as the stop left it, what each of its assignments settled to, and the
+// result reported back into the source thread.
+//
+// Stopping is one request and one answer, so a screen shows the stop as pending
+// until this arrives: Task.Status is stopping when the daemon recorded the
+// intent but could not confirm the cancellation of every worker it created, and
+// stopped when it did. Both answers carry the same fields, so a repeat after a
+// reconnect reads the settled state rather than inventing one.
+type CoordinatorStopResult struct {
+	Task        CoordinatorTask         `json:"task"`
+	Assignments []CoordinatorAssignment `json:"assignments"`
+	Delivery    *CoordinatorDelivery    `json:"delivery,omitempty"`
 }
 
 // CoordinatorAssignmentList is one task's assignments, as a read reports them.

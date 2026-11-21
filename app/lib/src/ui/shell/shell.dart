@@ -622,6 +622,7 @@ class Studio extends StatefulWidget {
     this.connectRepoFor,
     this.planningFor,
     this.handoffFor,
+    this.sourceHandoffFor,
     this.runFor,
     this.answerRunFor,
     this.rosterFor,
@@ -724,6 +725,13 @@ class Studio extends StatefulWidget {
   /// It is asynchronous because what the review inherits is the project's own
   /// settings, read when the person hands the plan off (F6 decision 12).
   final HandoffBuilder? handoffFor;
+
+  /// Builds the handoff one project thread is the source of (agent-first Studio,
+  /// tasks 7-8), for the band its transcript draws above the conversation. Null
+  /// leaves the band off: a host this build wired no route for draws no handoff
+  /// rather than one that could only fail.
+  final SourceHandoffModel? Function(String host, model.ThreadRef thread)?
+  sourceHandoffFor;
 
   /// Builds a plan run's model for one agent (F6 decision 11). Null leaves a
   /// plan run's place unbuilt rather than drawing an empty run.
@@ -1338,6 +1346,12 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
           // host (spec D10, P8 plan 2 decision 6).
           shareFor: widget.shareFor,
           inspectorFor: widget.inspectorFor,
+          // The handoff this thread is the source of (agent-first Studio,
+          // tasks 7-8): what its work was handed to, and the result reported
+          // back here. Null leaves the band off rather than drawing one that
+          // could not be read.
+          sourceHandoffFor: widget.sourceHandoffFor,
+          onOpen: navigation.go,
           // The thread's New buttons open the Studio's one dialog; its own ⌘N
           // does too, but behind the shell's guard against a composer that has
           // the keyboard (F9 decision 6). The dialog opens on this thread's
@@ -1864,6 +1878,8 @@ class _ThreadPlace extends StatefulWidget {
     this.composerFor,
     this.shareFor,
     this.inspectorFor,
+    this.sourceHandoffFor,
+    this.onOpen,
     this.onNewWork,
     this.onNewWorkFromKeys,
     this.asks = const [],
@@ -1877,6 +1893,15 @@ class _ThreadPlace extends StatefulWidget {
   final StackStore Function(model.ThreadRef thread) buildStore;
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
+
+  /// Builds the handoff this thread is the source of (agent-first Studio,
+  /// tasks 7-8), once, when the place opens. Null leaves the band off.
+  final SourceHandoffModel? Function(String host, model.ThreadRef thread)?
+  sourceHandoffFor;
+
+  /// Opens a place: the handoff's task, or one assignment's thread. Null leaves
+  /// those links out rather than drawing one that goes nowhere.
+  final void Function(Place place)? onOpen;
 
   /// What this thread opens as, from Settings' General section: the density a
   /// transcript starts at. The thread's own switch still overrides it, for
@@ -1927,6 +1952,12 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
   ComposerModel? _composer;
   ShareModel? _share;
 
+  /// The handoff this thread is the source of (agent-first Studio, tasks 7-8),
+  /// read once when the place opens. Its own read is what draws the band, and it
+  /// keeps each composer's draft because the band is the transcript's, not a
+  /// second screen's.
+  SourceHandoffModel? _handoff;
+
   @override
   void initState() {
     super.initState();
@@ -1936,6 +1967,12 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
     _inspector?.start();
     _composer = widget.composerFor?.call(widget.thread, _view);
     _share = widget.shareFor?.call(widget.thread.host, widget.thread.id);
+    // The handoff this thread is the source of: read once here, and its answer
+    // is what the transcript's band draws. A thread nothing was handed off from
+    // reads an empty view, which draws no band at all.
+    _handoff = widget.sourceHandoffFor?.call(widget.thread.host, widget.thread);
+    _handoff?.addListener(_handoffChanged);
+    unawaited(_handoff?.start());
     // A thread opened while its agent is mid-turn offers Steer and Stop from
     // the first frame, from the fleet's own report of the agent.
     _composer?.setRunning(_turnRunning);
@@ -1968,6 +2005,14 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
       widget.thread.status == model.ThreadStatus.running ||
       widget.thread.status == model.ThreadStatus.needsYou;
 
+  /// The handoff's own read answered: its band is drawn from the view state the
+  /// transcript already reads, so switching density or scrolling keeps it.
+  void _handoffChanged() {
+    final handoff = _handoff;
+    if (!mounted || handoff == null) return;
+    setState(() => _view.handoff = handoff.handoff);
+  }
+
   @override
   void dispose() {
     // The inspector's tab models and its state outlive no thread: they are
@@ -1979,6 +2024,8 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
     _view.dispose();
     _composer?.dispose();
     _share?.dispose();
+    _handoff?.removeListener(_handoffChanged);
+    _handoff?.dispose();
     super.dispose();
   }
 
@@ -2013,6 +2060,14 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
       // passed: no bridge route holds an agent, so the header would offer an
       // item that cannot work (f9-parity.md decision 2).
       onStop: _composer == null ? null : () => unawaited(_composer!.stop()),
+      // The handoff's own links: the coordinated task it opened, one
+      // assignment's thread, and the scoped retry a failed row offers. Null
+      // leaves each out rather than drawing one that goes nowhere.
+      onOpenHandoff: widget.onOpen,
+      onOpenAssignment: widget.onOpen,
+      onRetryAssignment: _handoff == null
+          ? null
+          : (id) => unawaited(_handoff!.retryAssignment(id)),
       composer: composer == null
           ? null
           : ThreadComposer(model: composer, view: _view),
@@ -2302,6 +2357,10 @@ class _MarshalRegionState extends State<_MarshalRegion> {
             : ThreadComposer(model: composer, view: view),
         onOpen: widget.navigation.go,
         onRetry: () => unawaited(_model.refresh()),
+        // The task's own Stop, distinct from the composer's turn Stop: it stops
+        // at the scope the task names and shows pending until the daemon answers.
+        onStop: _model.canStop ? () => unawaited(_model.stopTask()) : null,
+        stopping: _model.stopping,
       ),
     );
   }

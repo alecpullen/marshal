@@ -94,7 +94,12 @@ class HandoffAssignmentRow {
     HandoffAssignmentState.failed =>
       'Failed${(reason ?? '').trim().isEmpty ? '' : ': ${reason!.trim()}'}',
     HandoffAssignmentState.expired => 'Expired',
-    HandoffAssignmentState.stopped => 'Stopped',
+    // A stopped assignment carries why it stopped: a cancelled worker, a
+    // withdrawn submission, work that had already been delivered and one that
+    // never started are different outcomes, and the row names each as the one
+    // it is.
+    HandoffAssignmentState.stopped =>
+      'Stopped${(reason ?? '').trim().isEmpty ? '' : ': ${reason!.trim()}'}',
   };
 
   /// What a row is called: the project, or its id when the daemon named none.

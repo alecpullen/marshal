@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/client/transport.dart';
@@ -77,6 +79,7 @@ void main() {
       String assignmentId,
     )?
     retryAssignment,
+    Future<CoordinatorStopResult> Function(String taskId)? stopTask,
     String? remembered,
     void Function(String key, String value)? save,
     DateTime Function()? clock,
@@ -89,6 +92,7 @@ void main() {
     create: (request) async => throw StateError('this test creates nothing'),
     assignments: assignments,
     retryAssignment: retryAssignment,
+    stopTask: stopTask,
     read: remembered == null ? null : (key) => remembered,
     save: save,
     now: clock ?? () => now,
@@ -640,5 +644,374 @@ void main() {
     // answer: the rows it showed stand.
     await tester.tap(find.text('Retry api'));
     expect(model.assignments.length, 2);
+  });
+
+  // ── The scoped stop (task 8) ───────────────────────────────────────────
+  //
+  // A coordinated task's Stop is not the conversation's turn Stop: it stops
+  // further dispatch, withdraws the task's waiting submissions and cancels the
+  // workers it created, and it reads as pending until the daemon confirms it. A
+  // linked thread keeps its own Stop, and the summary names each outcome as the
+  // one it is.
+
+  CoordinatorTask settledTask(
+    String id, {
+    CoordinatorTaskStatus status = CoordinatorTaskStatus.coordinatorTaskStopped,
+  }) => CoordinatorTask(
+    id: id,
+    sessionID: 'coord-$id',
+    title: 'Task $id',
+    status: status,
+    revision: 2,
+    projects: const [],
+    createdAt: now.toIso8601String(),
+    updatedAt: now.toIso8601String(),
+  );
+
+  CoordinatorAssignment stoppedWorker(String id, String project, String name) =>
+      assignment(
+        id: id,
+        project: project,
+        projectName: name,
+        state: CoordinatorAssignmentState.coordinatorAssignmentStopped,
+        workerID: 'a-$name',
+        reason: 'its worker was cancelled when the task stopped',
+      );
+
+  const stopSummary =
+      'Marshal: this task stopped, with 3 assignments. cli: stopped: its worker '
+      'was cancelled when the task stopped; api: linked and observed; web: '
+      'failed: the task’s access was revoked.';
+
+  test('a stop is pending until the daemon confirms it, then names each '
+      'outcome', () async {
+    final confirm = Completer<CoordinatorStopResult>();
+    final model = modelFor(
+      answers: {
+        'a': attention(taskID: 'a', sources: [fresh('p-cli')]),
+      },
+      assignments: (id) async => assignmentList([
+        assignment(
+          id: 'asg-cli',
+          project: 'p-cli',
+          projectName: 'cli',
+          workerID: 'a-cli',
+        ),
+        assignment(
+          id: 'asg-api',
+          project: 'p-api',
+          projectName: 'api',
+          threadID: 'a-api',
+          state: CoordinatorAssignmentState.coordinatorAssignmentLinked,
+        ),
+        assignment(
+          id: 'asg-web',
+          project: 'p-web',
+          projectName: 'web',
+          state: CoordinatorAssignmentState.coordinatorAssignmentFailed,
+          reason: 'the task’s access was revoked',
+        ),
+      ]),
+      stopTask: (id) => confirm.future,
+    );
+    await model.load();
+    await model.selectTask('a');
+
+    final stop = model.stopTask();
+    await Future<void>.delayed(Duration.zero);
+    // Pending until the daemon answers: the task has not stopped, the control
+    // cannot be pressed again, and nothing claims work was cancelled.
+    expect(model.stopping, isTrue);
+    expect(model.task!.state, MarshalTaskState.open);
+    expect(model.canStop, isFalse);
+    expect(
+      model.handoff!.rows.every(
+        (row) => row.state != HandoffAssignmentState.stopped,
+      ),
+      isTrue,
+    );
+
+    confirm.complete(
+      CoordinatorStopResult(
+        task: settledTask('a'),
+        assignments: [
+          stoppedWorker('asg-cli', 'p-cli', 'cli'),
+          assignment(
+            id: 'asg-api',
+            project: 'p-api',
+            projectName: 'api',
+            threadID: 'a-api',
+            state: CoordinatorAssignmentState.coordinatorAssignmentLinked,
+          ),
+          assignment(
+            id: 'asg-web',
+            project: 'p-web',
+            projectName: 'web',
+            state: CoordinatorAssignmentState.coordinatorAssignmentFailed,
+            reason: 'the task’s access was revoked',
+          ),
+        ],
+        delivery: CoordinatorDelivery(
+          taskID: 'a',
+          eventID: 'coord-delivery-1',
+          text: stopSummary,
+          at: now.toIso8601String(),
+        ),
+      ),
+    );
+    await stop;
+
+    expect(model.stopping, isFalse);
+    expect(model.task!.state, MarshalTaskState.stopped);
+    expect(model.canStop, isFalse, reason: 'a stopped task dispatches nothing');
+    final rows = model.handoff!.rows;
+    // The worker the task created is named as cancelled.
+    expect(rows[0].state, HandoffAssignmentState.stopped);
+    expect(rows[0].stateWords, contains('cancelled'));
+    // The linked thread keeps its link, and with it its own Stop.
+    expect(rows[1].state, HandoffAssignmentState.linked);
+    expect(
+      rows[1].thread,
+      const Place(PlaceKind.thread, host: 'local', id: 'a-api'),
+    );
+    // A failure is not rewritten by the stop: it is still named as the failure
+    // it was.
+    expect(rows[2].state, HandoffAssignmentState.failed);
+    expect(rows[2].stateWords, contains('revoked'));
+    expect(model.resultText, stopSummary);
+    model.dispose();
+  });
+
+  test('a repeated stop after a reconnect does nothing a second time', () async {
+    var calls = 0;
+    final model = modelFor(
+      answers: {
+        'a': attention(taskID: 'a', sources: [fresh('p-cli')]),
+      },
+      assignments: (id) async => assignmentList([
+        assignment(
+          id: 'asg-cli',
+          project: 'p-cli',
+          projectName: 'cli',
+          workerID: 'a-cli',
+        ),
+      ]),
+      stopTask: (id) async {
+        calls++;
+        return CoordinatorStopResult(
+          task: settledTask(id),
+          assignments: [stoppedWorker('asg-cli', 'p-cli', 'cli')],
+        );
+      },
+    );
+    await model.load();
+    await model.selectTask('a');
+    await model.stopTask();
+    expect(calls, 1);
+    expect(model.task!.state, MarshalTaskState.stopped);
+
+    // A stopped task is spent: a second press, or a resumed screen's retry,
+    // sends nothing and cancels nothing again.
+    await model.stopTask();
+    expect(calls, 1);
+    expect(model.task!.state, MarshalTaskState.stopped);
+    model.dispose();
+  });
+
+  test('a stop the daemon refused is its words, not a stopped task', () async {
+    final model = modelFor(
+      answers: {
+        'a': attention(taskID: 'a', sources: [fresh('p-cli')]),
+      },
+      assignments: (id) async => assignmentList([
+        assignment(
+          id: 'asg-cli',
+          project: 'p-cli',
+          projectName: 'cli',
+          workerID: 'a-cli',
+        ),
+      ]),
+      stopTask: (id) async => throw BridgeFailure(409, '{"error":"conflict"}'),
+    );
+    await model.load();
+    await model.selectTask('a');
+    await model.stopTask();
+
+    expect(model.stopFailure, isNotNull);
+    expect(model.task!.state, MarshalTaskState.open, reason: 'nothing stopped');
+    expect(model.canStop, isTrue, reason: 'the action stays available');
+    model.dispose();
+  });
+
+  testWidgets('the scoped stop is its own control, pending until confirmed', (
+    tester,
+  ) async {
+    final confirm = Completer<CoordinatorStopResult>();
+    final model = modelFor(
+      answers: {
+        'a': attention(taskID: 'a', sources: [fresh('p-cli')]),
+      },
+      assignments: (id) async => assignmentList([
+        assignment(
+          id: 'asg-cli',
+          project: 'p-cli',
+          projectName: 'cli',
+          workerID: 'a-cli',
+        ),
+      ]),
+      stopTask: (id) => confirm.future,
+    );
+    await model.load();
+    await model.selectTask('a');
+
+    var pressed = 0;
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: AnimatedBuilder(
+          animation: model,
+          builder: (context, _) => MarshalPlace(
+            model: model,
+            host: 'local',
+            now: now,
+            onStop: model.canStop
+                ? () {
+                    pressed++;
+                    unawaited(model.stopTask());
+                  }
+                : null,
+            stopping: model.stopping,
+            onRetry: () {},
+          ),
+        ),
+      ),
+    );
+
+    // The task's own Stop, named for the task's scope: the conversation's turn
+    // Stop is the composer's, and this is not it.
+    expect(find.text('Stop task'), findsOneWidget);
+    await tester.tap(find.text('Stop task'));
+    await tester.pump();
+    expect(pressed, 1);
+
+    // While the daemon has not answered, the control says so and cannot be
+    // pressed again.
+    expect(find.text('Stopping…'), findsOneWidget);
+    expect(find.text('Stop task'), findsNothing);
+    await tester.tap(find.text('Stopping…'));
+    await tester.pump();
+    expect(pressed, 1);
+
+    confirm.complete(
+      CoordinatorStopResult(
+        task: settledTask('a'),
+        assignments: [stoppedWorker('asg-cli', 'p-cli', 'cli')],
+      ),
+    );
+    await tester.pumpAndSettle();
+    // Confirmed: the control is gone from a task that has stopped.
+    expect(find.text('Stop task'), findsNothing);
+    expect(find.text('Stopping…'), findsNothing);
+  });
+
+  // ── The joined journey (task 8) ────────────────────────────────────────
+  //
+  // The project → Marshal → worker → source journey as the screens read it: the
+  // source thread's band, the destination's assignments and the result reported
+  // back, and the same stop reached from either surface.
+
+  test('the source thread reads the handoff it handed work to', () async {
+    final source = SourceHandoffModel(
+      host: 'local',
+      projectId: 'p-api',
+      threadId: 'a-api',
+      read: (projectId, threadId) async {
+        expect((projectId, threadId), ('p-api', 'a-api'));
+        return CoordinatorSourceView(
+          host: 'local',
+          task: task('a'),
+          assignments: [
+            assignment(
+              id: 'asg-cli',
+              project: 'p-cli',
+              projectName: 'cli',
+              workerID: 'a-cli',
+            ),
+          ],
+          delivery: CoordinatorDelivery(
+            taskID: 'a',
+            eventID: 'coord-delivery-1',
+            text:
+                'Marshal: 1 assignment. cli: running — on '
+                'fix/compat-negotiation.',
+            at: now.toIso8601String(),
+          ),
+        );
+      },
+      now: () => now,
+    );
+    addTearDown(source.dispose);
+    await source.start();
+
+    final handoff = source.handoff!;
+    expect(handoff.taskId, 'a');
+    expect(handoff.task, const Place.marshal(host: 'local', id: 'a'));
+    expect(handoff.rows.single.project, 'cli');
+    expect(handoff.rows.single.state, HandoffAssignmentState.running);
+    // The worker's thread opens on this host: a task is host-local.
+    expect(
+      handoff.rows.single.thread,
+      const Place(PlaceKind.thread, host: 'local', id: 'a-cli'),
+    );
+    expect(handoff.result, contains('fix/compat-negotiation'));
+    expect(handoff.stale, isFalse);
+  });
+
+  test('a thread nothing was handed off from draws no handoff', () async {
+    final source = SourceHandoffModel(
+      host: 'local',
+      projectId: 'p-api',
+      threadId: 'a-api',
+      read: (projectId, threadId) async =>
+          const CoordinatorSourceView(assignments: []),
+      now: () => now,
+    );
+    addTearDown(source.dispose);
+    await source.start();
+    expect(source.handoff, isNull, reason: 'an empty view is not a handoff');
+  });
+
+  test('a handoff read that failed says the band may be behind', () async {
+    var reads = 0;
+    final source = SourceHandoffModel(
+      host: 'local',
+      projectId: 'p-api',
+      threadId: 'a-api',
+      read: (projectId, threadId) async {
+        reads++;
+        if (reads > 1) throw BridgeFailure(503, '{"error":"unavailable"}');
+        return CoordinatorSourceView(
+          host: 'local',
+          task: task('a'),
+          assignments: [
+            assignment(
+              id: 'asg-cli',
+              project: 'p-cli',
+              projectName: 'cli',
+              workerID: 'a-cli',
+            ),
+          ],
+        );
+      },
+      now: () => now,
+    );
+    addTearDown(source.dispose);
+    await source.start();
+    expect(source.handoff, isNotNull);
+    await source.refresh();
+    // What was read stands, marked as possibly behind rather than vanishing.
+    expect(source.failure, isNotNull);
+    expect(source.handoff, isNotNull);
+    expect(source.handoff!.stale, isTrue);
   });
 }

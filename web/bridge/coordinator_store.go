@@ -805,6 +805,45 @@ func (s *coordinatorStore) Delivery(taskID string) (contract.CoordinatorDelivery
 	return rec, ok, nil
 }
 
+// SetTaskStatus writes one task's status and reports whether it changed.
+//
+// It is the durable half of a task stop (agent-first Studio, task 8): the
+// stopping record is written before anything is cancelled, so a bridge that dies
+// mid-stop resumes from the record rather than from a call that may never have
+// been sent. It reports changed=false when the status already stands, which is
+// what keeps a repeat after a reconnect — or a second press — from looking like
+// progress.
+func (s *coordinatorStore) SetTaskStatus(taskID string, status contract.CoordinatorTaskStatus) (contract.CoordinatorTask, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.writable(); err != nil {
+		return contract.CoordinatorTask{}, false, err
+	}
+	rec, ok := s.tasks[taskID]
+	if !ok {
+		return contract.CoordinatorTask{}, false, ErrCoordinatorNotFound
+	}
+	if rec.Task.Status == status {
+		return rec.Task, false, nil
+	}
+	rec.Task.Status = status
+	rec.Task.Revision++
+	rec.Task.UpdatedAt = s.now().UTC()
+	if err := s.persistLocked(func(doc *coordinatorDocument) bool {
+		for n := range doc.Tasks {
+			if doc.Tasks[n].Task.ID == taskID {
+				doc.Tasks[n] = rec
+				return true
+			}
+		}
+		return false
+	}); err != nil {
+		return contract.CoordinatorTask{}, false, err
+	}
+	s.tasks[taskID] = rec
+	return rec.Task, true, nil
+}
+
 // UpdateAssignment applies mutate to one assignment and writes it atomically.
 //
 // mutate reports whether it changed anything; an unchanged assignment is not

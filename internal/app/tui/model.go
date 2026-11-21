@@ -1655,7 +1655,64 @@ func (m Model) ctrlCArmed() ctrlCAction {
 // the update covers the runtime early returns that would otherwise skip it,
 // and reconciliation after covers every dock-close branch without patching
 // each one. A value receiver cannot defer, so the two calls are explicit.
+//
+// The pending prompts' models are built here, before the message is routed, so
+// a request that arrives mid-turn is drawn by its real surface on the very
+// next frame rather than by the plain fallback panel until a key reaches it.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	init := m.ensurePromptModels()
+	out, cmd := m.updateRouted(msg)
+	return out, tea.Batch(init, cmd)
+}
+
+// ensurePromptModels builds the model for each pending prompt that has none
+// yet (or whose model is bound to another request), mirroring what the first
+// message to the prompt's handler used to do lazily. Without it a prompt that
+// opens while the user is idle or the window is unfocused renders through the
+// fallback renderer, whose layout differs from the real one, and snaps to the
+// real one on the first keypress. It returns the command the built form needs
+// to start, if any.
+func (m *Model) ensurePromptModels() tea.Cmd {
+	pending := m.sess.Pending()
+	width := max(m.leftWidth-4, 30)
+	var cmd tea.Cmd
+	if sa := pending.Sudo; sa != nil {
+		if m.sudoAuthModel == nil || m.sudoAuthModel.sa.Key != sa.Key {
+			m.sudoAuthModel = newSudoAuthModel(*sa, width)
+			m.syncPromptReviewHeights()
+		}
+		return nil
+	}
+	if sg := pending.SkillGate; sg != nil {
+		if m.skillGateModel == nil || m.skillGateModel.sg.Key != sg.Key {
+			m.skillGateModel = newSkillGateModel(*sg, width)
+		}
+		return nil
+	}
+	if len(pending.Approvals) > 0 {
+		a := displayApproval(pending.Approvals[0])
+		// Typed access requests belong to the access panel, a raw mode.request
+		// is only ever denied, and an approval edit owns the input: none of
+		// them show the chooser.
+		chooser := !a.Access && m.approvalEdit == nil &&
+			!(a.SubagentID == 0 && a.Tool == "mode.request")
+		if chooser && (m.approvalModel == nil || m.approvalModel.a.Key != a.Key) {
+			st := m.sess.Status()
+			m.approvalModel = newApprovalModel(a, st.Sandbox, st.HasBackup, width)
+			m.syncPromptReviewHeights()
+		}
+		return nil
+	}
+	if q := pending.Question; q != nil {
+		if m.questionModel == nil || m.questionModel.q.Key != q.Key {
+			m.questionModel = newQuestionModel(*q, width)
+			cmd = m.questionModel.Init()
+		}
+	}
+	return cmd
+}
+
+func (m Model) updateRouted(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.reconcileAccess()
 	// An approval edit is bound to exactly one request. When that request is no
 	// longer the pending one — settled, interrupted or replaced — the edit is

@@ -388,6 +388,11 @@ class NewWorkModel extends ChangeNotifier {
   List<Recipe> _recipeList = const [];
   bool _loading = false;
   String? _failure;
+
+  /// Whether the last Start was refused because this kind needs a prompt.
+  /// Kept apart from [_failure] so editing the prompt or switching kinds
+  /// clears the instruction without discarding a route's own error.
+  bool _promptMissing = false;
   SpawnResult? _started;
   PlannerView? _startedPlanner;
 
@@ -442,8 +447,13 @@ class NewWorkModel extends ChangeNotifier {
 
   bool get loading => _loading;
 
-  /// Why the last spawn failed, in the bridge's words.
-  String? get failure => _failure;
+  /// Why Start was refused: the prompt this kind needs is missing, or the
+  /// bridge's words for the last spawn.
+  String? get failure => _promptMissing ? _promptRequired : _failure;
+
+  static const _promptRequired =
+      'Write what it should do first, or start an Agent and tell it '
+      'in its thread.';
 
   /// The agent the last [start] made, if it made one.
   SpawnResult? get started => _started;
@@ -452,14 +462,28 @@ class NewWorkModel extends ChangeNotifier {
   StartedPlanner? get startedPlanner =>
       _startedPlanner == null ? null : StartedPlanner.of(_startedPlanner!);
 
-  /// Whether Start can post: a prompt, and a kind this phase can start.
-  bool get canStart => _prompt.trim().isNotEmpty && !_kind.planned;
+  /// Whether Start can post: a kind this phase can start, and — unless it is
+  /// an agent — the prompt that kind uses as its own text.
+  ///
+  /// An agent's prompt is optional: it can be started with nothing to do and
+  /// told what to do from its own thread, so the dialog posts a spawn with no
+  /// first turn rather than asking for words before the thread exists. A
+  /// planning thread's first turn and a work item's plan *are* the prompt, so
+  /// those two still need one.
+  bool get canStart =>
+      !_kind.planned &&
+      (_kind == NewWorkKind.agent || _prompt.trim().isNotEmpty);
+
+  /// Whether the prompt may be left empty, which only an agent allows. The
+  /// dialog says so beside the field, and Start stays live with the box blank.
+  bool get promptOptional => _kind == NewWorkKind.agent;
 
   /// Loads the three lists, and the project menu's alternatives, from the host
   /// the dialog starts on.
   Future<void> load() async {
     _loading = true;
     _failure = null;
+    _promptMissing = false;
     notifyListeners();
     final routes = _current;
     await _read(routes);
@@ -513,6 +537,7 @@ class NewWorkModel extends ChangeNotifier {
   void selectKind(NewWorkKind kind) {
     if (kind.planned || kind == _kind) return;
     _kind = kind;
+    _promptMissing = false;
     notifyListeners();
   }
 
@@ -559,6 +584,7 @@ class NewWorkModel extends ChangeNotifier {
     final kept = roots == null ? routes.project == root : roots.contains(root);
     _choices['Project'] = kept ? root : routes.project;
     _failure = null;
+    _promptMissing = false;
     await _read(routes);
     if (token != _switch || _disposed) return;
     _setProjectMenu(roots);
@@ -569,6 +595,7 @@ class NewWorkModel extends ChangeNotifier {
   void prefill(String text) {
     if (_prompt == text) return;
     _prompt = text;
+    if (text.trim().isNotEmpty) _promptMissing = false;
     notifyListeners();
   }
 
@@ -583,7 +610,16 @@ class NewWorkModel extends ChangeNotifier {
   /// the planner's first turn, and the thread the dialog opens is a planning
   /// thread.
   Future<void> start() async {
-    if (!canStart) return;
+    if (!canStart) {
+      // An agent starts with a blank box, so this is a planning thread's first
+      // turn or a work item's plan with nothing in it: say what Start needs
+      // rather than returning as though a press had worked.
+      _promptMissing = true;
+      _failure = null;
+      notifyListeners();
+      return;
+    }
+    _promptMissing = false;
     _failure = null;
     notifyListeners();
     if (_kind == NewWorkKind.planFirst) {
@@ -606,10 +642,14 @@ class NewWorkModel extends ChangeNotifier {
     }
     try {
       final baseBranch = _choices['Base branch'];
+      final prompt = _prompt.trim();
       _started = await _current.spawn(
         SpawnRequest(
           project: _choices['Project']!,
-          prompt: _prompt.trim(),
+          // An agent started with nothing to do carries no first turn at all:
+          // the route spawns it idle and its thread takes the first prompt,
+          // rather than the bridge being sent an empty one to run.
+          prompt: prompt.isEmpty ? null : prompt,
           mode: mode,
           baseRef: baseBranch == NewWorkDefaults.projectDefaultBranch
               ? null

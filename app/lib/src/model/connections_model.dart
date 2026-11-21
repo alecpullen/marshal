@@ -59,6 +59,47 @@ ForgePermits permitsFor(String kind) => switch (kind) {
   ),
 };
 
+/// How a new forge credential holds its secret, as a person chooses it. The
+/// bridge's own kinds are `vault`, `pat` and `ssh`; these say what each one
+/// asks of the person.
+enum CredentialSource {
+  /// A token pasted here and kept in the bridge's secrets (`vault`).
+  pastedToken,
+
+  /// A token the daemon reads from an environment variable (`pat`).
+  environmentVariable,
+
+  /// A private key file on the daemon's machine (`ssh`).
+  sshKey,
+}
+
+/// A stored credential a forge can be pointed at.
+@immutable
+class CredentialChoice {
+  const CredentialChoice({
+    required this.id,
+    required this.kind,
+    required this.isSet,
+  });
+
+  final String id;
+  final String kind;
+
+  /// Whether the secret it names exists now.
+  final bool isSet;
+}
+
+/// The protocols a provider speaks, as the bridge's config names them.
+const providerTypes = <(String, String, String)>[
+  (
+    'openai_compatible',
+    'OpenAI-compatible',
+    'LM Studio, vLLM, OpenRouter, OpenAI',
+  ),
+  ('anthropic', 'Anthropic', 'The Messages API'),
+  ('ollama', 'Ollama', 'Ollama\'s own endpoints'),
+];
+
 /// One row of Connections: a forge, or a model provider.
 enum ConnectionKind { forge, provider }
 
@@ -74,6 +115,8 @@ class Connection {
     required this.value,
     this.facts = const [],
     this.permits,
+    this.credentialID,
+    this.needsAttention = false,
   });
 
   final ConnectionKind kind;
@@ -92,6 +135,14 @@ class Connection {
 
   /// What a forge's credential permits; null for a provider.
   final ForgePermits? permits;
+
+  /// The stored credential a forge is reached with; null for a provider, and
+  /// for a forge with none.
+  final String? credentialID;
+
+  /// Something here stops it working: a forge with no credential or one whose
+  /// secret is missing, a provider whose last probe failed.
+  final bool needsAttention;
 
   bool get isProvider => kind == ConnectionKind.provider;
 }
@@ -175,6 +226,165 @@ class ConnectionsModel extends SectionModel<Connection> {
   /// the bridge's own config.
   @override
   Future<Connection> persist(Connection item) async => item;
+
+  /// Every stored credential, for a forge to be pointed at.
+  List<CredentialChoice> get credentialChoices => [
+    for (final one in _credentials.values)
+      CredentialChoice(id: one.id, kind: one.kind, isSet: one.set),
+  ];
+
+  /// Whether this model can write: one without a bridge is a fixture.
+  bool get canWrite => _client != null;
+
+  BridgeClient _bridge() =>
+      _client ??
+      (throw StateError('No bridge is connected, so nothing can be saved'));
+
+  /// Reads what the bridge holds again after a write, so every row says what
+  /// is true now.
+  Future<void> _refresh() async => replaceItems(await fetch());
+
+  /// Registers [url] under [id]. A refusal throws in the bridge's own words.
+  Future<void> connectRepository({
+    required String url,
+    required String id,
+    String forge = 'github',
+    String? credentialID,
+    String? branch,
+  }) async {
+    await _bridge().registerRepo(
+      Repo(
+        id: id,
+        url: url,
+        ownerID: '',
+        forge: forge,
+        credRef: credentialID,
+        branch: branch,
+      ),
+    );
+    await _refresh();
+  }
+
+  /// Points [repoID] at [credentialID], or at none. The repo is registered
+  /// again whole, so nothing else about it changes.
+  Future<void> useCredential(String repoID, String? credentialID) async {
+    final repo = _repos.firstWhere((one) => one.id == repoID);
+    await _bridge().registerRepo(
+      Repo(
+        id: repo.id,
+        url: repo.url,
+        branch: repo.branch,
+        credRef: credentialID,
+        ownerID: repo.ownerID,
+        forge: repo.forge,
+        apiBase: repo.apiBase,
+        watch: repo.watch,
+        watchLabel: repo.watchLabel,
+      ),
+    );
+    await _refresh();
+  }
+
+  /// Forgets a repository. Its credential stays.
+  Future<void> removeRepository(String id) async {
+    await _bridge().removeRepo(id);
+    await _refresh();
+  }
+
+  /// Stores a credential named [id], and — for a pasted token — the token in
+  /// the bridge's secrets. The token goes one way: nothing reads it back.
+  ///
+  /// [value] is the token, the environment variable's name or the key file's
+  /// path, by [source]. When [repoID] is given the repository is pointed at
+  /// the new credential in the same step.
+  Future<void> addCredential({
+    required String id,
+    required CredentialSource source,
+    required String value,
+    String? user,
+    String? repoID,
+  }) async {
+    final client = _bridge();
+    final input = switch (source) {
+      CredentialSource.pastedToken => CredentialInput(
+        id: id,
+        kind: 'vault',
+        ref: 'vault:git/$id',
+        user: user,
+      ),
+      CredentialSource.environmentVariable => CredentialInput(
+        id: id,
+        kind: 'pat',
+        envVar: value,
+        user: user,
+      ),
+      CredentialSource.sshKey => CredentialInput(
+        id: id,
+        kind: 'ssh',
+        keyPath: value,
+        user: user,
+      ),
+    };
+    if (source == CredentialSource.pastedToken) {
+      await client.putSecret('vault:git/$id', value);
+    }
+    await client.putCredential(input);
+    _credentials = {
+      ..._credentials,
+      id: Credential(id: id, kind: input.kind, set: true),
+    };
+    if (repoID != null) {
+      await useCredential(repoID, id);
+    } else {
+      await _refresh();
+    }
+  }
+
+  /// Deletes a credential. The bridge refuses while a repository uses it.
+  Future<void> removeCredential(String id) async {
+    await _bridge().deleteCredential(id);
+    await _refresh();
+  }
+
+  /// Adds or replaces the provider [name]. A key, when given, is stored with
+  /// it and never read back.
+  Future<void> saveProvider({
+    required String name,
+    required String type,
+    required String baseURL,
+    String? apiKeyEnv,
+    bool toolCalling = true,
+    String? key,
+  }) async {
+    final client = _bridge();
+    await client.setProviders(
+      ProvidersUpdate(
+        providers: {
+          name: ProviderWrite(
+            type: type,
+            baseURL: baseURL,
+            apiKeyEnv: apiKeyEnv,
+            toolCalling: toolCalling,
+          ),
+        },
+      ),
+    );
+    if (key != null && key.isNotEmpty) await client.setProviderKey(name, key);
+    await _refresh();
+  }
+
+  /// Stores a new key for [name]. It goes one way.
+  Future<void> setProviderKey(String name, String key) async {
+    await _bridge().setProviderKey(name, key);
+    await _refresh();
+  }
+
+  /// Removes the provider [name] from the user's config.
+  Future<void> removeProvider(String name) async {
+    await _bridge().setProviders(ProvidersUpdate(providers: {name: null}));
+    _probes.remove(name);
+    await _refresh();
+  }
 
   /// Asks the provider what models it answers with and puts the answer in
   /// the row. A probe that fails is an answer too: it says what went wrong.
@@ -264,8 +474,14 @@ class ConnectionsModel extends SectionModel<Connection> {
           id: repo.id,
           name: repo.id,
           description: '${repo.forge ?? 'git'} · $credentialWords',
-          value: permits.summary,
+          value: switch (credential) {
+            null => 'No credential — cannot push',
+            Credential(set: false) => 'Credential secret missing',
+            _ => permits.summary,
+          },
           permits: permits,
+          credentialID: credential?.id,
+          needsAttention: credential == null || !credential.set,
           facts: [
             ('Repository', repo.url),
             if (repo.branch != null) ('Branch', repo.branch!),
@@ -295,6 +511,7 @@ class ConnectionsModel extends SectionModel<Connection> {
             name: name,
             description: '${provider.type} · ${provider.baseURL}',
             value: _health(name, provider),
+            needsAttention: probe?.error?.isNotEmpty ?? false,
             facts: [
               ('Type', provider.type),
               ('Base URL', provider.baseURL),
@@ -308,14 +525,6 @@ class ConnectionsModel extends SectionModel<Connection> {
                 },
               ),
               ('Tool calling', provider.toolCalling ? 'Yes' : 'No'),
-              if (probe != null)
-                (
-                  'Probe',
-                  switch (probe.error) {
-                    final error? when error.isNotEmpty => error,
-                    _ => '${probe.models.length} models',
-                  },
-                ),
             ],
           ),
         );

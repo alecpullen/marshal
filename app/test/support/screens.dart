@@ -994,6 +994,13 @@ Widget _settings({int section = 0, StateKind? state}) {
         ownerID: 'owner-1',
         forge: 'github',
       ),
+      // One that cannot push yet, so the section draws what needs the person.
+      Repo(
+        id: 'acme-internal-tools-with-a-long-name',
+        url: 'github.com/acme/internal-tools',
+        ownerID: 'owner-1',
+        forge: 'github',
+      ),
     ],
     credentials: const [
       Credential(

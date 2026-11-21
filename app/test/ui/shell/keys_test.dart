@@ -7,6 +7,7 @@ import 'package:marshal_app/src/model/new_work_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
+import 'package:marshal_app/src/ui/shell/keys.dart';
 import 'package:marshal_app/src/ui/shell/sidebar.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
 import 'package:marshal_app/src/ui/thread/thread_composer.dart';
@@ -15,7 +16,9 @@ import '../../model/support.dart';
 import '../../support/fake_bridge.dart';
 
 /// The shell's keys (F9 decision 6): `⌘N` starts work from anywhere, `⌘2` opens
-/// the Inbox, and neither fires while a composer has the keyboard.
+/// Needs you, and neither fires while a composer has the keyboard. The key
+/// table is also checked on its own, so renaming a place's visible words can
+/// never quietly move a shortcut.
 StackSnapshot _snapshot() => const StackSnapshot(
   sessionID: 'a-1',
   rev: 1,
@@ -114,7 +117,7 @@ void main() {
     expect(find.text('Start a new agent'), findsOneWidget);
   });
 
-  testWidgets('⌘2 opens the Inbox', (tester) async {
+  testWidgets('⌘2 opens Needs you', (tester) async {
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
@@ -133,11 +136,11 @@ void main() {
       ),
     );
     await settleIo(tester);
-    expect(find.widgetWithText(PageBody, 'Inbox'), findsNothing);
+    expect(find.widgetWithText(PageBody, 'Needs you'), findsNothing);
 
     await sendMeta(tester, LogicalKeyboardKey.digit2);
 
-    expect(find.widgetWithText(PageBody, 'Inbox'), findsOneWidget);
+    expect(find.widgetWithText(PageBody, 'Needs you'), findsOneWidget);
   });
 
   testWidgets('⌘N does nothing while a composer has focus', (tester) async {
@@ -379,7 +382,7 @@ void main() {
     await settleIo(tester);
 
     // `⌘2` typed into a focused composer belongs to the field, not to the
-    // shell: the thread stays on screen instead of navigating to the Inbox
+    // shell: the thread stays on screen instead of navigating to Needs you
     // mid-sentence.
     await tester.tap(
       find.descendant(
@@ -390,7 +393,7 @@ void main() {
     await tester.pump();
     await sendMeta(tester, LogicalKeyboardKey.digit2);
 
-    expect(find.widgetWithText(PageBody, 'Inbox'), findsNothing);
+    expect(find.widgetWithText(PageBody, 'Needs you'), findsNothing);
     expect(find.byType(ThreadComposer), findsOneWidget);
   });
 
@@ -541,5 +544,124 @@ void main() {
     // The chip names what the read reported.
     await settleIo(tester);
     expect(find.text('Act · Auto'), findsOneWidget);
+  });
+
+  test('the shortcuts keep their destinations', () {
+    // Renaming the place's visible words moves nothing: ⌘1, ⌘2 and ⌘3 still
+    // mean Overview, Needs you and Pull requests, and the intents are the
+    // ones the shell answers (f9-parity decision 6).
+    expect(
+      shellShortcuts[const SingleActivator(
+        LogicalKeyboardKey.digit1,
+        meta: true,
+      )],
+      isA<GoOverviewIntent>(),
+    );
+    expect(
+      shellShortcuts[const SingleActivator(
+        LogicalKeyboardKey.digit2,
+        meta: true,
+      )],
+      isA<GoInboxIntent>(),
+    );
+    expect(
+      shellShortcuts[const SingleActivator(
+        LogicalKeyboardKey.digit3,
+        meta: true,
+      )],
+      isA<GoPullsIntent>(),
+    );
+  });
+
+  testWidgets('an old Inbox link opens Needs you', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final fixture = await fixtureWithProject(tester);
+    final inboxModel = inbox.InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+    );
+    addTearDown(inboxModel.dispose);
+
+    // The link written before the rename is still the way in: `Place.inbox()`
+    // names the same place, and what opens says Needs you.
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inboxModel,
+          initialPlace: const Place.inbox(),
+        ),
+      ),
+    );
+    await settleIo(tester);
+
+    expect(find.widgetWithText(PageBody, 'Needs you'), findsOneWidget);
+    expect(
+      tester
+          .widgetList<NavRow>(
+            find.descendant(
+              of: find.byType(Sidebar),
+              matching: find.byType(NavRow),
+            ),
+          )
+          .where((row) => row.selected)
+          .map((row) => row.label),
+      ['Needs you'],
+    );
+    // No row and no title still says the old word.
+    expect(find.text('Inbox'), findsNothing);
+  });
+
+  testWidgets('the narrow navigation keeps the fleet screens reachable', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final fixture = await fixtureWithProject(tester);
+    final inboxModel = inbox.InboxModel(
+      fixture.store,
+      client: fixture.clientFor,
+    );
+    addTearDown(inboxModel.dispose);
+
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Studio(
+          store: fixture.store,
+          inbox: inboxModel,
+          initialPlace: const Place.overview(),
+        ),
+      ),
+    );
+    await settleIo(tester);
+
+    // Below 760 the navigation is behind the app bar's button, and the three
+    // fleet screens are all in it.
+    await tester.tap(find.byTooltip('Projects and threads').first);
+    await tester.pump();
+    for (final label in ['Overview', 'Needs you', 'Pull requests']) {
+      expect(
+        find.descendant(of: find.byType(Sidebar), matching: find.text(label)),
+        findsOneWidget,
+        reason: '$label is one tap away in the narrow navigation',
+      );
+    }
+
+    // Choosing it closes the panel and opens the place.
+    await tester.tap(
+      find.descendant(
+        of: find.byType(Sidebar),
+        matching: find.text('Needs you'),
+      ),
+    );
+    await tester.pump();
+    expect(find.widgetWithText(PageBody, 'Needs you'), findsOneWidget);
   });
 }

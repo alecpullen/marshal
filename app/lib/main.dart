@@ -27,6 +27,7 @@ import 'src/model/hosts_model.dart';
 import 'src/model/inbox_model.dart';
 import 'src/model/inspector_state.dart';
 import 'src/model/library_model.dart';
+import 'src/model/marshal_model.dart';
 import 'src/model/models_model.dart';
 import 'src/model/network_model.dart';
 import 'src/model/notifications_model.dart';
@@ -42,6 +43,7 @@ import 'src/model/route_translation.dart';
 import 'src/model/schedules_model.dart';
 import 'src/model/secrets_model.dart';
 import 'src/model/section_model.dart';
+import 'src/model/selection.dart' show ProjectMemory;
 import 'src/model/share_model.dart';
 import 'src/model/signals_store.dart';
 import 'src/model/stack_store.dart';
@@ -104,6 +106,15 @@ Future<void> main() async {
     density: preferenceStore?.read('density'),
     save: preferenceStore?.write,
   );
+  // What this window remembers about where a person was working (agent-first
+  // Studio, task 2): the project selected last, and the thread read there
+  // last, per host and project. It is this device's, kept through the same
+  // store appearance and density use, so a reload or a reopened window comes
+  // back to the conversation it left.
+  final memory = ProjectMemory(
+    read: preferenceStore?.read,
+    save: preferenceStore?.write,
+  );
   // Every host's tripped watches, blocked requests and held drafts (spec D4).
   // It is built after the inbox so an answer can ask for a re-read of the host
   // it answered on, and its reads are what the Overview's card and the inbox's
@@ -161,6 +172,7 @@ Future<void> main() async {
           // Svelte Studio, or this build's own path (F8 decision 2). A
           // desktop has no page, so its window opens the Overview.
           startPage: kIsWeb ? startPlaceFromPage(Uri.base) : null,
+          memory: memory,
           automationsFor: sections.automations,
           libraryFor: sections.library,
           settingsFor: sections.settings,
@@ -223,6 +235,40 @@ Future<void> main() async {
           connectRepoFor: (host) => ConnectRepoModel(
             hosts.hosts.firstWhere((owner) => owner.name == host).client,
           ),
+          // Marshal's destination (agent-first Studio, task 5): one model per
+          // host, reading that host's coordinated tasks and attention over its
+          // own client. The task it read last is remembered through the same
+          // preference store the project memory uses, so the sidebar entry
+          // resumes it after a reload.
+          marshalFor: (host) => MarshalModel.forClient(
+            host,
+            hosts.hosts.firstWhere((owner) => owner.name == host).client,
+            read: preferenceStore?.read,
+            save: preferenceStore?.write,
+          ),
+          // A project thread's handoff (agent-first Studio, tasks 7-8): the
+          // coordinated task its work was handed to, the assignments and the
+          // result reported back. The route is keyed by the project's canonical
+          // daemon id, which the fleet's project list is what carries, so a
+          // project this host does not list draws no band rather than a link
+          // that could not resolve.
+          sourceHandoffFor: (host, thread) {
+            final client = hosts.hosts
+                .firstWhere((owner) => owner.name == host)
+                .client;
+            for (final project in store.projects(host: host)) {
+              if (project.root != thread.project) continue;
+              final projectID = project.mcpProjectID;
+              if (projectID == null || projectID.isEmpty) return null;
+              return SourceHandoffModel.forClient(
+                client,
+                host: host,
+                projectId: projectID,
+                threadId: thread.id,
+              );
+            }
+            return null;
+          },
           // A thread's Share mints a read-only status link for its agent on
           // the client that reaches its host (F7 decision 7): a running
           // thread's id is its agent id, which the route takes.

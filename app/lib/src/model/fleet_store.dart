@@ -110,6 +110,11 @@ class FleetStore extends ChangeNotifier {
   /// to empty them, and it is not a claim that the host is gone.
   String? failure(String host) => _state(host).failure;
 
+  /// The newest coordinator delta [host] sent, or null when it has sent none:
+  /// one coordinated task's assignments and the result it reported back
+  /// (agent-first Studio, task 7).
+  CoordinatorDelta? coordinator(String host) => _state(host).coordinator;
+
   /// Reads one host's snapshot: its agents, projects, inbox and budgets,
   /// and, beside the budgets, the session index.
   ///
@@ -335,6 +340,14 @@ class FleetStore extends ChangeNotifier {
           unawaited(_refreshBudgets(host));
         case 'project_removed':
           _applyProjectRemoved(state, ProjectRemovedDelta.fromJson(decoded));
+        case 'coordinator':
+          // A coordinated task's assignments and the result it reported back
+          // (agent-first Studio, task 7). They are not agent rows: the newest
+          // delta is kept for the surfaces that draw a handoff, which read the
+          // task's snapshot and follow this for live changes.
+          state
+            ..coordinator = CoordinatorDelta.fromJson(decoded)
+            ..coordinatorSeq += 1;
         case 'sessions':
           // A project's sessions changed and the delta carries no rows: the
           // index is the account of them, so its root is read again rather
@@ -400,9 +413,11 @@ class FleetStore extends ChangeNotifier {
       case DeltaKind.deltaProjectRemoved:
       case DeltaKind.deltaInbox:
       case DeltaKind.deltaSessions:
+      case DeltaKind.deltaCoordinator:
         // Handled elsewhere, or a kind this build does not know. A project's
         // sessions changed (P7 D9): its index is read in `_applyDelta`, and
-        // no agent row changes here.
+        // no agent row changes here. A coordinator delta is recorded in
+        // `_applyDelta` for the handoff surfaces, never in this agent list.
         return;
       case DeltaKind.deltaPull:
         // Pull requests are not agent rows: `PullsStore` follows the same
@@ -691,6 +706,16 @@ class _HostState {
 
   BudgetReport? budgets;
   String? failure;
+
+  /// The newest coordinator delta [host] sent: one task's assignments and the
+  /// result it reported back (agent-first Studio, task 7). Null until the host
+  /// sends one, and kept as the last one seen — the handoff surfaces read the
+  /// task's snapshot and follow this for live changes.
+  CoordinatorDelta? coordinator;
+
+  /// Bumped by each coordinator delta, so a surface can tell a newer one from
+  /// the same one seen again.
+  int coordinatorSeq = 0;
 
   /// Bumped by each read, so a slow answer cannot overwrite a newer one.
   int generation = 0;

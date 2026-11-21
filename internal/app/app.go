@@ -152,6 +152,12 @@ type options struct {
 	// OS keychain.
 	authResolver    provider.AuthResolver
 	authResolverSet bool
+	// coordinatorRole composes this runtime as Marshal's coordinator
+	// conversation: the coordination-only tool set replaces the standard one
+	// and the runner carries the coordinator role (coordinator.go). It is set
+	// only by WithCoordinatorRole, so the TUI and every project session are
+	// unaffected.
+	coordinatorRole bool
 }
 
 type Option func(*options)

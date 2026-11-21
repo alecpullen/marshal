@@ -857,7 +857,7 @@ class _GalleryState extends State<Gallery> {
         children: [
           NavRow(
             icon: Glyphs.tray,
-            label: 'Inbox',
+            label: 'Needs you',
             count: 3,
             selected: true,
             onTap: () {},

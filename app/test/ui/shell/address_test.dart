@@ -123,7 +123,7 @@ void main() {
     // screen asks for is what follows.
     calls.clear();
 
-    await tester.tap(find.text('Inbox'));
+    await tester.tap(find.text('Needs you'));
     await tester.pump();
 
     final written = calls
@@ -178,7 +178,7 @@ void main() {
     );
     // The Overview is on screen, and leaving it takes it off.
     expect(find.byType(Overview), findsOneWidget);
-    await tester.tap(find.text('Inbox'));
+    await tester.tap(find.text('Needs you'));
     await tester.pump();
     calls.clear();
     expect(find.byType(Overview), findsNothing);
@@ -220,7 +220,7 @@ void main() {
     );
     calls.clear();
 
-    await tester.tap(find.text('Inbox'));
+    await tester.tap(find.text('Needs you'));
     await tester.pump();
 
     expect(calls, isEmpty);

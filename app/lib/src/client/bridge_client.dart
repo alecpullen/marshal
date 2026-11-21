@@ -1340,6 +1340,104 @@ class BridgeClient {
     {'answer': answer},
   );
 
+  // Marshal's own destination (agent-first Studio, task 4-5). A coordinated
+  // task is host-local: the daemon that serves these routes stamps its own
+  // identity on every task and answer, and a task id means nothing on another
+  // host. The client therefore never sends a host — it is the client's own
+  // choice which daemon it asks, and the answer says which one answered.
+
+  /// GET /api/coordinator/tasks: the tasks a person can reopen on this daemon,
+  /// newest first, with the host that holds them.
+  Future<CoordinatorTaskList> coordinatorTasks() =>
+      _objectOf('/api/coordinator/tasks', CoordinatorTaskList.fromJson);
+
+  /// GET /api/coordinator/tasks/{id}: one task.
+  Future<CoordinatorTask> coordinatorTask(String id) => _objectOf(
+    '/api/coordinator/tasks/${Uri.encodeComponent(id)}',
+    CoordinatorTask.fromJson,
+  );
+
+  /// POST /api/coordinator/tasks: the first send of a coordinator destination.
+  ///
+  /// [CoordinatorCreateRequest.requestID] is the idempotency key, and the
+  /// answer's `created` tells a fresh task from a replayed one — which is what
+  /// keeps a retried first send from minting a second task.
+  Future<CoordinatorCreateResult> createCoordinatorTask(
+    CoordinatorCreateRequest request,
+  ) => _objectOf(
+    '/api/coordinator/tasks',
+    CoordinatorCreateResult.fromJson,
+    method: 'POST',
+    body: request,
+  );
+
+  /// GET /api/coordinator/tasks/{id}/attention: the read-only summary of what
+  /// needs a person across the task's projects, with per-source freshness.
+  ///
+  /// A `partial` answer covers less than the task's scope and is never an
+  /// all-clear; `sources` says which project each contribution came from and
+  /// why it could not be read.
+  Future<CoordinatorAttention> coordinatorAttention(String taskId) => _objectOf(
+    '/api/coordinator/tasks/${Uri.encodeComponent(taskId)}/attention',
+    CoordinatorAttention.fromJson,
+  );
+
+  /// GET /api/coordinator/tasks/{id}/assignments: the task's assignments, each
+  /// reconciled against what the daemon holds, and the newest result the task
+  /// delivered to its source thread.
+  ///
+  /// It is the snapshot a screen reads on reconnect: the live updates arrive as
+  /// fleet events, so a client that missed them reads this and cannot disagree
+  /// with what the stream would have said.
+  Future<CoordinatorAssignmentList> coordinatorAssignments(String taskId) =>
+      _objectOf(
+        '/api/coordinator/tasks/${Uri.encodeComponent(taskId)}/assignments',
+        CoordinatorAssignmentList.fromJson,
+      );
+
+  /// POST /api/coordinator/tasks/{id}/assignments/{assignment}/retry: one failed
+  /// or expired assignment attempted again under its existing identity.
+  ///
+  /// It is the scoped retry a failure row offers, so it retries exactly that
+  /// assignment: its siblings keep what they are doing.
+  Future<CoordinatorAssignmentList> retryCoordinatorAssignment(
+    String taskId,
+    String assignmentId,
+  ) => _objectOf(
+    '/api/coordinator/tasks/${Uri.encodeComponent(taskId)}'
+    '/assignments/${Uri.encodeComponent(assignmentId)}/retry',
+    CoordinatorAssignmentList.fromJson,
+    method: 'POST',
+  );
+
+  /// GET /api/coordinator/sources/{project}/{thread}: the handoff one project
+  /// thread is the source of, as the thread screen reads it.
+  ///
+  /// A thread nothing was handed off from answers an empty view, which is a
+  /// valid answer — the screen then draws no handoff rather than an error.
+  Future<CoordinatorSourceView> coordinatorSourceView(
+    String projectId,
+    String threadId,
+  ) => _objectOf(
+    '/api/coordinator/sources/${Uri.encodeComponent(projectId)}'
+    '/${Uri.encodeComponent(threadId)}',
+    CoordinatorSourceView.fromJson,
+  );
+
+  /// POST /api/coordinator/tasks/{id}/stop: stop one coordinated task at the
+  /// scope that request names.
+  ///
+  /// The daemon makes the intent durable before it cancels a child, so the
+  /// answer is the settled state: `stopping` when the stop was recorded but not
+  /// confirmed, `stopped` when it was. A repeat is answered with the state the
+  /// first left, which is what makes a retried stop after a reconnect harmless.
+  Future<CoordinatorStopResult> stopCoordinatorTask(String taskId) =>
+      _objectOf(
+        '/api/coordinator/tasks/${Uri.encodeComponent(taskId)}/stop',
+        CoordinatorStopResult.fromJson,
+        method: 'POST',
+      );
+
   /// One settings read or write, with the ETag the answer named.
   Future<ProjectSettingsVersion> _settingsOf(
     String path, {

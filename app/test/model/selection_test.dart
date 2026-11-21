@@ -160,4 +160,81 @@ void main() {
     // begin always notifies; extend only on a change.
     expect(notes, 3);
   });
+
+  group('ProjectMemory', () {
+    test('the project selected last is remembered, per host and root', () {
+      final store = <String, String>{};
+      final memory = ProjectMemory(
+        read: (key) => store[key],
+        save: (key, value) => store[key] = value,
+      );
+
+      expect(memory.lastProject, isNull);
+      memory.rememberProject('studio', '/home/u/alpha');
+      expect(
+        memory.lastProject,
+        (host: 'studio', project: '/home/u/alpha'),
+      );
+    });
+
+    test('the same project name on two hosts is kept apart', () {
+      final store = <String, String>{};
+      final memory = ProjectMemory(
+        read: (key) => store[key],
+        save: (key, value) => store[key] = value,
+      );
+
+      memory.rememberThread('studio', '/home/u/marshal', 'a-1');
+      expect(memory.threadFor('studio', '/home/u/marshal'), 'a-1');
+      // A name is not an identity: the same root on another host keeps its
+      // own keys, so one host's thread never answers for the other's.
+      expect(memory.threadFor('local', '/home/u/marshal'), isNull);
+      memory.rememberProject('local', '/home/u/marshal');
+      expect(memory.lastProject!.host, 'local');
+      // Forgetting one host's thread does not touch the other's.
+      memory.forgetThread('local', '/home/u/marshal');
+      expect(memory.threadFor('local', '/home/u/marshal'), isNull);
+      expect(memory.threadFor('studio', '/home/u/marshal'), 'a-1');
+    });
+
+    test('a corrupt preference names no project, and nothing throws', () {
+      final store = <String, String>{};
+      final memory = ProjectMemory(
+        read: (key) => store[key],
+        save: (key, value) => store[key] = value,
+      );
+
+      for (final kept in const [
+        'no-slash',
+        '/missing-host',
+        'studio/missing-project/',
+        'studio/%zz',
+      ]) {
+        store['project.last'] = kept;
+        expect(memory.lastProject, isNull, reason: kept);
+      }
+      // What a selection writes is what a reload reads back.
+      store['project.last'] = 'studio/%2Fhome%2Fu%2Falpha';
+      expect(
+        memory.lastProject,
+        (host: 'studio', project: '/home/u/alpha'),
+      );
+    });
+
+    test('the thread a project last had open is remembered and dropped', () {
+      final store = <String, String>{};
+      final memory = ProjectMemory(
+        read: (key) => store[key],
+        save: (key, value) => store[key] = value,
+      );
+
+      expect(memory.threadFor('local', '/home/u/alpha'), isNull);
+      memory.rememberThread('local', '/home/u/alpha', 'a-9');
+      expect(memory.threadFor('local', '/home/u/alpha'), 'a-9');
+      expect(memory.threadFor('local', '/home/u/beta'), isNull);
+      memory.forgetThread('local', '/home/u/alpha');
+      expect(memory.threadFor('local', '/home/u/alpha'), isNull);
+      expect(memory.threadFor('local', '/home/u/beta'), isNull);
+    });
+  });
 }

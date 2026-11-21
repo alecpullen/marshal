@@ -222,6 +222,39 @@ sidebar's rows are its sections, in the design's order under a `Back` row
 (F7 decision 7): a section is a place, so its row is filled while that section
 is open, and the page beside the sidebar draws the open section alone.
 
+### Navigation (added for the agent-first Studio)
+
+The sidebar has two tiers.
+
+**Primary navigation** is **Marshal** and the three fleet screens: Marshal,
+Overview, **Needs you** and Pull requests, in that order. They sit above the
+project tree in the desktop sidebar and in the narrow layout's navigation
+panel, so each is one action away at every width; the narrow layout also keeps
+its app-bar button to Needs you. Needs you is the name of the place the code
+still calls the inbox: its kind, the `#inbox` route, the `/inbox` link and
+`Place.inbox()` are unchanged, so a link written before the rename opens Needs
+you. The search matches the words on a row, so it finds Needs you and no longer
+finds the old word.
+
+Marshal is the agent-first Studio's own conversation (task 5): a host-local
+coordinated task whose links name the task (`/marshal/<host>/<task>`) and whose
+drafts name themselves (`/marshal/new/<draft>`), so a reload and Back land on
+the conversation they were written for. Its screen names the recipient above
+the composer, shows the read-only attention result as rows that open the ask or
+review at its own host and project, and never says "nothing needs you" over a
+source it could not read; the transcript and composer are the thread's, not a
+second pair.
+
+**Secondary navigation** is everything else: Automations, Library and Settings
+at the foot of the sidebar, and the boards and management views reached from
+the project rows and their own links. A management view never takes a primary
+slot. One above the tree would push the fleet screens out of sight, and the
+queue they show is what the operator opens Studio to answer.
+
+Renaming a place is a change to this document and to the label the model
+gives it (`nav_model.dart`), never a second spelling in a screen: every row,
+search result, tooltip and accessibility label reads the model's label.
+
 Added in F4: `DiffView` and `GateList`, the inspector's two read-only views of
 a change. Both are reused by the work item's inspector (F6), so neither knows
 what an agent or a session is: they take lines and checks.
@@ -230,7 +263,7 @@ Variants as built in F0, beyond the table: `Box.flush` (no inner padding,
 for rows separated by `Hairline`s, as `Rows` uses); `Btn` and `Btn.primary`;
 `Pill`, `Pill.icon` (whose tooltip is required) and a mono label for
 identifiers; `Meter` and `Meter.fault`; `PageBody`'s width, `full` (1180) or
-`list` (860), from §4; `AskCard`'s placement — Inbox (everything), Overview
+`list` (860), from §4; `AskCard`'s placement — Needs you (everything), Overview
 (the body only for a decision) or its own thread (no source line);
 `PrCard`'s five states — ready, failing, in progress, being fixed and checks
 unavailable. Added in

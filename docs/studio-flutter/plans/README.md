@@ -49,5 +49,6 @@ F0 was executed directly from its spec and has no plan.
 | 17 | [Studio conversation readability](2026-11-18-studio-conversation-readability-plan.md) | 15, 16 |
 | 18 | [Studio places polish](2026-11-18-studio-places-polish-plan.md) | 15, 16 |
 | 19 | [Studio navigation: search, Settings, kept preferences](2026-11-18-studio-navigation-plan.md) | 15, 16, 18 |
+| 20 | [Agent-first Studio](2026-11-21-agent-first-studio-plan.md) | Existing Studio navigation, fleet and thread surfaces |
 
 The Svelte Studio is frozen, bug fixes only, from the start of plan 2.

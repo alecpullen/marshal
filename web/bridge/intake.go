@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
@@ -38,6 +39,125 @@ type SpawnRequest struct {
 	// issue, so the exit path can link the pull request back to it.
 	IssueNumber int
 	IssueURL    string
+	// Project, TaskID and AssignmentID carry a coordinated assignment's target
+	// and identity through intake (agent-first Studio, task 6). They are set
+	// only by AssignmentDispatch, which is reached from a coordinator dispatch
+	// after its own access check — never from a request body or a tool
+	// argument — so an adapter cannot claim an assignment identity.
+	Project      string
+	TaskID       string
+	AssignmentID string
+}
+
+// AssignmentDispatch is one coordinated assignment as the intake and worker
+// paths need it: the dispatch identity that must follow the submission into its
+// worker, and the project and instruction it targets.
+//
+// The identity is the assignment's own ID (agent-first Studio, task 6). It is
+// written by the coordinator store before this is called, and everything below
+// resolves it: the pending submission's ID, the spawn claim's request ID and the
+// worker's agent record all carry it, so a retry, a confirmation, a reconnect
+// and a restart meet at one outcome.
+type AssignmentDispatch struct {
+	TaskID       string
+	AssignmentID string
+	// Project is the target project's root, resolved from its canonical ID by
+	// the caller. A dispatch never names a display name or a path from a model.
+	Project string
+	Title   string
+	Prompt  string
+	Mode    string
+	Auto    *bool
+}
+
+// validate refuses a dispatch that could not be resolved to one worker.
+func (d AssignmentDispatch) validate() error {
+	if strings.TrimSpace(d.TaskID) == "" || strings.TrimSpace(d.AssignmentID) == "" {
+		return fmt.Errorf("bridge: an assignment dispatch needs its task and assignment identity")
+	}
+	if strings.TrimSpace(d.Project) == "" {
+		return fmt.Errorf("bridge: an assignment dispatch needs a target project")
+	}
+	return nil
+}
+
+// StartAssignment starts the worker one authorized assignment resolves to, at
+// most once, and reports whether its instruction still has to be delivered.
+//
+// The assignment's identity is the spawn claim's request ID, so the worker's
+// identity is settled durably before the spawn has any side effect: a dispatch
+// interrupted before or after the worker existed resumes under the same
+// identity, and a replay of a request that already delivered its instruction
+// answers with the same worker and delivers nothing.
+//
+// It is reached only by a coordinator dispatch that authorized the target under
+// the access policy, and by the confirmation of the submission such a dispatch
+// stored. Nothing here presents an operator identity: the origin is the
+// coordinator's own.
+func (f *Fleet) StartAssignment(ctx context.Context, d AssignmentDispatch) (string, bool, error) {
+	if err := d.validate(); err != nil {
+		return "", false, err
+	}
+	opts := SpawnOptions{
+		Name: d.Title, Mode: d.Mode, Auto: d.Auto, Prompt: d.Prompt,
+		Origin:                  OriginCoordinator,
+		CoordinatorTaskID:       d.TaskID,
+		CoordinatorAssignmentID: d.AssignmentID,
+	}
+	return f.SpawnClaimed(ctx, d.Project, opts, d.AssignmentID)
+}
+
+// QueueAssignment stores one assignment's instruction as a submission awaiting
+// confirmation, carrying the assignment identity into the queue.
+//
+// The pending submission's ID is the assignment's own identity, so the same
+// dispatch can never queue two submissions for one target, and confirming it
+// starts the worker that identity settled.
+func (f *Fleet) QueueAssignment(d AssignmentDispatch) (PendingSpawn, error) {
+	if err := d.validate(); err != nil {
+		return PendingSpawn{}, err
+	}
+	if strings.TrimSpace(d.Title) == "" {
+		return PendingSpawn{}, fmt.Errorf("bridge: a submission requires a title")
+	}
+	if d.Prompt == "" {
+		return PendingSpawn{}, fmt.Errorf("bridge: a submission requires a prompt or a plan")
+	}
+	now := f.now()
+	p := PendingSpawn{
+		ID: d.AssignmentID, Origin: OriginCoordinator,
+		Title: d.Title, Prompt: d.Prompt, Mode: d.Mode, Auto: d.Auto,
+		CreatedAt: now, ExpiresAt: now.Add(pendingTTL),
+		Project: d.Project,
+		TaskID:  d.TaskID, AssignmentID: d.AssignmentID,
+	}
+	if err := f.ws.PutPending(p); err != nil {
+		return PendingSpawn{}, fmt.Errorf("persist pending submission: %w", err)
+	}
+	return p, nil
+}
+
+// deliverInstruction hands one assignment's instruction to the worker that
+// acknowledged its session.
+//
+// The durable claim recorded the delivery before this is called, so a retry
+// never sends the same instruction twice; a delivery lost to a crash is
+// recovered from the assignment's thread, where a duplicate turn would be a
+// second instruction nobody gave.
+func (f *Fleet) deliverInstruction(agentID, prompt string) {
+	if strings.TrimSpace(agentID) == "" || strings.TrimSpace(prompt) == "" {
+		return
+	}
+	go func() {
+		rt, err := f.RuntimeForSession(agentID)
+		if err != nil {
+			slog.Default().Warn("webbridge: assignment instruction not delivered", "agent", agentID, "err", err)
+			return
+		}
+		if err := rt.reg.Prompt(context.Background(), f.sessionIDFor(rt), prompt); err != nil {
+			slog.Default().Warn("webbridge: assignment instruction failed", "agent", agentID, "err", err)
+		}
+	}()
 }
 
 // SubmitResult reports what happened. Status is "pending" or "running".
@@ -158,6 +278,12 @@ func planPathFor(workDir, pendingID string) string {
 }
 
 // Approve turns a confirmed submission into a running agent.
+//
+// A coordinated assignment's submission (agent-first Studio, task 6) carries the
+// dispatch identity its coordinator stored before this submission existed, so
+// confirming it starts the worker that identity settled and hands it the
+// assignment's instruction once — never a second worker, and never an operator
+// identity the model did not have.
 func (f *Fleet) Approve(ctx context.Context, pendingID string) (string, error) {
 	p, ok := f.ws.PendingByID(pendingID)
 	if !ok {
@@ -168,11 +294,23 @@ func (f *Fleet) Approve(ctx context.Context, pendingID string) (string, error) {
 		return "", fmt.Errorf("%w: %s expired at %s", ErrUnknownPending, pendingID, p.ExpiresAt)
 	}
 
-	agentID, err := f.spawnFromRequest(ctx, SpawnRequest{
-		Origin: p.Origin, ClientID: p.ClientID, RepoID: p.RepoID, Ref: p.Ref,
-		Title: p.Title, Prompt: p.Prompt, Plan: p.Plan, Mode: p.Mode, Auto: p.Auto,
-		IssueNumber: p.IssueNumber, IssueURL: p.IssueURL,
-	})
+	var (
+		agentID string
+		deliver bool
+		err     error
+	)
+	if p.TaskID != "" {
+		agentID, deliver, err = f.StartAssignment(ctx, AssignmentDispatch{
+			TaskID: p.TaskID, AssignmentID: p.AssignmentID, Project: p.Project,
+			Title: p.Title, Prompt: p.Prompt, Mode: p.Mode, Auto: p.Auto,
+		})
+	} else {
+		agentID, err = f.spawnFromRequest(ctx, SpawnRequest{
+			Origin: p.Origin, ClientID: p.ClientID, RepoID: p.RepoID, Ref: p.Ref,
+			Title: p.Title, Prompt: p.Prompt, Plan: p.Plan, Mode: p.Mode, Auto: p.Auto,
+			IssueNumber: p.IssueNumber, IssueURL: p.IssueURL,
+		})
+	}
 	if err != nil {
 		return "", err
 	}
@@ -183,6 +321,9 @@ func (f *Fleet) Approve(ctx context.Context, pendingID string) (string, error) {
 		if err := f.startPlan(ctx, agentID, pendingID, p.Plan); err != nil {
 			return "", err
 		}
+	}
+	if deliver {
+		f.deliverInstruction(agentID, p.Prompt)
 	}
 	f.auditf(AuditEvent{Event: AuditPendingApproved, OwnerID: DefaultOwnerID,
 		AgentID: agentID, ClientID: p.ClientID, RepoID: p.RepoID, Origin: p.Origin})

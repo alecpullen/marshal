@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"marshal/web/bridge/contract"
@@ -43,11 +44,37 @@ type coordinatorService struct {
 	// a client sees an unavailable store rather than an empty one.
 	openErr error
 	now     func() time.Time
+	// dispatchMu guards dispatchLocks. One lock per assignment serializes the
+	// attempts to dispatch it, so a retry racing the original — or two identical
+	// requests — cannot both run its side effects. Entries are kept for the
+	// process lifetime: an assignment is a bounded, durable thing, and a lock
+	// that was dropped while a waiter still held it would let a third attempt
+	// run beside the second.
+	dispatchMu    sync.Mutex
+	dispatchLocks map[string]*sync.Mutex
+}
+
+// lockAssignment serializes one assignment's dispatch attempts and returns the
+// release.
+func (svc *coordinatorService) lockAssignment(assignmentID string) func() {
+	svc.dispatchMu.Lock()
+	lock, ok := svc.dispatchLocks[assignmentID]
+	if !ok {
+		lock = &sync.Mutex{}
+		svc.dispatchLocks[assignmentID] = lock
+	}
+	svc.dispatchMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }
 
 // newCoordinatorService opens the coordinator store under stateDir.
 func newCoordinatorService(fleet *Fleet, stateDir string, now func() time.Time) *coordinatorService {
-	svc := &coordinatorService{fleet: fleet, now: now}
+	svc := &coordinatorService{
+		fleet:         fleet,
+		now:           now,
+		dispatchLocks: map[string]*sync.Mutex{},
+	}
 	if svc.now == nil {
 		svc.now = time.Now
 	}

@@ -82,6 +82,163 @@ type CoordinatorCreateResult struct {
 	Created bool            `json:"created"`
 }
 
+// CoordinatorAssignmentRelationship is what an assignment's target is: a worker
+// the coordinated task created, or a thread that already existed and is linked.
+type CoordinatorAssignmentRelationship string
+
+// The relationship kinds.
+const (
+	// CoordinatorAssignmentWorker means the assignment created a worker: a
+	// project agent of its own, started under the assignment's identity.
+	CoordinatorAssignmentWorker CoordinatorAssignmentRelationship = "worker"
+	// CoordinatorAssignmentThread means the assignment linked a thread that was
+	// already running in the target project. A linked thread is observed by
+	// default; its instruction reaches it only when a person explicitly directed
+	// that thread, which the bridge verifies rather than the caller.
+	CoordinatorAssignmentThread CoordinatorAssignmentRelationship = "thread"
+)
+
+// CoordinatorAssignmentState is where one assignment stands.
+type CoordinatorAssignmentState string
+
+// The assignment states.
+const (
+	// CoordinatorAssignmentDispatching means the intent and its dispatch
+	// identity are durable and the dispatch has not resolved yet: the worker
+	// has not acknowledged, or an unconfirmed submission is not yet stored. It
+	// survives a restart, which is what lets the next dispatch resume the
+	// assignment instead of starting a second worker.
+	CoordinatorAssignmentDispatching CoordinatorAssignmentState = "dispatching"
+	// CoordinatorAssignmentPending means the assignment is intake awaiting a
+	// person's confirmation. It is not running, and nothing has been started.
+	CoordinatorAssignmentPending CoordinatorAssignmentState = "pending"
+	// CoordinatorAssignmentRunning means a worker acknowledged the assignment:
+	// its session exists and its instruction reached it.
+	CoordinatorAssignmentRunning CoordinatorAssignmentState = "running"
+	// CoordinatorAssignmentLinked means an existing thread is linked. Nothing
+	// was started; the thread is observed and, only under explicit user
+	// direction, receives the assignment's instruction.
+	CoordinatorAssignmentLinked CoordinatorAssignmentState = "linked"
+	// CoordinatorAssignmentFailed means this target could not be dispatched.
+	// Its siblings are unaffected.
+	CoordinatorAssignmentFailed CoordinatorAssignmentState = "failed"
+	// CoordinatorAssignmentExpired means an unconfirmed submission lapsed
+	// before a person confirmed it.
+	CoordinatorAssignmentExpired CoordinatorAssignmentState = "expired"
+	// CoordinatorAssignmentStopped is where the task stop scope moves an
+	// assignment. Nothing in this phase writes it.
+	CoordinatorAssignmentStopped CoordinatorAssignmentState = "stopped"
+)
+
+// CoordinatorAssignmentFailure is the machine-readable reason an assignment
+// failed. It is empty for every other state.
+const (
+	// CoordinatorFailureUnknownProject names a project ID this daemon did not
+	// mint, or one outside the task's scope.
+	CoordinatorFailureUnknownProject = "unknown_project"
+	// CoordinatorFailureUnknownThread names a thread the target project does not
+	// hold: a link never widens to another project's agent.
+	CoordinatorFailureUnknownThread = "unknown_thread"
+	// CoordinatorFailureUnauthorized means the task's effective access on the
+	// target project does not hold the capability dispatching needs.
+	CoordinatorFailureUnauthorized = "unauthorized"
+	// CoordinatorFailureUnavailable means the dispatch could not be attempted:
+	// the store, the access policy or the target project is unreadable.
+	CoordinatorFailureUnavailable = "unavailable"
+	// CoordinatorFailureUserDirectionRequired means the target asked to steer an
+	// existing thread and no person's direction for that thread was verified.
+	CoordinatorFailureUserDirectionRequired = "user_direction_required"
+)
+
+// CoordinatorWorkerRef names the worker an assignment created.
+type CoordinatorWorkerRef struct {
+	AgentID string `json:"agentId"`
+	// SessionID is the worker's ACP session. It is empty until the worker
+	// acknowledges, which is when its assignment becomes running.
+	SessionID string `json:"sessionId,omitempty"`
+}
+
+// CoordinatorAssignment is one coordinated task's assignment to one target
+// project: what it asked for, what that became, and how far it got.
+//
+// The assignment ID is the assignment's dispatch identity, not just a label:
+// it is minted and persisted before any side effect and is the identity the
+// pending submission, the spawn claim and the worker's own record all carry, so
+// a retry, a confirmation, a reconnect and a daemon restart all resolve to one
+// outcome.
+type CoordinatorAssignment struct {
+	ID     string `json:"id"`
+	TaskID string `json:"taskId"`
+	// ProjectID is the target project's canonical daemon ID, never a display
+	// name or a path.
+	ProjectID string `json:"projectId"`
+	// Instruction is what the task asked this project to do, as the task wrote
+	// it. It is display text in the caller's own words, never markup.
+	Instruction  string                            `json:"instruction,omitempty"`
+	Relationship CoordinatorAssignmentRelationship `json:"relationship"`
+	State        CoordinatorAssignmentState        `json:"state"`
+	// IntakeID is the pending submission an unconfirmed assignment awaits. It is
+	// the assignment's own identity in the intake queue.
+	IntakeID string `json:"intakeId,omitempty"`
+	// Worker is the agent this assignment created, once one exists.
+	Worker *CoordinatorWorkerRef `json:"worker,omitempty"`
+	// Thread is the existing thread a linked assignment observes.
+	Thread *CoordinatorThreadRef `json:"thread,omitempty"`
+	// ResultRevision is the newest revision of this assignment's observed
+	// result. Zero means nothing has been observed yet; it advances only when an
+	// observation sees a different result, so a client can tell a quiet worker
+	// from a stale record.
+	ResultRevision uint64 `json:"resultRevision"`
+	// Failure is the machine-readable reason when the state is failed.
+	Failure string `json:"failure,omitempty"`
+	// Reason explains a failed, expired or not-yet-resolved assignment in words
+	// meant for a person.
+	Reason    string    `json:"reason,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// CoordinatorAssignTarget is one target of a dispatch: the canonical project it
+// names, what that project should do, and — optionally — an existing thread to
+// link instead of starting a worker.
+type CoordinatorAssignTarget struct {
+	// ProjectID is the project's canonical daemon ID.
+	ProjectID   string `json:"projectId"`
+	Instruction string `json:"instruction,omitempty"`
+	// ThreadID links an existing thread in the target project rather than
+	// starting a worker. It must belong to that project.
+	ThreadID string `json:"threadId,omitempty"`
+	// Steer asks that the linked thread be given the instruction. It is admitted
+	// only when a person's direction for that thread is verified; without one the
+	// dispatch is refused before anything is recorded.
+	Steer bool `json:"steer,omitempty"`
+}
+
+// CoordinatorAssignRequest is one task-scoped dispatch. RequestID is the
+// caller's idempotency key: every retry of the same targets carries it, so a
+// second press, a lost answer or a restart resolves to the assignments the first
+// request recorded instead of dispatching again.
+type CoordinatorAssignRequest struct {
+	RequestID string                    `json:"requestId"`
+	Targets   []CoordinatorAssignTarget `json:"targets"`
+}
+
+// CoordinatorAssignResult is one dispatch's answer: one entry per target, in
+// request order. A target that failed carries its own failure, and its eligible
+// siblings still progress.
+type CoordinatorAssignResult struct {
+	TaskID       string                  `json:"taskId"`
+	TaskRevision uint64                  `json:"taskRevision,omitempty"`
+	Assignments  []CoordinatorAssignment `json:"assignments"`
+}
+
+// CoordinatorAssignmentList is one task's assignments, as a read reports them.
+type CoordinatorAssignmentList struct {
+	TaskID      string                  `json:"taskId"`
+	Host        string                  `json:"host,omitempty"`
+	Assignments []CoordinatorAssignment `json:"assignments"`
+}
+
 // CoordinatorAttentionKind is what an attention entry is: an ask that needs a
 // decision, or a review that is ready.
 type CoordinatorAttentionKind string

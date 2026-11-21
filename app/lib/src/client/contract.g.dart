@@ -1798,6 +1798,485 @@ class Repo {
   }
 }
 
+/// CoordinatorThreadRef identifies one source a coordinated task points at: the
+/// project it belongs to, what kind of thing it is, and its own id.
+class CoordinatorThreadRef {
+  const CoordinatorThreadRef({
+    required this.projectID,
+    required this.kind,
+    required this.id,
+  });
+
+  final String projectID;
+  /// Kind is "agent" (a fleet thread), "intake" (an unconfirmed submission),
+  /// "pull" (a pull request) or "review" (a pull request ready to review).
+  final String kind;
+  final String id;
+
+  factory CoordinatorThreadRef.fromJson(Map<String, dynamic> json) {
+    return CoordinatorThreadRef(
+      projectID: json['projectId'] as String,
+      kind: json['kind'] as String,
+      id: json['id'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projectId'] = projectID;
+    json['kind'] = kind;
+    json['id'] = id;
+    return json;
+  }
+}
+
+/// CoordinatorTaskStatus is where a coordinated task stands. Only "open" is
+/// written by this phase; a stopped task arrives with the stop scope.
+enum CoordinatorTaskStatus {
+  coordinatorTaskOpen('open'),
+  coordinatorTaskStopped('stopped'),
+  unknown('unknown');
+
+  const CoordinatorTaskStatus(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static CoordinatorTaskStatus fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// CoordinatorTask is one host-local coordinated task: a durable task ID, the
+/// coordinator conversation's session, an optional source thread, a title, a
+/// status and a revision.
+class CoordinatorTask {
+  const CoordinatorTask({
+    required this.id,
+    required this.sessionID,
+    this.title,
+    required this.status,
+    required this.revision,
+    this.source,
+    required this.projects,
+    this.host,
+    required this.createdAt,
+    required this.updatedAt,
+    this.rawEnums = const {},
+  });
+
+  final String id;
+  /// SessionID is the coordinator conversation's ACP session, minted by the
+  /// daemon and persisted here so the conversation outlives a browser.
+  final String sessionID;
+  final String? title;
+  final CoordinatorTaskStatus status;
+  final int revision;
+  final CoordinatorThreadRef? source;
+  /// Projects are the opaque project IDs this task may read. An empty list is
+  /// the host-local scope: every project registered on the serving daemon,
+  /// checked per read.
+  final List<String> projects;
+  /// Host is the serving daemon's identity (its socket path), so a client can
+  /// tell this task apart from one with the same ID on another host.
+  final String? host;
+  final String createdAt;
+  final String updatedAt;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory CoordinatorTask.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final statusWire = json['status'] as String;
+    final status = CoordinatorTaskStatus.fromWire(statusWire);
+    if (status == CoordinatorTaskStatus.unknown) {
+      rawEnums['status'] = statusWire;
+    }
+    return CoordinatorTask(
+      id: json['id'] as String,
+      sessionID: json['sessionId'] as String,
+      title: json['title'] as String?,
+      status: status,
+      revision: (json['revision'] as num).toInt(),
+      source: _objectOrNull(
+        json['source'],
+        CoordinatorThreadRef.fromJson,
+      ),
+      projects: _list(
+        json['projects'],
+        (value) => value as String,
+      ),
+      host: json['host'] as String?,
+      createdAt: json['createdAt'] as String,
+      updatedAt: json['updatedAt'] as String,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['sessionId'] = sessionID;
+    if (title != null) {
+      json['title'] = title;
+    }
+    json['status'] = rawEnums['status'] ?? status.wire;
+    json['revision'] = revision;
+    if (source != null) {
+      json['source'] = source!.toJson();
+    }
+    json['projects'] = projects;
+    if (host != null) {
+      json['host'] = host;
+    }
+    json['createdAt'] = createdAt;
+    json['updatedAt'] = updatedAt;
+    return json;
+  }
+}
+
+/// CoordinatorTaskList is GET /api/coordinator/tasks.
+class CoordinatorTaskList {
+  const CoordinatorTaskList({
+    required this.tasks,
+    this.host,
+  });
+
+  final List<CoordinatorTask> tasks;
+  final String? host;
+
+  factory CoordinatorTaskList.fromJson(Map<String, dynamic> json) {
+    return CoordinatorTaskList(
+      tasks: _list(
+        json['tasks'],
+        (value) => _object(value, CoordinatorTask.fromJson),
+      ),
+      host: json['host'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['tasks'] = [
+      for (final value in tasks) value.toJson(),
+    ];
+    if (host != null) {
+      json['host'] = host;
+    }
+    return json;
+  }
+}
+
+/// CoordinatorCreateRequest is POST /api/coordinator/tasks: the first send of a
+/// coordinator destination. RequestID is the client's idempotency key, reused
+/// for retries of the same content.
+class CoordinatorCreateRequest {
+  const CoordinatorCreateRequest({
+    required this.requestID,
+    this.title,
+    this.source,
+    this.projects,
+  });
+
+  final String requestID;
+  final String? title;
+  final CoordinatorThreadRef? source;
+  final List<String>? projects;
+
+  factory CoordinatorCreateRequest.fromJson(Map<String, dynamic> json) {
+    return CoordinatorCreateRequest(
+      requestID: json['requestId'] as String,
+      title: json['title'] as String?,
+      source: _objectOrNull(
+        json['source'],
+        CoordinatorThreadRef.fromJson,
+      ),
+      projects: _listOrNull(
+        json['projects'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    if (title != null) {
+      json['title'] = title;
+    }
+    if (source != null) {
+      json['source'] = source!.toJson();
+    }
+    if (projects != null) {
+      json['projects'] = projects!;
+    }
+    return json;
+  }
+}
+
+/// CoordinatorCreateResult is POST /api/coordinator/tasks's answer. Created is
+/// false when the request ID replayed an existing task, which is what tells a
+/// retry from a fresh destination.
+class CoordinatorCreateResult {
+  const CoordinatorCreateResult({
+    required this.task,
+    required this.created,
+  });
+
+  final CoordinatorTask task;
+  final bool created;
+
+  factory CoordinatorCreateResult.fromJson(Map<String, dynamic> json) {
+    return CoordinatorCreateResult(
+      task: _object(
+        json['task'],
+        CoordinatorTask.fromJson,
+      ),
+      created: json['created'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['task'] = task.toJson();
+    json['created'] = created;
+    return json;
+  }
+}
+
+/// CoordinatorAttentionKind is what an attention entry is: an ask that needs a
+/// decision, or a review that is ready.
+enum CoordinatorAttentionKind {
+  coordinatorAttentionAsk('ask'),
+  coordinatorAttentionReview('review'),
+  unknown('unknown');
+
+  const CoordinatorAttentionKind(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static CoordinatorAttentionKind fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// CoordinatorAttentionEntry is one read-only thing Marshal found: the source it
+/// came from, what kind it is, the text to show, how long it has waited and
+/// where it opens.
+class CoordinatorAttentionEntry {
+  const CoordinatorAttentionEntry({
+    required this.source,
+    required this.kind,
+    required this.text,
+    required this.ageSeconds,
+    this.destination,
+    this.rawEnums = const {},
+  });
+
+  final CoordinatorThreadRef source;
+  final CoordinatorAttentionKind kind;
+  /// Text is display text, never markup.
+  final String text;
+  /// AgeSeconds is how long the entry has waited, floored at zero.
+  final int ageSeconds;
+  /// Destination is the Studio path that opens the entry at its source. It is
+  /// absent when the source is not one this build can link to.
+  final String? destination;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory CoordinatorAttentionEntry.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final kindWire = json['kind'] as String;
+    final kind = CoordinatorAttentionKind.fromWire(kindWire);
+    if (kind == CoordinatorAttentionKind.unknown) {
+      rawEnums['kind'] = kindWire;
+    }
+    return CoordinatorAttentionEntry(
+      source: _object(
+        json['source'],
+        CoordinatorThreadRef.fromJson,
+      ),
+      kind: kind,
+      text: json['text'] as String,
+      ageSeconds: (json['ageSeconds'] as num).toInt(),
+      destination: json['destination'] as String?,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source.toJson();
+    json['kind'] = rawEnums['kind'] ?? kind.wire;
+    json['text'] = text;
+    json['ageSeconds'] = ageSeconds;
+    if (destination != null) {
+      json['destination'] = destination;
+    }
+    return json;
+  }
+}
+
+/// CoordinatorSourceState is how much one source contributed to a read. A
+/// source that is not fresh is never part of an all-clear.
+enum CoordinatorSourceState {
+  coordinatorSourceFresh('fresh'),
+  coordinatorSourceStale('stale'),
+  coordinatorSourceUnavailable('unavailable'),
+  coordinatorSourceUnauthorized('unauthorized'),
+  unknown('unknown');
+
+  const CoordinatorSourceState(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static CoordinatorSourceState fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// CoordinatorSource is one project's contribution to an attention read, with
+/// the reason when it is not fresh.
+class CoordinatorSource {
+  const CoordinatorSource({
+    required this.projectID,
+    required this.state,
+    this.reason,
+    this.observedAt,
+    this.rawEnums = const {},
+  });
+
+  final String projectID;
+  final CoordinatorSourceState state;
+  final String? reason;
+  /// ObservedAt is the newest evidence this source contributed, in Unix
+  /// millis. Zero when it contributed none.
+  final int? observedAt;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory CoordinatorSource.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final stateWire = json['state'] as String;
+    final state = CoordinatorSourceState.fromWire(stateWire);
+    if (state == CoordinatorSourceState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return CoordinatorSource(
+      projectID: json['projectId'] as String,
+      state: state,
+      reason: json['reason'] as String?,
+      observedAt: (json['observedAt'] as num?)?.toInt(),
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projectId'] = projectID;
+    json['state'] = rawEnums['state'] ?? state.wire;
+    if (reason != null) {
+      json['reason'] = reason;
+    }
+    if (observedAt != null) {
+      json['observedAt'] = observedAt;
+    }
+    return json;
+  }
+}
+
+/// CoordinatorAttention is the read-only attention summary for one task:
+/// entries to show plus per-source freshness. AllClear is true only when every
+/// source was read fresh and nothing needs a decision; a stale, unavailable or
+/// unauthorized source can never produce it.
+class CoordinatorAttention {
+  const CoordinatorAttention({
+    required this.taskID,
+    this.host,
+    required this.entries,
+    required this.sources,
+    required this.allClear,
+    required this.partial,
+    required this.observedAt,
+  });
+
+  final String taskID;
+  final String? host;
+  final List<CoordinatorAttentionEntry> entries;
+  final List<CoordinatorSource> sources;
+  final bool allClear;
+  /// Partial is true when some source was not fresh, so the caller knows the
+  /// answer covers less than the task's scope.
+  final bool partial;
+  final String observedAt;
+
+  factory CoordinatorAttention.fromJson(Map<String, dynamic> json) {
+    return CoordinatorAttention(
+      taskID: json['taskId'] as String,
+      host: json['host'] as String?,
+      entries: _list(
+        json['entries'],
+        (value) => _object(value, CoordinatorAttentionEntry.fromJson),
+      ),
+      sources: _list(
+        json['sources'],
+        (value) => _object(value, CoordinatorSource.fromJson),
+      ),
+      allClear: json['allClear'] as bool,
+      partial: json['partial'] as bool,
+      observedAt: json['observedAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['taskId'] = taskID;
+    if (host != null) {
+      json['host'] = host;
+    }
+    json['entries'] = [
+      for (final value in entries) value.toJson(),
+    ];
+    json['sources'] = [
+      for (final value in sources) value.toJson(),
+    ];
+    json['allClear'] = allClear;
+    json['partial'] = partial;
+    json['observedAt'] = observedAt;
+    return json;
+  }
+}
+
 /// DaemonInfo is what GET /api/daemon answers about the local daemon.
 class DaemonInfo {
   const DaemonInfo({

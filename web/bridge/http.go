@@ -108,6 +108,10 @@ type Server struct {
 	// enrolled session, in memory only, so a restart ends every one of them
 	// (marshal_enrollment.go).
 	marshalEnroll *marshalEnrollments
+	// coordinator is Marshal's own host-local destination: the durable tasks and
+	// the attention read over them (coordinator.go). It is nil on a server with
+	// no fleet state directory, and its routes then answer unavailable.
+	coordinator *coordinatorService
 }
 
 // NewServer builds a server over a *Fleet or a *Registry. For a fleet, the
@@ -150,6 +154,9 @@ func NewServer(target any, args ...any) *Server {
 	// server has a fleet to hold them.
 	if fleet != nil {
 		s.plannerRoutes()
+		// Marshal's own destination is host-local state: it exists when this
+		// server has the fleet's state directory to keep it in.
+		s.coordinatorSetup(fleet)
 	}
 	for _, arg := range args {
 		if factory, ok := arg.(FactoryAPI); ok {

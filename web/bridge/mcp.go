@@ -188,7 +188,12 @@ func (s *Server) mcpHandler(w http.ResponseWriter, r *http.Request) {
 			"serverInfo":      map[string]any{"name": "marshal-fleet", "version": "1"},
 		}, nil)
 	case "tools/list":
-		writeRPC(w, id, map[string]any{"tools": mcpToolDefinitions()}, nil)
+		tools := mcpToolDefinitions()
+		// A coordinator conversation is offered its own read tool and nothing
+		// it could mutate with: the list is added only for a verified built-in
+		// session whose daemon-minted session names a coordinated task.
+		tools = append(tools, s.coordinatorToolDefinitions(principal)...)
+		writeRPC(w, id, map[string]any{"tools": tools}, nil)
 	case "tools/call":
 		s.mcpToolCall(w, r, principal.Client, req)
 	default:

@@ -42,9 +42,10 @@ const (
 	coordinatorTasksName = "tasks.json"
 	// coordinatorVersion is the document's format. A document written by a
 	// newer build is refused rather than guessed at. Version 2 added
-	// assignments and their dispatch identity; a version 1 document holds tasks
-	// only and loads with no assignments.
-	coordinatorVersion = 2
+	// assignments and their dispatch identity; version 3 added the delivery a
+	// task posts back to its source thread. Each addition is additive: an older
+	// document loads with none of what it predates.
+	coordinatorVersion = 3
 	// coordinatorDocumentLimit bounds the document this build will read, so a
 	// corrupt or hostile file cannot allocate without limit.
 	coordinatorDocumentLimit = 8 << 20
@@ -127,6 +128,11 @@ type coordinatorDocument struct {
 	Tasks       []coordinatorRecord           `json:"tasks,omitempty"`
 	Assignments []coordinatorAssignmentRecord `json:"assignments,omitempty"`
 	Dispatches  []coordinatorDispatchRecord   `json:"dispatches,omitempty"`
+	// Deliveries holds one record per task: the newest informational update it
+	// posted to its source thread. The event ID on it is stable for the task, so
+	// a retry or a reconnect updates this record instead of appending a second
+	// summary.
+	Deliveries []contract.CoordinatorDelivery `json:"deliveries,omitempty"`
 }
 
 // coordinatorStore owns coordinated tasks on disk. Every mutation is serialized
@@ -144,7 +150,10 @@ type coordinatorStore struct {
 	// so a retried dispatch never mints its assignments twice.
 	assignments map[string]coordinatorAssignmentRecord
 	dispatches  map[string]coordinatorDispatchRecord
-	closed      bool
+	// deliveries holds one record per task: the newest informational update the
+	// task posted to its source thread.
+	deliveries map[string]contract.CoordinatorDelivery
+	closed     bool
 }
 
 // openCoordinatorStore opens or creates the store in dir. A missing directory
@@ -162,6 +171,7 @@ func openCoordinatorStore(dir string, now func() time.Time) (*coordinatorStore, 
 		requests:    map[string]string{},
 		assignments: map[string]coordinatorAssignmentRecord{},
 		dispatches:  map[string]coordinatorDispatchRecord{},
+		deliveries:  map[string]contract.CoordinatorDelivery{},
 	}
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -221,6 +231,14 @@ func openCoordinatorStore(dir string, now func() time.Time) (*coordinatorStore, 
 			return nil, fmt.Errorf("%w: coordinator dispatch %s appears twice", ErrCoordinatorUnavailable, rec.RequestID)
 		}
 		s.dispatches[key] = rec
+	}
+	// Deliveries are additive too: a version 2 document holds none, which is a
+	// task that has posted no result yet.
+	for _, rec := range doc.Deliveries {
+		if rec.TaskID == "" || rec.EventID == "" {
+			return nil, fmt.Errorf("%w: coordinator delivery with no identity", ErrCoordinatorUnavailable)
+		}
+		s.deliveries[rec.TaskID] = rec
 	}
 	return s, nil
 }
@@ -668,6 +686,125 @@ func (s *coordinatorStore) DispatchRequest(taskID, requestID string) (coordinato
 	return rec, true, nil
 }
 
+// SourceTask returns the open task whose source is the given thread.
+//
+// It is how a handoff from a thread finds the task that thread already handed
+// work to: the source is linked once, so a second handoff from the same thread
+// joins the existing task instead of opening another. A stopped task is not
+// returned — its identity is spent, and resuming it is the stop scope's
+// decision (task 8).
+func (s *coordinatorStore) SourceTask(source contract.CoordinatorThreadRef) (contract.CoordinatorTask, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s == nil || s.closed {
+		return contract.CoordinatorTask{}, false
+	}
+	for _, rec := range s.tasks {
+		if rec.Task.Source == nil {
+			continue
+		}
+		if *rec.Task.Source != source {
+			continue
+		}
+		if rec.Task.Status != contract.CoordinatorTaskOpen {
+			continue
+		}
+		return rec.Task, true
+	}
+	return contract.CoordinatorTask{}, false
+}
+
+// WidenScope adds projects to one task's read scope.
+//
+// A handoff that joins an existing source task may name a project the task was
+// not opened over. Widening the scope is what lets it dispatch there under the
+// same task identity, and it never narrows: a project the task already covered
+// stays covered.
+func (s *coordinatorStore) WidenScope(taskID string, projects []string) (contract.CoordinatorTask, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.writable(); err != nil {
+		return contract.CoordinatorTask{}, err
+	}
+	rec, ok := s.tasks[taskID]
+	if !ok {
+		return contract.CoordinatorTask{}, ErrCoordinatorNotFound
+	}
+	merged, err := canonicalCoordinatorProjects(append(append([]string(nil), rec.Task.Projects...), projects...))
+	if err != nil {
+		return contract.CoordinatorTask{}, err
+	}
+	if len(merged) == len(rec.Task.Projects) {
+		return rec.Task, nil
+	}
+	rec.Task.Projects = merged
+	rec.Task.Revision++
+	rec.Task.UpdatedAt = s.now().UTC()
+	if err := s.persistLocked(func(doc *coordinatorDocument) bool {
+		for n := range doc.Tasks {
+			if doc.Tasks[n].Task.ID == taskID {
+				doc.Tasks[n] = rec
+				return true
+			}
+		}
+		return false
+	}); err != nil {
+		return contract.CoordinatorTask{}, err
+	}
+	s.tasks[taskID] = rec
+	return rec.Task, nil
+}
+
+// PutDelivery records the informational update one task posts to its source
+// thread, and reports whether it changed anything.
+//
+// The event ID is the task's, and stable across attempts, so a retry, a
+// reconnect or a second observation replaces this one record instead of
+// posting a second summary. It reports changed=false when the record already
+// holds the same text, which is what keeps a delivery that learned nothing new
+// from being emitted again.
+func (s *coordinatorStore) PutDelivery(delivery contract.CoordinatorDelivery) (contract.CoordinatorDelivery, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.writable(); err != nil {
+		return contract.CoordinatorDelivery{}, false, err
+	}
+	if delivery.TaskID == "" || delivery.EventID == "" {
+		return contract.CoordinatorDelivery{}, false, fmt.Errorf("%w: a delivery needs a task and an event id", ErrCoordinatorInput)
+	}
+	previous, held := s.deliveries[delivery.TaskID]
+	if held && previous.EventID == delivery.EventID && previous.Text == delivery.Text {
+		return previous, false, nil
+	}
+	delivery.At = s.now().UTC()
+	if err := s.persistLocked(func(doc *coordinatorDocument) bool {
+		for n := range doc.Deliveries {
+			if doc.Deliveries[n].TaskID == delivery.TaskID {
+				doc.Deliveries[n] = delivery
+				return true
+			}
+		}
+		doc.Deliveries = append(doc.Deliveries, delivery)
+		return true
+	}); err != nil {
+		return previous, false, err
+	}
+	s.deliveries[delivery.TaskID] = delivery
+	return delivery, true, nil
+}
+
+// Delivery returns the newest informational update one task posted to its
+// source, if it posted one.
+func (s *coordinatorStore) Delivery(taskID string) (contract.CoordinatorDelivery, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s == nil || s.closed {
+		return contract.CoordinatorDelivery{}, false, ErrCoordinatorUnavailable
+	}
+	rec, ok := s.deliveries[taskID]
+	return rec, ok, nil
+}
+
 // UpdateAssignment applies mutate to one assignment and writes it atomically.
 //
 // mutate reports whether it changed anything; an unchanged assignment is not
@@ -711,6 +848,7 @@ func (s *coordinatorStore) persistLocked(mutate func(doc *coordinatorDocument) b
 		Tasks:       make([]coordinatorRecord, 0, len(s.tasks)+1),
 		Assignments: make([]coordinatorAssignmentRecord, 0, len(s.assignments)+1),
 		Dispatches:  make([]coordinatorDispatchRecord, 0, len(s.dispatches)+1),
+		Deliveries:  make([]contract.CoordinatorDelivery, 0, len(s.deliveries)+1),
 	}
 	for _, rec := range s.tasks {
 		doc.Tasks = append(doc.Tasks, rec)
@@ -729,6 +867,10 @@ func (s *coordinatorStore) persistLocked(mutate func(doc *coordinatorDocument) b
 		return coordinatorDispatchKey(doc.Dispatches[i].TaskID, doc.Dispatches[i].RequestID) <
 			coordinatorDispatchKey(doc.Dispatches[j].TaskID, doc.Dispatches[j].RequestID)
 	})
+	for _, rec := range s.deliveries {
+		doc.Deliveries = append(doc.Deliveries, rec)
+	}
+	sort.Slice(doc.Deliveries, func(i, j int) bool { return doc.Deliveries[i].TaskID < doc.Deliveries[j].TaskID })
 	if !mutate(&doc) {
 		return nil
 	}

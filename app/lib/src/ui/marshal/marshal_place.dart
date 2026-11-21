@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import '../../model/age.dart';
 import '../../model/marshal_model.dart';
 import '../../model/place.dart';
 import '../../model/thread_view_state.dart';
 import '../kit/kit.dart';
+import '../thread/transcript.dart' show HandoffBand;
 
 /// Marshal's destination (agent-first Studio, task 5): the host-local
 /// conversation a person resumes, the drafts New opens, and the read-only
@@ -107,6 +110,41 @@ class MarshalPlace extends StatelessWidget {
                     // refreshed, so the band does not repeat it.
                     sayAge: state != StateKind.stale,
                     onOpen: onOpen,
+                  ),
+                ),
+              // The work this task dispatched, and the result it reported back
+              // into the thread it came from: the same band a source thread
+              // draws, so the two surfaces cannot describe it differently.
+              if (model.task != null && model.handoff != null)
+                ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxHeight: Layout.inspector,
+                  ),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(
+                      Layout.pageSide,
+                      Space.s12,
+                      Layout.pageSide,
+                      0,
+                    ),
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      heightFactor: 1,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(
+                          maxWidth: Layout.reading,
+                        ),
+                        child: HandoffBand(
+                          handoff: model.handoff!,
+                          now: _now,
+                          onOpenTask: onOpen,
+                          onOpenAssignment: onOpen,
+                          onRetry: model.retrying == null
+                              ? (id) => unawaited(model.retryAssignment(id))
+                              : null,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               Expanded(child: _body(context)),

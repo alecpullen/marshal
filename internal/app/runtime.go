@@ -1943,6 +1943,20 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	marshalStudio := newMarshalStudioCredential(homeDir, workingDir, sessionID)
 	marshalStudio.enroll()
 	runner, toolReg, swarmRunner, mcpMgr, snapSvc, commandService, watchMgr, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, images, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock, nil, lspHandle, marshalStudio, authResolver)
+	// A coordinator conversation is composed after the standard build rather
+	// than inside it: the coordination role replaces what the session may do,
+	// so it is applied once, at the one place every runtime passes through.
+	// Nothing in a prompt, a tool result or a reload can widen it, because the
+	// registry the runner is handed is the coordination view and the standard
+	// tools never enter it.
+	if err == nil && runOpts.coordinatorRole {
+		toolReg = CoordinationRegistry(toolReg)
+		if runner != nil {
+			runner.Registry = toolReg
+			runner.Role = CoordinatorRole
+			runner.SystemPromptAddendum = withCoordinationAddendum(runner.SystemPromptAddendum)
+		}
+	}
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}

@@ -8,10 +8,10 @@ import 'thread_ref.dart';
 import 'work_item_model.dart' show threadOfItem;
 
 /// The fixed places that sit above the projects in the sidebar; the rest of
-/// [NavModel.fixed] sits below them, as the mock's sidebar does (Overview,
-/// Needs you and Pull requests above the tree; Automations, Library and
-/// Settings at its foot).
-const navAboveProjects = 3;
+/// [NavModel.fixed] sits below them, as the mock's sidebar does (Marshal,
+/// Overview, Needs you and Pull requests above the tree; Automations, Library
+/// and Settings at its foot).
+const navAboveProjects = 4;
 
 /// How old an idle thread must be to count as earlier (F2 Decisions): an
 /// agent that is idle and was last active more than a day ago.
@@ -202,6 +202,14 @@ NavModel buildNavModel(
   final now = store.now;
   final inboxCount = store.inbox().length;
   final fixed = [
+    // Marshal is the first primary row (agent-first Studio, task 5): it is the
+    // cross-project conversation the operator opens Studio to have, and the
+    // fleet screens it reads sit beside it.
+    NavPlace(
+      kind: PlaceKind.marshal,
+      label: _label(PlaceKind.marshal),
+      active: place.kind == PlaceKind.marshal,
+    ),
     NavPlace(
       kind: PlaceKind.overview,
       label: 'Overview',
@@ -290,6 +298,9 @@ String _label(PlaceKind kind) => switch (kind) {
   PlaceKind.overview => 'Overview',
   PlaceKind.inbox => 'Needs you',
   PlaceKind.pulls => 'Pull requests',
+  // Marshal is the destination's own name: it is the conversation's
+  // recipient, and the design doc names it in primary navigation.
+  PlaceKind.marshal => 'Marshal',
   PlaceKind.project => 'Project',
   PlaceKind.thread => 'Thread',
   PlaceKind.automations => 'Automations',

@@ -16,6 +16,15 @@ enum PlaceKind {
   settings,
 }
 
+/// The path segment that names a project's conversation rather than its
+/// board: `/conversation/<host>/<root>`, or `/conversation/<root>` for a
+/// conversation no host is named for.
+///
+/// A project's board keeps `/project/<id>` (agent-first Studio, task 2): an
+/// explicit board link still opens the board, while the sidebar's project row
+/// and New open the project's conversation.
+const conversationSegment = 'conversation';
+
 /// The query key a link carries the inspector's width under.
 const linkWidthKey = 'w';
 
@@ -36,13 +45,19 @@ class Place {
     this.id,
     this.section,
     this.query = const {},
+    this.conversation = false,
   }) : assert(
-         kind != PlaceKind.project || id != null,
-         'a project place names its project',
+         kind != PlaceKind.project || id != null || conversation,
+         'a project place names its project, unless it is the conversation '
+         'entry that asks which one',
        ),
        assert(
          kind != PlaceKind.thread || id != null,
          'a thread place names its thread',
+       ),
+       assert(
+         kind != PlaceKind.project || !conversation || section == null,
+         'a project conversation has no section',
        ),
        assert(
          section == null ||
@@ -58,13 +73,35 @@ class Place {
   /// The inbox: every ask, oldest first.
   const Place.inbox() : this(PlaceKind.inbox);
 
+  /// A project's conversation: what the sidebar's project row and New open
+  /// (agent-first Studio, task 2).
+  ///
+  /// It is a project place with [conversation] set, not a place kind of its
+  /// own: the project's board stays `/project/<id>`, and the conversation is
+  /// `/conversation/<root>` (or `/conversation/<host>/<root>`). An [id] names
+  /// the project to talk to; null is the entry with no project chosen yet,
+  /// which offers the last project, a selector, or Connect repository.
+  const Place.conversation({String? host, String? id})
+    : this(PlaceKind.project, host: host, id: id, conversation: true);
+
   final PlaceKind kind;
 
-  /// The host a thread belongs to. Every other place spans hosts.
+  /// Whether this project place is the project's conversation rather than its
+  /// board.
+  ///
+  /// The two are different entries on purpose (agent-first Studio, task 2): a
+  /// person selecting a project in the sidebar, or pressing New, wants to talk
+  /// to its agent, while an explicit board link — the `/project/<id>` deep
+  /// link, the Overview's project row — still opens the board.
+  final bool conversation;
+
+  /// The host a thread belongs to, or the host a project conversation is on.
+  /// Every other place spans hosts.
   ///
   /// A thread a link names by its id alone has none: a link written for the
   /// one-bridge Studio could not know which host answers for it, so the fleet
-  /// is asked instead (F8 decision 2).
+  /// is asked instead (F8 decision 2). A conversation a link names the same
+  /// way is answered the same way.
   final String? host;
 
   /// The project's id (its root) or the thread's id.
@@ -88,6 +125,7 @@ class Place {
     id: id,
     section: section,
     query: Map<String, String>.unmodifiable(query),
+    conversation: conversation,
   );
 
   @override
@@ -97,6 +135,7 @@ class Place {
       other.host == host &&
       other.id == id &&
       other.section == section &&
+      other.conversation == conversation &&
       mapEquals(other.query, query);
 
   @override
@@ -105,6 +144,7 @@ class Place {
     host,
     id,
     section,
+    conversation,
     Object.hashAllUnordered(
       query.entries.map((entry) => Object.hash(entry.key, entry.value)),
     ),
@@ -112,7 +152,8 @@ class Place {
 
   @override
   String toString() =>
-      'Place(${kind.name}${host == null ? '' : ', $host'}'
+      'Place(${kind.name}${conversation ? ', conversation' : ''}'
+      '${host == null ? '' : ', $host'}'
       '${id == null ? '' : ', $id'}'
       '${section == null ? '' : ', $section'}'
       '${query.isEmpty ? '' : ', $query'})';
@@ -240,6 +281,15 @@ Place _placeOf(List<String> parts) {
       return parts.length == 2
           ? Place(PlaceKind.project, id: parts[1])
           : _unknown;
+    case conversationSegment:
+      // `/conversation` names no project yet: it offers the last one, a
+      // selector, or Connect repository. `/conversation/<root>` names one, and
+      // `/conversation/<host>/<root>` names the host that answers for it.
+      if (parts.length == 1) return const Place.conversation();
+      if (parts.length == 2) return Place.conversation(id: parts[1]);
+      return parts.length == 3
+          ? Place.conversation(host: parts[1], id: parts[2])
+          : _unknown;
     case 'thread':
       // `/thread/<id>` names a thread no host is named for: a link written
       // before the app knew which host answers for it (F8 decision 2), or one
@@ -274,6 +324,7 @@ String formatPlace(Place place) {
             ? '/$segment'
             : '/$segment/${Uri.encodeComponent(section)}')
       : switch (place.kind) {
+          PlaceKind.project when place.conversation => _conversationPath(place),
           PlaceKind.project =>
             '/project/${Uri.encodeComponent(place.id ?? '')}',
           // A thread a link names without its host keeps that form: the path
@@ -294,4 +345,15 @@ String formatPlace(Place place) {
           '${Uri.encodeQueryComponent(place.query[key]!)}',
   ].join('&');
   return '$path?$query';
+}
+
+/// `/conversation`, `/conversation/<root>` or `/conversation/<host>/<root>`:
+/// the path [parsePlace] reads back as [Place.conversation].
+String _conversationPath(Place place) {
+  final id = place.id;
+  final host = place.host;
+  if (id == null) return '/$conversationSegment';
+  final encoded = Uri.encodeComponent(id);
+  if (host == null) return '/$conversationSegment/$encoded';
+  return '/$conversationSegment/${Uri.encodeComponent(host)}/$encoded';
 }

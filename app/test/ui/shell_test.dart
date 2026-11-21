@@ -1020,7 +1020,14 @@ void main() {
 
     final started = await tester.runAsync(
       () => ModelFixture.start([
-        FixtureHost(name: 'local', projects: [project('/home/u/marshal')]),
+        FixtureHost(
+          name: 'local',
+          projects: [project('/home/u/marshal')],
+          // One thread, so the fleet draws its places rather than the state of
+          // a fleet with nothing in it: New opens the project's conversation
+          // inside the content area.
+          agents: [agent(id: 'a-1', project: '/home/u/marshal')],
+        ),
       ], now: DateTime.utc(2026, 11, 17, 12)),
     );
     final fixture = started!;

@@ -6,6 +6,7 @@ import 'package:marshal_app/src/model/new_work_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
+import 'package:marshal_app/src/ui/new_work/project_composer.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
 
 import '../../model/support.dart';
@@ -121,24 +122,24 @@ void main() {
     await settleIo(tester);
     expect(find.text('Step in the first thread'), findsOneWidget);
 
-    // ⌘N opens the dialog (task 7).
+    // ⌘N opens the project composer (task 2's one new-work entry).
     await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('Start a new agent'), findsOneWidget);
 
-    // The sidebar has a field of its own, so the dialog's is named by its
-    // sheet.
+    // The sidebar has a field of its own, so the composer's is named by its
+    // screen.
     await tester.enterText(
       find.descendant(
-        of: find.byType(Sheet),
+        of: find.byType(ProjectComposer),
         matching: find.byType(EditableText),
       ),
       'Fix the login redirect',
     );
     await tester.pump();
-    await tester.tap(find.text('Start'));
+    await tester.tap(find.text('Send'));
     await settleIo(tester);
     await tester.pump(const Duration(milliseconds: 400));
 
@@ -150,8 +151,8 @@ void main() {
     expect(posted.body, contains('Fix the login redirect'));
     expect(posted.body, contains('"project":"/home/u/marshal"'));
 
-    // …and the dialog closed onto the thread it started
-    // (`onThreadStarted` in ui/shell/shell.dart), not the one it opened from.
+    // …and the composer closed onto the thread it started
+    // (`onStarted` in ui/shell/shell.dart), not the one it opened from.
     expect(find.text('Start a new agent'), findsNothing);
     expect(find.text('Step in the new thread'), findsOneWidget);
     expect(find.text('Step in the first thread'), findsNothing);
@@ -244,10 +245,13 @@ void main() {
     await settleIo(tester);
     expect(find.text('Step in the first thread'), findsOneWidget);
 
-    // ⌘N opens the dialog, and its Host chip moves it to the other host.
+    // ⌘N opens the composer, and the Host chip under Options moves it to the
+    // other host.
     await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Options'));
     await tester.pump(const Duration(milliseconds: 400));
     await tester.tap(find.textContaining('Host: local'));
     await tester.pump(const Duration(milliseconds: 400));
@@ -260,13 +264,13 @@ void main() {
 
     await tester.enterText(
       find.descendant(
-        of: find.byType(Sheet),
+        of: find.byType(ProjectComposer),
         matching: find.byType(EditableText),
       ),
       'Fix the studio redirect',
     );
     await tester.pump();
-    await tester.tap(find.text('Start'));
+    await tester.tap(find.text('Send'));
     await settleIo(tester);
     await tester.pump(const Duration(milliseconds: 400));
 
@@ -281,10 +285,10 @@ void main() {
         (request) => request.method == 'POST' && request.uri == '/api/agents',
       ),
       isEmpty,
-      reason: 'the host the dialog left posts nothing',
+      reason: 'the host the composer left posts nothing',
     );
 
-    // …and the dialog closed onto the thread it started there, not onto the
+    // …and the composer closed onto the thread it started there, not onto the
     // thread on the host it opened from.
     expect(find.text('Start a new agent'), findsNothing);
     expect(find.text('Step in the studio thread'), findsOneWidget);

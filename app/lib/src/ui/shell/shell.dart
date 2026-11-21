@@ -20,6 +20,7 @@ import '../../model/place_host.dart' show placeHost;
 import '../../model/planning_model.dart';
 import '../../model/project_model.dart';
 import '../../model/route_translation.dart';
+import '../../model/selection.dart' show ProjectMemory;
 import '../../model/signals_store.dart';
 import '../../model/source_state.dart';
 import '../../model/pulls_model.dart';
@@ -45,7 +46,7 @@ import '../pulls/fix_control.dart';
 import '../pulls/merge_control.dart';
 import '../pulls/pulls_place.dart';
 import '../sections/unsaved_guard.dart';
-import '../new_work/new_work_dialog.dart';
+import '../new_work/project_composer.dart';
 import '../thread/share_sheet.dart';
 import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
@@ -139,6 +140,7 @@ class Shell extends StatefulWidget {
     this.signals,
     this.onConnectRepo,
     this.onNew,
+    this.onOpenProject,
     this.onLeaveSettings,
     this.searchFocus,
   });
@@ -203,6 +205,13 @@ class Shell extends StatefulWidget {
   /// leaves both out — there is no project to start work in.
   final VoidCallback? onNew;
 
+  /// A project selected in the sidebar opens the project's *conversation*
+  /// (agent-first Studio, task 2), which is not the same action as opening
+  /// its board: the board keeps `/project/<id>` and the links that name it
+  /// (the Overview's project row, a deep link). Null leaves a sidebar project
+  /// row opening the board, which is what a build with no composer wants.
+  final void Function(String project)? onOpenProject;
+
   /// Where Settings' Back row goes: the place Settings was opened from, named
   /// by the screen that knows it (F2: a section is a place, and the whole of
   /// Settings is one too). Null leaves the row without a destination of its
@@ -263,7 +272,7 @@ class _ShellState extends State<Shell> {
     place: widget.place,
     host: _host,
     onHost: _setHost,
-    onSelect: (place) => _leave(() => widget.onSelect(place)),
+    onSelect: (place) => _leave(() => _select(place)),
     onConnectRepo: widget.onConnectRepo,
     onNew: widget.onNew,
     // Settings' Back row is a way out of a place like any other, so it asks
@@ -285,6 +294,24 @@ class _ShellState extends State<Shell> {
       unsaved: widget.unsaved,
     ),
   );
+
+  /// Opens what a sidebar row names.
+  ///
+  /// A *project* row is a selection of the project, so it opens the project's
+  /// conversation (agent-first Studio, task 2); the board keeps the links that
+  /// name it — `/project/<id>`, the Overview's project row, a legacy hash. A
+  /// build with no composer wired leaves every row opening the place it names,
+  /// which is what the shell did before the conversation existed.
+  void _select(Place place) {
+    final open = widget.onOpenProject;
+    if (open != null &&
+        place.kind == PlaceKind.project &&
+        !place.conversation) {
+      open(place.id!);
+      return;
+    }
+    widget.onSelect(place);
+  }
 
   /// Narrows the tree — and the host a per-host place reads — to [host], or
   /// to every host when it is null.
@@ -584,6 +611,7 @@ class Studio extends StatefulWidget {
     this.threadStore,
     this.composerFor,
     this.newWorkFor,
+    this.memory,
     this.shareFor,
     this.inspectorFor,
     this.connectRepoFor,
@@ -639,14 +667,21 @@ class Studio extends StatefulWidget {
   final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
   composerFor;
 
-  /// Builds the new-work dialog's model for one host and project root. Null
-  /// leaves `⌘N` and every "New" without a dialog.
+  /// Builds the new-work composer's model for one host and project root. Null
+  /// leaves `⌘N`, every "New" and every project selection without a
+  /// conversation.
   ///
   /// It is keyed by the project, not by a thread: the Overview and a project
   /// page start work too, and neither has a thread to start it from. Those
   /// entry points are the design's (design.md, "Starting work", and the mock's
   /// `Btn('New', primary: true, icon: plus)` in both page headers).
   final NewWorkModel Function(String host, String project)? newWorkFor;
+
+  /// Where this window remembers the project it selected last and the thread
+  /// it read there (agent-first Studio, task 2). Null keeps a memory this
+  /// window holds alone, which is what a test and a build with no preference
+  /// store want.
+  final ProjectMemory? memory;
 
   /// Builds the connect-repository sheet's model for one host (F9 B1). Null
   /// leaves the sidebar's plus out: a host that wires no bridge cannot
@@ -733,6 +768,12 @@ class Studio extends StatefulWidget {
 
 class _StudioState extends State<Studio> with WidgetsBindingObserver {
   late Place _place = widget.initialPlace;
+
+  /// What this window remembers between visits: the project selected last and
+  /// the thread read there last (agent-first Studio, task 2). A screen handed
+  /// no store keeps its memory for this visit alone, which is what a test
+  /// wants.
+  late final ProjectMemory _memory = widget.memory ?? ProjectMemory();
 
   /// The place the page's own address names, once this screen has written it
   /// (F8 decision 2). Null until then: a screen the page handed no place never
@@ -917,7 +958,11 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
           // resolution `⌘N` uses — but unguarded, because a tap does not take
           // the keyboard from a composer and a button that asked the key path
           // would do nothing while one held it.
-          onNew: _firstProject() == null ? null : _newWork,
+          onNew: widget.newWorkFor == null ? null : _newWork,
+          // A project row is a project *selection*, so it opens the project's
+          // conversation (agent-first Studio, task 2); a board link — the
+          // Overview's row, `/project/<id>` — keeps opening the board.
+          onOpenProject: widget.newWorkFor == null ? null : _openProject,
           onLeaveSettings: _leaveSettings,
           searchFocus: _searchFocus,
         );
@@ -979,6 +1024,7 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
   /// asked for it: one path, so every entry point clears the notice and sets
   /// the place the same way (f9-parity decision 6).
   void _go(Place next) {
+    _remember(next);
     setState(() {
       // The notice was about the link that opened the screen, not about the
       // place the person has chosen since.
@@ -993,6 +1039,46 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
       _place = next;
     });
     _writeAddress(next);
+  }
+
+  /// Remembers the thread a thread place shows, and its project, so selecting
+  /// that project again resumes it (agent-first Studio, task 2).
+  ///
+  /// Only a thread the fleet lists and that is not closed is remembered: a
+  /// stale entry would open a conversation that no longer exists, where the
+  /// honest place is a focused draft.
+  void _remember(Place place) {
+    if (place.kind != PlaceKind.thread) return;
+    final thread = _threadRef(place);
+    if (thread == null || thread.closed) return;
+    _memory
+      ..rememberProject(thread.host, thread.project)
+      ..rememberThread(thread.host, thread.project, thread.id);
+  }
+
+  /// Opens a project selected in the sidebar (agent-first Studio, task 2).
+  ///
+  /// The project's conversation is what a selection opens: the thread the
+  /// person last read there when the fleet still lists it and it has not
+  /// closed, and a focused draft otherwise. The board is never what a
+  /// selection opens — it keeps its own links (`/project/<id>`, the Overview's
+  /// project row).
+  void _openProject(String root) {
+    final host = _hostOfProject(root);
+    _memory.rememberProject(host, root);
+    final remembered = _memory.threadFor(host, root);
+    if (remembered != null) {
+      final thread = _threadOn(host, remembered);
+      if (thread != null && !thread.closed) {
+        _go(Place(PlaceKind.thread, host: host, id: thread.id));
+        return;
+      }
+      // It closed, or no host lists it any more: a focused draft is the
+      // honest place, and the stale id is forgotten so it is not resumed
+      // again.
+      _memory.forgetThread(host, root);
+    }
+    _go(Place.conversation(host: host, id: root));
   }
 
   /// Settings' Back row: the place Settings was opened from, or the Overview
@@ -1090,19 +1176,11 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
-        // The Overview's "New" (design.md, "Starting work"): it starts in the
-        // first project the fleet lists, and the dialog's Project chip offers
-        // the rest, so the default is a starting point rather than a limit.
-        // A place without a builder draws no button: the same guard the
-        // thread and the project place use.
-        onNewWork: widget.newWorkFor == null
-            ? null
-            : switch (_firstProject()) {
-                (final host, final project) => () => unawaited(
-                  _openNewWork(navigation, host, project),
-                ),
-                null => null,
-              },
+        // The Overview's "New" (design.md, "Starting work") opens the
+        // conversation entry, which resolves the project: the last one
+        // selected, a selector when several could be meant, or Connect
+        // repository when none is (agent-first Studio, task 2).
+        onNewWork: widget.newWorkFor == null ? null : _newWork,
       );
     }
     if (place.kind == PlaceKind.inbox) {
@@ -1137,6 +1215,9 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
         ),
       );
     }
+    if (place.kind == PlaceKind.project && place.conversation) {
+      return _conversation(place, nav, navigation);
+    }
     if (place.kind == PlaceKind.project) {
       final root = place.id;
       final build = widget.projectFor;
@@ -1167,9 +1248,11 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
               ? const Place(PlaceKind.automations)
               : Place(PlaceKind.automations, section: automationsSections[tab]),
         ),
+        // The page's New opens that project's conversation, which is the same
+        // entry the sidebar's New and `⌘N` reach (agent-first Studio, task 2).
         onNewWork: widget.newWorkFor == null
             ? null
-            : () => unawaited(_openNewWork(navigation, host, root)),
+            : () => navigation.go(Place.conversation(host: host, id: root)),
       );
     }
     if (place.kind == PlaceKind.thread) {
@@ -1424,9 +1507,13 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
     _newWork();
   }
 
-  /// Opens the new-work dialog for the project in view — the thread's, the
-  /// project place's, else the first the fleet lists — for every caller but
-  /// the key path, which guards a focused text field first.
+  /// Opens the new-work composer (agent-first Studio, task 2): the sidebar's
+  /// New, the narrow app bar's plus and `⌘N` all land on the same entry.
+  ///
+  /// The project in view — the thread's, the project place's — is the one it
+  /// opens; a global screen names none, so the entry resolves it: the last
+  /// project selected, a selector when several could be meant, or Connect
+  /// repository when no host lists one.
   void _newWork() {
     final place = _place;
     String? host;
@@ -1438,64 +1525,100 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
     } else if (place.kind == PlaceKind.project) {
       final root = place.id;
       if (root != null) {
-        host = _hostOfProject(root);
+        host = place.host ?? _hostOfProject(root);
         project = root;
       }
     }
-    if (host == null || project == null) {
-      final first = _firstProject();
-      // A dialog with no project to belong to is not opened at all.
-      if (first == null) return;
-      host = first.$1;
-      project = first.$2;
-    }
-    unawaited(
-      _openNewWork(PlaceNavigation(go: _go, unsaved: _unsaved), host, project),
+    _go(
+      project == null
+          ? const Place.conversation()
+          : Place.conversation(host: host, id: project),
     );
   }
 
-  /// Opens the Studio's one new-work dialog for one project, and the place the
-  /// answer names (design.md, "Starting work").
-  ///
-  /// A thread's `⌘N`, the Overview's "New" and a project page's "New" all come
-  /// here: an agent opens its thread, "Plan first" opens the planning thread
-  /// ([_rememberPlanner] is what lets its place resolve), and "Work item" opens
-  /// the handoff review.
-  Future<void> _openNewWork(
-    PlaceNavigation navigation,
-    String host,
-    String project,
-  ) async {
+  /// A project's conversation (agent-first Studio, task 2): the composer for
+  /// the project a selection, New or a link names, or the entry that resolves
+  /// one.
+  Widget _conversation(Place place, NavModel nav, PlaceNavigation navigation) {
     final build = widget.newWorkFor;
-    if (build == null) return;
-    final model = build(host, project);
-    await Sheet.show<void>(
-      context,
-      newWorkDialog(
-        model,
-        onCancel: () => Navigator.maybePop(context),
-        // The dialog may move to another host after it opens (spec D10), so
-        // every answer lands on the host the model names now, not the one the
-        // sheet opened on.
-        onStarted: (agentId) {
-          Navigator.maybePop(context);
-          navigation.go(Place(PlaceKind.thread, host: model.host, id: agentId));
-        },
-        onPlanned: (planner) {
-          Navigator.maybePop(context);
-          _rememberPlanner(model.host, project, planner);
-          navigation.go(
-            Place(PlaceKind.thread, host: model.host, id: planner.id),
-          );
-        },
-        onWorkItem: (prompt) {
-          Navigator.maybePop(context);
-          unawaited(_openNewWorkItem(navigation, model.host, project, prompt));
-        },
-      ),
+    if (build == null) return plannedPlace(place, nav);
+    final root = place.id;
+    if (root != null) {
+      return _composer(
+        place.host ?? _hostOfProject(root),
+        root,
+        build,
+        navigation,
+      );
+    }
+    // The entry with no project named: the one selected last when the fleet
+    // still serves it, a selector when several could be meant, and Connect
+    // repository when none is.
+    final candidates = [
+      for (final host in widget.store.hosts)
+        for (final project in widget.store.projects(host: host.name))
+          (host: host.name, root: project.root),
+    ];
+    final last = _memory.lastProject;
+    if (last != null) {
+      for (final candidate in candidates) {
+        if (candidate.host == last.host && candidate.root == last.project) {
+          return _composer(candidate.host, candidate.root, build, navigation);
+        }
+      }
+    }
+    if (candidates.length == 1) {
+      return _composer(
+        candidates.single.host,
+        candidates.single.root,
+        build,
+        navigation,
+      );
+    }
+    return _ConversationEntry(
+      candidates: candidates,
+      onOpen: (host, root) =>
+          navigation.go(Place.conversation(host: host, id: root)),
+      onConnectRepo: widget.connectRepoFor == null
+          ? null
+          : () => unawaited(_openConnectRepo(context)),
+      onRetry: _reread,
     );
-    model.dispose();
   }
+
+  /// One project's composer, and the place each answer opens.
+  ///
+  /// A started agent and a started planner are remembered as the project's
+  /// thread, so selecting that project again resumes them; a "Work item" opens
+  /// the handoff review, which is what the new-work dialog did.
+  Widget _composer(
+    String host,
+    String root,
+    NewWorkModel Function(String host, String project) build,
+    PlaceNavigation navigation,
+  ) => _ComposerPlace(
+    key: ValueKey('conversation/$host/$root'),
+    host: host,
+    project: root,
+    build: build,
+    onStarted: (host, root, agentId) {
+      _memory
+        ..rememberProject(host, root)
+        ..rememberThread(host, root, agentId);
+      navigation.go(Place(PlaceKind.thread, host: host, id: agentId));
+    },
+    onPlanned: (host, root, planner) {
+      _rememberPlanner(host, root, planner);
+      navigation.go(Place(PlaceKind.thread, host: host, id: planner.id));
+    },
+    onWorkItem: (host, root, prompt) =>
+        unawaited(_openNewWorkItem(navigation, host, root, prompt)),
+    onOpenProject: (host, root) =>
+        navigation.go(Place.conversation(host: host, id: root)),
+    onConnectRepo: widget.connectRepoFor == null
+        ? null
+        : () => unawaited(_openConnectRepo(context)),
+  );
 
   /// Opens the handoff review with [prompt] as the plan's starting text, and
   /// the item approving it creates (F6 decision 9).
@@ -1553,6 +1676,138 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
       if (digest != null) _runDigests[run.agentID] = digest;
     });
     navigation.go(Place(PlaceKind.thread, host: host, id: run.agentID));
+  }
+}
+
+/// One project's conversation (agent-first Studio, task 2): the composer, and
+/// the model behind it.
+///
+/// It owns the model it was built with, so leaving the conversation lets the
+/// lists it read alone rather than leaving a reader running — the same
+/// ownership [`_ProjectPlace`] and [`_PlanningPlace`] take.
+class _ComposerPlace extends StatefulWidget {
+  const _ComposerPlace({
+    super.key,
+    required this.host,
+    required this.project,
+    required this.build,
+    this.onStarted,
+    this.onPlanned,
+    this.onWorkItem,
+    this.onOpenProject,
+    this.onConnectRepo,
+  });
+
+  final String host;
+  final String project;
+  final NewWorkModel Function(String host, String project) build;
+
+  /// What Send started, on the host and project the model names *now* — the
+  /// Host and Project chips may have moved them since the place opened.
+  final void Function(String host, String project, String agentId)? onStarted;
+  final void Function(String host, String project, StartedPlanner planner)?
+  onPlanned;
+  final void Function(String host, String project, String prompt)? onWorkItem;
+  final void Function(String host, String project)? onOpenProject;
+  final VoidCallback? onConnectRepo;
+
+  @override
+  State<_ComposerPlace> createState() => _ComposerPlaceState();
+}
+
+class _ComposerPlaceState extends State<_ComposerPlace> {
+  /// The composer's model: built once for this place, and disposed with it.
+  late final NewWorkModel _model = widget.build(widget.host, widget.project);
+
+  @override
+  void dispose() {
+    _model.dispose();
+    super.dispose();
+  }
+
+  /// The project the composer would start in now, as its chip names it.
+  String get _project => _model.choices['Project'] ?? widget.project;
+
+  @override
+  Widget build(BuildContext context) => ProjectComposer(
+    model: _model,
+    project: widget.project,
+    host: widget.host,
+    onStarted: (agentId) =>
+        widget.onStarted?.call(_model.host, _project, agentId),
+    onPlanned: (planner) =>
+        widget.onPlanned?.call(_model.host, _project, planner),
+    onWorkItem: (prompt) =>
+        widget.onWorkItem?.call(_model.host, _project, prompt),
+  );
+}
+
+/// The conversation entry with no project to open (agent-first Studio, task
+/// 2): every project a host lists, so a person chooses one, and Connect
+/// repository when no host lists any.
+///
+/// It is what the last project selected being gone leaves, and what New from a
+/// global screen opens when several projects could be meant.
+class _ConversationEntry extends StatelessWidget {
+  const _ConversationEntry({
+    required this.candidates,
+    required this.onOpen,
+    this.onConnectRepo,
+    this.onRetry,
+  });
+
+  /// Each project to choose from, with the host that serves it: a name is not
+  /// an identity, so a project live on two hosts is two rows.
+  final List<({String host, String root})> candidates;
+
+  final void Function(String host, String root) onOpen;
+  final VoidCallback? onConnectRepo;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final retry = StateAction('Read the fleet again', onTap: onRetry ?? () {});
+    if (candidates.isEmpty) {
+      final connect = onConnectRepo;
+      return PageBody(
+        title: 'Start a new agent',
+        children: [
+          connect == null
+              ? StateMessage.empty(
+                  message:
+                      'No project yet: a project appears here once a daemon '
+                      'reports one.',
+                  action: retry,
+                )
+              : StateMessage.empty(
+                  message:
+                      'No project yet: connect a repository to start work in '
+                      'one.',
+                  action: StateAction('Connect repository', onTap: connect),
+                ),
+        ],
+      );
+    }
+    return PageBody(
+      title: 'Start a new agent',
+      subtitle: 'Choose the project this conversation belongs to.',
+      children: [
+        const Label('Projects'),
+        const SizedBox(height: Space.s8),
+        Wrap(
+          spacing: Space.s8,
+          runSpacing: Space.s8,
+          children: [
+            for (final candidate in candidates)
+              Btn(
+                '${projectName(candidate.root)} on ${candidate.host}',
+                icon: Glyphs.folder,
+                onTap: () => onOpen(candidate.host, candidate.root),
+              ),
+          ],
+        ),
+      ],
+    );
   }
 }
 

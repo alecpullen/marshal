@@ -185,6 +185,56 @@ void main() {
     composer.dispose();
   });
 
+  testWidgets('the recipient is named above the field', (tester) async {
+    final store = fixtureStore();
+    final view = ThreadViewState();
+    final composer = _model(view);
+    await pumpThread(
+      tester,
+      store: store,
+      view: view,
+      // A coordinator thread names Marshal here; a project thread names its
+      // own agent. Either way the name sits above the field.
+      composer: ThreadComposer(
+        model: composer,
+        view: view,
+        recipient: 'Marshal',
+      ),
+    );
+
+    expect(find.text('Marshal'), findsOneWidget);
+    // It reads above the field: a person checking the address before typing
+    // finds it before the hint, not after the buttons.
+    expect(
+      tester.getRect(find.text('Marshal')).bottom,
+      lessThanOrEqualTo(tester.getRect(find.byType(Composer)).top),
+    );
+
+    store.dispose();
+    view.dispose();
+    composer.dispose();
+  });
+
+  testWidgets('a host that names no recipient draws no line', (tester) async {
+    final store = fixtureStore();
+    final view = ThreadViewState();
+    final composer = _model(view);
+    await pumpThread(
+      tester,
+      store: store,
+      view: view,
+      composer: ThreadComposer(model: composer, view: view),
+    );
+
+    // Nothing between the transcript and the field: a blank line would be a
+    // label for nothing.
+    expect(find.text('Marshal'), findsNothing);
+
+    store.dispose();
+    view.dispose();
+    composer.dispose();
+  });
+
   testWidgets('a failed send keeps the text and posts nothing twice', (
     tester,
   ) async {

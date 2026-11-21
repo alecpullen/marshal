@@ -456,6 +456,12 @@ func writeErr(w http.ResponseWriter, err error) {
 	var running pullFixRunning
 	var owned ErrSessionOwned
 	switch {
+	case errors.Is(err, ErrSpawnRequestConflict):
+		// A definite rejection: the ID already named different work, and
+		// nothing was spawned, so the caller may edit the draft and retry. The
+		// code lets a client tell this apart from an unknown outcome — one
+		// whose spawn may exist — without parsing prose.
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "code": "spawn_request_conflict"})
 	case errors.Is(err, ErrFactoryConflict):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.As(err, &running):
@@ -715,6 +721,13 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if !validSpawnRequestID(body.RequestID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "requestId must be 1-128 printable characters with no spaces or control characters",
+			"code":  "invalid_request_id",
+		})
+		return
+	}
 	// A request that leaves a field out takes the project's default.
 	defaults := s.fleet.ws.ProjectSettingsFor(body.Project)
 	isolated := defaults.Isolated != nil && *defaults.Isolated
@@ -733,15 +746,19 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	if body.Workspace == "" {
 		body.Workspace = defaults.Workspace
 	}
-	id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
+	// The claim is taken before the spawn has any side effect, so a retried
+	// first send resolves to the agent the original request started instead of
+	// starting a second one (agent-first Studio, task 3). A request with no
+	// ID takes the path every caller had before it.
+	id, deliver, err := s.fleet.SpawnClaimed(r.Context(), body.Project, SpawnOptions{
 		Name: body.Name, Mode: body.Mode, Auto: body.Auto, Isolated: isolated, Branch: body.Branch, BaseRef: body.BaseRef,
-		Routing: body.Routing, Workspace: body.Workspace,
-	})
+		Routing: body.Routing, Workspace: body.Workspace, Prompt: body.Prompt,
+	}, body.RequestID)
 	if id == "" {
 		writeErr(w, err)
 		return
 	}
-	if body.Prompt != "" {
+	if deliver && body.Prompt != "" {
 		if rt, e := s.fleet.RuntimeForSession(id); e == nil {
 			go func() {
 				if e := rt.reg.Prompt(context.Background(), rt.sessionID, body.Prompt); e != nil {
@@ -755,6 +772,25 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		resp.Warning = err.Error()
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// validSpawnRequestID bounds a caller's idempotency key. It is stored, echoed
+// in refusals and compared, so it is printable, space-free and short enough
+// that a hostile caller cannot use it to grow the store without limit. It is
+// otherwise opaque: the bridge never parses it.
+func validSpawnRequestID(id string) bool {
+	if id == "" {
+		return true
+	}
+	if len(id) > 128 {
+		return false
+	}
+	for _, c := range id {
+		if c <= ' ' || c > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) agentDiff(w http.ResponseWriter, r *http.Request) {

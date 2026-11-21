@@ -100,8 +100,16 @@ class _ProjectComposerState extends State<ProjectComposer> {
   /// decision 9), and "Plan first" starts a planner (F6 decision 8); neither
   /// is spawned here, which is the behaviour the new-work dialog had and this
   /// entry keeps.
+  ///
+  /// The returned thread is bound here, not prompted again (agent-first
+  /// Studio, task 3): the first send carried the prompt, so opening the thread
+  /// is a binding — a second turn would be the same instruction twice.
   Future<void> _send() async {
     final model = widget.model;
+    // A second press while the first request is in flight would be a second
+    // ask; the model refuses it too, and the button is disabled for the same
+    // reason.
+    if (model.starting) return;
     if (model.kind == NewWorkKind.workItem) {
       if (!model.canStart) {
         await model.start();
@@ -151,13 +159,31 @@ class _ProjectComposerState extends State<ProjectComposer> {
               const SizedBox(height: Space.s8),
               Text(failure, style: e.small.tint(e.err)),
             ],
+            // Uncertainty is said out loud: the bridge may have started the
+            // agent even though its answer never arrived, and pressing Send
+            // again resolves that same request rather than starting a second
+            // one. The draft stays, which is what makes that possible.
+            if (model.outcomeUnknown) ...[
+              const SizedBox(height: Space.s8),
+              Text(
+                'The bridge did not confirm this request. Send it again — the '
+                'same request is resolved first, so it will not start a second '
+                'agent.',
+                style: e.small.tint(e.muted),
+              ),
+            ],
             const SizedBox(height: Space.s12),
             Wrap(
               spacing: Space.s8,
               runSpacing: Space.s8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Btn.primary('Send', onTap: () => unawaited(_send())),
+                // A request in flight is not asked twice: the button goes
+                // quiet until the bridge answers.
+                Btn.primary(
+                  model.starting ? 'Starting…' : 'Send',
+                  onTap: model.starting ? null : () => unawaited(_send()),
+                ),
                 Btn(
                   ProjectComposer.optionsLabel,
                   icon: _options ? Glyphs.chevron_down : Glyphs.chevron_right,

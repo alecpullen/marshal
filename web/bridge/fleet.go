@@ -1316,6 +1316,16 @@ type SpawnOptions struct {
 	// Workspace is a workspace reference (see ParseWSRef). Empty falls back
 	// to the project's default, then to the profile and devcontainer.
 	Workspace string
+	// ID, when set, is the agent ID the spawn must use instead of minting
+	// one. A first-send claim settles its agent ID before any side effect
+	// (agent-first Studio, task 3), so a retry that finds a claim whose spawn
+	// never completed resumes under the same identity rather than starting a
+	// second agent.
+	ID string
+	// RequestID is the caller's first-send key this spawn is resolving. It is
+	// recorded on the agent so the request can be resolved from the agent
+	// record itself. Empty for every spawn that named none.
+	RequestID string
 }
 
 // gitSource is the resolved remote source for a spawn, or a local path.
@@ -1363,6 +1373,97 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	return f.spawn(ctx, root, opts, nil)
 }
 
+// spawnRequestDigest is the canonical identity of one first-send payload.
+//
+// Two requests that name the same ID and the same payload are the same ask,
+// whatever order their routing keys arrived in; a different payload under one
+// ID is a conflict, because the ID would then mean two things.
+func spawnRequestDigest(root string, opts SpawnOptions) string {
+	payload, err := json.Marshal(struct {
+		Project   string          `json:"project"`
+		Name      string          `json:"name,omitempty"`
+		Mode      string          `json:"mode,omitempty"`
+		Auto      *bool           `json:"auto,omitempty"`
+		Prompt    string          `json:"prompt,omitempty"`
+		Isolated  bool            `json:"isolated,omitempty"`
+		Branch    string          `json:"branch,omitempty"`
+		BaseRef   string          `json:"baseRef,omitempty"`
+		Routing   json.RawMessage `json:"routing,omitempty"`
+		Workspace string          `json:"workspace,omitempty"`
+	}{root, opts.Name, opts.Mode, opts.Auto, opts.Prompt, opts.Isolated, opts.Branch, opts.BaseRef, opts.Routing, opts.Workspace})
+	if err != nil {
+		return ""
+	}
+	if canonical, cerr := factoryCanonical(payload); cerr == nil {
+		payload = canonical
+	}
+	return factoryDigest(payload)
+}
+
+// SpawnClaimed starts the agent one first-send request resolves to, at most
+// once (agent-first Studio, task 3).
+//
+// The request is claimed durably, under its caller/project scope, before the
+// spawn has any side effect; the claim settles the agent ID. A retry therefore
+// finds the agent the original request started — across a lost answer, a
+// second press, and a daemon restart — and a spawn that died before recording
+// its agent resumes under the same identity. The same ID with a different
+// payload is ErrSpawnRequestConflict, and a request with no ID takes the path
+// every caller had before: it spawns.
+//
+// The second result is whether the first prompt still has to be dispatched to
+// the agent. It is true for the request that started (or resumed) the agent
+// and for one that resolves an agent whose first turn never went out; it is
+// false for a replay of a request that already delivered. The claim records
+// the dispatch before it happens, so a retry cannot send the same first
+// message twice.
+func (f *Fleet) SpawnClaimed(ctx context.Context, root string, opts SpawnOptions, requestID string) (string, bool, error) {
+	if requestID == "" {
+		id, err := f.spawn(ctx, root, opts, nil)
+		return id, id != "" && opts.Prompt != "", err
+	}
+	origin := opts.Origin
+	if origin == "" {
+		origin = OriginUI
+	}
+	scope := spawnRequestScope(origin, root)
+	digest := spawnRequestDigest(root, opts)
+	claim, created, err := f.ws.ClaimSpawnRequest(scope, requestID, digest, newAgentID())
+	if err != nil {
+		return "", false, err
+	}
+	opts.ID, opts.RequestID = claim.AgentID, requestID
+	if !created {
+		if _, ok := f.ws.Agent(claim.AgentID); ok {
+			if claim.Prompted {
+				// The whole request already ran: the caller binds its thread.
+				return claim.AgentID, false, nil
+			}
+			// The agent exists but its first turn never went out, which is
+			// what a daemon that died between the spawn and the dispatch
+			// leaves. Deliver it now, once.
+			if merr := f.ws.MarkSpawnClaimPrompted(scope, requestID); merr != nil {
+				return "", false, merr
+			}
+			return claim.AgentID, opts.Prompt != "", nil
+		}
+		// The claim's agent is not recorded: the earlier attempt died before
+		// (or while) writing it. Resume under the identity the claim fixed,
+		// so even a partially created spawn yields one agent.
+	}
+	id, spawnErr := f.spawn(ctx, root, opts, nil)
+	if id == "" {
+		// A definite rejection: nothing was started, so the ID is free again
+		// and the caller may edit the draft and retry.
+		_ = f.ws.ReleaseSpawnClaim(scope, requestID)
+		return "", false, spawnErr
+	}
+	if merr := f.ws.MarkSpawnClaimPrompted(scope, requestID); merr != nil {
+		return id, false, fmt.Errorf("agent created but recording its request failed: %w", merr)
+	}
+	return id, opts.Prompt != "", spawnErr
+}
+
 type factorySpawnTag struct {
 	itemID, role, effectID string
 	native                 bool
@@ -1392,14 +1493,21 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 		return "", err
 	}
 
+	// A first-send claim settled the agent's identity before this spawn, so a
+	// resumption after a crash reuses it rather than minting a second one.
+	agentID := opts.ID
+	if agentID == "" {
+		agentID = newAgentID()
+	}
 	a := Agent{
-		ID:        newAgentID(),
-		Name:      opts.Name,
-		Mode:      opts.Mode,
-		Prompt:    opts.Prompt,
-		CreatedAt: time.Now().UTC(),
-		OwnerID:   DefaultOwnerID,
-		Origin:    origin,
+		ID:             agentID,
+		Name:           opts.Name,
+		Mode:           opts.Mode,
+		Prompt:         opts.Prompt,
+		CreatedAt:      time.Now().UTC(),
+		OwnerID:        DefaultOwnerID,
+		Origin:         origin,
+		SpawnRequestID: opts.RequestID,
 	}
 	if tag != nil {
 		a.FactoryItemID, a.FactoryRole, a.FactorySpawnEffectID = tag.itemID, tag.role, tag.effectID

@@ -4,6 +4,7 @@
 // ignore_for_file: prefer_initializing_formals
 
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -383,6 +384,10 @@ class NewWorkModel extends ChangeNotifier {
 
   NewWorkKind _kind = NewWorkKind.agent;
   String _prompt = '';
+
+  /// Whether the person picked a permission mode themselves, which a prompt
+  /// that reads as a request to plan must not override.
+  bool _modeChosen = false;
   List<RepoIssue> _issueList = const [];
   List<String> _recentList = const [];
   List<Recipe> _recipeList = const [];
@@ -395,6 +400,66 @@ class NewWorkModel extends ChangeNotifier {
   bool _promptMissing = false;
   SpawnResult? _started;
   PlannerView? _startedPlanner;
+
+  /// Whether a spawn request is in flight. A second Send while it is would be
+  /// a second request, so the composer refuses it rather than racing.
+  bool _starting = false;
+
+  /// The request ID the content it was minted for is sent under (agent-first
+  /// Studio, task 3), and the exact content it belongs to.
+  ///
+  /// The ID is the promise that makes a retry safe: every attempt at the same
+  /// content carries it, so the bridge resolves the original request instead
+  /// of starting a second agent. A changed draft is different work and mints a
+  /// new one, which is why the content is kept beside it.
+  String? _requestId;
+  String? _requestIdContent;
+
+  /// Whether the last Start ended without a definite answer: the bridge may or
+  /// may not have started the agent. The draft is kept, and the next Send of
+  /// the same content resolves the original request before dispatching again.
+  bool _outcomeUnknown = false;
+
+  /// Text the user's request reads as an explicit request to plan first: no
+  /// change to the repository until they decide on the plan.
+  ///
+  /// It is a conservative phrase list, not a parser: a request that opens with
+  /// "plan", "propose" or "outline", one that asks for a plan or an approach,
+  /// and one that says not to change anything yet. The first send then carries
+  /// Ask, where every change needs approval, so no tool mutation can precede
+  /// the decision. An explicit Plan first or Work item still takes its own
+  /// route.
+  static final _planFirst = RegExp(
+    r'^\s*(?:please\s+)?(?:plan|propose|outline|design)\b'
+    r'|\bplan\b[\s\S]{0,40}\b(?:first|before|only)\b'
+    r'|\b(?:make|write|draft|sketch|propose|outline|give me)\b'
+    r'[\s\S]{0,20}\b(?:plan|outline|approach)\b'
+    r"|\b(?:don't|do not|before you|without)\b"
+    r'[\s\S]{0,24}\b(?:change|edit|implement|touch)\b',
+    caseSensitive: false,
+  );
+
+  /// Whether [text] asks for a plan before any change is made.
+  static bool asksToPlan(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return false;
+    return _planFirst.hasMatch(trimmed);
+  }
+
+  /// Whether a start is in flight, which disables repeat submission.
+  bool get starting => _starting;
+
+  /// Whether the last Start's outcome is unknown — the request may have
+  /// started an agent the Studio never heard about.
+  ///
+  /// The draft is kept for exactly this: sending it again resolves the original
+  /// request before anything else is dispatched, so uncertainty never becomes
+  /// a duplicate agent.
+  bool get outcomeUnknown => _outcomeUnknown;
+
+  /// Whether this start would ask the bridge to discuss a plan before changing
+  /// anything, because the prompt asks for one.
+  bool get plansFirst => _kind == NewWorkKind.agent && asksToPlan(_prompt);
 
   /// What the dialog will start.
   NewWorkKind get kind => _kind;
@@ -558,6 +623,9 @@ class NewWorkModel extends ChangeNotifier {
     final current = _choices[name];
     if (current == null || current == value) return;
     if (!_optionsFor(name, current).contains(value)) return;
+    // A permission mode the person picked is their answer, so a prompt that
+    // reads as a request to plan no longer overrides it (task 3).
+    if (name == 'Permission mode') _modeChosen = true;
     if (name == 'Host') {
       final routes = _routes[value];
       if (routes == null) return;
@@ -612,10 +680,22 @@ class NewWorkModel extends ChangeNotifier {
   /// default), and the workspace choice as the `isolated` flag the bridge
   /// reads — not as a made-up workspace name.
   ///
+  /// The first send is exactly once (agent-first Studio, task 3): it carries a
+  /// client-generated request ID minted for this content, so pressing Send
+  /// twice, or retrying after an answer that never arrived, resolves the
+  /// original request to its agent rather than starting a second one. A draft
+  /// that changed is different work and gets a fresh ID. The prompt is kept
+  /// while the request is in flight and after it fails.
+  ///
   /// "Plan first" starts a planner instead (F6 decision 8), and the thread the
   /// dialog opens is a planning thread. That handoff keeps its existing prompt
   /// requirement; the planner's own thread takes the first instruction.
   Future<void> start() async {
+    if (_starting) {
+      // Repeat submission is disabled while a request is in flight: a second
+      // one would be a second ask, and the first may yet answer.
+      return;
+    }
     if (!canStart) {
       // An agent starts with a blank box, so this is a planning thread's first
       // turn or a work item's plan with nothing in it: say what Start needs
@@ -627,6 +707,7 @@ class NewWorkModel extends ChangeNotifier {
     }
     _promptMissing = false;
     _failure = null;
+    _outcomeUnknown = false;
     notifyListeners();
     if (_kind == NewWorkKind.planFirst) {
       await _startPlanning();
@@ -646,28 +727,97 @@ class NewWorkModel extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final baseBranch = _choices['Base branch'];
+    final prompt = _prompt.trim();
+    final project = _choices['Project']!;
+    final isolated = _choices['Workspace'] == NewWorkDefaults.isolatedWorktree;
+    // A prompt that asks for a plan enters discussion before implementation:
+    // unless the person chose a mode themselves, the first send carries Ask,
+    // where no change happens without an approval. The explicit Plan first and
+    // Work item routes above keep their own handoffs.
+    final sendMode = !_modeChosen && asksToPlan(prompt) ? 'ask' : mode;
+    final request = SpawnRequest(
+      project: project,
+      requestID: _requestIdFor(project, prompt, sendMode, baseBranch, isolated),
+      // An agent started with nothing to do carries no first turn at all: the
+      // route spawns it idle and its thread takes the first prompt, rather
+      // than the bridge being sent an empty one to run.
+      prompt: prompt.isEmpty ? null : prompt,
+      mode: sendMode,
+      baseRef: baseBranch == NewWorkDefaults.projectDefaultBranch
+          ? null
+          : baseBranch,
+      isolated: isolated,
+    );
+    _starting = true;
+    _started = null;
+    notifyListeners();
     try {
-      final baseBranch = _choices['Base branch'];
-      final prompt = _prompt.trim();
-      _started = await _current.spawn(
-        SpawnRequest(
-          project: _choices['Project']!,
-          // An agent started with nothing to do carries no first turn at all:
-          // the route spawns it idle and its thread takes the first prompt,
-          // rather than the bridge being sent an empty one to run.
-          prompt: prompt.isEmpty ? null : prompt,
-          mode: mode,
-          baseRef: baseBranch == NewWorkDefaults.projectDefaultBranch
-              ? null
-              : baseBranch,
-          isolated: _choices['Workspace'] == NewWorkDefaults.isolatedWorktree,
-        ),
-      );
+      _started = await _current.spawn(request);
     } catch (error) {
-      _failure = describeFailure(error);
+      _failure = _words(error);
+      // A definite rejection starts nothing, so the draft can be edited and
+      // retried. Anything else — a lost answer, a timeout, a failure with no
+      // code — may have started the agent, and the same ID is what resolves
+      // that on the next attempt.
+      _outcomeUnknown = !_definiteRejection(error);
+    } finally {
+      _starting = false;
     }
     notifyListeners();
   }
+
+  /// The request ID the content it is sent with belongs to.
+  ///
+  /// One content, one ID: a retry of the same draft resolves the original
+  /// request, and an edited draft is new work under a new ID. An ID whose
+  /// attempt never reached the bridge is kept, because keeping it is what
+  /// makes the retry safe.
+  String _requestIdFor(
+    String project,
+    String prompt,
+    String mode,
+    String? baseBranch,
+    bool isolated,
+  ) {
+    final content = [
+      project,
+      prompt,
+      mode,
+      baseBranch ?? '',
+      isolated ? '1' : '0',
+    ].join('\u0000');
+    if (_requestId == null || _requestIdContent != content) {
+      _requestIdContent = content;
+      _requestId = _newRequestId();
+    }
+    return _requestId!;
+  }
+
+  /// Whether a failed start was definitely refused, so nothing was created.
+  ///
+  /// The bridge answers a conflict — the same ID naming different work — with
+  /// 409 and a code, and every other 4xx is a request it read and refused.
+  /// Anything else is an outcome the Studio does not know: the answer was lost
+  /// or the bridge failed after the request reached it.
+  static bool _definiteRejection(Object error) =>
+      error is BridgeFailure && error.status >= 400 && error.status < 500;
+
+  /// Mints one client-generated request ID: opaque, unique, and made without
+  /// any clock or randomness the bridge could have supplied.
+  static String _newRequestId() {
+    _requestSeq++;
+    final salt = _random.nextInt(1 << 32).toRadixString(16).padLeft(8, '0');
+    return 'studio-${DateTime.now().microsecondsSinceEpoch}-'
+        '${_requestSeq.toString()}-$salt';
+  }
+
+  static int _requestSeq = 0;
+  static final _random = Random();
+
+  /// The bridge's words for a failed start, with its code left out of the
+  /// prose: `describeFailure` already prefers the body's `error`.
+  static String _words(Object error) => describeFailure(error);
 
   /// Starts the planner a "Plan first" asks for, and keeps the one it made.
   ///

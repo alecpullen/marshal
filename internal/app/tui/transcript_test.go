@@ -896,3 +896,28 @@ func TestExpandedMessageReadsItsWholeReasoning(t *testing.T) {
 		t.Fatalf("the drained expansion must read the whole reasoning:\n%s", got)
 	}
 }
+
+// A steering message is something the user typed, so it renders as a user
+// prompt does — ❯ gutter, no envelope — with a muted tag marking it mid-turn.
+func TestRenderSteeringMarkerReadsAsAUserMessage(t *testing.T) {
+	plain := stripANSI(renderSteeringMarker("[user steering, mid-turn]: also merge 203", 80))
+	if plain != " ❯ also merge 203 · steering\n" {
+		t.Fatalf("steering row = %q", plain)
+	}
+	if strings.Contains(plain, "[user steering") {
+		t.Fatal("the model-facing envelope leaked into the row")
+	}
+
+	// A last line with no room for the tag puts the tag on its own line
+	// rather than overflowing the width.
+	long := strings.Repeat("x", contentWidth(40))
+	out := stripANSI(renderSteeringMarker(long, 40))
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if w := ansi.StringWidth(line); w > 40 {
+			t.Fatalf("line %q is %d wide, want <= 40", line, w)
+		}
+	}
+	if !strings.HasSuffix(strings.TrimRight(out, "\n"), "steering") {
+		t.Fatalf("the tag should still be shown:\n%s", out)
+	}
+}

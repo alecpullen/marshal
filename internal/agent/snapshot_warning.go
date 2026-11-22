@@ -53,6 +53,11 @@ const (
 	// message: an error chain can be arbitrarily long and the transcript is
 	// the wrong place for it (the full text is always in the log).
 	snapshotCauseRunes = 300
+
+	// snapshotCaptureDeadline bounds one pre-write capture. The capture is on the
+	// tool-call path, so it gets a bound of its own rather than inheriting the
+	// manager's 30s command deadline.
+	snapshotCaptureDeadline = 5 * time.Second
 )
 
 // SnapshotPhase names where a snapshot operation was attempted. It only
@@ -144,6 +149,10 @@ const (
 	// from a capture failure: the snapshot exists in the store, it is simply
 	// not listed for this session.
 	reasonCaptureUnrecorded snapshotReason = "capture_unrecorded"
+	// reasonCaptureTimeout is a capture that exceeded snapshotCaptureDeadline:
+	// the workspace could not be enumerated in time, so rollback protection for
+	// this tool call is missing for a reason that is worth naming.
+	reasonCaptureTimeout snapshotReason = "capture_timeout"
 )
 
 // storeReasonTokens are the snapshot store's stable reason identifiers, most
@@ -266,6 +275,8 @@ func snapshotReasonDetail(reason snapshotReason) string {
 		return "the capture was skipped without recording a snapshot"
 	case reasonCaptureUnrecorded:
 		return "the snapshot was captured but could not be recorded for this session"
+	case reasonCaptureTimeout:
+		return fmt.Sprintf("the workspace could not be enumerated within %s", snapshotCaptureDeadline)
 	default:
 		return "the capture failed"
 	}
@@ -616,9 +627,23 @@ func (r *Runner) snapshotCapture(ctx context.Context, phase SnapshotPhase, files
 	if r == nil || r.Snapshotter == nil {
 		return
 	}
+	// A capture sits on the tool-call path, so it gets a bound of its own
+	// rather than inheriting the manager's 30s command deadline: a workspace too
+	// large to enumerate must cost the tool call a few seconds, not thirty.
+	parent := ctx
+	ctx, cancel := context.WithTimeout(ctx, snapshotCaptureDeadline)
+	defer cancel()
 	hash, err := r.Snapshotter.Track(ctx)
 	switch {
 	case err != nil:
+		// Our own bound firing is a capture outcome, not a cancellation, so it
+		// is tested BEFORE the cancellation filters below. Those treat any error
+		// matching ctx.Err() as an expected abort and log it silently, which
+		// would make a timeout invisible.
+		if errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil {
+			r.reportSnapshotProblem(phase, snapshotProblem{reason: reasonCaptureTimeout, err: err})
+			return
+		}
 		if snapshotIsSteeringCancellation(ctx, err) {
 			// The user interrupted this operation: the capture did not fail,
 			// it was stopped on purpose. Suppress the "rollback protection is

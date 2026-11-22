@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"marshal/internal/db"
@@ -166,5 +167,37 @@ func TestRunPrefersLSPForPythonToo(t *testing.T) {
 		if s.Source != "lsp" {
 			t.Fatalf("expected LSP to win for python, got %#v", s)
 		}
+	}
+}
+
+func TestRunReportsScanSkips(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a.txt", filepath.Join(root, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, root)
+
+	rep, err := Run(context.Background(), Deps{Root: root, DB: database, Embedder: nil}, pid)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, w := range rep.Warnings {
+		if strings.Contains(w, "scan skipped 1 entries") && strings.Contains(w, "(symlink)") {
+			return
+		}
+	}
+	t.Fatalf("no skip summary in warnings: %q", rep.Warnings)
+}
+
+func TestRunWarnsOnFilesystemRoot(t *testing.T) {
+	if got, want := pathologicalIndexRoot("/"), "a filesystem root"; got != want {
+		t.Errorf("pathologicalIndexRoot(%q) = %q, want %q", "/", got, want)
+	}
+	if got := pathologicalIndexRoot(t.TempDir()); got != "" {
+		t.Errorf("pathologicalIndexRoot(temp dir) = %q, want empty", got)
 	}
 }

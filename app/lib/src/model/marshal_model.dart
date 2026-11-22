@@ -49,7 +49,8 @@ class MarshalTask {
     title: (task.title ?? '').trim(),
     state: switch (task.status) {
       CoordinatorTaskStatus.coordinatorTaskStopped => MarshalTaskState.stopped,
-      CoordinatorTaskStatus.coordinatorTaskStopping => MarshalTaskState.stopping,
+      CoordinatorTaskStatus.coordinatorTaskStopping =>
+        MarshalTaskState.stopping,
       _ => MarshalTaskState.open,
     },
     updatedAt:
@@ -1253,7 +1254,10 @@ class SourceHandoffModel extends ChangeNotifier {
       String threadId,
     )
     read,
-    Future<CoordinatorAssignmentList> Function(String taskId, String assignmentId)?
+    Future<CoordinatorAssignmentList> Function(
+      String taskId,
+      String assignmentId,
+    )?
     retry,
     DateTime Function()? now,
   }) : _read = read,
@@ -1431,16 +1435,15 @@ class SourceHandoffModel extends ChangeNotifier {
   /// the retry answer carries only the id, so this invents nothing else. It
   /// is the fallback of [_sourceViewAfter], which prefers the task the source
   /// view read — where the handoff's title comes from.
-  CoordinatorTask _taskOf(CoordinatorAssignmentList answer) =>
-      CoordinatorTask(
-        id: answer.taskID,
-        sessionID: '',
-        status: CoordinatorTaskStatus.coordinatorTaskOpen,
-        revision: 1,
-        projects: const [],
-        createdAt: _now().toIso8601String(),
-        updatedAt: _now().toIso8601String(),
-      );
+  CoordinatorTask _taskOf(CoordinatorAssignmentList answer) => CoordinatorTask(
+    id: answer.taskID,
+    sessionID: '',
+    status: CoordinatorTaskStatus.coordinatorTaskOpen,
+    revision: 1,
+    projects: const [],
+    createdAt: _now().toIso8601String(),
+    updatedAt: _now().toIso8601String(),
+  );
 
   @override
   void dispose() {

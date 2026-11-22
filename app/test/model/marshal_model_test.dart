@@ -165,7 +165,10 @@ void main() {
 
   test('a late handoff answer never lands under another task', () async {
     final routes = _Routes();
-    final model = routes.model(tasks: [task('a'), task('b')], assignments: true);
+    final model = routes.model(
+      tasks: [task('a'), task('b')],
+      assignments: true,
+    );
     final opening = model.open(taskId: 'a');
     await pumpEventQueue();
     routes.attentionJobs[0].complete(attention('a', 'a'));
@@ -188,12 +191,18 @@ void main() {
 
   test('a scoped retry answers over a read still in flight', () async {
     final routes = _Routes();
-    final model = routes.model(tasks: [task('a')], assignments: true, retry: true);
+    final model = routes.model(
+      tasks: [task('a')],
+      assignments: true,
+      retry: true,
+    );
     final opening = model.open(taskId: 'a');
     await pumpEventQueue();
     routes.attentionJobs[0].complete(attention('a', 'a'));
     await pumpEventQueue();
-    routes.assignmentJobs[0].complete(handoff([assignment('x', state: 'failed')]));
+    routes.assignmentJobs[0].complete(
+      handoff([assignment('x', state: 'failed')]),
+    );
     await opening;
     expect(model.assignments.single.state, MarshalAssignmentState.failed);
     // A re-read starts; before it answers, the failed row is retried.
@@ -201,51 +210,66 @@ void main() {
     expect(routes.assignmentCalls.length, 2);
     final retried = model.retryAssignment('x');
     expect(routes.retryCalls.single, ['a', 'x']);
-    routes.retryJobs.single.complete(handoff([assignment('x', state: 'running')]));
+    routes.retryJobs.single.complete(
+      handoff([assignment('x', state: 'running')]),
+    );
     await retried;
     expect(model.assignments.single.state, MarshalAssignmentState.running);
     expect(model.retrying, isNull);
     // The read asked before the retry finally answers, too late: what the
     // retry settled is what stays on screen.
-    routes.assignmentJobs[1].complete(handoff([assignment('x', state: 'failed')]));
+    routes.assignmentJobs[1].complete(
+      handoff([assignment('x', state: 'failed')]),
+    );
     await pumpEventQueue();
     expect(model.assignments.single.state, MarshalAssignmentState.running);
     await reread;
     expect(model.readingAssignments, isFalse);
   });
 
-  test('a stop settles the handoff, and a stale read cannot overwrite it', () async {
-    final routes = _Routes();
-    final model = routes.model(tasks: [task('a')], assignments: true, stop: true);
-    final opening = model.open(taskId: 'a');
-    await pumpEventQueue();
-    routes.attentionJobs[0].complete(attention('a', 'a'));
-    await pumpEventQueue();
-    routes.assignmentJobs[0].complete(handoff([assignment('x', state: 'running')]));
-    await opening;
-    final reread = model.refreshAssignments();
-    final stopping = model.stopTask();
-    expect(routes.stopCalls.single, 'a');
-    routes.stopJobs.single.complete(
-      CoordinatorStopResult(
-        task: task('a', status: 'stopped'),
-        assignments: [assignment('x', state: 'stopped')],
-        delivery: delivery('delivered the result'),
-      ),
-    );
-    await stopping;
-    expect(model.task!.state, MarshalTaskState.stopped);
-    expect(model.stopFailure, isNull);
-    expect(model.assignments.single.state, MarshalAssignmentState.stopped);
-    expect(model.resultText, 'delivered the result');
-    // The read asked before the stop finally answers, too late.
-    routes.assignmentJobs[1].complete(handoff([assignment('x', state: 'running')]));
-    await pumpEventQueue();
-    expect(model.assignments.single.state, MarshalAssignmentState.stopped);
-    expect(model.task!.state, MarshalTaskState.stopped);
-    await reread;
-    expect(model.readingAssignments, isFalse);
-  });
+  test(
+    'a stop settles the handoff, and a stale read cannot overwrite it',
+    () async {
+      final routes = _Routes();
+      final model = routes.model(
+        tasks: [task('a')],
+        assignments: true,
+        stop: true,
+      );
+      final opening = model.open(taskId: 'a');
+      await pumpEventQueue();
+      routes.attentionJobs[0].complete(attention('a', 'a'));
+      await pumpEventQueue();
+      routes.assignmentJobs[0].complete(
+        handoff([assignment('x', state: 'running')]),
+      );
+      await opening;
+      final reread = model.refreshAssignments();
+      final stopping = model.stopTask();
+      expect(routes.stopCalls.single, 'a');
+      routes.stopJobs.single.complete(
+        CoordinatorStopResult(
+          task: task('a', status: 'stopped'),
+          assignments: [assignment('x', state: 'stopped')],
+          delivery: delivery('delivered the result'),
+        ),
+      );
+      await stopping;
+      expect(model.task!.state, MarshalTaskState.stopped);
+      expect(model.stopFailure, isNull);
+      expect(model.assignments.single.state, MarshalAssignmentState.stopped);
+      expect(model.resultText, 'delivered the result');
+      // The read asked before the stop finally answers, too late.
+      routes.assignmentJobs[1].complete(
+        handoff([assignment('x', state: 'running')]),
+      );
+      await pumpEventQueue();
+      expect(model.assignments.single.state, MarshalAssignmentState.stopped);
+      expect(model.task!.state, MarshalTaskState.stopped);
+      await reread;
+      expect(model.readingAssignments, isFalse);
+    },
+  );
 
   test('a failed read is behind, not on, a draft', () async {
     final routes = _Routes();
@@ -267,18 +291,21 @@ void main() {
     expect(model.read, isNull);
   });
 
-  test('an attention answer still in flight cannot land after a draft opened', () async {
-    final routes = _Routes();
-    final model = routes.model(tasks: [task('a')]);
-    final opening = model.open(taskId: 'a');
-    await pumpEventQueue();
-    await model.open(draft: 'd-1');
-    routes.attentionJobs[0].complete(attention('a', 'a'));
-    await pumpEventQueue();
-    expect(model.read, isNull);
-    expect(model.limited, isFalse);
-    await opening;
-  });
+  test(
+    'an attention answer still in flight cannot land after a draft opened',
+    () async {
+      final routes = _Routes();
+      final model = routes.model(tasks: [task('a')]);
+      final opening = model.open(taskId: 'a');
+      await pumpEventQueue();
+      await model.open(draft: 'd-1');
+      routes.attentionJobs[0].complete(attention('a', 'a'));
+      await pumpEventQueue();
+      expect(model.read, isNull);
+      expect(model.limited, isFalse);
+      await opening;
+    },
+  );
 
   test('the read that failed for one task does not frame the next', () async {
     final routes = _Routes();
@@ -423,7 +450,9 @@ void main() {
     expect(model.handoff!.taskTitle, 'Design the flange');
     expect(model.handoff!.rows.single.state, HandoffAssignmentState.failed);
     final retried = model.retryAssignment('x');
-    retryJob.complete(handoff([assignment('x', state: 'running')], taskId: 't-1'));
+    retryJob.complete(
+      handoff([assignment('x', state: 'running')], taskId: 't-1'),
+    );
     await retried;
     // The retry never moves the task, so the band keeps the name the source
     // view read rather than falling back to a task the retry answer invented.
@@ -459,7 +488,9 @@ void main() {
     // A reconnect refreshes; before it answers, the failed row is retried.
     final resumed = model.refresh();
     final retried = model.retryAssignment('x');
-    retryJob.complete(handoff([assignment('x', state: 'running')], taskId: 't-1'));
+    retryJob.complete(
+      handoff([assignment('x', state: 'running')], taskId: 't-1'),
+    );
     await retried;
     expect(model.handoff!.rows.single.state, HandoffAssignmentState.running);
     // The refresh asked before the retry finally answers, too late.

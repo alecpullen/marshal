@@ -171,10 +171,7 @@ void main() {
 
       expect(memory.lastProject, isNull);
       memory.rememberProject('studio', '/home/u/alpha');
-      expect(
-        memory.lastProject,
-        (host: 'studio', project: '/home/u/alpha'),
-      );
+      expect(memory.lastProject, (host: 'studio', project: '/home/u/alpha'));
     });
 
     test('the same project name on two hosts is kept apart', () {
@@ -215,10 +212,7 @@ void main() {
       }
       // What a selection writes is what a reload reads back.
       store['project.last'] = 'studio/%2Fhome%2Fu%2Falpha';
-      expect(
-        memory.lastProject,
-        (host: 'studio', project: '/home/u/alpha'),
-      );
+      expect(memory.lastProject, (host: 'studio', project: '/home/u/alpha'));
     });
 
     test('the thread a project last had open is remembered and dropped', () {

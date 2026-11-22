@@ -782,41 +782,44 @@ void main() {
     model.dispose();
   });
 
-  test('a repeated stop after a reconnect does nothing a second time', () async {
-    var calls = 0;
-    final model = modelFor(
-      answers: {
-        'a': attention(taskID: 'a', sources: [fresh('p-cli')]),
-      },
-      assignments: (id) async => assignmentList([
-        assignment(
-          id: 'asg-cli',
-          project: 'p-cli',
-          projectName: 'cli',
-          workerID: 'a-cli',
-        ),
-      ]),
-      stopTask: (id) async {
-        calls++;
-        return CoordinatorStopResult(
-          task: settledTask(id),
-          assignments: [stoppedWorker('asg-cli', 'p-cli', 'cli')],
-        );
-      },
-    );
-    await model.load();
-    await model.selectTask('a');
-    await model.stopTask();
-    expect(calls, 1);
-    expect(model.task!.state, MarshalTaskState.stopped);
+  test(
+    'a repeated stop after a reconnect does nothing a second time',
+    () async {
+      var calls = 0;
+      final model = modelFor(
+        answers: {
+          'a': attention(taskID: 'a', sources: [fresh('p-cli')]),
+        },
+        assignments: (id) async => assignmentList([
+          assignment(
+            id: 'asg-cli',
+            project: 'p-cli',
+            projectName: 'cli',
+            workerID: 'a-cli',
+          ),
+        ]),
+        stopTask: (id) async {
+          calls++;
+          return CoordinatorStopResult(
+            task: settledTask(id),
+            assignments: [stoppedWorker('asg-cli', 'p-cli', 'cli')],
+          );
+        },
+      );
+      await model.load();
+      await model.selectTask('a');
+      await model.stopTask();
+      expect(calls, 1);
+      expect(model.task!.state, MarshalTaskState.stopped);
 
-    // A stopped task is spent: a second press, or a resumed screen's retry,
-    // sends nothing and cancels nothing again.
-    await model.stopTask();
-    expect(calls, 1);
-    expect(model.task!.state, MarshalTaskState.stopped);
-    model.dispose();
-  });
+      // A stopped task is spent: a second press, or a resumed screen's retry,
+      // sends nothing and cancels nothing again.
+      await model.stopTask();
+      expect(calls, 1);
+      expect(model.task!.state, MarshalTaskState.stopped);
+      model.dispose();
+    },
+  );
 
   test('a stop the daemon refused is its words, not a stopped task', () async {
     final model = modelFor(

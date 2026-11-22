@@ -1431,12 +1431,11 @@ class BridgeClient {
   /// answer is the settled state: `stopping` when the stop was recorded but not
   /// confirmed, `stopped` when it was. A repeat is answered with the state the
   /// first left, which is what makes a retried stop after a reconnect harmless.
-  Future<CoordinatorStopResult> stopCoordinatorTask(String taskId) =>
-      _objectOf(
-        '/api/coordinator/tasks/${Uri.encodeComponent(taskId)}/stop',
-        CoordinatorStopResult.fromJson,
-        method: 'POST',
-      );
+  Future<CoordinatorStopResult> stopCoordinatorTask(String taskId) => _objectOf(
+    '/api/coordinator/tasks/${Uri.encodeComponent(taskId)}/stop',
+    CoordinatorStopResult.fromJson,
+    method: 'POST',
+  );
 
   /// One settings read or write, with the ETag the answer named.
   Future<ProjectSettingsVersion> _settingsOf(

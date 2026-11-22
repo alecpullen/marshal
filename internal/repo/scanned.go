@@ -13,4 +13,10 @@ type ScannedFile struct {
 	db.FileIndex
 	Content []byte
 	ReadErr error
+	// ContentOmitted reports that Content is nil because the scan's total
+	// content budget was exhausted, not because the file could not be read.
+	// ReadErr is nil for such a file and its FileIndex is valid. Consumers must
+	// not infer this state from a nil Content: an empty file legitimately has
+	// nil Content too.
+	ContentOmitted bool
 }

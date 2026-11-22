@@ -1,8 +1,10 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -486,6 +488,96 @@ func TestScanDetailedReturnsContent(t *testing.T) {
 	}
 	if sf.Hash == "" {
 		t.Fatal("expected non-empty hash")
+	}
+}
+
+func TestScanDetailedOmitsContentPastBudget(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Repeat("x", 1024)
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := NewScanner(Config{Root: root, MaxTotalContentBytes: 2 << 10})
+	scanned, err := s.ScanDetailed(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scanned) != 3 {
+		t.Fatalf("scanned %d files, want 3", len(scanned))
+	}
+	retained := 0
+	for _, sf := range scanned {
+		if sf.Content != nil {
+			retained++
+			if sf.ContentOmitted {
+				t.Errorf("%s: retained content marked omitted", sf.Path)
+			}
+			continue
+		}
+		if !sf.ContentOmitted {
+			t.Errorf("%s: nil content not marked omitted", sf.Path)
+		}
+		if sf.ReadErr != nil {
+			t.Errorf("%s: omitted file has read error %v", sf.Path, sf.ReadErr)
+		}
+		if sf.Hash == "" || sf.SizeBytes != 1024 {
+			t.Errorf("%s: omitted file lost its index entry: hash=%q size=%d", sf.Path, sf.Hash, sf.SizeBytes)
+		}
+	}
+	if retained != 2 {
+		t.Errorf("retained %d files, want 2", retained)
+	}
+	if got := len(s.Warnings()); got != 1 {
+		t.Errorf("warnings = %v, want exactly one budget warning", s.Warnings())
+	}
+}
+
+func TestScanDetailedRetainedBytesNeverExceedBudget(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Repeat("y", 700)
+	for i := 0; i < 10; i++ {
+		name := fmt.Sprintf("f%02d.txt", i)
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const budget = 2000
+	s := NewScanner(Config{Root: root, MaxTotalContentBytes: budget})
+	scanned, err := s.ScanDetailed(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, sf := range scanned {
+		total += len(sf.Content)
+	}
+	if total > budget {
+		t.Fatalf("retained %d bytes, budget %d", total, budget)
+	}
+	if len(scanned) != 10 {
+		t.Fatalf("scanned %d files, want 10: truncation must not shrink the file index", len(scanned))
+	}
+}
+
+func TestHashFileMatchesHashBytes(t *testing.T) {
+	dir := t.TempDir()
+	content := bytes.Repeat([]byte("abcdefgh"), 9000) // more than one 64 KiB chunk
+	path := filepath.Join(dir, "big.bin")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	streamedHash, streamedSize, err := hashFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHash, wantSize := hashBytes(content)
+	if streamedHash != wantHash {
+		t.Errorf("hashFile = %q, hashBytes = %q", streamedHash, wantHash)
+	}
+	if streamedSize != wantSize {
+		t.Errorf("hashFile size = %d, hashBytes size = %d", streamedSize, wantSize)
 	}
 }
 

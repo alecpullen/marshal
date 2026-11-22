@@ -3432,18 +3432,8 @@ func TestPendingQuestionEnterSubmitsAnswer(t *testing.T) {
 	}
 	state.SetPendingQuestion(q)
 
-	// First Update constructs the question model and returns the Init()
-	// command without processing the keypress. The keypress is dropped
-	// by the construct-Update; re-send the first character, then continue.
-	first, cmd := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
-	m = first.(Model)
-	if cmd != nil {
-		_ = cmd()
-	}
-	// Re-send the 'a' that was dropped by the construct-Update.
-	model, _ := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
-	m = model.(Model)
-	for _, r := range "rchive" {
+	m = primePrompt(m)
+	for _, r := range "archive" {
 		model, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = model.(Model)
 	}
@@ -3572,12 +3562,10 @@ func assertDraftIntact(t *testing.T, m Model, want composerDraft, when string) {
 }
 
 // answerPendingQuestion drives the inline question form to a submitted custom
-// answer through the real update path. The first message only builds the form
-// (as when a prompt appears while the user is already typing), so it is sent
-// again.
+// answer through the real update path. A neutral first message builds and
+// starts the form before any key is typed.
 func answerPendingQuestion(m Model) Model {
-	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
-	m = drainCmds(updated.(Model), cmd)
+	m = primePrompt(m)
 	for _, r := range "archive" {
 		m = sendKey(m, tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
@@ -3586,9 +3574,17 @@ func answerPendingQuestion(m Model) Model {
 
 // declinePendingQuestion declines the inline question form with Escape.
 func declinePendingQuestion(m Model) Model {
-	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	m = drainCmds(updated.(Model), cmd)
+	m = primePrompt(m)
 	return sendKey(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+}
+
+// primePrompt delivers a neutral message so the pending prompt's form is built
+// and started before any key is typed. The model builds the form on the first
+// message after the prompt opens, and the form's start-up commands must run
+// before it takes input, as they do in the live program.
+func primePrompt(m Model) Model {
+	updated, cmd := m.Update(tea.FocusMsg{})
+	return drainCmds(updated.(Model), cmd)
 }
 
 // TestQuestionSettlementPreservesComposer verifies that answering or declining
@@ -3763,11 +3759,11 @@ func TestQuestionCancellationAndReplacementKeepDraft(t *testing.T) {
 }
 
 // openQuestionThroughModel drives the message that builds the inline question
-// form. handleQuestion builds the form lazily on the first message and drops
-// that message, so the keys sent afterwards reach the real huh form.
+// form. The model builds the form on the first message after the question
+// opens, so the keys sent afterwards reach the real huh form.
 func openQuestionThroughModel(t *testing.T, m Model) Model {
 	t.Helper()
-	m = sendMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = primePrompt(m)
 	if m.questionModel == nil {
 		t.Fatal("the inline question form was not built")
 	}

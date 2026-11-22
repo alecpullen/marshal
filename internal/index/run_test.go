@@ -201,3 +201,84 @@ func TestRunWarnsOnFilesystemRoot(t *testing.T) {
 		t.Errorf("pathologicalIndexRoot(temp dir) = %q, want empty", got)
 	}
 }
+
+// paddedSource returns a syntactically valid Go file of exactly size bytes.
+func paddedSource(t *testing.T, funcName string, size int) []byte {
+	t.Helper()
+	head := "package p\n\nfunc " + funcName + "() {}\n"
+	pad := size - len(head) - len("//\n")
+	if pad < 0 {
+		t.Fatalf("size %d leaves no room for the file header", size)
+	}
+	return []byte(head + "//" + strings.Repeat("x", pad) + "\n")
+}
+
+// TestRunContentBudgetKeepsChunksOfOmittedFiles covers the pass's end of the
+// content budget: a file past MaxTotalContentBytes is still indexed by path,
+// but its bytes are not embedded, and a following pass must not read that
+// absence of chunks as a deletion.
+func TestRunContentBudgetKeepsChunksOfOmittedFiles(t *testing.T) {
+	root := t.TempDir()
+	// Two 1 KiB files against a 1 KiB budget: the first in walk order fits and
+	// the second is indexed without its content.
+	for _, name := range []string{"a.go", "b.go"} {
+		if err := os.WriteFile(filepath.Join(root, name), paddedSource(t, name[:1], 1<<10), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	database := newTestDB(t)
+	defer database.Close()
+	pid := mustCreateProject(t, database, root)
+
+	deps := Deps{
+		DB:                   database,
+		Root:                 root,
+		MaxTotalContentBytes: 1 << 10,
+		Embedder:             &fakeEmbedder{model: "m"},
+	}
+
+	rep, err := Run(context.Background(), deps, pid)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The path of the budget-omitted file is indexed all the same.
+	if rep.Files != 2 {
+		t.Fatalf("Files = %d, want 2", rep.Files)
+	}
+	if rep.FilesEmbedded != 1 {
+		t.Fatalf("FilesEmbedded = %d, want 1: only the file inside the content budget can be embedded", rep.FilesEmbedded)
+	}
+	state, err := database.ChunkedFiles(pid)
+	if err != nil {
+		t.Fatalf("ChunkedFiles: %v", err)
+	}
+	if _, ok := state["a.go"]; !ok {
+		t.Fatalf("a.go has no chunks after the first pass: %#v", state)
+	}
+	if _, ok := state["b.go"]; ok {
+		t.Fatalf("b.go was chunked though its content was past the budget: %#v", state)
+	}
+
+	// The second pass sees the same files at the same hashes: the retained one
+	// is skipped by hash and the omitted one keeps its (empty) chunk state, so
+	// nothing is re-embedded and no file is purged.
+	rep2, err := Run(context.Background(), deps, pid)
+	if err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if rep2.FilesEmbedded != 0 {
+		t.Errorf("second pass embedded %d files, want 0", rep2.FilesEmbedded)
+	}
+	after, err := database.ChunkedFiles(pid)
+	if err != nil {
+		t.Fatalf("ChunkedFiles after second pass: %v", err)
+	}
+	if len(after) != len(state) {
+		t.Fatalf("chunk state changed across an unchanged pass: before %#v after %#v", state, after)
+	}
+	for path := range after {
+		if _, ok := state[path]; !ok {
+			t.Fatalf("%s acquired chunks in the second pass", path)
+		}
+	}
+}

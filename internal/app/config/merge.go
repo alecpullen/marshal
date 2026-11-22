@@ -98,6 +98,7 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Indexing.Ignore = file.Indexing.Ignore
 		}
 		set(&cfg.Indexing.MaxIndexableFileBytes, file.Indexing.MaxIndexableFileBytes)
+		set(&cfg.Indexing.MaxTotalContentBytes, file.Indexing.MaxTotalContentBytes)
 		set(&cfg.Indexing.MaxSearchableFileBytes, file.Indexing.MaxSearchableFileBytes)
 		if file.Indexing.Watch != nil {
 			cfg.Indexing.Watch = file.Indexing.Watch

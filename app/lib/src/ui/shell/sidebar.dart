@@ -9,7 +9,7 @@ import '../settings/settings_place.dart';
 import 'host_switcher.dart';
 
 /// The Studio's navigation (design-system.md §2's layout and the mock's
-/// sidebar): the host switcher, the search field, the three fixed places
+/// sidebar): the host switcher, the search field, the four fixed places
 /// above the tree, the projects with their threads, and the three at its
 /// foot. In Settings the tree and those rows are replaced by the ten sections
 /// under a Back row (F7 decision 7).
@@ -415,6 +415,7 @@ class _SidebarState extends State<Sidebar> {
   /// The mark each fixed place carries (§6: a kind is an icon and a tooltip,
   /// and a place is its icon here).
   static IconData _icon(PlaceKind kind) => switch (kind) {
+    PlaceKind.marshal => Glyphs.chat_bubble_2,
     PlaceKind.overview => Glyphs.square_grid_2x2,
     PlaceKind.inbox => Glyphs.tray,
     PlaceKind.pulls => Glyphs.arrow_merge,

@@ -31,7 +31,11 @@ class FocusSearchIntent extends Intent {
 }
 
 /// The shell's shortcuts (f9-parity.md decision 6): ⌘N, ⌘1/⌘2/⌘3 for Overview,
-/// Inbox and Pull requests, and ⌘K for the sidebar's search.
+/// Needs you and Pull requests, and ⌘K for the sidebar's search.
+///
+/// `GoInboxIntent` is still the name of ⌘2's intent and `PlaceKind.inbox` is
+/// still the name of the place it opens: the rename is visible words only,
+/// and a destination does not move because its row was renamed.
 final Map<ShortcutActivator, Intent> shellShortcuts = {
   const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
       const NewWorkIntent(),

@@ -88,7 +88,10 @@ Place? translateLegacyHash(String hash) {
   }
   if (route == '#inbox') return const Place(PlaceKind.inbox);
 
-  // The new-work dialog: `#new[?project=<root>]`.
+  // The new-work dialog: `#new[?project=<root>]`. It opens the project it
+  // names, which is that project's board: the conversation entry is the
+  // sidebar's row and this build's own `/conversation` path, so an old
+  // bookmark still resolves exactly as it did (agent-first Studio, task 2).
   if (_newAgent.hasMatch(route)) return _scoped(_queryValue(route, 'project'));
   if (_plannerNew.hasMatch(route)) {
     return _scoped(_queryValue(route, 'project'));

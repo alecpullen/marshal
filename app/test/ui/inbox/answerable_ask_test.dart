@@ -187,7 +187,7 @@ void main() {
     expect(posted, ['Deny', 'Deny']);
   });
 
-  testWidgets('the Overview sends a multi-question ask to the Inbox', (
+  testWidgets('the Overview sends a multi-question ask to Needs you', (
     tester,
   ) async {
     var opened = 0;
@@ -221,9 +221,9 @@ void main() {
     // offers no field here and one way to the place that does.
     expect(find.byType(Field), findsNothing);
     expect(find.byType(AskCard), findsOneWidget);
-    expect(find.text('Open inbox'), findsOneWidget);
+    expect(find.text('Open Needs you'), findsOneWidget);
 
-    await tester.tap(find.text('Open inbox'));
+    await tester.tap(find.text('Open Needs you'));
     await tester.pump();
     expect(opened, 1);
   });

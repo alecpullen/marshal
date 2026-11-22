@@ -1302,8 +1302,10 @@ func TestIntegrationCancelledCaptureStopsWritingAndStaysBounded(t *testing.T) {
 			settled, integrationGlobalMax)
 	}
 
-	// The store is still usable: a fresh context captures successfully.
+	// The store is still usable: a fresh context captures successfully once the
+	// cancelled capture's backoff has elapsed.
 	env.manager.writeObserver = nil
+	afterCaptureBackoff(env.manager)
 	hash, _, err := env.manager.AdmitAndCaptureWithCleanup(ctx, env.catalog, request(env))
 	if err != nil {
 		t.Fatalf("capture after a cancellation: %v", err)

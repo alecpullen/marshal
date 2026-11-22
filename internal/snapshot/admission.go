@@ -637,8 +637,22 @@ func (m *Manager) storeErr(reason StoreReason, path, format string, args ...any)
 //
 // It returns the published hash (empty on every failure) plus the admission
 // result, so a caller can report what was decided even when the capture failed.
-func (m *Manager) AdmitAndCaptureWithCleanup(ctx context.Context, cat *Catalog, req CaptureRequest) (string, *AdmissionResult, error) {
-	admission, err := m.AdmitCapture(ctx, cat, req)
+func (m *Manager) AdmitAndCaptureWithCleanup(ctx context.Context, cat *Catalog, req CaptureRequest) (captured string, admission *AdmissionResult, err error) {
+	if reason, ok := m.suppressedCapture(req.WorkspaceRoot); ok {
+		return "", nil, storeErrorf(reason,
+			"snapshot capture for %s is suppressed for %s after an earlier failure",
+			req.WorkspaceRoot, captureBackoff)
+	}
+	defer func() {
+		if err == nil {
+			m.clearCaptureSuppression(req.WorkspaceRoot)
+			return
+		}
+		if reason := ReasonOf(err); reason != "" {
+			m.noteCaptureFailure(req.WorkspaceRoot, reason)
+		}
+	}()
+	admission, err = m.AdmitCapture(ctx, cat, req)
 	if err != nil {
 		return "", admission, err
 	}

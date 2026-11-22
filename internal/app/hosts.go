@@ -534,12 +534,13 @@ func (h *ProjectHost) indexPass(c context.Context) error {
 	passCtx, cancel := context.WithTimeout(c, 10*time.Minute)
 	defer cancel()
 	deps := index.Deps{
-		DB:         h.db,
-		Root:       h.root,
-		Ignore:     cfg.Indexing.Ignore,
-		MaxBytes:   cfg.Indexing.MaxIndexableFileBytes,
-		Embedder:   embedder,
-		OnProgress: h.progress,
+		DB:                   h.db,
+		Root:                 h.root,
+		Ignore:               cfg.Indexing.Ignore,
+		MaxBytes:             cfg.Indexing.MaxIndexableFileBytes,
+		MaxTotalContentBytes: cfg.Indexing.MaxTotalContentBytes,
+		Embedder:             embedder,
+		OnProgress:           h.progress,
 	}
 	if embedWarning != "" {
 		deps.Warnings = []string{embedWarning}

@@ -317,6 +317,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			SummariseFiles:         strutil.Ptr(cfg.Indexing.SummariseFiles),
 			Ignore:                 cfg.Indexing.Ignore,
 			MaxIndexableFileBytes:  strutil.Ptr(cfg.Indexing.MaxIndexableFileBytes),
+			MaxTotalContentBytes:   strutil.Ptr(cfg.Indexing.MaxTotalContentBytes),
 			MaxSearchableFileBytes: strutil.Ptr(cfg.Indexing.MaxSearchableFileBytes),
 			Watch:                  cfg.Indexing.Watch,
 			WatchDebounceMs:        strutil.Ptr(cfg.Indexing.WatchDebounceMs),

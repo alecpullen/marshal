@@ -416,6 +416,27 @@ func TestSaveProjectConfigRoundTripsAgentScalars(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigRoundTripsMaxTotalContentBytes(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.Indexing.MaxTotalContentBytes = 4 << 20
+
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if loaded.Indexing.MaxTotalContentBytes != 4<<20 {
+		t.Fatalf("indexing max_total_content_bytes not round-tripped, got %+v", loaded.Indexing)
+	}
+}
+
 func TestSaveProjectConfigPreservesHooks(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")

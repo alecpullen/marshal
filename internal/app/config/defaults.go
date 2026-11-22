@@ -7,6 +7,15 @@ import (
 	"marshal/internal/llm/routing"
 )
 
+// defaultMaxTotalContentBytes is the default cap on the file content one index
+// pass holds in memory at once. It equals repo.DefaultMaxTotalContentBytes,
+// which the scanner falls back to when a caller passes zero; the value is
+// spelled out here rather than imported because internal/repo reaches back
+// into this package through internal/db, internal/subagentwork and
+// internal/worktree. Keep the two values in step; TestDefaultIndexingBounds
+// pins this one.
+const defaultMaxTotalContentBytes int64 = 512 << 20
+
 func Default() Config {
 	cfg := Config{
 		Project: ProjectConfig{
@@ -55,12 +64,24 @@ func Default() Config {
 			RetainDays:      14,
 		},
 		Indexing: IndexingConfig{
-			UseTreesitter:          false,
-			UseEmbeddings:          false,
-			SummariseFiles:         false,
-			Ignore:                 []string{"node_modules/**", "vendor/**", "dist/**", ".git/**"},
-			MaxIndexableFileBytes:  25 * 1024 * 1024, // 25 MiB
-			MaxSearchableFileBytes: 1 * 1024 * 1024,  // 1 MiB
+			UseTreesitter:  false,
+			UseEmbeddings:  false,
+			SummariseFiles: false,
+			// The bare names below are matched against the basename as well as
+			// the relative path, so each prunes at any depth. They cover
+			// dependency caches, toolchain installs and model/Steam payloads
+			// that a home-directory workspace holds in bulk and that no index
+			// should read.
+			Ignore: []string{
+				"node_modules/**", "vendor/**", "dist/**", ".git/**",
+				".cache", ".lmstudio", ".cargo", ".rustup", ".gradle", ".m2",
+				".npm", ".venv", "venv", "__pycache__", "target", ".next",
+				".turbo", "Steam",
+				"*.safetensors", "*.gguf", "*.onnx", "*.pak", "*.iso", "*.dmg",
+			},
+			MaxIndexableFileBytes:  2 * 1024 * 1024, // 2 MiB
+			MaxTotalContentBytes:   defaultMaxTotalContentBytes,
+			MaxSearchableFileBytes: 1 * 1024 * 1024, // 1 MiB
 		},
 		Models: ModelsConfig{
 			Presets: map[string]routing.ModelPreset{},

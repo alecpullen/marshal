@@ -112,6 +112,7 @@ type fileIndexing struct {
 	SummariseFiles         *bool    `toml:"summarise_files"`
 	Ignore                 []string `toml:"ignore"`
 	MaxIndexableFileBytes  *int64   `toml:"max_indexable_file_bytes"`
+	MaxTotalContentBytes   *int64   `toml:"max_total_content_bytes"`
 	MaxSearchableFileBytes *int64   `toml:"max_searchable_file_bytes"`
 	Watch                  *bool    `toml:"watch"`
 	WatchDebounceMs        *int     `toml:"watch_debounce_ms"`

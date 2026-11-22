@@ -26,6 +26,11 @@ type Deps struct {
 	Embedder   embedding.Embedder   // nil => embeddings skipped
 	LSP        LSPSymbols           // nil => LSP symbols not available
 	OnProgress func(message string) // nil => no progress reporting
+	// MaxTotalContentBytes caps the bytes of file content a pass holds in
+	// memory at once. Zero means repo.DefaultMaxTotalContentBytes. Files
+	// past the cap are indexed by path but their content is omitted, so
+	// their symbols and embeddings are skipped rather than guessed.
+	MaxTotalContentBytes int64
 	// Warnings are conditions the caller already knows about (an embedding
 	// backend that could not be reached, say). They are reported ahead of
 	// the ones this pass finds.
@@ -51,7 +56,12 @@ func Run(ctx context.Context, deps Deps, projectID int64) (Report, error) {
 			deps.Root, kind))
 	}
 
-	scanner := repo.NewScanner(repo.Config{Root: deps.Root, Ignore: deps.Ignore, MaxIndexableFileBytes: deps.MaxBytes})
+	scanner := repo.NewScanner(repo.Config{
+		Root:                  deps.Root,
+		Ignore:                deps.Ignore,
+		MaxIndexableFileBytes: deps.MaxBytes,
+		MaxTotalContentBytes:  deps.MaxTotalContentBytes,
+	})
 	scanned, err := scanner.ScanDetailed(ctx)
 	if err != nil {
 		return rep, fmt.Errorf("scan repo: %w", err)

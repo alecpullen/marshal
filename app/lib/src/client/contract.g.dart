@@ -1798,6 +1798,1347 @@ class Repo {
   }
 }
 
+/// CoordinatorThreadRef identifies one source a coordinated task points at: the
+/// project it belongs to, what kind of thing it is, and its own id.
+class CoordinatorThreadRef {
+  const CoordinatorThreadRef({
+    required this.projectID,
+    required this.kind,
+    required this.id,
+  });
+
+  final String projectID;
+  /// Kind is "agent" (a fleet thread), "intake" (an unconfirmed submission),
+  /// "pull" (a pull request) or "review" (a pull request ready to review).
+  final String kind;
+  final String id;
+
+  factory CoordinatorThreadRef.fromJson(Map<String, dynamic> json) {
+    return CoordinatorThreadRef(
+      projectID: json['projectId'] as String,
+      kind: json['kind'] as String,
+      id: json['id'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projectId'] = projectID;
+    json['kind'] = kind;
+    json['id'] = id;
+    return json;
+  }
+}
+
+/// CoordinatorTaskStatus is where a coordinated task stands.
+enum CoordinatorTaskStatus {
+  coordinatorTaskOpen('open'),
+  coordinatorTaskStopping('stopping'),
+  coordinatorTaskStopped('stopped'),
+  unknown('unknown');
+
+  const CoordinatorTaskStatus(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static CoordinatorTaskStatus fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// CoordinatorTask is one host-local coordinated task: a durable task ID, the
+/// coordinator conversation's session, an optional source thread, a title, a
+/// status and a revision.
+class CoordinatorTask {
+  const CoordinatorTask({
+    required this.id,
+    required this.sessionID,
+    this.title,
+    required this.status,
+    required this.revision,
+    this.source,
+    required this.projects,
+    this.host,
+    required this.createdAt,
+    required this.updatedAt,
+    this.rawEnums = const {},
+  });
+
+  final String id;
+  /// SessionID is the coordinator conversation's ACP session, minted by the
+  /// daemon and persisted here so the conversation outlives a browser.
+  final String sessionID;
+  final String? title;
+  final CoordinatorTaskStatus status;
+  final int revision;
+  final CoordinatorThreadRef? source;
+  /// Projects are the opaque project IDs this task may read. An empty list is
+  /// the host-local scope: every project registered on the serving daemon,
+  /// checked per read.
+  final List<String> projects;
+  /// Host is the serving daemon's identity (its socket path), so a client can
+  /// tell this task apart from one with the same ID on another host.
+  final String? host;
+  final String createdAt;
+  final String updatedAt;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory CoordinatorTask.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final statusWire = json['status'] as String;
+    final status = CoordinatorTaskStatus.fromWire(statusWire);
+    if (status == CoordinatorTaskStatus.unknown) {
+      rawEnums['status'] = statusWire;
+    }
+    return CoordinatorTask(
+      id: json['id'] as String,
+      sessionID: json['sessionId'] as String,
+      title: json['title'] as String?,
+      status: status,
+      revision: (json['revision'] as num).toInt(),
+      source: _objectOrNull(
+        json['source'],
+        CoordinatorThreadRef.fromJson,
+      ),
+      projects: _list(
+        json['projects'],
+        (value) => value as String,
+      ),
+      host: json['host'] as String?,
+      createdAt: json['createdAt'] as String,
+      updatedAt: json['updatedAt'] as String,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['sessionId'] = sessionID;
+    if (title != null) {
+      json['title'] = title;
+    }
+    json['status'] = rawEnums['status'] ?? status.wire;
+    json['revision'] = revision;
+    if (source != null) {
+      json['source'] = source!.toJson();
+    }
+    json['projects'] = projects;
+    if (host != null) {
+      json['host'] = host;
+    }
+    json['createdAt'] = createdAt;
+    json['updatedAt'] = updatedAt;
+    return json;
+  }
+}
+
+/// CoordinatorTaskList is GET /api/coordinator/tasks.
+class CoordinatorTaskList {
+  const CoordinatorTaskList({
+    required this.tasks,
+    this.host,
+  });
+
+  final List<CoordinatorTask> tasks;
+  final String? host;
+
+  factory CoordinatorTaskList.fromJson(Map<String, dynamic> json) {
+    return CoordinatorTaskList(
+      tasks: _list(
+        json['tasks'],
+        (value) => _object(value, CoordinatorTask.fromJson),
+      ),
+      host: json['host'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['tasks'] = [
+      for (final value in tasks) value.toJson(),
+    ];
+    if (host != null) {
+      json['host'] = host;
+    }
+    return json;
+  }
+}
+
+/// CoordinatorCreateRequest is POST /api/coordinator/tasks: the first send of a
+/// coordinator destination. RequestID is the client's idempotency key, reused
+/// for retries of the same content.
+class CoordinatorCreateRequest {
+  const CoordinatorCreateRequest({
+    required this.requestID,
+    this.title,
+    this.source,
+    this.projects,
+  });
+
+  final String requestID;
+  final String? title;
+  final CoordinatorThreadRef? source;
+  final List<String>? projects;
+
+  factory CoordinatorCreateRequest.fromJson(Map<String, dynamic> json) {
+    return CoordinatorCreateRequest(
+      requestID: json['requestId'] as String,
+      title: json['title'] as String?,
+      source: _objectOrNull(
+        json['source'],
+        CoordinatorThreadRef.fromJson,
+      ),
+      projects: _listOrNull(
+        json['projects'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    if (title != null) {
+      json['title'] = title;
+    }
+    if (source != null) {
+      json['source'] = source!.toJson();
+    }
+    if (projects != null) {
+      json['projects'] = projects!;
+    }
+    return json;
+  }
+}
+
+/// CoordinatorCreateResult is POST /api/coordinator/tasks's answer. Created is
+/// false when the request ID replayed an existing task, which is what tells a
+/// retry from a fresh destination.
+class CoordinatorCreateResult {
+  const CoordinatorCreateResult({
+    required this.task,
+    required this.created,
+  });
+
+  final CoordinatorTask task;
+  final bool created;
+
+  factory CoordinatorCreateResult.fromJson(Map<String, dynamic> json) {
+    return CoordinatorCreateResult(
+      task: _object(
+        json['task'],
+        CoordinatorTask.fromJson,
+      ),
+      created: json['created'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['task'] = task.toJson();
+    json['created'] = created;
+    return json;
+  }
+}
+
+/// CoordinatorAssignmentRelationship is what an assignment's target is: a worker
+/// the coordinated task created, or a thread that already existed and is linked.
+enum CoordinatorAssignmentRelationship {
+  coordinatorAssignmentWorker('worker'),
+  coordinatorAssignmentThread('thread'),
+  unknown('unknown');
+
+  const CoordinatorAssignmentRelationship(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static CoordinatorAssignmentRelationship fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// CoordinatorAssignmentState is where one assignment stands.
+enum CoordinatorAssignmentState {
+  coordinatorAssignmentDispatching('dispatching'),
+  coordinatorAssignmentPending('pending'),
+  coordinatorAssignmentRunning('running'),
+  coordinatorAssignmentLinked('linked'),
+  coordinatorAssignmentFailed('failed'),
+  coordinatorAssignmentExpired('expired'),
+  coordinatorAssignmentStopped('stopped'),
+  unknown('unknown');
+
+  const CoordinatorAssignmentState(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static CoordinatorAssignmentState fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// CoordinatorWorkerRef names the worker an assignment created.
+class CoordinatorWorkerRef {
+  const CoordinatorWorkerRef({
+    required this.agentID,
+    this.sessionID,
+  });
+
+  final String agentID;
+  /// SessionID is the worker's ACP session. It is empty until the worker
+  /// acknowledges, which is when its assignment becomes running.
+  final String? sessionID;
+
+  factory CoordinatorWorkerRef.fromJson(Map<String, dynamic> json) {
+    return CoordinatorWorkerRef(
+      agentID: json['agentId'] as String,
+      sessionID: json['sessionId'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['agentId'] = agentID;
+    if (sessionID != null) {
+      json['sessionId'] = sessionID;
+    }
+    return json;
+  }
+}
+
+/// CoordinatorAssignment is one coordinated task's assignment to one target
+/// project: what it asked for, what that became, and how far it got.
+///
+/// The assignment ID is the assignment's dispatch identity, not just a label:
+/// it is minted and persisted before any side effect and is the identity the
+/// pending submission, the spawn claim and the worker's own record all carry, so
+/// a retry, a confirmation, a reconnect and a daemon restart all resolve to one
+/// outcome.
+class CoordinatorAssignment {
+  const CoordinatorAssignment({
+    required this.id,
+    required this.taskID,
+    required this.projectID,
+    this.projectName,
+    this.instruction,
+    required this.relationship,
+    required this.state,
+    this.intakeID,
+    this.worker,
+    this.thread,
+    required this.resultRevision,
+    this.failure,
+    this.reason,
+    required this.createdAt,
+    required this.updatedAt,
+    this.rawEnums = const {},
+  });
+
+  final String id;
+  final String taskID;
+  /// ProjectID is the target project's canonical daemon ID, never a display
+  /// name or a path.
+  final String projectID;
+  /// ProjectName is what the daemon calls that project: the last segment of its
+  /// root, which is what a person says. It is display text, filled on every read
+  /// rather than stored, so a renamed project reads under its new name.
+  final String? projectName;
+  /// Instruction is what the task asked this project to do, as the task wrote
+  /// it. It is display text in the caller's own words, never markup.
+  final String? instruction;
+  final CoordinatorAssignmentRelationship relationship;
+  final CoordinatorAssignmentState state;
+  /// IntakeID is the pending submission an unconfirmed assignment awaits. It is
+  /// the assignment's own identity in the intake queue.
+  final String? intakeID;
+  /// Worker is the agent this assignment created, once one exists.
+  final CoordinatorWorkerRef? worker;
+  /// Thread is the existing thread a linked assignment observes.
+  final CoordinatorThreadRef? thread;
+  /// ResultRevision is the newest revision of this assignment's observed
+  /// result. Zero means nothing has been observed yet; it advances only when an
+  /// observation sees a different result, so a client can tell a quiet worker
+  /// from a stale record.
+  final int resultRevision;
+  /// Failure is the machine-readable reason when the state is failed.
+  final String? failure;
+  /// Reason explains a failed, expired or not-yet-resolved assignment in words
+  /// meant for a person.
+  final String? reason;
+  final String createdAt;
+  final String updatedAt;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory CoordinatorAssignment.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final relationshipWire = json['relationship'] as String;
+    final relationship = CoordinatorAssignmentRelationship.fromWire(relationshipWire);
+    if (relationship == CoordinatorAssignmentRelationship.unknown) {
+      rawEnums['relationship'] = relationshipWire;
+    }
+    final stateWire = json['state'] as String;
+    final state = CoordinatorAssignmentState.fromWire(stateWire);
+    if (state == CoordinatorAssignmentState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return CoordinatorAssignment(
+      id: json['id'] as String,
+      taskID: json['taskId'] as String,
+      projectID: json['projectId'] as String,
+      projectName: json['projectName'] as String?,
+      instruction: json['instruction'] as String?,
+      relationship: relationship,
+      state: state,
+      intakeID: json['intakeId'] as String?,
+      worker: _objectOrNull(
+        json['worker'],
+        CoordinatorWorkerRef.fromJson,
+      ),
+      thread: _objectOrNull(
+        json['thread'],
+        CoordinatorThreadRef.fromJson,
+      ),
+      resultRevision: (json['resultRevision'] as num).toInt(),
+      failure: json['failure'] as String?,
+      reason: json['reason'] as String?,
+      createdAt: json['createdAt'] as String,
+      updatedAt: json['updatedAt'] as String,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['taskId'] = taskID;
+    json['projectId'] = projectID;
+    if (projectName != null) {
+      json['projectName'] = projectName;
+    }
+    if (instruction != null) {
+      json['instruction'] = instruction;
+    }
+    json['relationship'] = rawEnums['relationship'] ?? relationship.wire;
+    json['state'] = rawEnums['state'] ?? state.wire;
+    if (intakeID != null) {
+      json['intakeId'] = intakeID;
+    }
+    if (worker != null) {
+      json['worker'] = worker!.toJson();
+    }
+    if (thread != null) {
+      json['thread'] = thread!.toJson();
+    }
+    json['resultRevision'] = resultRevision;
+    if (failure != null) {
+      json['failure'] = failure;
+    }
+    if (reason != null) {
+      json['reason'] = reason;
+    }
+    json['createdAt'] = createdAt;
+    json['updatedAt'] = updatedAt;
+    return json;
+  }
+}
+
+/// CoordinatorAssignTarget is one target of a dispatch: the canonical project it
+/// names, what that project should do, and — optionally — an existing thread to
+/// link instead of starting a worker.
+class CoordinatorAssignTarget {
+  const CoordinatorAssignTarget({
+    required this.projectID,
+    this.instruction,
+    this.threadID,
+    this.steer,
+  });
+
+  /// ProjectID is the project's canonical daemon ID.
+  final String projectID;
+  final String? instruction;
+  /// ThreadID links an existing thread in the target project rather than
+  /// starting a worker. It must belong to that project.
+  final String? threadID;
+  /// Steer asks that the linked thread be given the instruction. It is admitted
+  /// only when a person's direction for that thread is verified; without one the
+  /// dispatch is refused before anything is recorded.
+  final bool? steer;
+
+  factory CoordinatorAssignTarget.fromJson(Map<String, dynamic> json) {
+    return CoordinatorAssignTarget(
+      projectID: json['projectId'] as String,
+      instruction: json['instruction'] as String?,
+      threadID: json['threadId'] as String?,
+      steer: json['steer'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projectId'] = projectID;
+    if (instruction != null) {
+      json['instruction'] = instruction;
+    }
+    if (threadID != null) {
+      json['threadId'] = threadID;
+    }
+    if (steer != null) {
+      json['steer'] = steer;
+    }
+    return json;
+  }
+}
+
+/// CoordinatorAssignRequest is one task-scoped dispatch. RequestID is the
+/// caller's idempotency key: every retry of the same targets carries it, so a
+/// second press, a lost answer or a restart resolves to the assignments the first
+/// request recorded instead of dispatching again.
+class CoordinatorAssignRequest {
+  const CoordinatorAssignRequest({
+    required this.requestID,
+    required this.targets,
+  });
+
+  final String requestID;
+  final List<CoordinatorAssignTarget> targets;
+
+  factory CoordinatorAssignRequest.fromJson(Map<String, dynamic> json) {
+    return CoordinatorAssignRequest(
+      requestID: json['requestId'] as String,
+      targets: _list(
+        json['targets'],
+        (value) => _object(value, CoordinatorAssignTarget.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['targets'] = [
+      for (final value in targets) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// CoordinatorAssignResult is one dispatch's answer: one entry per target, in
+/// request order. A target that failed carries its own failure, and its eligible
+/// siblings still progress.
+class CoordinatorAssignResult {
+  const CoordinatorAssignResult({
+    required this.taskID,
+    this.taskRevision,
+    required this.assignments,
+  });
+
+  final String taskID;
+  final int? taskRevision;
+  final List<CoordinatorAssignment> assignments;
+
+  factory CoordinatorAssignResult.fromJson(Map<String, dynamic> json) {
+    return CoordinatorAssignResult(
+      taskID: json['taskId'] as String,
+      taskRevision: (json['taskRevision'] as num?)?.toInt(),
+      assignments: _list(
+        json['assignments'],
+        (value) => _object(value, CoordinatorAssignment.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['taskId'] = taskID;
+    if (taskRevision != null) {
+      json['taskRevision'] = taskRevision;
+    }
+    json['assignments'] = [
+      for (final value in assignments) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// CoordinatorStopResult is POST /api/coordinator/tasks/{id}/stop's answer: the
+/// task as the stop left it, what each of its assignments settled to, and the
+/// result reported back into the source thread.
+///
+/// Stopping is one request and one answer, so a screen shows the stop as pending
+/// until this arrives: Task.Status is stopping when the daemon recorded the
+/// intent but could not confirm the cancellation of every worker it created, and
+/// stopped when it did. Both answers carry the same fields, so a repeat after a
+/// reconnect reads the settled state rather than inventing one.
+class CoordinatorStopResult {
+  const CoordinatorStopResult({
+    required this.task,
+    required this.assignments,
+    this.delivery,
+  });
+
+  final CoordinatorTask task;
+  final List<CoordinatorAssignment> assignments;
+  final CoordinatorDelivery? delivery;
+
+  factory CoordinatorStopResult.fromJson(Map<String, dynamic> json) {
+    return CoordinatorStopResult(
+      task: _object(
+        json['task'],
+        CoordinatorTask.fromJson,
+      ),
+      assignments: _list(
+        json['assignments'],
+        (value) => _object(value, CoordinatorAssignment.fromJson),
+      ),
+      delivery: _objectOrNull(
+        json['delivery'],
+        CoordinatorDelivery.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['task'] = task.toJson();
+    json['assignments'] = [
+      for (final value in assignments) value.toJson(),
+    ];
+    if (delivery != null) {
+      json['delivery'] = delivery!.toJson();
+    }
+    return json;
+  }
+}
+
+/// CoordinatorAssignmentList is one task's assignments, as a read reports them.
+///
+/// Delivery is the newest informational update this task posted back to its
+/// source thread. It is carried by the read rather than pushed only, so a
+/// source whose viewer was not attached when the result was ready still shows
+/// it: the record is durable and the next read is what draws it.
+class CoordinatorAssignmentList {
+  const CoordinatorAssignmentList({
+    required this.taskID,
+    this.host,
+    required this.assignments,
+    this.delivery,
+  });
+
+  final String taskID;
+  final String? host;
+  final List<CoordinatorAssignment> assignments;
+  final CoordinatorDelivery? delivery;
+
+  factory CoordinatorAssignmentList.fromJson(Map<String, dynamic> json) {
+    return CoordinatorAssignmentList(
+      taskID: json['taskId'] as String,
+      host: json['host'] as String?,
+      assignments: _list(
+        json['assignments'],
+        (value) => _object(value, CoordinatorAssignment.fromJson),
+      ),
+      delivery: _objectOrNull(
+        json['delivery'],
+        CoordinatorDelivery.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['taskId'] = taskID;
+    if (host != null) {
+      json['host'] = host;
+    }
+    json['assignments'] = [
+      for (final value in assignments) value.toJson(),
+    ];
+    if (delivery != null) {
+      json['delivery'] = delivery!.toJson();
+    }
+    return json;
+  }
+}
+
+/// CoordinatorDelivery is one coordinated task's informational update to the
+/// source thread it was handed off from.
+///
+/// It is not an agent turn: nothing is prompted and no session is started, so a
+/// delivery reaches a thread that has no viewer attached and one whose agent is
+/// idle alike. EventID is stable for the task, which is what makes a retry, a
+/// reconnect or a second observation update the one delivered result instead of
+/// posting a duplicate summary.
+class CoordinatorDelivery {
+  const CoordinatorDelivery({
+    required this.taskID,
+    this.source,
+    required this.eventID,
+    required this.text,
+    required this.at,
+  });
+
+  final String taskID;
+  final CoordinatorThreadRef? source;
+  /// EventID is the delivery's stable identity. A second attempt with the same
+  /// EventID replaces the record rather than appending another result.
+  final String eventID;
+  /// Text is display text: what the task's assignments did, in the daemon's
+  /// own words. It is never markup, and it names no host path.
+  final String text;
+  final String at;
+
+  factory CoordinatorDelivery.fromJson(Map<String, dynamic> json) {
+    return CoordinatorDelivery(
+      taskID: json['taskId'] as String,
+      source: _objectOrNull(
+        json['source'],
+        CoordinatorThreadRef.fromJson,
+      ),
+      eventID: json['eventId'] as String,
+      text: json['text'] as String,
+      at: json['at'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['taskId'] = taskID;
+    if (source != null) {
+      json['source'] = source!.toJson();
+    }
+    json['eventId'] = eventID;
+    json['text'] = text;
+    json['at'] = at;
+    return json;
+  }
+}
+
+/// CoordinatorSourceView is one source thread's handoff as a thread screen reads
+/// it: the coordinated task opened from that thread (when there is one), its
+/// assignments, and the newest delivered result.
+///
+/// Task is absent for a thread nothing was handed off from, which is a valid
+/// answer — the screen then draws no handoff rather than an error.
+class CoordinatorSourceView {
+  const CoordinatorSourceView({
+    this.host,
+    this.task,
+    required this.assignments,
+    this.delivery,
+  });
+
+  final String? host;
+  final CoordinatorTask? task;
+  final List<CoordinatorAssignment> assignments;
+  final CoordinatorDelivery? delivery;
+
+  factory CoordinatorSourceView.fromJson(Map<String, dynamic> json) {
+    return CoordinatorSourceView(
+      host: json['host'] as String?,
+      task: _objectOrNull(
+        json['task'],
+        CoordinatorTask.fromJson,
+      ),
+      assignments: _list(
+        json['assignments'],
+        (value) => _object(value, CoordinatorAssignment.fromJson),
+      ),
+      delivery: _objectOrNull(
+        json['delivery'],
+        CoordinatorDelivery.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (host != null) {
+      json['host'] = host;
+    }
+    if (task != null) {
+      json['task'] = task!.toJson();
+    }
+    json['assignments'] = [
+      for (final value in assignments) value.toJson(),
+    ];
+    if (delivery != null) {
+      json['delivery'] = delivery!.toJson();
+    }
+    return json;
+  }
+}
+
+/// CoordinatorTargetCandidate is one project a handoff target could have meant:
+/// the canonical id to name it by, and the display name a person reads.
+class CoordinatorTargetCandidate {
+  const CoordinatorTargetCandidate({
+    required this.projectID,
+    required this.name,
+  });
+
+  final String projectID;
+  final String name;
+
+  factory CoordinatorTargetCandidate.fromJson(Map<String, dynamic> json) {
+    return CoordinatorTargetCandidate(
+      projectID: json['projectId'] as String,
+      name: json['name'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projectId'] = projectID;
+    json['name'] = name;
+    return json;
+  }
+}
+
+/// CoordinatorHandoffTarget is one target a handoff names. It is a canonical
+/// project id, or the project's display name as the person said it ("the CLI");
+/// the bridge resolves a name against the projects this host registered and
+/// asks one question when it cannot.
+class CoordinatorHandoffTarget {
+  const CoordinatorHandoffTarget({
+    this.projectID,
+    this.project,
+    required this.instruction,
+    this.threadID,
+    this.steer,
+  });
+
+  final String? projectID;
+  /// Project is the display name a person used. It is resolved here, never
+  /// passed through as a path.
+  final String? project;
+  final String instruction;
+  /// ThreadID links an existing thread in the target project instead of
+  /// starting a worker, and Steer asks that it be given the instruction —
+  /// admitted only with the person's verified direction.
+  final String? threadID;
+  final bool? steer;
+
+  factory CoordinatorHandoffTarget.fromJson(Map<String, dynamic> json) {
+    return CoordinatorHandoffTarget(
+      projectID: json['projectId'] as String?,
+      project: json['project'] as String?,
+      instruction: json['instruction'] as String,
+      threadID: json['threadId'] as String?,
+      steer: json['steer'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (projectID != null) {
+      json['projectId'] = projectID;
+    }
+    if (project != null) {
+      json['project'] = project;
+    }
+    json['instruction'] = instruction;
+    if (threadID != null) {
+      json['threadId'] = threadID;
+    }
+    if (steer != null) {
+      json['steer'] = steer;
+    }
+    return json;
+  }
+}
+
+/// CoordinatorHandoffRequest is the handoff tool's arguments: what the source
+/// session asks for, the projects it asks, and the findings they need.
+///
+/// The source is never here. It is the session the transport authenticated, so
+/// a caller cannot hand work off from a thread it does not hold.
+class CoordinatorHandoffRequest {
+  const CoordinatorHandoffRequest({
+    required this.requestID,
+    required this.outcome,
+    this.findings,
+    required this.targets,
+  });
+
+  final String requestID;
+  /// Outcome is what the handoff asks for, in the source's words. It names the
+  /// task and is the instruction of a target that states none of its own.
+  final String outcome;
+  /// Findings is what the target projects need to know to act: the evidence
+  /// the source gathered. It travels with every target's instruction.
+  final String? findings;
+  final List<CoordinatorHandoffTarget> targets;
+
+  factory CoordinatorHandoffRequest.fromJson(Map<String, dynamic> json) {
+    return CoordinatorHandoffRequest(
+      requestID: json['requestId'] as String,
+      outcome: json['outcome'] as String,
+      findings: json['findings'] as String?,
+      targets: _list(
+        json['targets'],
+        (value) => _object(value, CoordinatorHandoffTarget.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['outcome'] = outcome;
+    if (findings != null) {
+      json['findings'] = findings;
+    }
+    json['targets'] = [
+      for (final value in targets) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// CoordinatorClarification is the one question a handoff asks before it
+/// dispatches to a target it could not resolve to exactly one project.
+///
+/// Nothing is dispatched while it stands: an ambiguous name is answered with the
+/// projects it could mean, and the person's answer is a target that names one.
+class CoordinatorClarification {
+  const CoordinatorClarification({
+    required this.name,
+    required this.question,
+    required this.candidates,
+  });
+
+  /// Name is the target as the handoff wrote it, quoted in the question.
+  final String name;
+  /// Question is the whole question, in words meant for a person.
+  final String question;
+  final List<CoordinatorTargetCandidate> candidates;
+
+  factory CoordinatorClarification.fromJson(Map<String, dynamic> json) {
+    return CoordinatorClarification(
+      name: json['name'] as String,
+      question: json['question'] as String,
+      candidates: _list(
+        json['candidates'],
+        (value) => _object(value, CoordinatorTargetCandidate.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['question'] = question;
+    json['candidates'] = [
+      for (final value in candidates) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// CoordinatorHandoffResult is the handoff tool's answer: the task the source is
+/// linked to, the assignments each target resolved to, and either the one
+/// clarifying question that held the dispatch back or the delivery that
+/// reported it.
+class CoordinatorHandoffResult {
+  const CoordinatorHandoffResult({
+    this.taskID,
+    this.host,
+    this.source,
+    required this.assignments,
+    this.clarification,
+    this.delivery,
+  });
+
+  final String? taskID;
+  final String? host;
+  final CoordinatorThreadRef? source;
+  /// Assignments is empty when a clarification held the dispatch back.
+  final List<CoordinatorAssignment> assignments;
+  final CoordinatorClarification? clarification;
+  final CoordinatorDelivery? delivery;
+
+  factory CoordinatorHandoffResult.fromJson(Map<String, dynamic> json) {
+    return CoordinatorHandoffResult(
+      taskID: json['taskId'] as String?,
+      host: json['host'] as String?,
+      source: _objectOrNull(
+        json['source'],
+        CoordinatorThreadRef.fromJson,
+      ),
+      assignments: _list(
+        json['assignments'],
+        (value) => _object(value, CoordinatorAssignment.fromJson),
+      ),
+      clarification: _objectOrNull(
+        json['clarification'],
+        CoordinatorClarification.fromJson,
+      ),
+      delivery: _objectOrNull(
+        json['delivery'],
+        CoordinatorDelivery.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (taskID != null) {
+      json['taskId'] = taskID;
+    }
+    if (host != null) {
+      json['host'] = host;
+    }
+    if (source != null) {
+      json['source'] = source!.toJson();
+    }
+    json['assignments'] = [
+      for (final value in assignments) value.toJson(),
+    ];
+    if (clarification != null) {
+      json['clarification'] = clarification!.toJson();
+    }
+    if (delivery != null) {
+      json['delivery'] = delivery!.toJson();
+    }
+    return json;
+  }
+}
+
+/// CoordinatorDelta is a "coordinator" fleet delta: one task's assignments and
+/// its newest source delivery.
+///
+/// It carries whole assignment rows rather than a count, so a live client
+/// updates the same fields a snapshot would give it and the two cannot disagree.
+class CoordinatorDelta {
+  const CoordinatorDelta({
+    required this.kind,
+    this.sessionID,
+    required this.taskID,
+    this.host,
+    this.source,
+    required this.assignments,
+    this.delivery,
+    this.rawEnums = const {},
+  });
+
+  final DeltaKind kind;
+  final String? sessionID;
+  final String taskID;
+  final String? host;
+  final CoordinatorThreadRef? source;
+  final List<CoordinatorAssignment> assignments;
+  final CoordinatorDelivery? delivery;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory CoordinatorDelta.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final kindWire = json['kind'] as String;
+    final kind = DeltaKind.fromWire(kindWire);
+    if (kind == DeltaKind.unknown) {
+      rawEnums['kind'] = kindWire;
+    }
+    return CoordinatorDelta(
+      kind: kind,
+      sessionID: json['sessionId'] as String?,
+      taskID: json['taskId'] as String,
+      host: json['host'] as String?,
+      source: _objectOrNull(
+        json['source'],
+        CoordinatorThreadRef.fromJson,
+      ),
+      assignments: _list(
+        json['assignments'],
+        (value) => _object(value, CoordinatorAssignment.fromJson),
+      ),
+      delivery: _objectOrNull(
+        json['delivery'],
+        CoordinatorDelivery.fromJson,
+      ),
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = rawEnums['kind'] ?? kind.wire;
+    if (sessionID != null) {
+      json['sessionId'] = sessionID;
+    }
+    json['taskId'] = taskID;
+    if (host != null) {
+      json['host'] = host;
+    }
+    if (source != null) {
+      json['source'] = source!.toJson();
+    }
+    json['assignments'] = [
+      for (final value in assignments) value.toJson(),
+    ];
+    if (delivery != null) {
+      json['delivery'] = delivery!.toJson();
+    }
+    return json;
+  }
+}
+
+/// CoordinatorAttentionKind is what an attention entry is: an ask that needs a
+/// decision, or a review that is ready.
+enum CoordinatorAttentionKind {
+  coordinatorAttentionAsk('ask'),
+  coordinatorAttentionReview('review'),
+  unknown('unknown');
+
+  const CoordinatorAttentionKind(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static CoordinatorAttentionKind fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// CoordinatorAttentionEntry is one read-only thing Marshal found: the source it
+/// came from, what kind it is, the text to show, how long it has waited and
+/// where it opens.
+class CoordinatorAttentionEntry {
+  const CoordinatorAttentionEntry({
+    required this.source,
+    required this.kind,
+    required this.text,
+    required this.ageSeconds,
+    this.destination,
+    this.rawEnums = const {},
+  });
+
+  final CoordinatorThreadRef source;
+  final CoordinatorAttentionKind kind;
+  /// Text is display text, never markup.
+  final String text;
+  /// AgeSeconds is how long the entry has waited, floored at zero.
+  final int ageSeconds;
+  /// Destination is the Studio path that opens the entry at its source. It is
+  /// absent when the source is not one this build can link to.
+  final String? destination;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory CoordinatorAttentionEntry.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final kindWire = json['kind'] as String;
+    final kind = CoordinatorAttentionKind.fromWire(kindWire);
+    if (kind == CoordinatorAttentionKind.unknown) {
+      rawEnums['kind'] = kindWire;
+    }
+    return CoordinatorAttentionEntry(
+      source: _object(
+        json['source'],
+        CoordinatorThreadRef.fromJson,
+      ),
+      kind: kind,
+      text: json['text'] as String,
+      ageSeconds: (json['ageSeconds'] as num).toInt(),
+      destination: json['destination'] as String?,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source.toJson();
+    json['kind'] = rawEnums['kind'] ?? kind.wire;
+    json['text'] = text;
+    json['ageSeconds'] = ageSeconds;
+    if (destination != null) {
+      json['destination'] = destination;
+    }
+    return json;
+  }
+}
+
+/// CoordinatorSourceState is how much one source contributed to a read. A
+/// source that is not fresh is never part of an all-clear.
+enum CoordinatorSourceState {
+  coordinatorSourceFresh('fresh'),
+  coordinatorSourceStale('stale'),
+  coordinatorSourceUnavailable('unavailable'),
+  coordinatorSourceUnauthorized('unauthorized'),
+  unknown('unknown');
+
+  const CoordinatorSourceState(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static CoordinatorSourceState fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// CoordinatorSource is one project's contribution to an attention read, with
+/// the reason when it is not fresh.
+class CoordinatorSource {
+  const CoordinatorSource({
+    required this.projectID,
+    required this.state,
+    this.reason,
+    this.observedAt,
+    this.rawEnums = const {},
+  });
+
+  final String projectID;
+  final CoordinatorSourceState state;
+  final String? reason;
+  /// ObservedAt is the newest evidence this source contributed, in Unix
+  /// millis. Zero when it contributed none.
+  final int? observedAt;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory CoordinatorSource.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final stateWire = json['state'] as String;
+    final state = CoordinatorSourceState.fromWire(stateWire);
+    if (state == CoordinatorSourceState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return CoordinatorSource(
+      projectID: json['projectId'] as String,
+      state: state,
+      reason: json['reason'] as String?,
+      observedAt: (json['observedAt'] as num?)?.toInt(),
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projectId'] = projectID;
+    json['state'] = rawEnums['state'] ?? state.wire;
+    if (reason != null) {
+      json['reason'] = reason;
+    }
+    if (observedAt != null) {
+      json['observedAt'] = observedAt;
+    }
+    return json;
+  }
+}
+
+/// CoordinatorAttention is the read-only attention summary for one task:
+/// entries to show plus per-source freshness. AllClear is true only when every
+/// source was read fresh and nothing needs a decision; a stale, unavailable or
+/// unauthorized source can never produce it.
+class CoordinatorAttention {
+  const CoordinatorAttention({
+    required this.taskID,
+    this.host,
+    required this.entries,
+    required this.sources,
+    required this.allClear,
+    required this.partial,
+    required this.observedAt,
+  });
+
+  final String taskID;
+  final String? host;
+  final List<CoordinatorAttentionEntry> entries;
+  final List<CoordinatorSource> sources;
+  final bool allClear;
+  /// Partial is true when some source was not fresh, so the caller knows the
+  /// answer covers less than the task's scope.
+  final bool partial;
+  final String observedAt;
+
+  factory CoordinatorAttention.fromJson(Map<String, dynamic> json) {
+    return CoordinatorAttention(
+      taskID: json['taskId'] as String,
+      host: json['host'] as String?,
+      entries: _list(
+        json['entries'],
+        (value) => _object(value, CoordinatorAttentionEntry.fromJson),
+      ),
+      sources: _list(
+        json['sources'],
+        (value) => _object(value, CoordinatorSource.fromJson),
+      ),
+      allClear: json['allClear'] as bool,
+      partial: json['partial'] as bool,
+      observedAt: json['observedAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['taskId'] = taskID;
+    if (host != null) {
+      json['host'] = host;
+    }
+    json['entries'] = [
+      for (final value in entries) value.toJson(),
+    ];
+    json['sources'] = [
+      for (final value in sources) value.toJson(),
+    ];
+    json['allClear'] = allClear;
+    json['partial'] = partial;
+    json['observedAt'] = observedAt;
+    return json;
+  }
+}
+
 /// DaemonInfo is what GET /api/daemon answers about the local daemon.
 class DaemonInfo {
   const DaemonInfo({
@@ -13350,6 +14691,7 @@ class SessionRow {
 class SpawnRequest {
   const SpawnRequest({
     required this.project,
+    this.requestID,
     this.name,
     this.mode,
     this.auto,
@@ -13362,6 +14704,14 @@ class SpawnRequest {
   });
 
   final String project;
+  /// RequestID is the caller's own idempotency key for a first send
+  /// (agent-first Studio, task 3). A caller that names one is promising that
+  /// every retry of the same content carries the same value, so a lost
+  /// answer or a second press resolves to the agent the request already
+  /// started instead of starting another. It is scoped to the project, and
+  /// reusing it for different content is refused. Empty is today's
+  /// behaviour: every request spawns.
+  final String? requestID;
   final String? name;
   final String? mode;
   /// Auto accompanies Mode as a starting default. It is a pointer so an
@@ -13379,6 +14729,7 @@ class SpawnRequest {
   factory SpawnRequest.fromJson(Map<String, dynamic> json) {
     return SpawnRequest(
       project: json['project'] as String,
+      requestID: json['requestId'] as String?,
       name: json['name'] as String?,
       mode: json['mode'] as String?,
       auto: json['auto'] as bool?,
@@ -13394,6 +14745,9 @@ class SpawnRequest {
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{};
     json['project'] = project;
+    if (requestID != null) {
+      json['requestId'] = requestID;
+    }
     if (name != null) {
       json['name'] = name;
     }
@@ -14909,6 +16263,7 @@ class StatusLinkCreated {
 
 /// DeltaKind is the discriminator of a fleet-stream delta.
 enum DeltaKind {
+  deltaCoordinator('coordinator'),
   deltaActivity('activity'),
   deltaMode('mode'),
   deltaTelemetry('telemetry'),

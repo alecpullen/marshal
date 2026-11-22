@@ -251,7 +251,7 @@ func TestRenderNoticeInline(t *testing.T) {
 		Category: acpwire.NoticeProvider,
 		Severity: acpwire.NoticeError,
 		Message:  "connection refused",
-	}, 80)
+	}, 80, false)
 	plain := stripANSI(out)
 	if !strings.Contains(plain, "✗") {
 		t.Fatalf("provider error missing ✗ gutter:\n%s", out)
@@ -665,7 +665,7 @@ func TestBlockRenderersEndWithSingleNewline(t *testing.T) {
 		"system notice":  renderSystemNotice("note", 80),
 		"tool result":    renderToolResultLine("line1\nline2", 80),
 		"plan block":     renderPlanBlock("step 1", 80),
-		"provider error": renderNotice(acpwire.Notice{Category: acpwire.NoticeProvider, Severity: acpwire.NoticeError, Message: "boom"}, 80),
+		"provider error": renderNotice(acpwire.Notice{Category: acpwire.NoticeProvider, Severity: acpwire.NoticeError, Message: "boom"}, 80, false),
 		"queued":         renderQueuedMessages([]string{"q1"}, 80),
 		"active tool": renderActiveToolCall(
 			wireRunning(session.ActiveToolCall{Name: "shell.run", Args: "go test", StartedAt: time.Unix(100, 0)}),

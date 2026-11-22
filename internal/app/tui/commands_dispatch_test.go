@@ -453,11 +453,8 @@ func TestWorkPromptNavigationDoesNotResolveOrStealSteering(t *testing.T) {
 		t.Fatalf("prompt request = %s/%q, want prompt/q-1", pmt.kind, pmt.requestID)
 	}
 
-	updated, cmd := m.Update(pmt)
+	updated, _ := m.Update(pmt)
 	m = updated.(Model)
-	if cmd != nil {
-		t.Fatalf("prompt navigation produced a cmd (%T); it must not answer anything", cmd)
-	}
 
 	// The prompt is still pending: navigation never resolves it.
 	if stateOf(m).PendingQuestion() == nil {

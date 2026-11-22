@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/bridge_client.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
@@ -185,9 +188,94 @@ void main() {
     expect(model.choices['Permission mode'], 'Act');
     expect(model.choices['Environment'], 'Local');
     expect(model.kind, NewWorkKind.agent);
-    expect(model.canStart, isFalse, reason: 'nothing to start yet');
+    expect(
+      model.canStart,
+      isTrue,
+      reason: 'an agent starts with nothing to do and is told in its thread',
+    );
+    expect(model.promptOptional, isTrue);
     model.dispose();
   });
+
+  test('an agent starts with no prompt at all', () async {
+    final routes = _Routes();
+    final model = routes.model();
+
+    await model.start();
+
+    final request = routes.spawns.single;
+    expect(request.project, '/home/u/marshal');
+    expect(
+      request.prompt,
+      isNull,
+      reason: 'no first turn is sent for an agent that has nothing to do yet',
+    );
+    expect(
+      jsonEncode(request),
+      isNot(contains('"prompt"')),
+      reason: 'the wire request carries no prompt key at all',
+    );
+    expect(model.started?.agentID, 'a-9');
+    expect(model.failure, isNull);
+    expect(model.promptError, isNull);
+    model.dispose();
+  });
+
+  test('a planning thread and a work item still need the prompt', () async {
+    final routes = _Routes();
+    final model = routes.model();
+
+    for (final kind in [NewWorkKind.planFirst, NewWorkKind.workItem]) {
+      model.selectKind(kind);
+      expect(model.promptOptional, isFalse, reason: '${kind.word} needs text');
+      expect(model.canStart, isFalse, reason: '${kind.word} has none yet');
+
+      await model.start();
+
+      expect(routes.spawns, isEmpty, reason: '${kind.word} started nothing');
+      expect(
+        model.promptError,
+        contains('Write what it should do'),
+        reason: '${kind.word} says why',
+      );
+      expect(
+        model.failure,
+        isNull,
+        reason: '${kind.word} did not fail at the bridge',
+      );
+    }
+    model.dispose();
+  });
+
+  test(
+    'a missing-prompt message goes when the prompt or kind changes',
+    () async {
+      final model = _Routes().model();
+
+      model.selectKind(NewWorkKind.workItem);
+      await model.start();
+      expect(model.promptError, contains('Write what it should do'));
+
+      model.prefill('Review the handoff');
+      expect(
+        model.promptError,
+        isNull,
+        reason: 'the prompt now has what Start needs',
+      );
+
+      model.prefill('');
+      await model.start();
+      expect(model.promptError, contains('Write what it should do'));
+
+      model.selectKind(NewWorkKind.agent);
+      expect(
+        model.promptError,
+        isNull,
+        reason: 'an agent needs no prompt at all',
+      );
+      model.dispose();
+    },
+  );
 
   test('the three lists load', () async {
     final model = _Routes().model();
@@ -623,6 +711,94 @@ void main() {
     expect(studio.spawns.single.project, '/home/u/studio');
     expect(studio.spawns.single.prompt, 'Do the work');
     expect(model.started?.agentID, 'a-studio');
+    model.dispose();
+  });
+
+  test('a retry of the same draft sends the same request ID', () async {
+    // A spawn that records what was asked before it refuses, then answers:
+    // the shape of a bridge whose first answer was lost.
+    var fail = true;
+    final sent = <SpawnRequest>[];
+    final model = NewWorkModel(
+      defaults: NewWorkDefaults.fromProject(
+        const ProjectStatus(
+          root: '/home/u/marshal',
+          available: true,
+          trust: TrustState.trustTrusted,
+          isolation: 'available',
+        ),
+      ),
+      recentPrompts: () async => RecentPrompts(prompts: const []),
+      issues: (project) async => const [],
+      recipes: () async => const [],
+      spawn: (request) async {
+        sent.add(request);
+        if (fail) throw Exception('refused');
+        return const SpawnResult(agentID: 'a-9');
+      },
+      options: const {},
+    );
+    model.prefill('Fix the login redirect');
+    await model.start();
+    expect(sent, hasLength(1));
+    // An exception says nothing about what the bridge did, so the outcome is
+    // unknown and the draft is kept for the retry.
+    expect(model.outcomeUnknown, isTrue);
+    fail = false;
+    await model.start();
+    expect(sent, hasLength(2));
+    // The second attempt carries the id the first sent, so the bridge
+    // resolves the original request instead of starting a second agent.
+    expect(sent[1].requestID, sent[0].requestID);
+    expect(sent[0].requestID, isNotEmpty);
+    model.dispose();
+  });
+
+  test('an edited draft is different work and gets a new request ID', () async {
+    final routes = _Routes();
+    final model = routes.model();
+    model.prefill('Fix the login redirect');
+    await model.start();
+    model.prefill('Fix the login redirect, and add a test');
+    await model.start();
+    expect(routes.spawns, hasLength(2));
+    expect(routes.spawns[1].prompt, 'Fix the login redirect, and add a test');
+    expect(routes.spawns[1].requestID, isNot(routes.spawns[0].requestID));
+    model.dispose();
+  });
+
+  test('a second Send while the first is in flight starts nothing', () async {
+    var calls = 0;
+    final gate = Completer<SpawnResult>();
+    final model = NewWorkModel(
+      defaults: NewWorkDefaults.fromProject(
+        const ProjectStatus(
+          root: '/home/u/marshal',
+          available: true,
+          trust: TrustState.trustTrusted,
+          isolation: 'available',
+        ),
+      ),
+      recentPrompts: () async => RecentPrompts(prompts: const []),
+      issues: (project) async => const [],
+      recipes: () async => const [],
+      spawn: (request) {
+        calls++;
+        return gate.future;
+      },
+      options: const {},
+    );
+    model.prefill('Fix the login redirect');
+    final first = model.start();
+    expect(model.starting, isTrue);
+    // The in-flight guard refuses a second send instead of racing it.
+    await model.start();
+    expect(calls, 1);
+    gate.complete(const SpawnResult(agentID: 'a-9'));
+    await first;
+    expect(calls, 1);
+    expect(model.starting, isFalse);
+    expect(model.started?.agentID, 'a-9');
     model.dispose();
   });
 }

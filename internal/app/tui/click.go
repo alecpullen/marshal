@@ -12,6 +12,9 @@ type clickTarget struct {
 	// isLiveRegion marks a block rendered by liveregion, whose body scrolls
 	// independently of the transcript when the wheel is over it.
 	isLiveRegion bool
+	// notice marks the notice banner: a click expands or collapses its
+	// details rather than toggling a node.
+	notice bool
 }
 
 // nodeRegion is a half-open [startLine, endLine) range of content lines in
@@ -134,6 +137,12 @@ func (m *Model) handleTranscriptClick(msg tea.Mouse) (tea.Cmd, bool) {
 	target, ok := m.regionAt(line)
 	if !ok {
 		return nil, false
+	}
+	if target.notice {
+		m.toggleNotice()
+		m.invalidateTranscript()
+		m.refreshViewport()
+		return nil, true
 	}
 	// In browse mode a click also moves the cursor to the clicked node. A
 	// click never enters browse mode on its own.

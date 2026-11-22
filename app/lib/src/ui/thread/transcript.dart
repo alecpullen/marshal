@@ -1,4 +1,6 @@
+import '../../model/age.dart';
 import '../../model/inbox_model.dart' as model;
+import '../../model/place.dart';
 import '../../model/selection.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_view_state.dart';
@@ -108,6 +110,9 @@ class Transcript extends StatefulWidget {
     this.onAnswer,
     this.now,
     this.onOpenNode,
+    this.onOpenHandoff,
+    this.onOpenAssignment,
+    this.onRetryAssignment,
   });
 
   /// The session's tree.
@@ -132,6 +137,20 @@ class Transcript extends StatefulWidget {
 
   /// Opens a node's detail. Null leaves rows that are not controls plain.
   final void Function(String nodeId)? onOpenNode;
+
+  /// Opens the coordinated task this thread handed work to. Null leaves the
+  /// handoff's link out rather than drawing one that goes nowhere.
+  final void Function(Place place)? onOpenHandoff;
+
+  /// Opens one assignment's thread — the worker's, or the thread that was
+  /// linked. Null leaves a row without a link.
+  final void Function(Place place)? onOpenAssignment;
+
+  /// Retries one failed assignment, by its identity, and nothing else. The
+  /// future finishing is what the band's control waits on, so the retry shows
+  /// as pending until the answer comes. Null leaves the failure a fact
+  /// rather than an action.
+  final Future<void> Function(String assignmentId)? onRetryAssignment;
 
   @override
   State<Transcript> createState() => _TranscriptState();
@@ -266,8 +285,17 @@ class _TranscriptState extends State<Transcript> {
   @override
   Widget build(BuildContext context) {
     final following = widget.view.following;
+    final handoff = widget.view.handoff;
     return Column(
       children: [
+        if (handoff != null)
+          _HandoffHeader(
+            handoff: handoff,
+            now: widget.now ?? DateTime.now(),
+            onOpenTask: widget.onOpenHandoff,
+            onOpenAssignment: widget.onOpenAssignment,
+            onRetry: widget.onRetryAssignment,
+          ),
         if (!following && _rows.isNotEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: Space.s4),
@@ -361,6 +389,222 @@ class _TranscriptState extends State<Transcript> {
           ),
       ],
     );
+  }
+}
+
+/// The handoff a thread is the source of, capped and scrolled above the
+/// conversation: it belongs to the thread rather than to one row, so it stays
+/// where a person can see it while the work it sent runs elsewhere.
+class _HandoffHeader extends StatelessWidget {
+  const _HandoffHeader({
+    required this.handoff,
+    required this.now,
+    this.onOpenTask,
+    this.onOpenAssignment,
+    this.onRetry,
+  });
+
+  final HandoffView handoff;
+  final DateTime now;
+  final void Function(Place place)? onOpenTask;
+  final void Function(Place place)? onOpenAssignment;
+  final Future<void> Function(String assignmentId)? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: Layout.inspector),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(
+          Layout.pageSide,
+          Space.s12,
+          Layout.pageSide,
+          0,
+        ),
+        child: Align(
+          alignment: Alignment.topCenter,
+          heightFactor: 1,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: Layout.reading),
+            child: HandoffBand(
+              handoff: handoff,
+              now: now,
+              onOpenTask: onOpenTask,
+              onOpenAssignment: onOpenAssignment,
+              onRetry: onRetry,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One thread's handoff (agent-first Studio, task 7): the coordinated task the
+/// thread handed work to, a row per target project with its state and thread
+/// link, and the result the daemon reported back.
+///
+/// It draws what the model holds and posts nothing itself: opening the task, a
+/// thread and retrying one assignment are the host's actions, so the same band
+/// serves a thread's transcript and Marshal's own destination. A blocked
+/// assignment shows the ask it is waiting on; a failed one offers a retry that
+/// names exactly that assignment; a view whose read failed says how old it is
+/// rather than presenting it as current.
+class HandoffBand extends StatefulWidget {
+  const HandoffBand({
+    super.key,
+    required this.handoff,
+    required this.now,
+    this.onOpenTask,
+    this.onOpenAssignment,
+    this.onRetry,
+  });
+
+  /// The handoff to draw.
+  final HandoffView handoff;
+
+  /// What a row's age is measured against.
+  final DateTime now;
+
+  /// Opens the coordinated task; null leaves the header a fact.
+  final void Function(Place place)? onOpenTask;
+
+  /// Opens an assignment's thread; null leaves the row without a link.
+  final void Function(Place place)? onOpenAssignment;
+
+  /// Starts one failed assignment's retry. The future completing is the
+  /// answer the control waits on, so the retry reads as pending until the
+  /// daemon answers; null leaves the failure a fact.
+  final Future<void> Function(String assignmentId)? onRetry;
+
+  @override
+  State<HandoffBand> createState() => _HandoffBandState();
+}
+
+/// One retry at a time: while a retry waits for its answer, its own button
+/// reads *Retrying…* and nothing else can be asked, so a second press cannot
+/// send the same assignment twice (§9: an action taken is acknowledged at
+/// once and shows as pending until the daemon confirms it).
+class _HandoffBandState extends State<HandoffBand> {
+  /// The assignment whose retry is in flight, by id; null when none is.
+  String? _retrying;
+
+  Future<void> _retry(String assignmentId) async {
+    final retry = widget.onRetry;
+    if (retry == null || _retrying != null) return;
+    setState(() => _retrying = assignmentId);
+    try {
+      await retry(assignmentId);
+    } finally {
+      if (mounted) setState(() => _retrying = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final handoff = widget.handoff;
+    final now = widget.now;
+    final onOpenTask = widget.onOpenTask;
+    final onOpenAssignment = widget.onOpenAssignment;
+    final e = Ember.of(context);
+    final task = handoff.task;
+    final result = (handoff.result ?? '').trim();
+    return Box(
+      // Something waiting on a person makes the group draw attention; a failure
+      // does not shout, because its row already says so in words and colour.
+      tone: handoff.blocked ? BoxTone.attention : BoxTone.plain,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Label(
+            'Handoff',
+            count: handoff.rows.length,
+            link: task == null || onOpenTask == null
+                ? null
+                : LabelLink('Open Marshal task', onTap: () => onOpenTask(task)),
+          ),
+          const SizedBox(height: Space.s8),
+          if (task == null)
+            Text(
+              'Marshal is coordinating this thread’s work.',
+              style: e.small.tint(e.muted),
+            )
+          else
+            Text(
+              'Marshal is coordinating this thread’s work in “${handoff.name}”.',
+              style: e.small.tint(e.muted),
+            ),
+          const SizedBox(height: Space.s8),
+          if (handoff.rows.isEmpty)
+            Text(
+              'Nothing has been assigned to another project yet.',
+              style: e.small.tint(e.muted),
+            )
+          else
+            Rows([
+              for (final row in handoff.rows)
+                RowItem(
+                  name: row.name,
+                  description: _description(row),
+                  value: row.updatedAt == null
+                      ? null
+                      : relativeAge(row.updatedAt!, now),
+                  onTap: row.thread == null || onOpenAssignment == null
+                      ? null
+                      : () => onOpenAssignment(row.thread!),
+                ),
+            ]),
+          for (final row in handoff.rows)
+            if (row.retryable && widget.onRetry != null)
+              Padding(
+                padding: const EdgeInsets.only(top: Space.s8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Btn(
+                    row.id == _retrying ? 'Retrying…' : 'Retry ${row.name}',
+                    icon: Glyphs.arrow_clockwise,
+                    onTap: _retrying == null ? () => _retry(row.id) : null,
+                  ),
+                ),
+              ),
+          if (result.isNotEmpty) ...[
+            const SizedBox(height: Space.s12),
+            const Label('Result'),
+            const SizedBox(height: Space.s4),
+            Notice(text: result),
+            if (handoff.resultAt != null)
+              Text(
+                'Reported ${relativeAge(handoff.resultAt!, now)} ago',
+                style: e.monoSmall.tint(e.muted),
+              ),
+          ],
+          if (handoff.stale) ...[
+            const SizedBox(height: Space.s8),
+            Text(
+              handoff.observedAt == null
+                  ? 'This handoff could not be read again, so it may be behind.'
+                  : 'Last observed ${relativeAge(handoff.observedAt!, now)} ago; '
+                        'this handoff may be behind.',
+              style: e.small.tint(e.muted),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// What one assignment's row says: where it stands, the thread it resolved to,
+  /// and — for one blocked on a person — the ask it is waiting on, in the ask's
+  /// own words.
+  static String _description(HandoffAssignmentRow row) {
+    final parts = <String>[row.stateWords];
+    if (row.threadTitle.trim().isNotEmpty) {
+      parts.add('thread: ${row.threadTitle.trim()}');
+    }
+    if (row.blocked && row.askLine.isNotEmpty) {
+      parts.add('ask: ${row.askLine}');
+    }
+    return parts.join(' · ');
   }
 }
 

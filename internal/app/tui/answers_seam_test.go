@@ -209,9 +209,9 @@ func TestTheSkillGateAnswersThroughTheSession(t *testing.T) {
 	}
 
 	// As TestHandleSkillGateAllowOnceRespondsAndClears drives it: the first
-	// message builds the dialog, "2" selects Allow always (this skill), and
+	// message builds the dialog (primePrompt), "2" selects Allow always (this skill), and
 	// Enter confirms.
-	m = sendKey(m, skillGateKeyPress("enter"))
+	m = primePrompt(m)
 	m = sendKey(m, skillGateKeyPress("2"))
 	m = sendKey(m, skillGateKeyPress("enter"))
 

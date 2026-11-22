@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/provider"
 )
 
 // systemNotes returns the transcript's system messages, in order.
@@ -63,6 +64,26 @@ func TestAFailedRunWritesItsNote(t *testing.T) {
 			t.Fatal("Prompt = nil, want the runner's error")
 		}
 		if got, want := systemNotes(state), []string{"✘ Turn failed: the provider said no"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("system notes = %q, want %q", got, want)
+		}
+	})
+
+	// A provider failure the agent summarised writes only its title: the
+	// banner carries the provider's sentence, never its raw JSON body.
+	t.Run("provider", func(t *testing.T) {
+		state := newState(t, "s1")
+		fake := newFakeRunner()
+		fake.err = &provider.ProviderError{
+			Provider:   "ollama-cloud",
+			StatusCode: 403,
+			Body:       `{"error":{"message":"your subscription payment is past due.","type":"api_error"}}`,
+		}
+		_, sess := New(Deps{State: state, Runner: func() Runner { return fake }})
+
+		if _, err := sess.Prompt(context.Background(), acpwire.PromptParams{Text: "hello"}); err == nil {
+			t.Fatal("Prompt = nil, want the runner's error")
+		}
+		if got, want := systemNotes(state), []string{"✘ Turn failed: ollama-cloud · billing"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("system notes = %q, want %q", got, want)
 		}
 	})

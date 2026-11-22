@@ -88,7 +88,9 @@ func noticeWire(n session.Notice) acpwire.Notice {
 	return acpwire.Notice{
 		Category: n.Category.String(),
 		Severity: severity,
+		Title:    n.Title,
 		Message:  n.Message,
+		Detail:   n.Detail,
 		Hint:     n.Hint,
 		Source:   n.Source,
 		SetAt:    acpwire.Millis(n.SetAt),
@@ -107,7 +109,9 @@ func noticeState(n acpwire.Notice) session.Notice {
 	return session.Notice{
 		Category: category,
 		Severity: severity,
+		Title:    n.Title,
 		Message:  n.Message,
+		Detail:   n.Detail,
 		Hint:     n.Hint,
 		Source:   n.Source,
 		SetAt:    acpwire.Time(n.SetAt),
@@ -156,17 +160,22 @@ func runError(err error) error {
 			Hint:     "Run /connect to sign in to " + name + ".",
 		})
 	}
-	var httpErr *provider.ProviderError
-	var reqErr *provider.RequestError
-	if errors.As(err, &httpErr) || errors.As(err, &reqErr) {
-		return noteError(err, acpwire.CodeProviderError, session.Notice{
-			Category: session.NoticeProvider,
-			Severity: session.SeverityError,
-			Message:  firstLine(err.Error()),
-			Hint:     "Run /connect to review the provider, or /models to pick another model.",
-		})
+	if f, ok := provider.DescribeFailure(err); ok {
+		return noteError(err, acpwire.CodeProviderError, providerNotice(f))
 	}
 	return err
+}
+
+// providerNotice is the banner a summarised provider failure calls for.
+func providerNotice(f provider.Failure) session.Notice {
+	return session.Notice{
+		Category: session.NoticeProvider,
+		Severity: session.SeverityError,
+		Title:    f.Title(),
+		Message:  f.Message,
+		Detail:   f.Detail,
+		Hint:     f.Hint,
+	}
 }
 
 // noteError wraps err as a coded wire error whose data carries notice. The

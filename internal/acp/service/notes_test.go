@@ -18,7 +18,10 @@ import (
 // provider failure becomes a coded error carrying the banner its caller shows,
 // and every other error comes back untouched.
 func TestRunErrorCarriesTheNotice(t *testing.T) {
-	const reviewHint = "Run /connect to review the provider, or /models to pick another model."
+	const (
+		unavailableHint = "The provider is having trouble — retry shortly, or /models to pick another model."
+		unreachableHint = "Check the provider's endpoint with /connect, or /models to pick another model."
+	)
 
 	plain := errors.New("plain failure")
 	providerErr := &provider.ProviderError{Provider: "openai", StatusCode: 503, Body: "unavailable"}
@@ -37,10 +40,13 @@ func TestRunErrorCarriesTheNotice(t *testing.T) {
 		err       error
 		code      acpwire.ErrorCode
 		hint      string
+		title     string
+		message   string // "" for the error's first line
+		detail    bool
 		unchanged bool
 	}{
-		{name: "a provider error", err: providerErr, code: acpwire.CodeProviderError, hint: reviewHint},
-		{name: "a wrapped request error", err: wrappedRequest, code: acpwire.CodeProviderError, hint: reviewHint},
+		{name: "a provider error", err: providerErr, code: acpwire.CodeProviderError, hint: unavailableHint, title: "openai · unavailable", message: "Unavailable", detail: true},
+		{name: "a wrapped request error", err: wrappedRequest, code: acpwire.CodeProviderError, hint: unreachableHint, title: "openai · unreachable", message: "Connection refused", detail: true},
 		{name: "a named auth error", err: authErr, code: acpwire.CodeAuthRequired, hint: "Run /connect to sign in to codex."},
 		{name: "a wrapped auth error", err: authWrapped, code: acpwire.CodeAuthRequired, hint: "Run /connect to sign in to codex."},
 		{name: "a nameless auth error", err: namelessAuth, code: acpwire.CodeAuthRequired, hint: "Run /connect to sign in to this provider."},
@@ -77,8 +83,18 @@ func TestRunErrorCarriesTheNotice(t *testing.T) {
 			if notice.Severity != acpwire.NoticeError {
 				t.Errorf("notice severity = %q, want %q", notice.Severity, acpwire.NoticeError)
 			}
-			if want := firstLine(tc.err.Error()); notice.Message != want {
-				t.Errorf("notice message = %q, want the error's first line %q", notice.Message, want)
+			want := tc.message
+			if want == "" {
+				want = firstLine(tc.err.Error())
+			}
+			if notice.Message != want {
+				t.Errorf("notice message = %q, want %q", notice.Message, want)
+			}
+			if notice.Title != tc.title {
+				t.Errorf("notice title = %q, want %q", notice.Title, tc.title)
+			}
+			if (notice.Detail == tc.err.Error()) != tc.detail {
+				t.Errorf("notice detail = %q, want the raw error = %v", notice.Detail, tc.detail)
 			}
 			if notice.Hint != tc.hint {
 				t.Errorf("notice hint = %q, want %q", notice.Hint, tc.hint)

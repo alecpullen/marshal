@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../../model/inbox_model.dart' as asks_model;
 import '../../model/inspector_state.dart';
+import '../../model/place.dart';
 import '../../model/pulls_model.dart';
 import '../../model/selection.dart';
 import '../../model/stack_store.dart';
@@ -106,6 +107,9 @@ class ThreadScreen extends StatefulWidget {
     this.pullActions,
     this.onMerge,
     this.onSendBack,
+    this.onOpenHandoff,
+    this.onOpenAssignment,
+    this.onRetryAssignment,
   });
 
   /// The thread this screen is showing.
@@ -188,6 +192,18 @@ class ThreadScreen extends StatefulWidget {
   /// Steers this thread's own agent with what the person says. Null when the
   /// agent has ended, and the button then says so instead of doing nothing.
   final VoidCallback? onSendBack;
+
+  /// Opens the coordinated task this thread handed work to (agent-first Studio,
+  /// task 7). Null leaves the handoff's link out.
+  final void Function(Place place)? onOpenHandoff;
+
+  /// Opens one handoff assignment's thread. Null leaves the row without a link.
+  final void Function(Place place)? onOpenAssignment;
+
+  /// Retries one failed assignment, by its identity; the future finishing is
+  /// what the retry control shows as pending. Null leaves the failure a fact
+  /// rather than an action.
+  final Future<void> Function(String assignmentId)? onRetryAssignment;
 
   @override
   State<ThreadScreen> createState() => _ThreadScreenState();
@@ -530,6 +546,9 @@ class _ThreadScreenState extends State<ThreadScreen> {
                 onAnswer: widget.onAnswer,
                 now: widget.now,
                 onOpenNode: _openNode,
+                onOpenHandoff: widget.onOpenHandoff,
+                onOpenAssignment: widget.onOpenAssignment,
+                onRetryAssignment: widget.onRetryAssignment,
               ),
       ),
       _composer(),

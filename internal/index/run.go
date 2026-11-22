@@ -159,4 +159,3 @@ func pathologicalIndexRoot(root string) string {
 	}
 	return ""
 }
-

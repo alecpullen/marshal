@@ -15,12 +15,15 @@ import (
 	"path/filepath"
 
 	"marshal/internal/db"
+	"marshal/internal/limits"
 )
 
 // DefaultMaxTotalContentBytes is the most file content one scan retains. It is
 // a total, not a per-file bound: a tree of many small files passes every
-// per-file cap and still sums to an unbounded working set.
-const DefaultMaxTotalContentBytes int64 = 512 << 20
+// per-file cap and still sums to an unbounded working set. The number lives in
+// internal/limits so internal/app/config can default to it: naming it from
+// there would close the internal/repo → internal/app/config cycle.
+const DefaultMaxTotalContentBytes int64 = limits.MaxTotalContentBytes
 
 type Config struct {
 	Root   string

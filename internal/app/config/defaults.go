@@ -4,17 +4,9 @@ import (
 	"time"
 
 	"marshal/internal/interaction"
+	"marshal/internal/limits"
 	"marshal/internal/llm/routing"
 )
-
-// defaultMaxTotalContentBytes is the default cap on the file content one index
-// pass holds in memory at once. It equals repo.DefaultMaxTotalContentBytes,
-// which the scanner falls back to when a caller passes zero; the value is
-// spelled out here rather than imported because internal/repo reaches back
-// into this package through internal/db, internal/subagentwork and
-// internal/worktree. Keep the two values in step; TestDefaultIndexingBounds
-// pins this one.
-const defaultMaxTotalContentBytes int64 = 512 << 20
 
 func Default() Config {
 	cfg := Config{
@@ -80,7 +72,7 @@ func Default() Config {
 				"*.safetensors", "*.gguf", "*.onnx", "*.pak", "*.iso", "*.dmg",
 			},
 			MaxIndexableFileBytes:  2 * 1024 * 1024, // 2 MiB
-			MaxTotalContentBytes:   defaultMaxTotalContentBytes,
+			MaxTotalContentBytes:   limits.MaxTotalContentBytes,
 			MaxSearchableFileBytes: 1 * 1024 * 1024, // 1 MiB
 		},
 		Models: ModelsConfig{

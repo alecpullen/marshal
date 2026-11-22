@@ -4,7 +4,7 @@ import '../tokens.dart';
 import 'press.dart';
 import 'vocabulary.dart';
 
-/// A section label's one trailing link: "Open inbox", "All pull requests".
+/// A section label's one trailing link: "Open Needs you", "All pull requests".
 @immutable
 class LabelLink {
   const LabelLink(this.text, {required this.onTap});

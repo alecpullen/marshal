@@ -7,11 +7,11 @@ import '../kit/kit.dart';
 import '../pulls/pull_facts.dart';
 import 'answerable_ask.dart';
 
-/// Which asks the Inbox shows: everything, what blocks work, what is there to
+/// Which asks Needs you shows: everything, what blocks work, what is there to
 /// look at, and — from F5 — the pull requests that wait for review.
 enum InboxFilter { all, blocking, lookAt, ready }
 
-/// The Inbox: every ask the fleet reported, oldest first, answered from its
+/// Needs you: every ask the fleet reported, oldest first, answered from its
 /// own card.
 ///
 /// It draws the asks it is given and posts through [onAnswer]; it never
@@ -86,12 +86,12 @@ class _InboxState extends State<Inbox> {
     // a dead feed must not hide the asks a healthy one reported.
     final anyLoaded = widget.sources.any((source) => source.loaded);
     if (state != null && state != StateKind.stale && !anyLoaded) {
-      return PageBody(title: 'Inbox', children: [_stateMessage(state)]);
+      return PageBody(title: 'Needs you', children: [_stateMessage(state)]);
     }
     final shown = _shown;
     final freshness = _freshness();
     return PageBody(
-      title: 'Inbox',
+      title: 'Needs you',
       subtitle: _subtitle(),
       width: PageWidth.list,
       children: [
@@ -287,7 +287,7 @@ class _InboxState extends State<Inbox> {
         action: retry,
       ),
       StateKind.error => StateMessage.error(
-        message: 'The inbox could not be read.',
+        message: 'The Needs you queue could not be read.',
         retry: retry,
       ),
       StateKind.unauthorized => const StateMessage.unauthorized(),
@@ -302,7 +302,7 @@ class _InboxState extends State<Inbox> {
       // own row (`_freshness`), never a whole-page message.
       StateKind.stale => const SizedBox.shrink(),
       StateKind.planned => const StateMessage.planned(
-        name: 'Inbox',
+        name: 'Needs you',
         note: 'Not built yet',
       ),
     };

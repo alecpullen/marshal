@@ -108,6 +108,10 @@ type Server struct {
 	// enrolled session, in memory only, so a restart ends every one of them
 	// (marshal_enrollment.go).
 	marshalEnroll *marshalEnrollments
+	// coordinator is Marshal's own host-local destination: the durable tasks and
+	// the attention read over them (coordinator.go). It is nil on a server with
+	// no fleet state directory, and its routes then answer unavailable.
+	coordinator *coordinatorService
 }
 
 // NewServer builds a server over a *Fleet or a *Registry. For a fleet, the
@@ -150,6 +154,9 @@ func NewServer(target any, args ...any) *Server {
 	// server has a fleet to hold them.
 	if fleet != nil {
 		s.plannerRoutes()
+		// Marshal's own destination is host-local state: it exists when this
+		// server has the fleet's state directory to keep it in.
+		s.coordinatorSetup(fleet)
 	}
 	for _, arg := range args {
 		if factory, ok := arg.(FactoryAPI); ok {
@@ -449,6 +456,12 @@ func writeErr(w http.ResponseWriter, err error) {
 	var running pullFixRunning
 	var owned ErrSessionOwned
 	switch {
+	case errors.Is(err, ErrSpawnRequestConflict):
+		// A definite rejection: the ID already named different work, and
+		// nothing was spawned, so the caller may edit the draft and retry. The
+		// code lets a client tell this apart from an unknown outcome — one
+		// whose spawn may exist — without parsing prose.
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "code": "spawn_request_conflict"})
 	case errors.Is(err, ErrFactoryConflict):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.As(err, &running):
@@ -708,6 +721,13 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if !validSpawnRequestID(body.RequestID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "requestId must be 1-128 printable characters with no spaces or control characters",
+			"code":  "invalid_request_id",
+		})
+		return
+	}
 	// A request that leaves a field out takes the project's default.
 	defaults := s.fleet.ws.ProjectSettingsFor(body.Project)
 	isolated := defaults.Isolated != nil && *defaults.Isolated
@@ -726,15 +746,19 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	if body.Workspace == "" {
 		body.Workspace = defaults.Workspace
 	}
-	id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
+	// The claim is taken before the spawn has any side effect, so a retried
+	// first send resolves to the agent the original request started instead of
+	// starting a second one (agent-first Studio, task 3). A request with no
+	// ID takes the path every caller had before it.
+	id, deliver, err := s.fleet.SpawnClaimed(r.Context(), body.Project, SpawnOptions{
 		Name: body.Name, Mode: body.Mode, Auto: body.Auto, Isolated: isolated, Branch: body.Branch, BaseRef: body.BaseRef,
-		Routing: body.Routing, Workspace: body.Workspace,
-	})
+		Routing: body.Routing, Workspace: body.Workspace, Prompt: body.Prompt,
+	}, body.RequestID)
 	if id == "" {
 		writeErr(w, err)
 		return
 	}
-	if body.Prompt != "" {
+	if deliver && body.Prompt != "" {
 		if rt, e := s.fleet.RuntimeForSession(id); e == nil {
 			go func() {
 				if e := rt.reg.Prompt(context.Background(), rt.sessionID, body.Prompt); e != nil {
@@ -748,6 +772,25 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		resp.Warning = err.Error()
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// validSpawnRequestID bounds a caller's idempotency key. It is stored, echoed
+// in refusals and compared, so it is printable, space-free and short enough
+// that a hostile caller cannot use it to grow the store without limit. It is
+// otherwise opaque: the bridge never parses it.
+func validSpawnRequestID(id string) bool {
+	if id == "" {
+		return true
+	}
+	if len(id) > 128 {
+		return false
+	}
+	for _, c := range id {
+		if c <= ' ' || c > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) agentDiff(w http.ResponseWriter, r *http.Request) {
@@ -1686,7 +1729,11 @@ func (s *Server) approvePending(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
 		return
 	}
-	agentID, err := s.fleet.Approve(r.Context(), id)
+	// A coordinated assignment's confirmation waits for the assignment's own
+	// dispatch lock — the one a stop holds while it withdraws the submission
+	// — so an approval can never start a worker the stop had already
+	// withdrawn and settled (approveCoordinatorPending).
+	agentID, err := s.approveCoordinatorPending(r.Context(), id)
 	if err != nil {
 		writeErr(w, err)
 		return

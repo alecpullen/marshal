@@ -102,9 +102,9 @@ void main() {
     expect(find.text('ask 0'), findsOneWidget);
     expect(find.text('ask 2'), findsOneWidget);
     expect(find.text('5'), findsOneWidget);
-    expect(find.text('2 more in the inbox.'), findsOneWidget);
+    expect(find.text('2 more in Needs you.'), findsOneWidget);
     // The rest are one link away.
-    expect(find.text('Open inbox'), findsOneWidget);
+    expect(find.text('Open Needs you'), findsOneWidget);
   });
 
   testWidgets('tile opens its thread', (tester) async {

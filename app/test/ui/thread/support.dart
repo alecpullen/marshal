@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
+import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/model/thread_view_state.dart';
@@ -111,6 +112,9 @@ Future<void> pumpThread(
   List<model.Ask> asks = const [],
   AnswerAsk? onAnswer,
   DateTime? now,
+  void Function(Place place)? onOpenHandoff,
+  void Function(Place place)? onOpenAssignment,
+  Future<void> Function(String assignmentId)? onRetryAssignment,
 }) async {
   tester.view.physicalSize = const Size(900, 700);
   tester.view.devicePixelRatio = 1;
@@ -134,6 +138,9 @@ Future<void> pumpThread(
         asks: asks,
         onAnswer: onAnswer,
         now: now,
+        onOpenHandoff: onOpenHandoff,
+        onOpenAssignment: onOpenAssignment,
+        onRetryAssignment: onRetryAssignment,
       ),
     ),
   );

@@ -5,8 +5,16 @@ import "encoding/json"
 // SpawnRequest is a POST /api/agents body.
 type SpawnRequest struct {
 	Project string `json:"project"`
-	Name    string `json:"name,omitempty"`
-	Mode    string `json:"mode,omitempty"`
+	// RequestID is the caller's own idempotency key for a first send
+	// (agent-first Studio, task 3). A caller that names one is promising that
+	// every retry of the same content carries the same value, so a lost
+	// answer or a second press resolves to the agent the request already
+	// started instead of starting another. It is scoped to the project, and
+	// reusing it for different content is refused. Empty is today's
+	// behaviour: every request spawns.
+	RequestID string `json:"requestId,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Mode      string `json:"mode,omitempty"`
 	// Auto accompanies Mode as a starting default. It is a pointer so an
 	// absent value stays distinguishable from an explicit false.
 	Auto   *bool  `json:"auto,omitempty"`

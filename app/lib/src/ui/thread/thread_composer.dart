@@ -7,17 +7,28 @@ import '../kit/kit.dart';
 ///
 /// The draft lives in the thread's [ThreadViewState], so switching threads
 /// keeps each draft and a reconnect loses none of it.
+///
+/// It names the recipient of the conversation above the field when the host
+/// gives one — the project's agent here, **Marshal** for a coordinator thread
+/// (agent-first Studio, task 5) — so a person reading a transcript always knows
+/// who the next turn is addressed to. It is a parameter rather than a fact
+/// derived here: this widget draws, and who a thread belongs to is the host's.
 class ThreadComposer extends StatefulWidget {
   const ThreadComposer({
     super.key,
     required this.model,
     required this.view,
+    this.recipient,
     this.onMode,
     this.onModel,
   });
 
   final ComposerModel model;
   final ThreadViewState view;
+
+  /// Who the next turn is addressed to, named above the field. Null draws no
+  /// name, which is what a host that does not know the recipient leaves.
+  final String? recipient;
 
   /// Opens the permission-mode menu. The kit's composer posts the chosen mode
   /// through [ComposerModel.selectMode].
@@ -86,9 +97,24 @@ class _ThreadComposerState extends State<ThreadComposer> {
           final e = Ember.of(context);
           final model = widget.model;
           final failure = model.failure;
+          final recipient = widget.recipient;
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // The recipient is named above the field, so a thread that can
+              // address more than one agent — a project agent here, Marshal in
+              // a coordinator thread — never leaves the next turn's reader
+              // guessing who it is for.
+              if (recipient != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: Space.s4),
+                  child: Text(
+                    recipient,
+                    style: e.small.tint(e.muted),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               Composer(
                 controller: _text,
                 hint: model.running

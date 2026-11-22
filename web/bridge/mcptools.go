@@ -131,6 +131,9 @@ func (s *Server) mcpToolCall(w http.ResponseWriter, r *http.Request, c MCPClient
 	case "list":
 		s.mcpList(w, c, req.ID)
 	default:
+		if s.coordinatorToolCall(w, r, c, req.ID, p.Name, p.Arguments) {
+			return
+		}
 		if s.factoryToolCall(w, r, c, req.ID, p.Name, p.Arguments) {
 			return
 		}

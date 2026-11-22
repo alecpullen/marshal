@@ -62,6 +62,14 @@ issues, and so does a route the client issues that has no row.
 | GET | `/api/credentials` | credentials |  |
 | POST | `/api/credentials` | putCredential |  |
 | DELETE | `/api/credentials/X` | deleteCredential |  |
+| GET | `/api/coordinator/tasks` | coordinatorTasks |  |
+| POST | `/api/coordinator/tasks` | createCoordinatorTask |  |
+| GET | `/api/coordinator/tasks/X` | coordinatorTask |  |
+| GET | `/api/coordinator/tasks/X/attention` | coordinatorAttention |  |
+| GET | `/api/coordinator/tasks/X/assignments` | coordinatorAssignments |  |
+| POST | `/api/coordinator/tasks/X/assignments/X/retry` | retryCoordinatorAssignment |  |
+| GET | `/api/coordinator/sources/X/X` | coordinatorSourceView |  |
+| POST | `/api/coordinator/tasks/X/stop` | stopCoordinatorTask |  |
 | GET | `/api/daemon` | daemon |  |
 | GET | `/api/disk` | disk |  |
 | GET | `/api/events` | fleetEvents | sessionEvents streams it too |

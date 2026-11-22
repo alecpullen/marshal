@@ -413,6 +413,10 @@ type Model struct {
 	// flash is a transient status-line message (see flash.go).
 	flash      string
 	flashUntil time.Time
+	// noticeExpanded is the key (noticeKey) of the banner the user expanded
+	// with a click, or "". Keyed rather than a bool so a new notice always
+	// arrives collapsed without anything having to reset it.
+	noticeExpanded string
 	// regionOffset holds the per-region body scroll offset for bounded live
 	// regions (see internal/app/tui/liveregion). Pruned on every
 	// refreshViewport, so a finished region's entry does not leak.

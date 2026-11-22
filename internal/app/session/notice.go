@@ -39,10 +39,16 @@ const (
 // SetNotice when zero, so every notice carries a real timestamp no matter
 // which layer produced it — the fix for runtime-injected errors pinning
 // the banner forever.
+//
+// Title, when set, is the banner's short head ("ollama-cloud · billing") and
+// Message the sentence under it; Detail is raw error text a person can expand,
+// left empty when the message says everything.
 type Notice struct {
 	Category NoticeCategory
 	Severity NoticeSeverity
+	Title    string
 	Message  string
+	Detail   string
 	Hint     string
 	Source   string
 	SetAt    time.Time

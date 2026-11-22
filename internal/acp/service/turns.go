@@ -513,10 +513,16 @@ func runNote(kind acpwire.RunKind, outcome acpwire.RunOutcome, userStop bool, er
 		if err == nil {
 			return ""
 		}
-		if kind == acpwire.RunAuthor {
-			return "✘ Plan authoring failed: " + firstLine(err.Error())
+		// A summarised failure writes only its title: the banner carries the
+		// provider's sentence, and the line is the transcript's record of it.
+		what := firstLine(err.Error())
+		if n, ok := acpclient.NoticeOf(err); ok && n.Title != "" {
+			what = n.Title
 		}
-		return "✘ Turn failed: " + firstLine(err.Error())
+		if kind == acpwire.RunAuthor {
+			return "✘ Plan authoring failed: " + what
+		}
+		return "✘ Turn failed: " + what
 	}
 	return ""
 }

@@ -823,6 +823,9 @@ func TestStoreIsUsableAfterARefusal(t *testing.T) {
 	if err := os.Remove(huge); err != nil {
 		t.Fatalf("remove huge: %v", err)
 	}
+	// The failed capture suppressed this workspace. Usable here means usable
+	// again once the backoff has elapsed.
+	afterCaptureBackoff(env.manager)
 
 	hash, _ := trackCapture(t, env, request(env))
 	if hash == "" {

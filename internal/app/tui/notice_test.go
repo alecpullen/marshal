@@ -63,7 +63,7 @@ func TestRenderNoticeShowsCategoryMessageHint(t *testing.T) {
 		Message:  "connection refused",
 		Hint:     "Run /connect to review the provider.",
 	}
-	out := renderNotice(n, 100)
+	out := renderNotice(n, 100, false)
 	for _, want := range []string{"provider", "connection refused", "Run /connect", "esc"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("renderNotice missing %q:\n%s", want, out)
@@ -71,15 +71,15 @@ func TestRenderNoticeShowsCategoryMessageHint(t *testing.T) {
 	}
 }
 
-func TestRenderNoticeClampsMessageToTwoLines(t *testing.T) {
+func TestRenderNoticeClampsMessage(t *testing.T) {
 	n := acpwire.Notice{
 		Category: acpwire.NoticeInternal,
 		Severity: acpwire.NoticeError,
 		Message:  strings.Repeat("very long error message ", 40),
 	}
-	out := renderNotice(n, 60)
-	if got := strings.Count(strings.TrimRight(out, "\n"), "\n") + 1; got > 3 {
-		t.Fatalf("renderNotice produced %d lines, want <= 3 (2 message + 1 hint):\n%s", got, out)
+	out := renderNotice(n, 60, false)
+	if got := strings.Count(strings.TrimRight(out, "\n"), "\n") + 1; got > noticeMessageLines+1 {
+		t.Fatalf("renderNotice produced %d lines, want <= %d (message + 1 hint):\n%s", got, noticeMessageLines+1, out)
 	}
 }
 
@@ -268,5 +268,112 @@ func TestRenderWarnNotice(t *testing.T) {
 	status := stripANSI(m.sessionRightSegment())
 	if !strings.Contains(status, "warning") {
 		t.Fatalf("status segment should show warning, got %q", status)
+	}
+}
+
+// A summarised provider failure leads with its title and the provider's
+// sentence. With no detail and a short message there is nothing to expand, so
+// the banner offers no toggle — the billing case: nothing for Marshal to fix.
+func TestRenderNoticeTitledBillingHasNoDetailsToggle(t *testing.T) {
+	n := acpwire.Notice{
+		Category: acpwire.NoticeProvider,
+		Severity: acpwire.NoticeError,
+		Title:    "ollama-cloud · billing",
+		Message:  "Your subscription payment is past due.",
+		Hint:     "/models to pick another model.",
+	}
+	plain := stripANSI(renderNotice(n, 100, false))
+	for _, want := range []string{"ollama-cloud · billing", "Your subscription payment is past due.", "/models", "esc to dismiss"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("banner missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "details") {
+		t.Fatalf("a notice with nothing more to show offers no details toggle:\n%s", plain)
+	}
+	if noticeExpandable(n, 100) {
+		t.Fatal("noticeExpandable = true, want false")
+	}
+}
+
+// Detail stays out of the collapsed banner and shows, clamped, once expanded.
+func TestRenderNoticeExpandsDetail(t *testing.T) {
+	n := acpwire.Notice{
+		Category: acpwire.NoticeProvider,
+		Severity: acpwire.NoticeError,
+		Title:    "openrouter · unavailable",
+		Message:  "Internal server error",
+		Detail:   `provider "openrouter" returned HTTP 500: {"error":{"message":"Internal server error","code":"upstream_x"}}`,
+	}
+	collapsed := stripANSI(renderNotice(n, 100, false))
+	if strings.Contains(collapsed, "upstream_x") {
+		t.Fatalf("collapsed banner shows the raw detail:\n%s", collapsed)
+	}
+	if !strings.Contains(collapsed, "details") {
+		t.Fatalf("collapsed banner should offer details:\n%s", collapsed)
+	}
+	expanded := stripANSI(renderNotice(n, 100, true))
+	if !strings.Contains(expanded, "upstream_x") || !strings.Contains(expanded, "hide details") {
+		t.Fatalf("expanded banner should show the detail and a hide toggle:\n%s", expanded)
+	}
+
+	n.Detail = strings.Repeat("line\n", 100)
+	lines := strings.Count(stripANSI(renderNotice(n, 100, true)), "\n")
+	if lines > noticeDetailLines+6 {
+		t.Fatalf("expanded banner is %d lines, want the detail clamped near %d", lines, noticeDetailLines)
+	}
+}
+
+// A click on the banner expands it, a second collapses it, and a new notice
+// always arrives collapsed.
+func TestClickOnNoticeTogglesDetails(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 30)
+	stateOf(m).SetNotice(session.Notice{
+		Category: session.NoticeProvider,
+		Severity: session.SeverityError,
+		Title:    "openrouter · unavailable",
+		Message:  "Internal server error",
+		Detail:   "raw body upstream_x",
+	})
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	var region nodeRegion
+	found := false
+	for _, r := range m.nodeRegions {
+		if r.target.notice {
+			region, found = r, true
+		}
+	}
+	if !found {
+		t.Fatal("an expandable notice should have a click region")
+	}
+	y := m.scrollHintRows() + m.breadcrumbRows() + region.startLine - m.viewport.YOffset()
+	mm := asModel(t, clickAt(t, m, 3, y))
+	if !strings.Contains(stripANSI(mm.viewport.GetContent()), "upstream_x") {
+		t.Fatal("a click on the banner should show its detail")
+	}
+	mm = asModel(t, clickAt(t, mm, 3, y))
+	if strings.Contains(stripANSI(mm.viewport.GetContent()), "upstream_x") {
+		t.Fatal("a second click should hide the detail")
+	}
+
+	mm.toggleNotice()
+	stateOf(mm).SetNotice(session.Notice{Category: session.NoticeProvider, Title: "other · error", Message: "x", Detail: "other detail"})
+	if n := mm.sess.Status().Notice; n == nil || mm.noticeIsExpanded(*n) {
+		t.Fatal("a new notice should arrive collapsed")
+	}
+}
+
+// An unclassified multi-line error keeps its first line as the message and
+// the whole text as detail.
+func TestNoticeForErrorKeepsMultiLineDetail(t *testing.T) {
+	n := noticeForError(errors.New("first line\nsecond line"), "turn")
+	if n.Message != "first line" || n.Detail != "first line\nsecond line" {
+		t.Fatalf("notice = %+v", n)
+	}
+	if n := noticeForError(errors.New("one line"), "turn"); n.Detail != "" {
+		t.Fatalf("a one-line error has no detail, got %q", n.Detail)
 	}
 }

@@ -221,7 +221,11 @@ func (m *Model) refreshViewport() {
 		addBlock(blockKey{name: "reconnect"}, renderReconnectNotice(facts.reconnect, m.activeSpinnerFrame(acpwire.ActivityReconnecting), width), nil, nil)
 	}
 	if noticeUp {
-		addBlock(blockKey{name: "notice"}, renderNotice(notice, width), nil, nil)
+		var target *clickTarget
+		if noticeExpandable(notice, width) {
+			target = &clickTarget{notice: true}
+		}
+		addBlock(blockKey{name: "notice"}, renderNotice(notice, width, m.noticeIsExpanded(notice)), target, nil)
 	}
 	if len(queued) > 0 {
 		addBlock(blockKey{name: "queued"}, renderQueuedMessages(queued, width), nil, nil)
@@ -613,7 +617,7 @@ func (m *Model) contentSignature(roots []string, facts viewFacts, width int, the
 		fmt.Fprintf(h, "q%q|", q)
 	}
 	if noticeUp {
-		fmt.Fprintf(h, "n%v|", notice)
+		fmt.Fprintf(h, "n%v|%t|", notice, m.noticeIsExpanded(notice))
 	}
 	if facts.reconnect != "" {
 		fmt.Fprintf(h, "rc%s|%s|", facts.reconnect, m.spinnerFrame)

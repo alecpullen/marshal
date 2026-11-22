@@ -706,14 +706,22 @@ func (r *Runner) appendSkillBodies(messages []schema.ChatMessage) []schema.ChatM
 	return messages
 }
 
+// fail marks task failed and banners err. It writes nothing to the
+// transcript: the run's owner writes the one failure line when the run ends
+// ("✘ Turn failed: …", acp/service runNote), and a second row here doubled it.
+// A provider failure is summarised, so the banner carries the provider's own
+// sentence rather than its raw response body.
 func (r *Runner) fail(task *Task, err error) error {
 	task.Status = TaskStatusFailed
-	r.State.SetNotice(session.Notice{
+	n := session.Notice{
 		Category: session.NoticeProvider,
 		Severity: session.SeverityError,
 		Message:  err.Error(),
 		Source:   "agent",
-	})
-	r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Agent failed: %s", err.Error()), session.ContentTypePlain)
+	}
+	if f, ok := provider.DescribeFailure(err); ok {
+		n.Title, n.Message, n.Detail, n.Hint = f.Title(), f.Message, f.Detail, f.Hint
+	}
+	r.State.SetNotice(n)
 	return err
 }

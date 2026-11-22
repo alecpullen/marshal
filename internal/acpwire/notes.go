@@ -53,10 +53,15 @@ const (
 
 // Notice is the session's banner: one user-facing notice at a time. SetAt is
 // Unix milliseconds; SetNotice stamps a zero one with the agent's clock.
+// Title, when set, is the banner's short head ("ollama-cloud · billing") and
+// Message the sentence under it. Detail is the raw error text a client may
+// offer to expand; it is empty when the message says everything.
 type Notice struct {
 	Category string `json:"category"`
 	Severity string `json:"severity"`
+	Title    string `json:"title,omitempty"`
 	Message  string `json:"message"`
+	Detail   string `json:"detail,omitempty"`
 	Hint     string `json:"hint,omitempty"`
 	Source   string `json:"source,omitempty"`
 	SetAt    int64  `json:"setAt,omitempty"`

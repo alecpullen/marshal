@@ -198,11 +198,14 @@ func TestAProviderErrorFromATurnSetsTheProviderNotice(t *testing.T) {
 	if n.Source != "turn" {
 		t.Errorf("source = %q, want %q", n.Source, "turn")
 	}
-	if !strings.Contains(n.Hint, "/connect to review the provider") {
-		t.Errorf("hint = %q, want the review-the-provider hint", n.Hint)
+	if !strings.Contains(n.Hint, "/models to pick another model") {
+		t.Errorf("hint = %q, want the pick-another-model hint", n.Hint)
+	}
+	if n.Title != "openai · unavailable" || n.Message != "Boom" {
+		t.Errorf("notice = %q / %q, want the summarised title and message", n.Title, n.Message)
 	}
 	msgs := state.Messages()
-	if len(msgs) == 0 || !strings.HasPrefix(msgs[len(msgs)-1].Content, "✘ Turn failed: ") {
+	if len(msgs) == 0 || msgs[len(msgs)-1].Content != "✘ Turn failed: openai · unavailable" {
 		t.Fatalf("last message = %q, want a compact turn-failed row", msgs[len(msgs)-1].Content)
 	}
 }

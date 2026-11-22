@@ -238,6 +238,15 @@ func unreadable(path, hash string) repo.ScannedFile {
 	}
 }
 
+// omitted is a path whose content the scan chose not to retain: the total
+// content budget was exhausted, but the file itself is present and indexed.
+func omitted(path, hash string) repo.ScannedFile {
+	return repo.ScannedFile{
+		FileIndex:      db.FileIndex{Path: path, Language: "go", Hash: hash, SizeBytes: 16},
+		ContentOmitted: true,
+	}
+}
+
 // TestReindexTransientReadErrorKeepsExistingChunks is the AUD-11 completion
 // condition: a file that is still on disk but unreadable during a reindex
 // keeps its previously valid chunks, because only paths absent from the scan
@@ -279,6 +288,50 @@ func TestReindexTransientReadErrorKeepsExistingChunks(t *testing.T) {
 	}
 	if _, ok := after["a.go"]; !ok {
 		t.Fatalf("a.go was purged by a transient read error: %#v", after)
+	}
+}
+
+// TestReindexContentOmittedKeepsExistingChunks covers the other half of the
+// same rule: a file the scan indexed without retaining its bytes is present,
+// not empty, so its existing chunks must survive the pass.
+func TestReindexContentOmittedKeepsExistingChunks(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	pid := mustCreateProject(t, database, "/tmp/p")
+	ix := NewIndexer(database, &fakeEmbedder{model: "m"})
+	ctx := context.Background()
+
+	first := []repo.ScannedFile{scanned("a.go", "h1", "func F(){}")}
+	if _, err := ix.Reindex(ctx, pid, first, syms("a.go")); err != nil {
+		t.Fatalf("initial Reindex: %v", err)
+	}
+	state, err := database.ChunkedFiles(pid)
+	if err != nil {
+		t.Fatalf("ChunkedFiles: %v", err)
+	}
+	before, ok := state["a.go"]
+	if !ok {
+		t.Fatal("a.go has no chunks after the first pass")
+	}
+
+	second := []repo.ScannedFile{omitted("a.go", before.FileHash)}
+	stats, err := ix.Reindex(ctx, pid, second, nil)
+	if err != nil {
+		t.Fatalf("Reindex with omitted content: %v", err)
+	}
+	if stats.FilesPurged != 0 {
+		t.Errorf("purged %d files, want 0", stats.FilesPurged)
+	}
+	after, err := database.ChunkedFiles(pid)
+	if err != nil {
+		t.Fatalf("ChunkedFiles: %v", err)
+	}
+	got, ok := after["a.go"]
+	if !ok {
+		t.Fatal("a.go lost its chunks: an omitted file must keep them")
+	}
+	if got.FileHash != before.FileHash {
+		t.Errorf("hash = %q, want %q", got.FileHash, before.FileHash)
 	}
 }
 

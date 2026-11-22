@@ -64,7 +64,10 @@ func (ix *Indexer) Reindex(ctx context.Context, projectID int64, scanned []repo.
 		// read: mark it seen before skipping, so a transient read error does
 		// not make the purge pass below treat the file as deleted (AUD-11).
 		seen[sf.Path] = true
-		if sf.ReadErr != nil {
+		// A file whose content the scan chose not to retain is still present:
+		// it must keep its existing chunks rather than be treated as
+		// changed-and-empty, which is what the purge below would otherwise do.
+		if sf.ReadErr != nil || sf.ContentOmitted {
 			continue
 		}
 		prev, ok := state[sf.Path]

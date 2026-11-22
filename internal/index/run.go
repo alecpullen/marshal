@@ -3,6 +3,8 @@ package index
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"marshal/internal/db"
@@ -43,11 +45,26 @@ type Report struct {
 // replace) → tree-sitter symbols (full replace) → embeddings (incremental).
 func Run(ctx context.Context, deps Deps, projectID int64) (Report, error) {
 	rep := Report{LangCounts: map[string]int{}, Warnings: append([]string(nil), deps.Warnings...)}
+	if kind := pathologicalIndexRoot(deps.Root); kind != "" {
+		rep.Warnings = append(rep.Warnings, fmt.Sprintf(
+			"index root %s is %s, so this pass walks far more than a project tree; set indexing.root or run Marshal from a project directory",
+			deps.Root, kind))
+	}
 
 	scanner := repo.NewScanner(repo.Config{Root: deps.Root, Ignore: deps.Ignore, MaxIndexableFileBytes: deps.MaxBytes})
 	scanned, err := scanner.ScanDetailed(ctx)
 	if err != nil {
 		return rep, fmt.Errorf("scan repo: %w", err)
+	}
+
+	rep.Warnings = append(rep.Warnings, scanner.Warnings()...)
+	// Skips are summarised in one bounded line rather than one warning per
+	// path: a mis-rooted workspace skips tens of thousands of entries, and a
+	// per-file list would bury the diagnostics that matter.
+	if skipped := scanner.Skipped(); len(skipped) > 0 {
+		rep.Warnings = append(rep.Warnings, fmt.Sprintf(
+			"scan skipped %d entries; first: %s (%s)",
+			len(skipped), skipped[0].Path, skipped[0].Reason))
 	}
 
 	files := make([]db.FileIndex, len(scanned))
@@ -69,6 +86,11 @@ func Run(ctx context.Context, deps Deps, projectID int64) (Report, error) {
 	for _, sf := range scanned {
 		if sf.ReadErr != nil {
 			rep.Warnings = append(rep.Warnings, sf.Path+": read error")
+			continue
+		}
+		if sf.ContentOmitted {
+			// The file index above still covers this file; only its symbols are
+			// unavailable, because symbol extraction needs the bytes.
 			continue
 		}
 		if deps.LSP != nil {
@@ -107,3 +129,24 @@ func Run(ctx context.Context, deps Deps, projectID int64) (Report, error) {
 	rep.ChunksWritten = st.ChunksWritten
 	return rep, nil
 }
+
+// pathologicalIndexRoot names the kind of root that makes an index pass walk
+// orders of magnitude more than a project tree, or returns "" for an ordinary
+// root. Such a root is still indexed — refusing would break non-git project
+// directories — but the pass says so rather than silently spending minutes on
+// it.
+func pathologicalIndexRoot(root string) string {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return ""
+	}
+	abs = filepath.Clean(abs)
+	if filepath.Dir(abs) == abs {
+		return "a filesystem root"
+	}
+	if home, err := os.UserHomeDir(); err == nil && filepath.Clean(home) == abs {
+		return "the user's home directory"
+	}
+	return ""
+}
+

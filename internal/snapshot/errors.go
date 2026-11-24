@@ -110,6 +110,12 @@ const (
 	// ReasonInternal means the manager is misconfigured (for example a nil
 	// dependency seam).
 	ReasonInternal StoreReason = "internal_error"
+	// ReasonNoEligiblePaths means the workspace has no path a capture could
+	// include, so admission refuses before reserving a manifest replacement for
+	// a snapshot that cannot exist. It is a property of the workspace, not a
+	// storage defect: nothing needs repair, and retrying the same workspace
+	// cannot succeed until it holds a file worth capturing.
+	ReasonNoEligiblePaths StoreReason = "no_eligible_paths"
 	// ReasonSnapshotExpired means a well-formed snapshot hash is no longer
 	// retained by any usable generation of its workspace: the rollback point
 	// was reclaimed by retention or budget pressure. It is deliberately
@@ -146,6 +152,7 @@ var (
 	ErrUnverifiedObject       = errors.New(string(ReasonUnverifiedObject))
 	ErrCommandTimeout         = errors.New(string(ReasonCommandTimeout))
 	ErrStoreInternal          = errors.New(string(ReasonInternal))
+	ErrNoEligiblePaths        = errors.New(string(ReasonNoEligiblePaths))
 	ErrSnapshotExpired        = errors.New(string(ReasonSnapshotExpired))
 	ErrSnapshotNotFound       = errors.New(string(ReasonSnapshotNotFound))
 	ErrInvalidObjectHash      = errors.New(string(ReasonInvalidObjectHash))
@@ -184,6 +191,8 @@ func sentinelForReason(r StoreReason) error {
 		return ErrCommandTimeout
 	case ReasonInternal:
 		return ErrStoreInternal
+	case ReasonNoEligiblePaths:
+		return ErrNoEligiblePaths
 	case ReasonSnapshotExpired:
 		return ErrSnapshotExpired
 	case ReasonSnapshotNotFound:

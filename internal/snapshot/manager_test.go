@@ -766,9 +766,9 @@ func TestRunManagedClassifiesItsOwnDeadlineAsCommandTimeout(t *testing.T) {
 	}
 }
 
-// A caller cancellation or a caller deadline is NOT the manager's own bound: it
-// must stay an unclassified context error, because the agent recognises an
-// expected abort (turn cancel, shutdown) by its context and must show nothing.
+// A caller cancellation is NOT the manager's own bound: it must stay an
+// unclassified context error, because the agent recognises an expected abort
+// (turn cancel, shutdown) by its context and must show nothing.
 func TestRunManagedLeavesCallerCancellationUnclassified(t *testing.T) {
 	m := newTestManager(t, WithCommandDeadline(30*time.Second))
 	cmd := exec.Command(os.Args[0], "-test.run=TestSnapshotHelperProcess")
@@ -788,5 +788,33 @@ func TestRunManagedLeavesCallerCancellationUnclassified(t *testing.T) {
 	}
 	if got := ReasonOf(err); got != "" {
 		t.Fatalf("a caller cancellation was classified as %q; it must stay unclassified", got)
+	}
+}
+
+// A caller deadline is a timeout, not an expected abort: the capture's work did
+// not fit in the time allowed. It must be named so the agent reports it honestly
+// and the capture cost is backed off instead of being paid again on every tool
+// call.
+func TestRunManagedClassifiesCallerDeadlineAsCommandTimeout(t *testing.T) {
+	m := newTestManager(t, WithCommandDeadline(30*time.Second))
+	cmd := exec.Command(os.Args[0], "-test.run=TestSnapshotHelperProcess")
+	cmd.Env = append(os.Environ(),
+		envHelperMode+"="+helperModeHeartbeat,
+		envHelperHeartbeat+"="+filepath.Join(t.TempDir(), "hb"),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_, err := m.RunManaged(ctx, cmd)
+	if err == nil {
+		t.Fatal("RunManaged returned success for a command the caller's deadline ended")
+	}
+	if got := ReasonOf(err); got != ReasonCommandTimeout {
+		t.Fatalf("ReasonOf = %q, want %q (err = %v)", got, ReasonCommandTimeout, err)
+	}
+	if !errors.Is(err, ErrCommandTimeout) {
+		t.Fatalf("errors.Is(err, ErrCommandTimeout) = false; err = %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the classified timeout lost its cause; err = %v", err)
 	}
 }

@@ -1302,7 +1302,8 @@ func TestIntegrationCancelledCaptureStopsWritingAndStaysBounded(t *testing.T) {
 			settled, integrationGlobalMax)
 	}
 
-	// The store is still usable: a fresh context captures successfully.
+	// The store is still usable: a cancellation is an expected abort, not a
+	// workspace defect, so it does not suppress the next capture.
 	env.manager.writeObserver = nil
 	hash, _, err := env.manager.AdmitAndCaptureWithCleanup(ctx, env.catalog, request(env))
 	if err != nil {

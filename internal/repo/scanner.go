@@ -9,11 +9,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 
 	"marshal/internal/db"
+	"marshal/internal/limits"
 )
 
 type Config struct {
@@ -23,6 +25,12 @@ type Config struct {
 	// indexed during scanning. Files larger than this threshold are skipped
 	// and recorded in Skipped(). Zero means no limit.
 	MaxIndexableFileBytes int64
+	// MaxTotalContentBytes caps the total file content one scan retains across
+	// all files. A file beyond the budget is still hashed and indexed (path,
+	// hash, language, size) but its Content is nil and
+	// ScannedFile.ContentOmitted is set. Zero means
+	// limits.MaxTotalContentBytes: a bound never disappears.
+	MaxTotalContentBytes int64
 }
 
 // SkipEntry records a file or directory that was skipped during scanning.
@@ -82,7 +90,7 @@ func NewScanner(config Config) *Scanner {
 // Unlike WalkDir errors, per-file errors from fn are NOT fatal — they are
 // logged in Warnings() and recorded as ScannedFile.ReadErr so the caller
 // can inspect them without aborting the entire scan.
-func (s *Scanner) walk(ctx context.Context, fn func(path, rel string) (db.FileIndex, []byte, error)) ([]ScannedFile, error) {
+func (s *Scanner) walk(ctx context.Context, fn func(path, rel string, retain bool) (db.FileIndex, []byte, error)) ([]ScannedFile, error) {
 	s.warnings = nil
 	root := s.config.Root
 	if s.loadErr != nil {
@@ -90,6 +98,16 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string) (db.FileIn
 	}
 
 	var results []ScannedFile
+	var totalContent int64
+	budget := s.config.MaxTotalContentBytes
+	if budget <= 0 {
+		budget = limits.MaxTotalContentBytes
+	}
+	// exhausted latches the first file the budget rejects; unmeasured names the
+	// first file whose size could not be read. Both are reported once, at the
+	// path that caused them.
+	exhausted := false
+	unmeasured := ""
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -155,22 +173,55 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string) (db.FileIn
 			return nil
 		}
 
-		// Skip files that exceed the configurable size cap.
-		if s.config.MaxIndexableFileBytes > 0 {
-			if info, infoErr := entry.Info(); infoErr == nil && info.Size() > s.config.MaxIndexableFileBytes {
-				s.skipped = append(s.skipped, SkipEntry{Path: rel, Reason: fmt.Sprintf("file too large (%d bytes)", info.Size())})
-				return nil
-			}
+		// The cap and the budget both need the size, so stat once here rather
+		// than once per bound. A failed stat is not fatal: the file is treated
+		// as unretainable and hashed by streaming, which keeps a file we cannot
+		// measure out of the retained working set. It is reported ContentOmitted
+		// too, so the warning below names the first such file instead of
+		// dropping it silently.
+		size, sizeKnown := int64(0), false
+		if info, infoErr := entry.Info(); infoErr == nil {
+			size, sizeKnown = info.Size(), true
+		}
+		if !sizeKnown && unmeasured == "" {
+			unmeasured = rel
+			s.warnings = append(s.warnings, fmt.Sprintf(
+				"content omitted: could not measure %s, so the file is indexed without content", rel))
 		}
 
-		fi, content, fnErr := fn(path, rel)
+		// Skip files that exceed the configurable size cap.
+		if s.config.MaxIndexableFileBytes > 0 && sizeKnown && size > s.config.MaxIndexableFileBytes {
+			s.skipped = append(s.skipped, SkipEntry{Path: rel, Reason: fmt.Sprintf("file too large (%d bytes)", size)})
+			return nil
+		}
+
+		// The budget is a total, so it can only be judged here, once per file,
+		// after the per-file filters have run. exhausted latches the first file
+		// it rejects: every file after the boundary is omitted, so the retained
+		// set is a prefix of the walk and no later file is measured against the
+		// budget again. That keeps a small file that follows a rejected large one
+		// omitted too, rather than retained out of order. A file whose size
+		// could not be measured is omitted without exhausting the budget, so it
+		// can sit after retained files.
+		retain := !exhausted && sizeKnown && totalContent+size <= budget
+		if !retain && sizeKnown && !exhausted {
+			exhausted = true
+			s.warnings = append(s.warnings, fmt.Sprintf(
+				"content budget exhausted: files past %d retained bytes are indexed without content, starting at %s",
+				budget, rel))
+		}
+		fi, content, fnErr := fn(path, rel, retain)
 		if fnErr != nil {
 			s.warnings = append(s.warnings, fnErr.Error())
 		}
+		if retain && fnErr == nil {
+			totalContent += int64(len(content))
+		}
 		results = append(results, ScannedFile{
-			FileIndex: fi,
-			Content:   content,
-			ReadErr:   fnErr,
+			FileIndex:      fi,
+			Content:        content,
+			ReadErr:        fnErr,
+			ContentOmitted: !retain,
 		})
 		return nil
 	})
@@ -184,8 +235,29 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string) (db.FileIn
 // content so callers can use it without re-reading from disk.
 // Per-file read failures are non-fatal: the returned ScannedFile will have a
 // nil Content and a non-nil ReadErr. The scan continues to other files.
+// A file past the scan's total content budget is hashed by streaming and
+// returned with a nil Content and ContentOmitted set: it stays in the file
+// index, it just carries no bytes. Once the budget rejects a file, every later
+// file is omitted the same way, so the retained files form a prefix of the walk.
+// A file whose size could not be measured is omitted too, because it cannot be
+// judged against the budget, so it can sit after retained files.
 func (s *Scanner) ScanDetailed(ctx context.Context) ([]ScannedFile, error) {
-	return s.walk(ctx, func(path, rel string) (db.FileIndex, []byte, error) {
+	return s.walk(ctx, func(path, rel string, retain bool) (db.FileIndex, []byte, error) {
+		if !retain {
+			hash, size, err := hashFile(path)
+			if err != nil {
+				return db.FileIndex{
+					Path:     rel,
+					Language: DetectLanguage(rel),
+				}, nil, fmt.Errorf("hash %s: %w", rel, err)
+			}
+			return db.FileIndex{
+				Path:      rel,
+				Language:  DetectLanguage(rel),
+				Hash:      hash,
+				SizeBytes: size,
+			}, nil, nil
+		}
 		content, err := os.ReadFile(path)
 		if err != nil {
 			return db.FileIndex{
@@ -193,13 +265,7 @@ func (s *Scanner) ScanDetailed(ctx context.Context) ([]ScannedFile, error) {
 				Language: DetectLanguage(rel),
 			}, nil, fmt.Errorf("read %s: %w", rel, err)
 		}
-		hash, size, hashErr := hashBytes(content)
-		if hashErr != nil {
-			return db.FileIndex{
-				Path:     rel,
-				Language: DetectLanguage(rel),
-			}, content, fmt.Errorf("hash %s: %w", rel, hashErr)
-		}
+		hash, size := hashBytes(content)
 		return db.FileIndex{
 			Path:      rel,
 			Language:  DetectLanguage(rel),
@@ -223,10 +289,28 @@ func (s *Scanner) Warnings() []string {
 
 // hashBytes computes the SHA-256 hash of content and returns the hex-encoded
 // hash along with the content length.
-func hashBytes(content []byte) (string, int64, error) {
+func hashBytes(content []byte) (string, int64) {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:]), int64(len(content))
+}
+
+// hashFile computes the SHA-256 hash of a file's bytes without holding them in
+// memory, and returns the hash and the number of bytes read. It is the path
+// taken for a file past the scan's content budget, so its digest must match
+// hashBytes for the same bytes.
+func hashFile(path string) (string, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+
 	h := sha256.New()
-	h.Write(content)
-	return hex.EncodeToString(h.Sum(nil)), int64(len(content)), nil
+	n, err := io.CopyBuffer(h, f, make([]byte, 64<<10))
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
 // shouldSkipDir reports whether rel is a known tooling or output directory

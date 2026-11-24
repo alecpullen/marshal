@@ -416,6 +416,27 @@ func TestSaveProjectConfigRoundTripsAgentScalars(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigRoundTripsMaxTotalContentBytes(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.Indexing.MaxTotalContentBytes = 4 << 20
+
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if loaded.Indexing.MaxTotalContentBytes != 4<<20 {
+		t.Fatalf("indexing max_total_content_bytes not round-tripped, got %+v", loaded.Indexing)
+	}
+}
+
 func TestSaveProjectConfigPreservesHooks(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")
@@ -666,7 +687,11 @@ func fullEditedConfig() Config {
 	cfg := Default()
 	cfg.Project = ProjectConfig{Name: "acme", Languages: []string{"go", "python"}}
 	cfg.Commands = CommandsConfig{Test: "make test", Format: "make fmt", Vet: "make vet"}
-	cfg.Indexing = IndexingConfig{UseTreesitter: true, UseEmbeddings: true, SummariseFiles: true, Ignore: []string{"build/**"}, MaxIndexableFileBytes: 0, MaxSearchableFileBytes: 0}
+	// indexing.ignore is additive at merge time, so a config an editing
+	// surface holds and saves already carries the shipped defaults plus its
+	// own entry. Name the merged list here so the round trip compares equal.
+	ignore := append(Default().Indexing.Ignore, "build/**")
+	cfg.Indexing = IndexingConfig{UseTreesitter: true, UseEmbeddings: true, SummariseFiles: true, Ignore: ignore, MaxIndexableFileBytes: 0, MaxSearchableFileBytes: 0}
 	cfg.Web = WebConfig{Enabled: true, FetchTimeout: 45 * time.Second, SearchProvider: "searx", SearchURL: "http://localhost:8888", SearchKey: "sk-live-1234"}
 	cfg.Desktop = DesktopConfig{Enabled: true, Mode: "attach", Headless: true, CDPURL: "http://localhost:9222", URLAllowlist: []string{"example.com"}, URLDenylist: []string{"evil.com/admin"}, DefaultTimeout: 60 * time.Second, ScreenshotFormat: "png"}
 	cfg.Swarm.Budget = SwarmBudgetConfig{MaxFixRounds: 5, MaxTotalTokens: 99000, ToolIters: map[string]int{"tester": 9}}

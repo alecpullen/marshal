@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -571,10 +572,19 @@ func describeMode(mode os.FileMode) string {
 	}
 }
 
-// interruptedCapture wraps a context error as a structured capture failure
-// while keeping errors.Is(err, context.Canceled) true for callers that branch
-// on cancellation.
+// interruptedCapture names a capture that ended because a context ended.
+//
+// A cancellation is an expected interruption — the user aborted, or the process
+// is shutting down — so it is not a defect. A deadline is a timeout: the work
+// did not fit in the time allowed, which is ReasonCommandTimeout rather than a
+// half-finished capture. Classifying by the context error, rather than by
+// whichever guard the timer happened to interrupt, makes the same event produce
+// the same reason wherever it lands. errors.Is(err, context.Canceled) and
+// errors.Is(err, context.DeadlineExceeded) both stay true through the chain.
 func interruptedCapture(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return storeError(ReasonCommandTimeout, fmt.Errorf("capture timed out: %w", err))
+	}
 	return storeError(ReasonInterruptedCapture, fmt.Errorf("capture interrupted: %w", err))
 }
 

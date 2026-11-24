@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,8 +108,64 @@ func TestTrackDoesNotBlockForeverOnBusyService(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("Track error = %v, want context.DeadlineExceeded", err)
 		}
+		if got := ReasonOf(err); got != ReasonCommandTimeout {
+			t.Fatalf("ReasonOf = %q, want %q (err = %v)", got, ReasonCommandTimeout, err)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Track blocked on a busy service instead of honoring its deadline")
+	}
+}
+
+// A deadline that ends the capture before admission — here, while waiting for
+// the service's operation semaphore — is classified as a timeout and backed
+// off. Those failures never reach AdmitAndCaptureWithCleanup, which records the
+// ones admission sees.
+func TestTrackBacksOffADeadlineBeforeAdmission(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	nestedTree(t, dir, 2)
+	svc := New(t.TempDir(), dir, 1, nil, testLogger())
+
+	if err := svc.lock(context.Background()); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err := svc.Track(ctx)
+	if err == nil {
+		t.Fatal("Track succeeded while the service was held")
+	}
+	if got := ReasonOf(err); got != ReasonCommandTimeout {
+		t.Fatalf("ReasonOf = %q, want %q (err = %v)", got, ReasonCommandTimeout, err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the classified timeout lost its cause: %v", err)
+	}
+
+	m, _, storeErr := svc.store()
+	if storeErr != nil {
+		t.Fatalf("store: %v", storeErr)
+	}
+	if reason, ok := m.suppressedCapture(dir); !ok || reason != ReasonCommandTimeout {
+		t.Fatalf("suppressedCapture = (%q, %v), want (%q, true)", reason, ok, ReasonCommandTimeout)
+	}
+
+	// Release the semaphore: the next call is refused by the suppression before
+	// any capture work starts.
+	svc.unlock()
+	start := time.Now()
+	_, err = svc.Track(context.Background())
+	if err == nil {
+		t.Fatal("a suppressed workspace captured successfully")
+	}
+	if !strings.Contains(err.Error(), "suppressed") {
+		t.Fatalf("second Track error = %v, want a suppression", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("a suppressed capture took %s; it should be refused before capture", elapsed)
 	}
 }
 

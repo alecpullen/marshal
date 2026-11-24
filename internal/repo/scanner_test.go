@@ -1,8 +1,10 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -486,6 +488,204 @@ func TestScanDetailedReturnsContent(t *testing.T) {
 	}
 	if sf.Hash == "" {
 		t.Fatal("expected non-empty hash")
+	}
+}
+
+func TestScanDetailedOmitsContentPastBudget(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Repeat("x", 1024)
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := NewScanner(Config{Root: root, MaxTotalContentBytes: 2 << 10})
+	scanned, err := s.ScanDetailed(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scanned) != 3 {
+		t.Fatalf("scanned %d files, want 3", len(scanned))
+	}
+	retained := 0
+	for _, sf := range scanned {
+		if sf.Content != nil {
+			retained++
+			if sf.ContentOmitted {
+				t.Errorf("%s: retained content marked omitted", sf.Path)
+			}
+			continue
+		}
+		if !sf.ContentOmitted {
+			t.Errorf("%s: nil content not marked omitted", sf.Path)
+		}
+		if sf.ReadErr != nil {
+			t.Errorf("%s: omitted file has read error %v", sf.Path, sf.ReadErr)
+		}
+		if sf.Hash == "" || sf.SizeBytes != 1024 {
+			t.Errorf("%s: omitted file lost its index entry: hash=%q size=%d", sf.Path, sf.Hash, sf.SizeBytes)
+		}
+	}
+	if retained != 2 {
+		t.Errorf("retained %d files, want 2", retained)
+	}
+	if got := len(s.Warnings()); got != 1 {
+		t.Errorf("warnings = %v, want exactly one budget warning", s.Warnings())
+	}
+}
+
+func TestScanDetailedRetainedBytesNeverExceedBudget(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Repeat("y", 700)
+	for i := 0; i < 10; i++ {
+		name := fmt.Sprintf("f%02d.txt", i)
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const budget = 2000
+	s := NewScanner(Config{Root: root, MaxTotalContentBytes: budget})
+	scanned, err := s.ScanDetailed(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, sf := range scanned {
+		total += len(sf.Content)
+	}
+	if total > budget {
+		t.Fatalf("retained %d bytes, budget %d", total, budget)
+	}
+	if len(scanned) != 10 {
+		t.Fatalf("scanned %d files, want 10: truncation must not shrink the file index", len(scanned))
+	}
+}
+
+// TestScanDetailedOmitsRestOfWalkAfterBudget pins the documented invariant:
+// the omitted set is a prefix of the walk, not an arbitrary interleaving. Once
+// the budget rejects one file, every later file is omitted too — including a
+// small one that would still fit in what is left.
+func TestScanDetailedOmitsRestOfWalkAfterBudget(t *testing.T) {
+	root := t.TempDir()
+	sizes := []struct {
+		name string
+		size int
+	}{
+		{"a.go", 600},
+		{"b.go", 900},
+		{"c.go", 200},
+	}
+	for _, f := range sizes {
+		if err := os.WriteFile(filepath.Join(root, f.name), bytes.Repeat([]byte("z"), f.size), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a.go fits (600 <= 1000); b.go does not (600+900 > 1000) and exhausts the
+	// budget; c.go would fit (600+200 <= 1000) but follows an omitted file, so
+	// it must be omitted too.
+	const budget = 1000
+	s := NewScanner(Config{Root: root, MaxTotalContentBytes: budget})
+	scanned, err := s.ScanDetailed(context.Background())
+	if err != nil {
+		t.Fatalf("ScanDetailed: %v", err)
+	}
+	if len(scanned) != len(sizes) {
+		t.Fatalf("scanned %d files, want %d: omission must not shrink the file index", len(scanned), len(sizes))
+	}
+	byPath := make(map[string]ScannedFile, len(scanned))
+	for _, sf := range scanned {
+		byPath[sf.Path] = sf
+	}
+	if a := byPath["a.go"]; a.Content == nil || a.ContentOmitted {
+		t.Errorf("a.go: retained=%v omitted=%v, want its content retained", a.Content != nil, a.ContentOmitted)
+	}
+	for _, f := range sizes[1:] {
+		sf, ok := byPath[f.name]
+		if !ok {
+			t.Fatalf("%s missing from the file index", f.name)
+		}
+		if sf.Content != nil || !sf.ContentOmitted {
+			t.Errorf("%s: retained=%v omitted=%v, want both omitted after b.go exhausted the budget",
+				f.name, sf.Content != nil, sf.ContentOmitted)
+		}
+		if sf.ReadErr != nil {
+			t.Errorf("%s: omitted file has read error %v", f.name, sf.ReadErr)
+		}
+		if sf.Hash == "" || sf.SizeBytes != int64(f.size) {
+			t.Errorf("%s: omitted file lost its index entry: hash=%q size=%d", f.name, sf.Hash, sf.SizeBytes)
+		}
+	}
+	warnings := s.Warnings()
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %q, want exactly one budget warning", warnings)
+	}
+	if !strings.Contains(warnings[0], "b.go") {
+		t.Errorf("budget warning must name the first omitted path b.go: %q", warnings[0])
+	}
+}
+
+// TestScanDetailedWarnsWhenSizeCannotBeMeasured covers the other case
+// ContentOmitted reports: the file could not be measured, so no size could be
+// judged against the budget. A directory stripped of its execute bit still
+// lists (readdir needs read permission only) while stat of its children fails,
+// which makes entry.Info() fail for every file inside it without changing
+// anything the walk itself reports.
+func TestScanDetailedWarnsWhenSizeCannotBeMeasured(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permission bits differ on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("permission bits have no effect when running as root")
+	}
+	root := t.TempDir()
+	hidden := filepath.Join(root, "hidden")
+	if err := os.Mkdir(hidden, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hidden, "unmeasurable.go"), []byte("package hidden\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hidden, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(hidden, 0o755)
+
+	s := NewScanner(Config{Root: root})
+	scanned, err := s.ScanDetailed(context.Background())
+	if err != nil {
+		t.Fatalf("ScanDetailed: %v", err)
+	}
+	if len(scanned) != 1 || scanned[0].Path != "hidden/unmeasurable.go" {
+		t.Fatalf("scanned = %v, want the single unmeasurable file", scanned)
+	}
+	if !scanned[0].ContentOmitted {
+		t.Error("a file whose size could not be measured must be marked ContentOmitted")
+	}
+	for _, w := range s.Warnings() {
+		if strings.Contains(w, "hidden/unmeasurable.go") && strings.Contains(w, "measure") {
+			return
+		}
+	}
+	t.Fatalf("no warning names the first file whose size could not be measured: %q", s.Warnings())
+}
+
+func TestHashFileMatchesHashBytes(t *testing.T) {
+	dir := t.TempDir()
+	content := bytes.Repeat([]byte("abcdefgh"), 9000) // more than one 64 KiB chunk
+	path := filepath.Join(dir, "big.bin")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	streamedHash, streamedSize, err := hashFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHash, wantSize := hashBytes(content)
+	if streamedHash != wantHash {
+		t.Errorf("hashFile = %q, hashBytes = %q", streamedHash, wantHash)
+	}
+	if streamedSize != wantSize {
+		t.Errorf("hashFile size = %d, hashBytes size = %d", streamedSize, wantSize)
 	}
 }
 

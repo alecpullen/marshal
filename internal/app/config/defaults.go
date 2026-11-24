@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"marshal/internal/interaction"
+	"marshal/internal/limits"
 	"marshal/internal/llm/routing"
 )
 
@@ -55,12 +56,28 @@ func Default() Config {
 			RetainDays:      14,
 		},
 		Indexing: IndexingConfig{
-			UseTreesitter:          false,
-			UseEmbeddings:          false,
-			SummariseFiles:         false,
-			Ignore:                 []string{"node_modules/**", "vendor/**", "dist/**", ".git/**"},
-			MaxIndexableFileBytes:  25 * 1024 * 1024, // 25 MiB
-			MaxSearchableFileBytes: 1 * 1024 * 1024,  // 1 MiB
+			UseTreesitter:  false,
+			UseEmbeddings:  false,
+			SummariseFiles: false,
+			// The bare names below are matched against the basename as well as
+			// the relative path, so each prunes at any depth. They cover
+			// dependency caches, toolchain installs and model/Steam payloads
+			// that a home-directory workspace holds in bulk and that no index
+			// should read.
+			//
+			// These defaults are additive at merge time (see merge.unionStrings):
+			// an indexing.ignore list a user or project file supplies extends
+			// this one, it does not replace it.
+			Ignore: []string{
+				"node_modules/**", "vendor/**", "dist/**", ".git/**",
+				".cache", ".lmstudio", ".cargo", ".rustup", ".gradle", ".m2",
+				".npm", ".venv", "venv", "__pycache__", "target", ".next",
+				".turbo", "Steam",
+				"*.safetensors", "*.gguf", "*.onnx", "*.pak", "*.iso", "*.dmg",
+			},
+			MaxIndexableFileBytes:  2 * 1024 * 1024, // 2 MiB
+			MaxTotalContentBytes:   limits.MaxTotalContentBytes,
+			MaxSearchableFileBytes: 1 * 1024 * 1024, // 1 MiB
 		},
 		Models: ModelsConfig{
 			Presets: map[string]routing.ModelPreset{},

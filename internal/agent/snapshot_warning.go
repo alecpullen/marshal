@@ -53,6 +53,11 @@ const (
 	// message: an error chain can be arbitrarily long and the transcript is
 	// the wrong place for it (the full text is always in the log).
 	snapshotCauseRunes = 300
+
+	// snapshotCaptureDeadline bounds one pre-write capture. The capture is on the
+	// tool-call path, so it gets a bound of its own rather than inheriting the
+	// manager's 30s command deadline.
+	snapshotCaptureDeadline = 5 * time.Second
 )
 
 // SnapshotPhase names where a snapshot operation was attempted. It only
@@ -128,6 +133,7 @@ const (
 	reasonInvalidLimits          snapshotReason = "invalid_limits"
 	reasonNotOwned               snapshotReason = "store_not_owned"
 	reasonSymlinkEscape          snapshotReason = "symlink_escape"
+	reasonNoEligiblePaths        snapshotReason = "no_eligible_paths"
 	reasonInternalError          snapshotReason = "internal_error"
 
 	// Reasons this package derives from the capture outcome itself.
@@ -144,6 +150,10 @@ const (
 	// from a capture failure: the snapshot exists in the store, it is simply
 	// not listed for this session.
 	reasonCaptureUnrecorded snapshotReason = "capture_unrecorded"
+	// reasonCaptureTimeout is a capture that exceeded snapshotCaptureDeadline:
+	// the workspace could not be enumerated in time, so rollback protection for
+	// this tool call is missing for a reason that is worth naming.
+	reasonCaptureTimeout snapshotReason = "capture_timeout"
 )
 
 // storeReasonTokens are the snapshot store's stable reason identifiers, most
@@ -162,6 +172,7 @@ var storeReasonTokens = []snapshotReason{
 	reasonInvalidLimits,
 	reasonNotOwned,
 	reasonSymlinkEscape,
+	reasonNoEligiblePaths,
 	reasonInternalError,
 }
 
@@ -262,10 +273,14 @@ func snapshotReasonDetail(reason snapshotReason) string {
 		return "a path in the snapshot store resolved outside it"
 	case reasonInternalError:
 		return "the snapshot store reported an internal error"
+	case reasonNoEligiblePaths:
+		return "the workspace has no paths a snapshot capture could include"
 	case reasonCaptureSkipped:
 		return "the capture was skipped without recording a snapshot"
 	case reasonCaptureUnrecorded:
 		return "the snapshot was captured but could not be recorded for this session"
+	case reasonCaptureTimeout:
+		return fmt.Sprintf("the workspace could not be enumerated within %s", snapshotCaptureDeadline)
 	default:
 		return "the capture failed"
 	}
@@ -612,13 +627,47 @@ func (w *SnapshotWarningState) ReportMaintenance(st *session.State, phase Snapsh
 //   - continuation policy is untouched: snapshotCapture never returns an
 //     error, never blocks the tool call, and never touches permissions or
 //     approval.
+//
+// snapshotCaptureTimeout is the pre-write bound, with the test seam applied.
+func (r *Runner) snapshotCaptureTimeout() time.Duration {
+	if r.SnapshotCaptureDeadline > 0 {
+		return r.SnapshotCaptureDeadline
+	}
+	return snapshotCaptureDeadline
+}
+
 func (r *Runner) snapshotCapture(ctx context.Context, phase SnapshotPhase, files []string) {
 	if r == nil || r.Snapshotter == nil {
 		return
 	}
+	// Only the pre-write capture sits on the tool-call path, so only it gets a
+	// bound of its own rather than inheriting the manager's 30s command
+	// deadline. A turn-start capture keeps the manager's deadline: failing it at
+	// five seconds would lose the turn's baseline rollback point on a workspace
+	// that legitimately takes longer to enumerate.
+	parent := ctx
+	var timeout time.Duration
+	if phase == SnapshotPhasePreWrite {
+		timeout = r.snapshotCaptureTimeout()
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	hash, err := r.Snapshotter.Track(ctx)
 	switch {
 	case err != nil:
+		// Our own bound firing is a capture outcome, not a cancellation, so it
+		// is tested BEFORE the cancellation filters below. Those treat any error
+		// matching ctx.Err() as an expected abort and log it silently, which
+		// would make a timeout invisible.
+		if timeout > 0 && errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil {
+			r.reportSnapshotProblem(phase, snapshotProblem{
+				reason: reasonCaptureTimeout,
+				detail: fmt.Sprintf("the workspace could not be enumerated within %s", timeout),
+				err:    err,
+			})
+			return
+		}
 		if snapshotIsSteeringCancellation(ctx, err) {
 			// The user interrupted this operation: the capture did not fail,
 			// it was stopped on purpose. Suppress the "rollback protection is

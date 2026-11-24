@@ -21,6 +21,19 @@ import (
 // than at one workspace, because accounting and reclamation are global.
 const snapshotsDirName = "snapshots"
 
+// captureBackoff is how long a workspace whose capture failed is skipped
+// before capture is attempted again. It is a timed backoff, not a permanent
+// negative cache: a transient failure must not disable snapshots for the rest
+// of the session.
+const captureBackoff = 5 * time.Minute
+
+// captureSuppression records that capture for one workspace root failed, why,
+// and until when further attempts are suppressed.
+type captureSuppression struct {
+	reason StoreReason
+	until  time.Time
+}
+
 // Manager owns the snapshot storage root. It provides exclusive cross-process
 // ownership, conservative whole-root accounting, free-space queries, and
 // centralized sanitized subprocess execution.
@@ -102,6 +115,11 @@ type Manager struct {
 	mu    sync.Mutex
 	lock  *StoreLock
 	trees map[*ownedTree]struct{}
+
+	// captureSuppressions records a timed backoff per canonical workspace root
+	// after a failed capture. Guarded by mu. Never persisted: a restart retries
+	// once, which is the correct cost.
+	captureSuppressions map[string]captureSuppression
 }
 
 // Hooks are fault-injection points used by the ownership, generation, and
@@ -392,6 +410,82 @@ func (m *Manager) observeWrite(ev WriteEvent) {
 		return
 	}
 	m.writeObserver(ev)
+}
+
+func (m *Manager) suppressedCapture(root string) (StoreReason, bool) {
+	key, ok := m.captureKey(root)
+	if !ok {
+		return "", false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, ok := m.captureSuppressions[key]
+	if !ok {
+		return "", false
+	}
+	if !m.now().Before(entry.until) {
+		delete(m.captureSuppressions, key)
+		return "", false
+	}
+	return entry.reason, true
+}
+
+func (m *Manager) noteCaptureFailure(root string, reason StoreReason) {
+	key, ok := m.captureKey(root)
+	if !ok {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.captureSuppressions == nil {
+		m.captureSuppressions = map[string]captureSuppression{}
+	}
+	m.captureSuppressions[key] = captureSuppression{reason: reason, until: m.now().Add(captureBackoff)}
+}
+
+func (m *Manager) clearCaptureSuppression(root string) {
+	key, ok := m.captureKey(root)
+	if !ok {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.captureSuppressions, key)
+}
+
+// RecordCaptureOutcome applies one capture outcome to the workspace's
+// suppression state: a genuine capture failure starts the backoff, and a
+// success clears it.
+//
+// It is exported within the package because a capture can fail before admission
+// runs — while waiting for the service's operation semaphore or the store lock,
+// or while store setup is cut short — and that failure must be backed off too.
+// The admission lifecycle records the failures it sees through the same helper,
+// so the policy on which reasons suppress lives in one place.
+func (m *Manager) RecordCaptureOutcome(root string, err error) {
+	if err == nil {
+		m.clearCaptureSuppression(root)
+		return
+	}
+	if reason := ReasonOf(err); recordsCaptureSuppression(reason) {
+		m.noteCaptureFailure(root, reason)
+	}
+}
+
+// captureKey canonicalises a workspace root so two spellings of the same
+// directory share one suppression entry.
+func (m *Manager) captureKey(root string) (string, bool) {
+	if root == "" {
+		return "", false
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", false
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	return abs, true
 }
 
 // NewManager builds a Manager rooted at <dataDir>/snapshots.
@@ -1063,9 +1157,14 @@ func (s *commandScope) classify(err error) error {
 		return err
 	}
 	if s.parent.Err() != nil {
-		// The caller's own context ended (cancel or its own deadline): an
-		// expected abort, which must stay unclassified.
-		return err
+		// The caller's own context ended. A cancellation is an expected abort,
+		// which must stay unclassified; the caller's own deadline is a timeout,
+		// and naming it is what lets the failure be reported as one and its
+		// cost backed off. Classifying here, rather than at whichever guard the
+		// timer happens to interrupt, keeps the reason deterministic.
+		if !errors.Is(s.parent.Err(), context.DeadlineExceeded) {
+			return err
+		}
 	}
 	se := storeError(ReasonCommandTimeout, fmt.Errorf("%s timed out after %s: %w",
 		s.label, s.bound.Round(time.Millisecond), err))

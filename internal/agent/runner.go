@@ -253,6 +253,10 @@ type Runner struct {
 	MemoryProvider MemoryProvider
 	ProjectID      int64
 	Now            func() time.Time
+	// SnapshotCaptureDeadline bounds one pre-write snapshot capture. Zero uses
+	// snapshotCaptureDeadline; tests inject a short bound and a fake snapshotter
+	// so the timeout is exercised without spending five real seconds.
+	SnapshotCaptureDeadline time.Duration
 	// Sleep backs the reconnect wait loop's backoff. Nil means a ctx-aware
 	// time.Sleep; tests substitute an instant (or clock-advancing) fake so
 	// reconnect behaviour can be exercised without real waiting.

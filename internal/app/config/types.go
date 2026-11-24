@@ -770,9 +770,15 @@ func (c ImagesConfig) PayloadConfig() imagepayload.Config {
 }
 
 type IndexingConfig struct {
-	UseTreesitter          bool     `toml:"use_treesitter"`
-	UseEmbeddings          bool     `toml:"use_embeddings"`
-	SummariseFiles         bool     `toml:"summarise_files"`
+	UseTreesitter  bool `toml:"use_treesitter"`
+	UseEmbeddings  bool `toml:"use_embeddings"`
+	SummariseFiles bool `toml:"summarise_files"`
+	// Ignore lists extra prune patterns for the index scan. It is additive,
+	// not replacing: whatever a config file names is merged with the built-in
+	// prune defaults and with the layers below it, in stable order and without
+	// duplicates, so a user adds rules and cannot accidentally drop the
+	// dependency-directory and model-weight defaults. Empty means the defaults
+	// alone.
 	Ignore                 []string `toml:"ignore"`
 	MaxIndexableFileBytes  int64    `toml:"max_indexable_file_bytes"`
 	MaxTotalContentBytes   int64    `toml:"max_total_content_bytes"`

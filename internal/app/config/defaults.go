@@ -64,6 +64,10 @@ func Default() Config {
 			// dependency caches, toolchain installs and model/Steam payloads
 			// that a home-directory workspace holds in bulk and that no index
 			// should read.
+			//
+			// These defaults are additive at merge time (see merge.unionStrings):
+			// an indexing.ignore list a user or project file supplies extends
+			// this one, it does not replace it.
 			Ignore: []string{
 				"node_modules/**", "vendor/**", "dist/**", ".git/**",
 				".cache", ".lmstudio", ".cargo", ".rustup", ".gradle", ".m2",

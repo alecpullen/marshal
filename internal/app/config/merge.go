@@ -22,6 +22,28 @@ func set[T any](dst *T, src *T) {
 	}
 }
 
+// unionStrings extends base with the entries of next it does not already hold,
+// keeping base's order first and then next's. It is the merge for additive list
+// settings — indexing.ignore, where a configured entry adds a prune rule rather
+// than replacing the shipped ones — so a later layer can only grow the list.
+func unionStrings(base, next []string) []string {
+	if len(next) == 0 {
+		return base
+	}
+	seen := make(map[string]bool, len(base)+len(next))
+	out := make([]string, 0, len(base)+len(next))
+	for _, list := range [][]string{base, next} {
+		for _, v := range list {
+			if seen[v] {
+				continue
+			}
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func merge(cfg *Config, file configFile) error {
 	if file.Project != nil {
 		set(&cfg.Project.Name, file.Project.Name)
@@ -95,7 +117,10 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Indexing.UseEmbeddings, file.Indexing.UseEmbeddings)
 		set(&cfg.Indexing.SummariseFiles, file.Indexing.SummariseFiles)
 		if file.Indexing.Ignore != nil {
-			cfg.Indexing.Ignore = file.Indexing.Ignore
+			// Additive: a configured list adds prune rules to the ones already
+			// accumulated, so a user naming one entry does not lose the shipped
+			// defaults (dependency directories, model weights).
+			cfg.Indexing.Ignore = unionStrings(cfg.Indexing.Ignore, file.Indexing.Ignore)
 		}
 		set(&cfg.Indexing.MaxIndexableFileBytes, file.Indexing.MaxIndexableFileBytes)
 		set(&cfg.Indexing.MaxTotalContentBytes, file.Indexing.MaxTotalContentBytes)

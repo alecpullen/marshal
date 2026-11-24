@@ -35,10 +35,15 @@ type fakeWriteSnapshotter struct {
 	// error, which is what a capture that outruns snapshotCaptureDeadline looks
 	// like from the runner's side.
 	block bool
+	// lastDeadline records the deadline Track observed, so a test can pin which
+	// phase gets the short pre-write bound.
+	lastDeadline time.Time
+	hadDeadline  bool
 }
 
 func (f *fakeWriteSnapshotter) Track(ctx context.Context) (string, error) {
 	f.calls++
+	f.lastDeadline, f.hadDeadline = ctx.Deadline()
 	if f.block {
 		<-ctx.Done()
 		return "", ctx.Err()
@@ -167,13 +172,16 @@ func TestPreWriteCaptureTimeoutIsReportedNotSwallowed(t *testing.T) {
 	snap := &fakeWriteSnapshotter{block: true}
 	rec := &fakeSnapshotRecorder{}
 	runner, executed := writeToolRunner(t, state, snap, rec)
+	// Drive the bound from a short injected value rather than the real five
+	// seconds: the test pins the behaviour, not the wall clock.
+	runner.SnapshotCaptureDeadline = 20 * time.Millisecond
 
 	start := time.Now()
 	if _, err := runner.executeToolCall(context.Background(), writeFileAction()); err != nil {
 		t.Fatalf("executeToolCall: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > snapshotCaptureDeadline+5*time.Second {
-		t.Fatalf("capture took %s, want it bounded near %s", elapsed, snapshotCaptureDeadline)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("capture took %s, want it bounded near the injected %s", elapsed, runner.SnapshotCaptureDeadline)
 	}
 	if !*executed {
 		t.Fatal("tool did not run after a timed-out snapshot capture; continuation policy changed")
@@ -208,6 +216,33 @@ func TestPreWriteCaptureTimeoutIsReportedNotSwallowed(t *testing.T) {
 func TestPreWriteCaptureDeadlineIsFiveSeconds(t *testing.T) {
 	if snapshotCaptureDeadline != 5*time.Second {
 		t.Fatalf("snapshotCaptureDeadline = %s, want 5s", snapshotCaptureDeadline)
+	}
+}
+
+// TestTurnStartCaptureKeepsTheManagersDeadline pins the phase gate: the short
+// bound belongs to the pre-write path only. A turn-start capture keeps the
+// manager's own command deadline, so a workspace that legitimately takes longer
+// than five seconds to enumerate does not lose the turn's baseline rollback
+// point.
+func TestTurnStartCaptureKeepsTheManagersDeadline(t *testing.T) {
+	state := newTestState(t)
+	snap := &fakeWriteSnapshotter{hash: "0123456789abcdef"}
+	runner, _ := writeToolRunner(t, state, snap, &fakeSnapshotRecorder{})
+	runner.SnapshotCaptureDeadline = 20 * time.Millisecond
+
+	runner.snapshotCapture(context.Background(), SnapshotPhaseTurnStart, nil)
+	if snap.hadDeadline {
+		t.Fatalf("turn-start capture carried a deadline %s away; it must inherit the manager's",
+			time.Until(snap.lastDeadline))
+	}
+
+	runner.snapshotCapture(context.Background(), SnapshotPhasePreWrite, nil)
+	if !snap.hadDeadline {
+		t.Fatal("pre-write capture carried no deadline; the short bound was not applied")
+	}
+	if remaining := time.Until(snap.lastDeadline); remaining > runner.SnapshotCaptureDeadline {
+		t.Fatalf("pre-write deadline is %s away, want at most the injected %s",
+			remaining, runner.SnapshotCaptureDeadline)
 	}
 }
 

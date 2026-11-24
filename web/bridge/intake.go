@@ -289,7 +289,7 @@ func (f *Fleet) Approve(ctx context.Context, pendingID string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("%w: %s", ErrUnknownPending, pendingID)
 	}
-	if !p.ExpiresAt.IsZero() && time.Now().UTC().After(p.ExpiresAt) {
+	if !p.ExpiresAt.IsZero() && f.now().After(p.ExpiresAt) {
 		_ = f.ws.DeletePending(pendingID)
 		return "", fmt.Errorf("%w: %s expired at %s", ErrUnknownPending, pendingID, p.ExpiresAt)
 	}

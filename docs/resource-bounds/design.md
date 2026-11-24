@@ -90,10 +90,11 @@ The explicit field is required, not cosmetic — see "Reindex hazard" below.
    `retain := sizeKnown && !exhausted && totalContent+size <= budget`.
    `totalContent` grows by `len(content)` only for retained files. The first
    file the budget cannot hold sets `exhausted`, and every later file is
-   omitted too, so the omitted set is a prefix of the walk and the single
-   warning's "starting at …" names the right boundary. A file whose size cannot
-   be measured is likewise indexed without content, and the first such file is
-   named in its own warning so it is not silently dropped.
+   omitted too, so the set omitted by the budget is a prefix of the walk and
+   the single warning's "starting at …" names the right boundary. A file whose
+   size cannot be measured is likewise indexed without content (so it falls
+   outside that budget prefix), and the first such file is named in its own
+   warning so it is not silently dropped.
 3. `ScanDetailed` keeps its current path for retained files (`os.ReadFile` then
    `hashBytes`). For non-retained files it calls a new `hashFile(path)` that
    streams through `sha256` in 64 KiB chunks, returning `(hash, size, error)`.
@@ -190,7 +191,11 @@ suppressing them would make the recovery their own warning recommends
 timeout, not an abort: it is classified `command_timeout` so it is reported
 honestly and backed off, which is what makes B1 and B2 compose. Classification
 is by the context error, not by whichever guard the timer happened to
-interrupt, so the same event produces the same reason wherever it lands.
+interrupt, so the same event produces the same reason wherever it lands. A
+failure that happens before admission — waiting for the service's operation
+semaphore or the store lock, or store setup cut short — is recorded through the
+same helper, so that variant is backed off too rather than paying its cost on
+every tool call.
 
 ### B2 — interactive deadline
 
@@ -259,6 +264,12 @@ field, threaded at `internal/app/hosts.go:540` (`MaxBytes:` sits beside it).
 cycle. The leaf package `internal/limits` is the single declaration of the
 number; `internal/repo` references it directly and declares no second name for
 it.
+
+Because the merged `indexing.ignore` list is additive, saving a config that sets
+any entry writes the shipped prune defaults alongside it: the union is taken
+against the live defaults, which is what keeps a new default reaching an
+existing user. That is the accepted cost of the behaviour, and the merged list
+is what the save surface writes.
 
 ## Testing
 

@@ -289,7 +289,10 @@ func (f *Fleet) Approve(ctx context.Context, pendingID string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("%w: %s", ErrUnknownPending, pendingID)
 	}
-	if !p.ExpiresAt.IsZero() && time.Now().UTC().After(p.ExpiresAt) {
+	// The fleet's clock, not the wall clock: QueueAssignment stamps ExpiresAt
+	// from it, so checking against a different source makes a submission that
+	// was just queued unapprovable whenever the clock is pinned ahead.
+	if !p.ExpiresAt.IsZero() && f.now().After(p.ExpiresAt) {
 		_ = f.ws.DeletePending(pendingID)
 		return "", fmt.Errorf("%w: %s expired at %s", ErrUnknownPending, pendingID, p.ExpiresAt)
 	}

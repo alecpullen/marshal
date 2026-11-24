@@ -561,6 +561,114 @@ func TestScanDetailedRetainedBytesNeverExceedBudget(t *testing.T) {
 	}
 }
 
+// TestScanDetailedOmitsRestOfWalkAfterBudget pins the documented invariant:
+// the omitted set is a prefix of the walk, not an arbitrary interleaving. Once
+// the budget rejects one file, every later file is omitted too — including a
+// small one that would still fit in what is left.
+func TestScanDetailedOmitsRestOfWalkAfterBudget(t *testing.T) {
+	root := t.TempDir()
+	sizes := []struct {
+		name string
+		size int
+	}{
+		{"a.go", 600},
+		{"b.go", 900},
+		{"c.go", 200},
+	}
+	for _, f := range sizes {
+		if err := os.WriteFile(filepath.Join(root, f.name), bytes.Repeat([]byte("z"), f.size), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a.go fits (600 <= 1000); b.go does not (600+900 > 1000) and exhausts the
+	// budget; c.go would fit (600+200 <= 1000) but follows an omitted file, so
+	// it must be omitted too.
+	const budget = 1000
+	s := NewScanner(Config{Root: root, MaxTotalContentBytes: budget})
+	scanned, err := s.ScanDetailed(context.Background())
+	if err != nil {
+		t.Fatalf("ScanDetailed: %v", err)
+	}
+	if len(scanned) != len(sizes) {
+		t.Fatalf("scanned %d files, want %d: omission must not shrink the file index", len(scanned), len(sizes))
+	}
+	byPath := make(map[string]ScannedFile, len(scanned))
+	for _, sf := range scanned {
+		byPath[sf.Path] = sf
+	}
+	if a := byPath["a.go"]; a.Content == nil || a.ContentOmitted {
+		t.Errorf("a.go: retained=%v omitted=%v, want its content retained", a.Content != nil, a.ContentOmitted)
+	}
+	for _, f := range sizes[1:] {
+		sf, ok := byPath[f.name]
+		if !ok {
+			t.Fatalf("%s missing from the file index", f.name)
+		}
+		if sf.Content != nil || !sf.ContentOmitted {
+			t.Errorf("%s: retained=%v omitted=%v, want both omitted after b.go exhausted the budget",
+				f.name, sf.Content != nil, sf.ContentOmitted)
+		}
+		if sf.ReadErr != nil {
+			t.Errorf("%s: omitted file has read error %v", f.name, sf.ReadErr)
+		}
+		if sf.Hash == "" || sf.SizeBytes != int64(f.size) {
+			t.Errorf("%s: omitted file lost its index entry: hash=%q size=%d", f.name, sf.Hash, sf.SizeBytes)
+		}
+	}
+	warnings := s.Warnings()
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %q, want exactly one budget warning", warnings)
+	}
+	if !strings.Contains(warnings[0], "b.go") {
+		t.Errorf("budget warning must name the first omitted path b.go: %q", warnings[0])
+	}
+}
+
+// TestScanDetailedWarnsWhenSizeCannotBeMeasured covers the other case
+// ContentOmitted reports: the file could not be measured, so no size could be
+// judged against the budget. A directory stripped of its execute bit still
+// lists (readdir needs read permission only) while stat of its children fails,
+// which makes entry.Info() fail for every file inside it without changing
+// anything the walk itself reports.
+func TestScanDetailedWarnsWhenSizeCannotBeMeasured(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permission bits differ on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("permission bits have no effect when running as root")
+	}
+	root := t.TempDir()
+	hidden := filepath.Join(root, "hidden")
+	if err := os.Mkdir(hidden, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hidden, "unmeasurable.go"), []byte("package hidden\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hidden, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(hidden, 0o755)
+
+	s := NewScanner(Config{Root: root})
+	scanned, err := s.ScanDetailed(context.Background())
+	if err != nil {
+		t.Fatalf("ScanDetailed: %v", err)
+	}
+	if len(scanned) != 1 || scanned[0].Path != "hidden/unmeasurable.go" {
+		t.Fatalf("scanned = %v, want the single unmeasurable file", scanned)
+	}
+	if !scanned[0].ContentOmitted {
+		t.Error("a file whose size could not be measured must be marked ContentOmitted")
+	}
+	for _, w := range s.Warnings() {
+		if strings.Contains(w, "hidden/unmeasurable.go") && strings.Contains(w, "measure") {
+			return
+		}
+	}
+	t.Fatalf("no warning names the first file whose size could not be measured: %q", s.Warnings())
+}
+
 func TestHashFileMatchesHashBytes(t *testing.T) {
 	dir := t.TempDir()
 	content := bytes.Repeat([]byte("abcdefgh"), 9000) // more than one 64 KiB chunk

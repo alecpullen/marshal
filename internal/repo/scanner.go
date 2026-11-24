@@ -110,7 +110,11 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string, retain boo
 	if budget <= 0 {
 		budget = DefaultMaxTotalContentBytes
 	}
-	omissions := 0
+	// exhausted latches the first file the budget rejects; unmeasured names the
+	// first file whose size could not be read. Both are reported once, at the
+	// path that caused them.
+	exhausted := false
+	unmeasured := ""
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -179,11 +183,17 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string, retain boo
 		// The cap and the budget both need the size, so stat once here rather
 		// than once per bound. A failed stat is not fatal: the file is treated
 		// as unretainable and hashed by streaming, which keeps a file we cannot
-		// measure out of the retained working set without inventing a new skip
-		// reason for it.
+		// measure out of the retained working set. It is reported ContentOmitted
+		// too, so the warning below names the first such file instead of
+		// dropping it silently.
 		size, sizeKnown := int64(0), false
 		if info, infoErr := entry.Info(); infoErr == nil {
 			size, sizeKnown = info.Size(), true
+		}
+		if !sizeKnown && unmeasured == "" {
+			unmeasured = rel
+			s.warnings = append(s.warnings, fmt.Sprintf(
+				"content omitted: could not measure %s, so the file is indexed without content", rel))
 		}
 
 		// Skip files that exceed the configurable size cap.
@@ -193,21 +203,24 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string, retain boo
 		}
 
 		// The budget is a total, so it can only be judged here, once per file,
-		// after the per-file filters have run. Once it rejects a file it keeps
-		// rejecting for the rest of the walk, so the omitted set is a prefix of
-		// the walk rather than an arbitrary interleaving.
-		retain := sizeKnown && totalContent+size <= budget
+		// after the per-file filters have run. exhausted latches the first file
+		// it rejects: the omitted set is a prefix of the walk, so every later
+		// file is omitted without being measured against the budget again. That
+		// keeps a small file that follows a rejected large one omitted too,
+		// rather than retained out of order.
+		retain := !exhausted && sizeKnown && totalContent+size <= budget
+		if !retain && sizeKnown && !exhausted {
+			exhausted = true
+			s.warnings = append(s.warnings, fmt.Sprintf(
+				"content budget exhausted: files past %d retained bytes are indexed without content, starting at %s",
+				budget, rel))
+		}
 		fi, content, fnErr := fn(path, rel, retain)
 		if fnErr != nil {
 			s.warnings = append(s.warnings, fnErr.Error())
 		}
 		if retain && fnErr == nil {
 			totalContent += int64(len(content))
-		} else if !retain && sizeKnown && omissions == 0 {
-			omissions++
-			s.warnings = append(s.warnings, fmt.Sprintf(
-				"content budget exhausted: files past %d retained bytes are indexed without content, starting at %s",
-				budget, rel))
 		}
 		results = append(results, ScannedFile{
 			FileIndex:      fi,
@@ -229,7 +242,10 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string, retain boo
 // nil Content and a non-nil ReadErr. The scan continues to other files.
 // A file past the scan's total content budget is hashed by streaming and
 // returned with a nil Content and ContentOmitted set: it stays in the file
-// index, it just carries no bytes.
+// index, it just carries no bytes. Once the budget rejects a file, every later
+// file is omitted the same way, so the omitted set is a prefix of the walk. A
+// file whose size could not be measured is omitted too, because it cannot be
+// judged against the budget.
 func (s *Scanner) ScanDetailed(ctx context.Context) ([]ScannedFile, error) {
 	return s.walk(ctx, func(path, rel string, retain bool) (db.FileIndex, []byte, error) {
 		if !retain {

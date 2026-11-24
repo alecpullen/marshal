@@ -18,10 +18,11 @@ type ScannedFile struct {
 	// in two cases: the scan's total content budget was exhausted (the file is
 	// past the budget), or the file's size could not be measured, so it could
 	// not be judged against that budget. ReadErr is nil in the budget case and
-	// the FileIndex is valid in both. Files omitted by the budget form a prefix
-	// of the walk; a file omitted because its size could not be measured can
-	// appear outside that prefix. Consumers skip both cases alike; the scan's
-	// Warnings name the first file of each kind. Consumers must not infer this
-	// state from a nil Content: an empty file legitimately has nil Content too.
+	// the FileIndex is valid in both. Files omitted by the budget run from the
+	// boundary to the end of the walk, so the retained files form a prefix; a
+	// file omitted because its size could not be measured can appear after
+	// retained files. Consumers skip both cases alike; the scan's Warnings name
+	// the first file of each kind. Consumers must not infer this state from a
+	// nil Content: an empty file legitimately has nil Content too.
 	ContentOmitted bool
 }

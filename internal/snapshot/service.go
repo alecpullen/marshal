@@ -493,6 +493,11 @@ func (s *Service) recordEarlyCaptureFailure(err error) error {
 	}
 	if m, _, storeErr := s.store(); storeErr == nil {
 		m.RecordCaptureOutcome(s.workTree, classified)
+	} else if s.logger != nil {
+		// Best effort: the failure is still classified and returned, but a
+		// manager that cannot be built means the backoff cannot be recorded.
+		// Say so rather than claiming the guarantee silently.
+		s.logger.Debug("snapshot capture failure could not be recorded", "error", storeErr)
 	}
 	return classified
 }

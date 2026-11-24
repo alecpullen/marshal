@@ -90,11 +90,11 @@ The explicit field is required, not cosmetic — see "Reindex hazard" below.
    `retain := sizeKnown && !exhausted && totalContent+size <= budget`.
    `totalContent` grows by `len(content)` only for retained files. The first
    file the budget cannot hold sets `exhausted`, and every later file is
-   omitted too, so the set omitted by the budget is a prefix of the walk and
-   the single warning's "starting at …" names the right boundary. A file whose
-   size cannot be measured is likewise indexed without content (so it falls
-   outside that budget prefix), and the first such file is named in its own
-   warning so it is not silently dropped.
+   omitted too, so the retained files form a prefix of the walk and the single
+   warning's "starting at …" names the right boundary. A file whose size cannot
+   be measured is likewise indexed without content (so it can sit after retained
+   files), and the first such file is named in its own warning so it is not
+   silently dropped.
 3. `ScanDetailed` keeps its current path for retained files (`os.ReadFile` then
    `hashBytes`). For non-retained files it calls a new `hashFile(path)` that
    streams through `sha256` in 64 KiB chunks, returning `(hash, size, error)`.

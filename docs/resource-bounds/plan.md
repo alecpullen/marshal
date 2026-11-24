@@ -30,15 +30,19 @@ From `design.md`, plus two the authoring pass added:
 - 5 minutes is the backoff window; 5 seconds is the interactive capture bound.
   Both are constants until someone needs otherwise.
 - *(authoring, corrected during execution)* `internal/app/config` **cannot**
-  import `internal/repo` for `repo.DefaultMaxTotalContentBytes`: `internal/repo`
-  already reaches `internal/app/config` through `internal/db`,
-  `internal/subagentwork` and `internal/worktree`, so the edge is a cycle. The
-  512 MiB bound therefore lives in `internal/limits`
-  (`limits.MaxTotalContentBytes`), a leaf both packages name;
-  `repo.DefaultMaxTotalContentBytes` remains the scanner's name for it.
+  import `internal/repo` for the content bound: `internal/repo` already reaches
+  `internal/app/config` through `internal/db`, `internal/subagentwork` and
+  `internal/worktree`, so the edge is a cycle. The 512 MiB bound therefore lives
+  in `internal/limits` (`limits.MaxTotalContentBytes`), a leaf both packages
+  name. `internal/repo` references it directly and declares no second name, so
+  the number has exactly one declaration. Code snippets below that still spell
+  `repo.DefaultMaxTotalContentBytes` are as originally planned; the landed code
+  uses `limits.MaxTotalContentBytes`.
 - *(authoring)* A failed `stat` in `walk` must not skip the file. It makes the
-  file unretainable (hashed by streaming) rather than adding a new skip reason,
-  which keeps the existing skip vocabulary unchanged.
+  file unretainable (hashed by streaming) and records `ContentOmitted`, rather
+  than adding a new skip reason, which keeps the existing skip vocabulary
+  unchanged; the first such file is named in a warning so it is not silently
+  dropped.
 
 ## Contracts
 

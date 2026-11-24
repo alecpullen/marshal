@@ -44,13 +44,15 @@ on the total.
 
 ### Change
 
-Add to `internal/repo/scanner.go`:
+The value lives in the leaf package `internal/limits`, because both the scanner
+and `internal/app/config` need it and the config package cannot import
+`internal/repo` (see "Config plumbing"). `internal/repo` names it directly, so
+there is exactly one declaration of the number.
 
 ```go
-// DefaultMaxTotalContentBytes is the most file content one scan retains. It is
+// limits.MaxTotalContentBytes is the most file content one scan retains. It is
 // a total, not a per-file bound: a tree of many small files passes every
 // per-file cap and still sums to an unbounded working set.
-const DefaultMaxTotalContentBytes int64 = 512 << 20
 ```
 
 `Config` gains:
@@ -59,17 +61,19 @@ const DefaultMaxTotalContentBytes int64 = 512 << 20
 // MaxTotalContentBytes caps the total file content one scan retains across all
 // files. A file beyond the budget is still hashed and indexed (path, hash,
 // language, size) but its Content is nil and ScannedFile.ContentOmitted is set.
-// Zero means DefaultMaxTotalContentBytes; a bound never disappears.
+// Zero means limits.MaxTotalContentBytes; a bound never disappears.
 MaxTotalContentBytes int64
 ```
 
 `ScannedFile` gains `ContentOmitted bool` with:
 
 ```go
-// ContentOmitted reports that Content is nil because the scan's total content
-// budget was exhausted, not because the file could not be read. ReadErr is nil
-// for such a file and its FileIndex is valid. Consumers must not infer this
-// state from a nil Content: an empty file legitimately has nil Content too.
+// ContentOmitted reports that the scan deliberately retained no content for
+// this file: the total content budget was exhausted, or the file's size could
+// not be measured. It is not a read failure; ReadErr is nil for such a file
+// unless even its hash could not be computed, and its FileIndex is valid either
+// way. Consumers must not infer this state from a nil Content: an empty file
+// legitimately has nil Content too.
 ContentOmitted bool
 ```
 
@@ -83,9 +87,13 @@ The explicit field is required, not cosmetic — see "Reindex hazard" below.
    other call site needs updating.
 2. `walk` stats each entry **once** (today it stats only when
    `MaxIndexableFileBytes > 0`, `scanner.go:159`) and computes
-   `retain := totalContent+info.Size() <= budget`. `totalContent` grows by
-   `len(content)` only for retained files. Once the budget is exhausted
-   `retain` stays false for the remainder of the walk.
+   `retain := sizeKnown && !exhausted && totalContent+size <= budget`.
+   `totalContent` grows by `len(content)` only for retained files. The first
+   file the budget cannot hold sets `exhausted`, and every later file is
+   omitted too, so the omitted set is a prefix of the walk and the single
+   warning's "starting at …" names the right boundary. A file whose size cannot
+   be measured is likewise indexed without content, and the first such file is
+   named in its own warning so it is not silently dropped.
 3. `ScanDetailed` keeps its current path for retained files (`os.ReadFile` then
    `hashBytes`). For non-retained files it calls a new `hashFile(path)` that
    streams through `sha256` in 64 KiB chunks, returning `(hash, size, error)`.
@@ -130,6 +138,15 @@ outcome the existing transient-read-error test
 Truncation is on *symbols only*. The file index stays complete, because
 `FileIndex` is built from path/hash/language/size and needs no content.
 
+### Known limits
+
+The budget bounds retained *content*, not the scan itself: every file is still
+enumerated, and each is read once to compute its hash. The returned slice also
+holds one `db.FileIndex` (including a path string) per file, so a pathological
+tree remains bounded in memory by file count and path bytes rather than by
+content, and its scan time stays proportional to the tree. Bounding those needs
+a streaming index pass and is out of scope here.
+
 ## 2. Snapshot capture cost (B1, B2)
 
 ### Defect
@@ -164,14 +181,29 @@ Implementation: a `captureBackoff = 5 * time.Minute` constant and a
 manager's existing mutex and is never persisted — a restart retries once,
 which is the correct cost.
 
+Only a failure of the capture itself suppresses. Admission refusals
+(`budget_exhausted`, `insufficient_free_space`, `no_eligible_paths`) are
+decisions made before a byte is written and leave the store byte-identical, so
+suppressing them would make the recovery their own warning recommends
+(cleanup, then retry) inert for the whole window. A cancellation
+(`interrupted_capture`) is an expected abort. A caller's own deadline is a
+timeout, not an abort: it is classified `command_timeout` so it is reported
+honestly and backed off, which is what makes B1 and B2 compose. Classification
+is by the context error, not by whichever guard the timer happened to
+interrupt, so the same event produces the same reason wherever it lands.
+
 ### B2 — interactive deadline
 
 `Manager.deadlineFor` already lets a caller's sooner deadline win
-(`internal/snapshot/manager.go:993`), so no new knob is needed. The pre-write
-path wraps its context in a 5-second `context.WithTimeout` inside
+(`internal/snapshot/manager.go:993`), so no new knob is needed. The **pre-write
+path** wraps its context in a 5-second `context.WithTimeout` inside
 `snapshotCapture`, instead of inheriting the 30 s `commandDeadline`. A capture
 that cannot enumerate within that bound reports `ReasonCommandTimeout`
-promptly and returns; the tool call proceeds.
+promptly and returns; the tool call proceeds. The bound is phase-gated: a
+turn-start capture keeps the manager's full command deadline, so a workspace
+that legitimately takes longer than five seconds to enumerate does not lose the
+turn's baseline rollback point. The bound is injectable on `Runner` for tests,
+which pin it precisely instead of spending five real seconds.
 
 ## 3. Index defaults (C1, C2, C4)
 
@@ -201,7 +233,10 @@ gap.
 
 `MaxIndexableFileBytes` 25 MiB → 2 MiB (`internal/app/config/defaults.go:62`).
 A 25 MiB source file is not useful to index, and the 25 MiB figure was never
-what protected against this failure — the many-small-files case did.
+what protected against this failure — the many-small-files case did. Files over
+the cap are still skipped rather than truncated; the scanner records each skip
+and `index.Run` reports the count ("scan skipped N entries; first: …"), so the
+coverage change is visible in the pass report rather than silent.
 
 ### C4 — pathological root
 
@@ -217,8 +252,13 @@ pointer in the file schema (`file_types.go:114`), a `set(...)` in
 `merge.go:100`, and a value in `save.go:319`. `index.Deps` gains a matching
 field, threaded at `internal/app/hosts.go:540` (`MaxBytes:` sits beside it).
 
-`config/defaults.go` references `repo.DefaultMaxTotalContentBytes`; the import
-is acyclic, since `internal/repo` imports only `internal/db`.
+`config/defaults.go` references `limits.MaxTotalContentBytes`, not a
+`repo.DefaultMaxTotalContentBytes`: `internal/repo` already reaches
+`internal/app/config` through `internal/db`, `internal/subagentwork` and
+`internal/worktree`, so naming the scanner's constant from config would close a
+cycle. The leaf package `internal/limits` is the single declaration of the
+number; `internal/repo` references it directly and declares no second name for
+it.
 
 ## Testing
 

@@ -453,6 +453,25 @@ func (m *Manager) clearCaptureSuppression(root string) {
 	delete(m.captureSuppressions, key)
 }
 
+// RecordCaptureOutcome applies one capture outcome to the workspace's
+// suppression state: a genuine capture failure starts the backoff, and a
+// success clears it.
+//
+// It is exported within the package because a capture can fail before admission
+// runs — while waiting for the service's operation semaphore or the store lock,
+// or while store setup is cut short — and that failure must be backed off too.
+// The admission lifecycle records the failures it sees through the same helper,
+// so the policy on which reasons suppress lives in one place.
+func (m *Manager) RecordCaptureOutcome(root string, err error) {
+	if err == nil {
+		m.clearCaptureSuppression(root)
+		return
+	}
+	if reason := ReasonOf(err); recordsCaptureSuppression(reason) {
+		m.noteCaptureFailure(root, reason)
+	}
+}
+
 // captureKey canonicalises a workspace root so two spellings of the same
 // directory share one suppression entry.
 func (m *Manager) captureKey(root string) (string, bool) {

@@ -657,24 +657,17 @@ func (m *Manager) storeErr(reason StoreReason, path, format string, args ...any)
 //     failure here leaves the intent for reconciliation rather than losing it.
 //
 // It returns the published hash (empty on every failure) plus the admission
-// result when admission ran, so a caller can report what was decided even when
-// the capture failed. The result is nil when the capture was suppressed before
-// admission: nothing was decided, and the returned error names the suppression.
+// result when admission reached a decision, so a caller can report what was
+// decided even when the capture failed. The result is nil when admission did
+// not run to a decision — a suppressed workspace, or a failure resolving the
+// store before admission could judge it.
 func (m *Manager) AdmitAndCaptureWithCleanup(ctx context.Context, cat *Catalog, req CaptureRequest) (captured string, admission *AdmissionResult, err error) {
 	if reason, ok := m.suppressedCapture(req.WorkspaceRoot); ok {
 		return "", nil, storeErrorf(reason,
 			"snapshot capture for %s is suppressed for %s after an earlier failure",
 			req.WorkspaceRoot, captureBackoff)
 	}
-	defer func() {
-		if err == nil {
-			m.clearCaptureSuppression(req.WorkspaceRoot)
-			return
-		}
-		if reason := ReasonOf(err); recordsCaptureSuppression(reason) {
-			m.noteCaptureFailure(req.WorkspaceRoot, reason)
-		}
-	}()
+	defer func() { m.RecordCaptureOutcome(req.WorkspaceRoot, err) }()
 	admission, err = m.AdmitCapture(ctx, cat, req)
 	if err != nil {
 		return "", admission, err

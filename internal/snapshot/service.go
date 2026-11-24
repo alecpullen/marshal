@@ -452,10 +452,10 @@ func (s *Service) Track(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return "", s.recordEarlyCaptureFailure(err)
 	}
 	if err := s.lock(ctx); err != nil {
-		return "", err
+		return "", s.recordEarlyCaptureFailure(err)
 	}
 	defer s.unlock()
 
@@ -470,7 +470,31 @@ func (s *Service) Track(ctx context.Context) (string, error) {
 		})
 		return captureErr
 	})
+	if err != nil && ReasonOf(err) == "" {
+		// Store setup (bootstrap, ownership) can be cut short by the caller's
+		// context too. Name and record it like any other capture failure;
+		// anything that already carries a reason was recorded by admission.
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+			return "", s.recordEarlyCaptureFailure(err)
+		}
+	}
 	return hash, err
+}
+
+// recordEarlyCaptureFailure classifies a capture that ended before admission
+// ran — the caller's context had already ended, or waiting for the operation
+// semaphore or the store lock used it up — and applies the outcome to the
+// workspace's suppression state. These failures never reach
+// AdmitAndCaptureWithCleanup, which is the other place that records one.
+func (s *Service) recordEarlyCaptureFailure(err error) error {
+	classified := interruptedCapture(err)
+	if !recordsCaptureSuppression(ReasonOf(classified)) {
+		return classified
+	}
+	if m, _, storeErr := s.store(); storeErr == nil {
+		m.RecordCaptureOutcome(s.workTree, classified)
+	}
+	return classified
 }
 
 // Diff returns a unified diff between the snapshot named by hash and the

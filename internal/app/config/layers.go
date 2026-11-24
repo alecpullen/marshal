@@ -45,6 +45,11 @@ type Layers struct {
 	// stripped before merge so the user-global value always wins, and the
 	// project's value is never able to raise or lower the ceiling.
 	ProjectSnapshotGlobalIgnored bool
+	// ProjectPreferSharedIgnored reports that the project file carried
+	// [skills].prefer_shared, which is user-global only. The list is stripped
+	// before merge so a repository cannot choose which copy of a skill the
+	// user runs.
+	ProjectPreferSharedIgnored bool
 	// BudgetFixes lists the dotted paths of [budgets] values that were
 	// invalid and replaced by their defaults.
 	BudgetFixes    []string
@@ -149,6 +154,7 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	var projectFile configFile
 	projectBudgetsIgnored := false
 	projectSnapshotGlobalIgnored := false
+	projectPreferSharedIgnored := false
 	if applyProject {
 		var err error
 		projectFile, err = loadFile(projectPath)
@@ -166,6 +172,13 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 		if projectFile.Snapshots != nil && projectFile.Snapshots.GlobalMaxBytes != nil {
 			projectSnapshotGlobalIgnored = true
 			projectFile.Snapshots.GlobalMaxBytes = nil
+		}
+		// [skills].prefer_shared is user-global only: which copy of a skill
+		// the user runs is the user's choice, not the repository's, so strip
+		// the list before merge rather than letting a project file pick it.
+		if projectFile.Skills != nil && projectFile.Skills.PreferShared != nil {
+			projectPreferSharedIgnored = true
+			projectFile.Skills.PreferShared = nil
 		}
 		projectNorm, projectNotices, nerr := normalizeInteractionFile(projectFile, LayerProject.String())
 		if nerr != nil {
@@ -224,6 +237,7 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	return Layers{
 		ProjectBudgetsIgnored:        projectBudgetsIgnored,
 		ProjectSnapshotGlobalIgnored: projectSnapshotGlobalIgnored,
+		ProjectPreferSharedIgnored:   projectPreferSharedIgnored,
 		BudgetFixes:                  budgetFixes,
 		Default:                      def, User: user, Merged: cfg, Migrated: migrated,
 		SubtaskIterationsSet:      subtaskSet,

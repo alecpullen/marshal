@@ -101,6 +101,9 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Skills.MaxActive, file.Skills.MaxActive)
 		set(&cfg.Skills.BodyFullTurns, file.Skills.BodyFullTurns)
 		set(&cfg.Skills.LoadGateThresholdTokens, file.Skills.LoadGateThresholdTokens)
+		if file.Skills.PreferShared != nil {
+			cfg.Skills.PreferShared = file.Skills.PreferShared
+		}
 	}
 	if file.Images != nil {
 		set(&cfg.Images.MaxInputBytes, file.Images.MaxInputBytes)

@@ -2,7 +2,6 @@ package skills
 
 import (
 	_ "embed"
-	"fmt"
 )
 
 //go:embed builtin/marshal-sdd-plan-authoring.md
@@ -44,12 +43,10 @@ var usingWorktreesSkill []byte
 //go:embed builtin/progress-reporting.md
 var progressReportingSkill []byte
 
-// loadBuiltIns registers the skills embedded in the binary. They load before
-// the global and project skill directories (see LoadSkills), and the index is
-// keyed by name — so a user-installed skill of the same name overrides the
-// built-in. That precedence is deliberate: an explicit install wins.
-func loadBuiltIns(idx *Index) error {
-	for name, raw := range map[string][]byte{
+// builtInSources is the embedded skill files by name. The name doubles as the
+// built-in source's own identity for the entry.
+func builtInSources() map[string][]byte {
+	return map[string][]byte{
 		"marshal-sdd-plan-authoring":     marshalSDDPlanAuthoring,
 		"marshal-executing-plans":        marshalExecutingPlans,
 		"marshal-writing-plans":          marshalWritingPlans,
@@ -63,12 +60,20 @@ func loadBuiltIns(idx *Index) error {
 		"postmortem":                     postmortemSkill,
 		"using-worktrees":                usingWorktreesSkill,
 		"progress-reporting":             progressReportingSkill,
-	} {
-		skill, err := Parse(string(raw))
-		if err != nil {
-			return fmt.Errorf("parse built-in skill %q: %w", name, err)
-		}
-		idx.Set(skill.Name, skill)
+	}
+}
+
+// loadBuiltIns registers the skills embedded in the binary. They load before
+// the global and project skill directories (see LoadSkills), and the index is
+// keyed by name — so a user-installed skill of the same name overrides the
+// built-in. That precedence is deliberate: an explicit install wins.
+func loadBuiltIns(idx *Index) error {
+	candidates, err := builtInCandidates()
+	if err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		idx.Set(candidate.Skill.Name, candidate.Skill)
 	}
 	return nil
 }

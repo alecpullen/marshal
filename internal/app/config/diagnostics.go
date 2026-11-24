@@ -348,6 +348,14 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 			Source:   LayerProject.String(),
 		})
 	}
+	if layers.ProjectPreferSharedIgnored {
+		ds = append(ds, Diagnostic{
+			Severity: SeverityWarning,
+			Path:     "skills.prefer_shared",
+			Message:  "skills.prefer_shared is user-global only; the project config's value is ignored",
+			Source:   LayerProject.String(),
+		})
+	}
 
 	// 14: sandbox env allowlist. An explicit-empty allowlist is a deliberate
 	// opt-out, but it is also reachable by accident: the /settings list-drill

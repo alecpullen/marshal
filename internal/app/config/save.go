@@ -330,6 +330,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			MaxActive:               strutil.Ptr(cfg.Skills.MaxActive),
 			BodyFullTurns:           strutil.Ptr(cfg.Skills.BodyFullTurns),
 			LoadGateThresholdTokens: strutil.Ptr(cfg.Skills.LoadGateThresholdTokens),
+			PreferShared:            cfg.Skills.PreferShared,
 		}
 	}
 	// Retired is *derived* by the merge — it names the retired keys a file

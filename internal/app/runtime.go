@@ -1872,7 +1872,15 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 
 	globalSkillsDir := filepath.Join(config.UserDir(homeDir), "skills")
 	projectSkillsDir := filepath.Join(workingDir, ".marshal", "skills")
-	skillIndex, err := skills.LoadSkills(globalSkillsDir, projectSkillsDir)
+	// The shared root belongs to the agent user on the machine running the
+	// agent, not to Marshal's own state: other agents install there, and its
+	// absence is the normal case.
+	sharedSkillsDir := filepath.Join(homeDir, ".agents", "skills")
+	resolvedSkills, err := skills.Resolve(skills.Stores{
+		GlobalDir:  globalSkillsDir,
+		ProjectDir: projectSkillsDir,
+		SharedDir:  sharedSkillsDir,
+	}, cfg.Skills.PreferShared)
 	if err != nil {
 		if logFile != nil {
 			_ = logFile.Close()
@@ -1880,6 +1888,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		_ = database.Close()
 		return nil, fmt.Errorf("load skills: %w", err)
 	}
+	skillIndex := resolvedSkills.Index
 
 	pluginCommands := loadPluginContents(&cfg, skillIndex, homeDir, workingDir, projectTrusted, logger)
 

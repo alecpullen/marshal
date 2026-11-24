@@ -1,8 +1,6 @@
 package skills
 
 import (
-	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,46 +103,13 @@ func parseSkillFile(path string) (Skill, error) {
 	return Parse(string(raw))
 }
 
+// LoadSkills resolves the built-in, Marshal global and project stores. It is
+// the two-store form of Resolve, kept for callers that know nothing about the
+// shared root; the winner per name is the same as Resolve's default order.
 func LoadSkills(globalDir, projectDir string) (*Index, error) {
-	idx := NewIndex()
-
-	if err := loadBuiltIns(idx); err != nil {
+	resolved, err := Resolve(Stores{GlobalDir: globalDir, ProjectDir: projectDir}, nil)
+	if err != nil {
 		return nil, err
 	}
-
-	if err := loadFromDir(idx, globalDir, slog.Default()); err != nil {
-		return nil, fmt.Errorf("load global skills from %s: %w", globalDir, err)
-	}
-	if err := loadFromDir(idx, projectDir, slog.Default()); err != nil {
-		return nil, fmt.Errorf("load project skills from %s: %w", projectDir, err)
-	}
-
-	return idx, nil
-}
-
-func loadFromDir(idx *Index, dir string, logger *slog.Logger) error {
-	paths, err := scanSkillDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, p := range paths {
-		loadSkillFile(idx, p, logger)
-	}
-	return nil
-}
-
-func loadSkillFile(idx *Index, path string, logger *slog.Logger) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		logger.Warn("failed to read skill file", "path", path, "error", err)
-		return
-	}
-
-	skill, err := parseFrontmatter(string(raw))
-	if err != nil {
-		logger.Warn("skipping invalid skill file", "path", path, "error", err)
-		return
-	}
-
-	idx.skills[skill.Name] = skill
+	return resolved.Index, nil
 }

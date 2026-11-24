@@ -193,6 +193,39 @@ func TestRunReportsScanSkips(t *testing.T) {
 	t.Fatalf("no skip summary in warnings: %q", rep.Warnings)
 }
 
+// TestRunReportsSizeCapSkips covers the per-file size cap's end of the skip
+// report: a file past MaxIndexableFileBytes (the 2 MiB default in production)
+// is skipped by the scanner, and the pass surfaces that skip in its one-line
+// summary, so the coverage loss is visible instead of silent.
+func TestRunReportsSizeCapSkips(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "small.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("x", 4096)
+	if err := os.WriteFile(filepath.Join(root, "big.txt"), []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	database := newTestDB(t)
+	pid := mustCreateProject(t, database, root)
+
+	rep, err := Run(context.Background(), Deps{Root: root, DB: database, Embedder: nil, MaxBytes: 1024}, pid)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Files != 1 {
+		t.Errorf("indexed %d files, want 1: the capped file must be left out of the index", rep.Files)
+	}
+	for _, w := range rep.Warnings {
+		if strings.Contains(w, "scan skipped 1 entries") &&
+			strings.Contains(w, "big.txt") &&
+			strings.Contains(w, "file too large") {
+			return
+		}
+	}
+	t.Fatalf("the per-file size-cap skip is not surfaced in the pass's warnings: %q", rep.Warnings)
+}
+
 func TestRunWarnsOnFilesystemRoot(t *testing.T) {
 	if got, want := pathologicalIndexRoot("/"), "a filesystem root"; got != want {
 		t.Errorf("pathologicalIndexRoot(%q) = %q, want %q", "/", got, want)

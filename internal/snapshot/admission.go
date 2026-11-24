@@ -140,15 +140,17 @@ func (m *Manager) AdmitCapture(ctx context.Context, cat *Catalog, req CaptureReq
 	if err != nil {
 		return nil, err
 	}
+	result := &AdmissionResult{Plan: plan, Maintenance: plan.Maintenance}
 	if len(plan.Entries) == 0 {
 		// An empty capture is refused here rather than in the writer: admitting
 		// one would reserve a full manifest replacement for a snapshot that
-		// cannot exist.
-		return nil, storeErrorf(ReasonInternal, cat.Workspace(),
+		// cannot exist. It is a refusal, not an internal error — the store is
+		// healthy and the workspace is simply empty — so it carries the result
+		// the caller reports and is exempt from the capture backoff.
+		refusal := m.storeErr(ReasonNoEligiblePaths, cat.Workspace(),
 			"refusing to admit a capture of a workspace with no eligible paths")
+		return refuseAdmission(result, refusal), refusal
 	}
-
-	result := &AdmissionResult{Plan: plan, Maintenance: plan.Maintenance}
 
 	for attempt := 0; attempt < maxRotationAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -603,7 +605,26 @@ func refuseAdmission(result *AdmissionResult, err *StoreError) *AdmissionResult 
 // isAdmissionRefusal reports whether a reason is a decision admission reports as
 // a refusal rather than as a failure to decide.
 func isAdmissionRefusal(reason StoreReason) bool {
-	return reason == ReasonBudgetExhausted || reason == ReasonInsufficientFreeSpace
+	return reason == ReasonBudgetExhausted || reason == ReasonInsufficientFreeSpace ||
+		reason == ReasonNoEligiblePaths
+}
+
+// recordsCaptureSuppression reports whether a failed capture with this reason
+// should suppress the workspace for the capture backoff.
+//
+// Only a failure of the capture itself does. An admission refusal is a decision
+// made before a byte is written and leaves the store byte-identical, so it is
+// not a workspace defect — and suppressing it would make the recovery the
+// refusal's own warning recommends (cleanup, then retry) inert for the whole
+// backoff window. A cancellation or interruption is an expected abort, not a
+// defect; the agent layer already leaves suppression alone for it. An empty
+// workspace is a property of the workspace, not a failure to retry.
+func recordsCaptureSuppression(reason StoreReason) bool {
+	switch reason {
+	case "", ReasonInterruptedCapture, ReasonNoEligiblePaths:
+		return false
+	}
+	return !isAdmissionRefusal(reason)
 }
 
 // storeErr builds a path-carrying *StoreError. It is the *StoreError-returning
@@ -636,7 +657,9 @@ func (m *Manager) storeErr(reason StoreReason, path, format string, args ...any)
 //     failure here leaves the intent for reconciliation rather than losing it.
 //
 // It returns the published hash (empty on every failure) plus the admission
-// result, so a caller can report what was decided even when the capture failed.
+// result when admission ran, so a caller can report what was decided even when
+// the capture failed. The result is nil when the capture was suppressed before
+// admission: nothing was decided, and the returned error names the suppression.
 func (m *Manager) AdmitAndCaptureWithCleanup(ctx context.Context, cat *Catalog, req CaptureRequest) (captured string, admission *AdmissionResult, err error) {
 	if reason, ok := m.suppressedCapture(req.WorkspaceRoot); ok {
 		return "", nil, storeErrorf(reason,
@@ -648,7 +671,7 @@ func (m *Manager) AdmitAndCaptureWithCleanup(ctx context.Context, cat *Catalog, 
 			m.clearCaptureSuppression(req.WorkspaceRoot)
 			return
 		}
-		if reason := ReasonOf(err); reason != "" {
+		if reason := ReasonOf(err); recordsCaptureSuppression(reason) {
 			m.noteCaptureFailure(req.WorkspaceRoot, reason)
 		}
 	}()

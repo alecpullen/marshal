@@ -823,10 +823,10 @@ func TestStoreIsUsableAfterARefusal(t *testing.T) {
 	if err := os.Remove(huge); err != nil {
 		t.Fatalf("remove huge: %v", err)
 	}
-	// The failed capture suppressed this workspace. Usable here means usable
-	// again once the backoff has elapsed.
-	afterCaptureBackoff(env.manager)
 
+	// A refusal is not a capture failure, so it must not suppress the
+	// workspace: the recovery the refusal warns about (cleanup, then retry) has
+	// to work immediately.
 	hash, _ := trackCapture(t, env, request(env))
 	if hash == "" {
 		t.Fatal("the capture after a refusal published nothing")
@@ -834,16 +834,24 @@ func TestStoreIsUsableAfterARefusal(t *testing.T) {
 }
 
 // A workspace with no eligible paths is refused by admission rather than
-// reserving a manifest replacement for a snapshot that cannot exist.
+// reserving a manifest replacement for a snapshot that cannot exist. It is a
+// refusal, not an internal error: the store is healthy and the workspace is
+// simply empty.
 func TestAdmissionRefusesAnEmptyWorkspace(t *testing.T) {
 	requireGit(t)
 	env := newAdmissionEnv(t, testLimits())
-	_, err := env.manager.AdmitCapture(context.Background(), env.catalog, request(env))
+	result, err := env.manager.AdmitCapture(context.Background(), env.catalog, request(env))
 	if err == nil {
 		t.Fatal("admission admitted a workspace with no eligible paths")
 	}
-	if !errors.Is(err, ErrStoreInternal) {
-		t.Fatalf("refusal reason = %v, want ErrStoreInternal", err)
+	if !errors.Is(err, ErrNoEligiblePaths) {
+		t.Fatalf("refusal reason = %v, want ErrNoEligiblePaths", err)
+	}
+	if result == nil {
+		t.Fatal("an empty-workspace refusal returned no admission result")
+	}
+	if result.Outcome != AdmissionRefused {
+		t.Fatalf("outcome = %q, want %q", result.Outcome, AdmissionRefused)
 	}
 }
 

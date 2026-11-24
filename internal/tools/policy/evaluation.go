@@ -193,6 +193,9 @@ func writesOutsideWorkspace(in Input) bool {
 				// operation, so it is a write the tool will really make.
 				continue
 			}
+			// Only an analyzer-classified target reaches here, and an analyzed
+			// target is a shell operand: a non-shell write carries Validated or
+			// ShellScopeUnknown, never a scratch scope.
 			if !scopeIsInside(target.Scope) {
 				return true
 			}

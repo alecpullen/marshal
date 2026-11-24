@@ -797,6 +797,16 @@ func (t *toolSet) backupState() *session.State {
 	return t.wsState()
 }
 
+// cloneScratchRoots copies a registration's scratch roots, preserving the
+// nil/non-nil distinction that separates "the temporary-directory default"
+// from "no scratch root at all".
+func cloneScratchRoots(roots []string) []string {
+	if roots == nil {
+		return nil
+	}
+	return append([]string{}, roots...)
+}
+
 func newToolSet(opts Options) (*toolSet, error) {
 	if opts.WorkspaceRoot == "" {
 		return nil, errors.New("workspace root is required")
@@ -844,7 +854,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		root:             root,
 		additionalRoots:  additionalRoots,
 		namedRoots:       opts.NamedRoots,
-		scratchRoots:     opts.ScratchRoots,
+		scratchRoots:     cloneScratchRoots(opts.ScratchRoots),
 		pathGrants:       opts.PathGrants,
 		runner:           runner,
 		testCommand:      testCommand,

@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
+	"marshal/internal/pathutil"
 	"marshal/internal/tools/registry"
 )
 
@@ -99,10 +99,7 @@ func (t *toolSet) prepareCommand(_ context.Context, call registry.ToolCall) (reg
 	if strings.TrimSpace(workspace) == "" {
 		workspace = t.root
 	}
-	home := ""
-	if h, err := os.UserHomeDir(); err == nil {
-		home = h
-	}
+	home, homeKnown := pathutil.HomeDir()
 	environment, known, err := source.CaptureCommandEnvironment(dir)
 	if err != nil {
 		return registry.CommandFacts{}, fmt.Errorf("capture %s environment: %w", call.Name, err)
@@ -123,16 +120,22 @@ func (t *toolSet) prepareCommand(_ context.Context, call registry.ToolCall) (reg
 		}
 		known = copied
 	}
-	return registry.CommandFacts{
+	facts := registry.CommandFacts{
 		Command:       command,
 		Dir:           dir,
 		WorkspaceRoot: workspace,
 		HomeDir:       home,
 		ReadRoots:     t.commandReadRoots(),
-		ScratchRoots:  t.effectiveScratchRoots(),
 		Env:           known,
 		Environment:   environment,
-	}, nil
+	}
+	// A scratch grant only means anything together with the home-directory
+	// carve-out that bounds it. A process with no home directory to name gets
+	// neither, rather than a scratch root nothing keeps credentials out of.
+	if homeKnown {
+		facts.ScratchRoots = t.effectiveScratchRoots()
+	}
+	return facts, nil
 }
 
 // preparedCommand validates and normalizes the command bytes one call would
@@ -182,13 +185,18 @@ func decodeCommandArgs(call registry.ToolCall, dst any) error {
 // additional roots plus every readable grant this toolset holds (named aliases,
 // the project checkout of an active worktree and operation-specific permits).
 // A write-only grant is not a read root.
+//
+// The session's scratch roots are deliberately not here. They travel as their
+// own fact, because a scratch grant is narrower than a read grant: the
+// classifier withholds it from the home directory, and a root listed as both
+// would be laundered straight back in as a plain read root.
 func (t *toolSet) commandReadRoots() []string {
 	roots := append([]string(nil), t.additionalRoots...)
 	seen := make(map[string]bool, len(roots))
 	for _, root := range roots {
 		seen[root] = true
 	}
-	for _, grant := range t.grantedRoots() {
+	for _, grant := range t.explicitRoots() {
 		if !grant.Read || grant.Path == "" || seen[grant.Path] {
 			continue
 		}

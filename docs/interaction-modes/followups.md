@@ -29,19 +29,21 @@ single `ShellWrite` effect without per-command knowledge of *which* operands are
 write targets.
 
 Closing it needs write-target selection, not a target walk. `op.Targets`
-currently classifies every operand, and for many commands the operands are not
-paths at all — `git commit -m "fix the parser"`, `make build`,
-`go test ./pkg/...` — so a naive "any non-workspace target requires System"
-rule would demand System approval for ordinary commits and builds. A correct
-implementation needs, per command family, which operands are write destinations
-plus the redirect destinations, and it needs its own matrix tests.
+classifies every operand alike, and for many commands the operands are not
+destinations at all — `git commit -m "fix the parser"`, `make build`,
+`go test ./pkg/...` — so "any non-workspace target requires System" would ask
+for System on a read of `/etc/hosts` (`grep p /etc/hosts`) exactly as it would
+on `cp x /etc/hosts`, and would refuse an ordinary commit whose message happens
+to resolve outside the workspace. A correct implementation needs, per command
+family, which operands are write destinations plus the redirect destinations,
+and it needs its own matrix tests.
 
 Scope if picked up: `internal/tools/policy/{shell_scope,evaluation}.go`, the
 effect/target tables, and `docs/interaction-modes/feature-spec.md` §Policy
 matrix once the implementation and the row agree.
 
-Note that the session's scratch space — the operating system's temporary
-directory and Marshal's own agent worktree area — is now inside the
+Note that the session's scratch space — the session's own temporary directory
+and, from inside a worktree, Marshal's agent worktree area — is now inside the
 workspace's scope for both surfaces, so the ordinary staging this gap covered
 no longer depends on it. The gap remains open for paths outside the workspace
 and every scratch space.

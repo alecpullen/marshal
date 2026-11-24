@@ -3,6 +3,7 @@
 package native
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
+	"marshal/internal/pathutil"
 	"marshal/internal/tools/registry"
 )
 
@@ -157,5 +159,99 @@ func TestAgentWorktreeAreaStaysWritableInsideAWorktree(t *testing.T) {
 	}
 	if _, err := invokeTool(t, reg, "file.write", string(checkoutArgs)); err == nil {
 		t.Fatal("file.write into the project checkout from inside a worktree returned nil error")
+	}
+}
+
+// TestChildAgentInheritsNoScratchReach pins the child rule the spec states: a
+// child agent is bound to its own root, and the scratch reach of the session
+// that spawned it is not part of that binding. Both surfaces must agree.
+func TestChildAgentInheritsNoScratchReach(t *testing.T) {
+	root := t.TempDir()
+	child := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{}, session.WithDepth(1))
+	tools, err := newToolSet(Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, SessionState: child})
+	if err != nil {
+		t.Fatalf("newToolSet: %v", err)
+	}
+	if _, err := tools.resolveToolPath(filepath.Join(t.TempDir(), "notes.md"), false); err == nil {
+		t.Fatal("a child agent wrote into the temporary directory")
+	}
+	attempt := tools.commandAttempt(context.Background(), "shell.run", "call-child", "go test ./...")
+	if len(attempt.Input.ScratchRoots) != 0 {
+		t.Fatalf("a child agent's shell attempt carried scratch roots: %v", attempt.Input.ScratchRoots)
+	}
+}
+
+// TestCommandAttemptCarriesScratchRootsWithoutLaunderingThemAsReadRoots pins
+// the shell surface's wiring. The attempt a managed command is admitted
+// against is what the classifier sees, so it has to carry the session's
+// scratch roots — and carry them only as scratch roots, because a root listed
+// as a read root too would undo the home-directory carve-out downstream.
+func TestCommandAttemptCarriesScratchRootsWithoutLaunderingThemAsReadRoots(t *testing.T) {
+	if _, ok := pathutil.HomeDir(); !ok {
+		t.Skip("no home directory to carve out on this host")
+	}
+	tools, err := newToolSet(Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}})
+	if err != nil {
+		t.Fatalf("newToolSet: %v", err)
+	}
+	attempt := tools.commandAttempt(context.Background(), "shell.run", "call-root", "go test ./...")
+	scratch := attempt.Input.ScratchRoots
+	if len(scratch) == 0 {
+		t.Fatal("the shell attempt carried no scratch root, so the temporary directory needs System again")
+	}
+	for _, root := range scratch {
+		for _, readRoot := range attempt.Input.ReadRoots {
+			if readRoot == root {
+				t.Fatalf("scratch root %q is also handed to the classifier as a read root", root)
+			}
+		}
+	}
+	// The file tools and the shell surface agree about the same directory.
+	if _, err := tools.resolveToolPath(filepath.Join(t.TempDir(), "notes.md"), false); err != nil {
+		t.Fatalf("the file tools refused the temporary directory: %v", err)
+	}
+}
+
+// TestReadOnlyPathGrantStaysReadOnlyUnderScratch pins that a scratch grant does
+// not widen a root the caller declared read-only, even when that root happens
+// to live inside the temporary directory.
+func TestReadOnlyPathGrantStaysReadOnlyUnderScratch(t *testing.T) {
+	// Under the temporary directory, so the scratch grant reaches it.
+	granted := t.TempDir()
+	tools, err := newToolSet(Options{
+		WorkspaceRoot: t.TempDir(),
+		CommandRunner: &fakeRunner{},
+		PathGrants:    []pathutil.RootGrant{{Path: granted, Read: true}},
+	})
+	if err != nil {
+		t.Fatalf("newToolSet: %v", err)
+	}
+	target := filepath.Join(granted, "report.txt")
+	if _, err := tools.resolveToolPath(target, true); err != nil {
+		t.Fatalf("read through the read-only grant: %v", err)
+	}
+	if _, err := tools.resolveToolPath(target, false); err == nil {
+		t.Fatal("a write into a read-only grant was admitted through the scratch grant")
+	}
+}
+
+// TestScratchRootDoesNotAdmitAnUnrelatedPath pins that an explicit scratch list
+// is exactly that: a temporary directory the session did not name is outside
+// every root it holds.
+func TestScratchRootDoesNotAdmitAnUnrelatedPath(t *testing.T) {
+	scratch := t.TempDir()
+	tools, err := newToolSet(Options{
+		WorkspaceRoot: t.TempDir(),
+		CommandRunner: &fakeRunner{},
+		ScratchRoots:  []string{scratch},
+	})
+	if err != nil {
+		t.Fatalf("newToolSet: %v", err)
+	}
+	if _, err := tools.resolveToolPath(filepath.Join(scratch, "staged.txt"), false); err != nil {
+		t.Fatalf("write into the declared scratch root: %v", err)
+	}
+	if _, err := tools.resolveToolPath(filepath.Join(t.TempDir(), "other.txt"), false); err == nil {
+		t.Fatal("an undeclared temporary directory was admitted")
 	}
 }

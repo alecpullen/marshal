@@ -154,10 +154,11 @@ Guardrails fail closed. `mkfs`, `shutdown`, `reboot` and recursive deletes of
 the filesystem root or home are denied outright. Destructive workspace
 operations require exact approval (or Auto), and a destructive operation
 outside the workspace and its scratch space additionally requires System. The
-scratch space is the operating system's temporary directory and Marshal's own
-worktree area — ordinary staging space, not privileged space; the home
-directory and the checkout of an active worktree are never part of it. `git
-push` sits behind its own non-bypassable floor.
+scratch space is the session's own temporary directory — not the host's shared
+`/tmp` — and, from inside a worktree, Marshal's worktree area: ordinary staging
+space, not privileged space. The home directory, the checkout of an active
+worktree and any root declared read-only are never part of it, and a child
+agent inherits none of it. `git push` sits behind its own non-bypassable floor.
 
 ### Two modes, plus Auto
 

@@ -1138,9 +1138,14 @@ func (s *commandScope) classify(err error) error {
 		return err
 	}
 	if s.parent.Err() != nil {
-		// The caller's own context ended (cancel or its own deadline): an
-		// expected abort, which must stay unclassified.
-		return err
+		// The caller's own context ended. A cancellation is an expected abort,
+		// which must stay unclassified; the caller's own deadline is a timeout,
+		// and naming it is what lets the failure be reported as one and its
+		// cost backed off. Classifying here, rather than at whichever guard the
+		// timer happens to interrupt, keeps the reason deterministic.
+		if !errors.Is(s.parent.Err(), context.DeadlineExceeded) {
+			return err
+		}
 	}
 	se := storeError(ReasonCommandTimeout, fmt.Errorf("%s timed out after %s: %w",
 		s.label, s.bound.Round(time.Millisecond), err))

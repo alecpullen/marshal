@@ -49,6 +49,10 @@ func TestReadToolsSystemAccessAbsolute(t *testing.T) {
 			CommandRunner: &fakeRunner{},
 			SessionState:  state,
 			Config:        config.Default(),
+			// No scratch roots: this test pins the strict boundary, where a
+			// path outside the workspace is outside every root the session
+			// holds.
+			ScratchRoots: []string{},
 		}); err != nil {
 			t.Fatalf("RegisterAll: %v", err)
 		}

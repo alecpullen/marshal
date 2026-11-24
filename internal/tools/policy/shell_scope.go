@@ -82,6 +82,40 @@ func classifyShellPath(path string, in ShellInput) (ShellScope, string) {
 			return ShellScopeWorkspace, resolved
 		}
 	}
+	// A scratch root is ordinary working space the session may read and
+	// write: the temporary directory it stages build output in, and its own
+	// scratch area. It is checked before the read roots because it is the
+	// more specific answer, and because a scratch root inside the project
+	// checkout would otherwise be classified as the read-only reference.
+	//
+	// The home directory is never scratch space, wherever it happens to
+	// live: a temporary directory that happens to contain it must not
+	// become a way to reach a credential. A path the workspace or a read
+	// root already covers is unaffected — only the scratch grant is
+	// withheld.
+	homeRoot := ""
+	if in.HomeDir != "" {
+		homeRoot, _ = pathutil.ResolveAbsolute(in.HomeDir)
+		if homeRoot == "" {
+			homeRoot = filepath.Clean(in.HomeDir)
+		}
+	}
+	for _, r := range in.ScratchRoots {
+		if r == "" {
+			continue
+		}
+		root, rerr := pathutil.ResolveAbsolute(r)
+		if rerr != nil {
+			root = filepath.Clean(r)
+		}
+		if !isWithinRoot(resolved, root) {
+			continue
+		}
+		if homeRoot != "" && isWithinRoot(resolved, homeRoot) {
+			continue
+		}
+		return ShellScopeScratch, resolved
+	}
 	for _, r := range in.ReadRoots {
 		if r == "" {
 			continue

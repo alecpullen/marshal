@@ -6,13 +6,20 @@ import (
 	"path/filepath"
 )
 
+// AgentDirPath returns the directory agent worktrees live in, without
+// creating it. AgentDir is the creating form; this one only names the
+// directory, for callers that need to grant or recognise the area.
+func AgentDirPath(projectRoot string) string {
+	return filepath.Join(projectRoot, ".marshal", "worktrees")
+}
+
 // AgentDir is where interactive-session (agent) worktrees live:
 // <projectRoot>/.marshal/worktrees. It is created on first call with a
 // self-ignoring .gitignore so worktree checkouts never appear in the main
 // checkout's git status. Pipeline run worktrees live elsewhere
 // (.marshal/pipeline/<slug>/worktrees) and are unaffected.
 func AgentDir(projectRoot string) (string, error) {
-	dir := filepath.Join(projectRoot, ".marshal", "worktrees")
+	dir := AgentDirPath(projectRoot)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("agent worktrees: mkdir %s: %w", dir, err)
 	}

@@ -39,6 +39,9 @@ func systemModeToolset(t *testing.T) (*registry.Registry, *session.State, string
 		CommandRunner: &fakeRunner{},
 		FileTracker:   filetrack.New(database.SQLDB(), "test-session"),
 		SessionState:  state,
+		// No scratch roots: these tests pin the strict boundary, where a path
+		// outside the workspace is outside every root the session holds.
+		ScratchRoots: []string{},
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}

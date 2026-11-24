@@ -193,7 +193,7 @@ func writesOutsideWorkspace(in Input) bool {
 				// operation, so it is a write the tool will really make.
 				continue
 			}
-			if target.Scope != ShellScopeWorkspace && target.Scope != ShellScopeReadRoot {
+			if !scopeIsInside(target.Scope) {
 				return true
 			}
 		}
@@ -419,10 +419,27 @@ func destructiveOutsideWorkspace(a *ShellAnalysis) bool {
 			continue
 		}
 		for _, t := range op.Targets {
-			if t.Scope != ShellScopeWorkspace && t.Scope != ShellScopeReadRoot {
+			if !scopeIsInside(t.Scope) {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// scopeIsInside reports whether a target's scope is one the session may
+// operate in without a System grant: the workspace itself, a root granted for
+// reading, or a scratch root the session may read and write.
+//
+// A scratch root is ordinary working space — the temporary directory a session
+// stages build output in, and its own scratch area — so a destructive
+// operation scoped inside one is a workspace operation, not an external one.
+// It still goes through the destructive-approval path; what it no longer needs
+// is the System grant that only broad filesystem access warrants.
+func scopeIsInside(scope ShellScope) bool {
+	switch scope {
+	case ShellScopeWorkspace, ShellScopeReadRoot, ShellScopeScratch:
+		return true
 	}
 	return false
 }

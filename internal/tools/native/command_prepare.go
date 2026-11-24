@@ -129,6 +129,7 @@ func (t *toolSet) prepareCommand(_ context.Context, call registry.ToolCall) (reg
 		WorkspaceRoot: workspace,
 		HomeDir:       home,
 		ReadRoots:     t.commandReadRoots(),
+		ScratchRoots:  t.effectiveScratchRoots(),
 		Env:           known,
 		Environment:   environment,
 	}, nil

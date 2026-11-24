@@ -340,8 +340,9 @@ first stage cannot hide a destructive, external, or unknown later stage.
 | Operation | Act | Act + Auto |
 |---|---|---|
 | Routine workspace reads/edits, builds, tests, commits | Allow | Allow |
+| Routine read or edit in the session's scratch space | Allow | Allow |
 | Project-local dependency installation | Allow | Allow |
-| Destructive workspace operation | Specific approval | Allow |
+| Destructive operation in the workspace or its scratch space | Specific approval | Allow |
 | Routine read outside the workspace's permitted read scope | Require System, then allow | Require System, then allow |
 | Routine file edit outside the workspace | Require System, then allow | Require System, then allow |
 | Destructive operation outside the workspace | Require System and specific approval | Require System and specific approval |
@@ -349,6 +350,28 @@ first stage cannot hide a destructive, external, or unknown later stage.
 | `git push` or a configured publishing/floor command | Specific approval | Specific approval |
 | Valid command with uncertain operation/scope | Specific approval | Specific approval |
 | Catastrophic-floor operation | Deny | Deny |
+
+The session's scratch space is ordinary working space, not privileged space:
+the operating system's temporary directory, where a session stages build output,
+test fixtures and throwaway scripts, and Marshal's own agent worktree area. A
+routine read or edit there needs no System grant, and a destructive operation
+scoped there is a workspace operation — specific approval, or Auto — rather
+than an external one. Treating that space as privileged made ordinary work
+need a System grant while the shell surface could already read and write it
+without one.
+
+Two roots are never scratch space, wherever they happen to live: the user's
+home directory, which holds credentials and keys, and the project checkout of
+an active worktree, which is a read-only reference because the worktree is the
+write target. A temporary directory that contains one of them — as it does in
+a container or a sandboxed test environment — must not become a way to reach a
+credential or to write the user's checkout. A path outside the workspace and
+every scratch space still requires System.
+
+The scratch space belongs to the session that owns it. A child agent is bound
+to its own root, and that binding is its whole working scope: the child
+reaches no further than the root it was given, and a child that needs more
+asks its parent.
 
 Project-local installs include local npm/pnpm/yarn installs and module-local
 Go dependency changes. A Python install must have a known project-local target

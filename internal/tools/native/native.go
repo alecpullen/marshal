@@ -123,6 +123,16 @@ type Options struct {
 	// when resolving relative paths; paths that escape ALL roots are
 	// rejected. May be nil when no extra directories are configured.
 	AdditionalRoots []string
+	// ScratchRoots are the roots this registration treats as ordinary scratch
+	// space: readable and writable without a System grant. They are where a
+	// session stages build output, test fixtures and throwaway scripts, so
+	// treating them as privileged space blocked ordinary work.
+	//
+	// Nil means the default: the operating system's temporary directory. An
+	// explicit list replaces that default entirely, and an empty list grants
+	// no scratch root at all — which is how a registration keeps the strict
+	// "outside the workspace is outside" boundary.
+	ScratchRoots []string
 
 	// NamedRoots maps alias prefixes (e.g. "@run") to approved artifact
 	// directories. Paths starting with an alias are resolved against the
@@ -264,6 +274,10 @@ type toolSet struct {
 	root            string
 	additionalRoots []string
 	namedRoots      map[string]string
+	// scratchRoots are the registration's own scratch roots. nil means the
+	// default (the operating system's temporary directory); an explicit list
+	// replaces it, and an empty one grants no scratch root at all.
+	scratchRoots []string
 	// pathGrants are the registration's own root grants. They narrow
 	// additionalRoots/namedRoots for the same root or alias; the primary root
 	// stays readable and writable.
@@ -830,6 +844,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		root:             root,
 		additionalRoots:  additionalRoots,
 		namedRoots:       opts.NamedRoots,
+		scratchRoots:     opts.ScratchRoots,
 		pathGrants:       opts.PathGrants,
 		runner:           runner,
 		testCommand:      testCommand,

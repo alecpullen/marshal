@@ -20,6 +20,17 @@ type CommandFacts struct {
 	HomeDir string
 	// ReadRoots are the additional roots the command may read.
 	ReadRoots []string
+	// ScratchRoots are the roots the command may read AND write as ordinary
+	// working space, outside the workspace: the operating system's temporary
+	// directory and the session's own scratch area.
+	//
+	// A target inside one of them is not an external operation, so it does not
+	// require System. The temporary directory in particular is where a session
+	// stages build output, test fixtures and throwaway scripts as a matter of
+	// course, and the shell surface could already read and write it without a
+	// System grant — treating it as privileged space was an inconsistency
+	// between two surfaces rather than a boundary worth keeping.
+	ScratchRoots []string
 	// Env is the environment facts the analyzer actually knows: only names
 	// whose value the launch is known to carry. A variable absent here is
 	// unknown and must not be guessed from the host. Policy fingerprints
@@ -49,6 +60,7 @@ type CommandPreparer func(context.Context, ToolCall) (CommandFacts, error)
 func cloneCommandFacts(f CommandFacts) CommandFacts {
 	out := f
 	out.ReadRoots = cloneStrings(f.ReadRoots)
+	out.ScratchRoots = cloneStrings(f.ScratchRoots)
 	out.Env = cloneStringMap(f.Env)
 	out.Environment = cloneStrings(f.Environment)
 	return out

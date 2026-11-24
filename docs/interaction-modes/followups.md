@@ -40,6 +40,12 @@ Scope if picked up: `internal/tools/policy/{shell_scope,evaluation}.go`, the
 effect/target tables, and `docs/interaction-modes/feature-spec.md` §Policy
 matrix once the implementation and the row agree.
 
+Note that the session's scratch space — the operating system's temporary
+directory and Marshal's own agent worktree area — is now inside the
+workspace's scope for both surfaces, so the ordinary staging this gap covered
+no longer depends on it. The gap remains open for paths outside the workspace
+and every scratch space.
+
 ## 2. Auto is more permissive than it was for three destructive shapes
 
 Deliberate per "no blanket rules" plus "Auto preauthorizes destructive workspace

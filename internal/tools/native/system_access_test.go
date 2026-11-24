@@ -46,11 +46,13 @@ func TestFullAutoNativePathsRespectChildSystemCeiling(t *testing.T) {
 	cfg.Agent.Auto = true
 	owner := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
 	child := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{}, session.WithInteractionOwner(owner, interaction.Ceiling{Act: true, Auto: true}))
-	tools, err := newToolSet(Options{WorkspaceRoot: child.WorkingDir, CommandRunner: &fakeRunner{}, SessionState: child})
+	outside := filepath.Join(t.TempDir(), "fixture.txt")
+	// No scratch roots: this test pins the strict boundary, where a path
+	// outside the workspace is outside every root the session holds.
+	tools, err := newToolSet(Options{WorkspaceRoot: child.WorkingDir, CommandRunner: &fakeRunner{}, SessionState: child, ScratchRoots: []string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	outside := filepath.Join(t.TempDir(), "fixture.txt")
 	if _, err := tools.resolveToolPath(outside, false); err == nil {
 		t.Fatal("Full Auto widened child's write scope")
 	}
@@ -98,7 +100,9 @@ func TestResolveToolPathSystemModeAbsolute(t *testing.T) {
 	outside := filepath.Join(outsideDir, "report.json")
 
 	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
-	tools, err := newToolSet(Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, SessionState: state})
+	// No scratch roots: this test pins the strict boundary, where a path
+	// outside the workspace is outside every root the session holds.
+	tools, err := newToolSet(Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, SessionState: state, ScratchRoots: []string{}})
 	if err != nil {
 		t.Fatalf("newToolSet: %v", err)
 	}

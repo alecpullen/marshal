@@ -18,13 +18,6 @@ import (
 	"marshal/internal/limits"
 )
 
-// DefaultMaxTotalContentBytes is the most file content one scan retains. It is
-// a total, not a per-file bound: a tree of many small files passes every
-// per-file cap and still sums to an unbounded working set. The number lives in
-// internal/limits so internal/app/config can default to it: naming it from
-// there would close the internal/repo → internal/app/config cycle.
-const DefaultMaxTotalContentBytes int64 = limits.MaxTotalContentBytes
-
 type Config struct {
 	Root   string
 	Ignore []string
@@ -36,7 +29,7 @@ type Config struct {
 	// all files. A file beyond the budget is still hashed and indexed (path,
 	// hash, language, size) but its Content is nil and
 	// ScannedFile.ContentOmitted is set. Zero means
-	// DefaultMaxTotalContentBytes: a bound never disappears.
+	// limits.MaxTotalContentBytes: a bound never disappears.
 	MaxTotalContentBytes int64
 }
 
@@ -108,7 +101,7 @@ func (s *Scanner) walk(ctx context.Context, fn func(path, rel string, retain boo
 	var totalContent int64
 	budget := s.config.MaxTotalContentBytes
 	if budget <= 0 {
-		budget = DefaultMaxTotalContentBytes
+		budget = limits.MaxTotalContentBytes
 	}
 	// exhausted latches the first file the budget rejects; unmeasured names the
 	// first file whose size could not be read. Both are reported once, at the

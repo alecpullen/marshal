@@ -27,7 +27,7 @@ type Deps struct {
 	LSP        LSPSymbols           // nil => LSP symbols not available
 	OnProgress func(message string) // nil => no progress reporting
 	// MaxTotalContentBytes caps the bytes of file content a pass holds in
-	// memory at once. Zero means repo.DefaultMaxTotalContentBytes. Files
+	// memory at once. Zero means internal/limits.MaxTotalContentBytes. Files
 	// past the cap are indexed by path but their content is omitted, so
 	// their symbols and embeddings are skipped rather than guessed.
 	MaxTotalContentBytes int64

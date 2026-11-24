@@ -163,7 +163,9 @@ func TestRepoSearch_SkipsSymlinksAndReportsErrors(t *testing.T) {
 func TestRepoSearchRejectsEmptyQueryAndTraversal(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+	// No scratch roots: this test pins the strict boundary, where a path
+	// outside the workspace is outside every root the session holds.
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, ScratchRoots: []string{}}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 

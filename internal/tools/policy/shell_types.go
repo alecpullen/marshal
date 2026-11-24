@@ -42,6 +42,7 @@ const (
 	ShellScopeNone      ShellScope = "none"
 	ShellScopeWorkspace ShellScope = "workspace"
 	ShellScopeReadRoot  ShellScope = "read_root"
+	ShellScopeScratch   ShellScope = "scratch"
 	ShellScopeExternal  ShellScope = "external"
 	ShellScopeUnknown   ShellScope = "unknown"
 )

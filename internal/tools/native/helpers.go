@@ -12,6 +12,7 @@ import (
 
 	"marshal/internal/pathutil"
 	"marshal/internal/tools/registry"
+	"marshal/internal/worktree"
 )
 
 const truncationMarker = "\n[output truncated]"
@@ -227,26 +228,129 @@ func (t *toolSet) resolveToolPath(rel string, read bool) (string, error) {
 		return "", derr
 	}
 	resolved, err := resolveGrants(t.activeRoot(), t.grantedRoots(), rel, !read)
-	if err != nil {
-		if errors.Is(err, ErrPathEscapes) {
-			// Read-side only: Marshal-owned paths under $HOME are readable
-			// without a workspace override. Writes never take this branch.
-			// The target is resolved BEFORE the allowlist decision and the
-			// resolved path is what gets returned, so a symlink planted
-			// inside an allowlisted directory cannot pivot the read
-			// elsewhere on disk.
-			if read && filepath.IsAbs(rel) {
-				if target, rerr := resolveSystemPath(filepath.Clean(rel)); rerr == nil &&
-					IsReadAllowedOutsideWorkspace(target) {
-					return target, nil
-				}
-			}
-			return "", fmt.Errorf("%w; Marshal-owned paths readable outside the workspace: %s",
-				err, strings.Join(readAllowedUnderHome, ", "))
-		}
+	if err != nil && !errors.Is(err, ErrPathEscapes) {
 		return "", err
 	}
-	return resolved, nil
+	var restrictedRoot string
+	if err == nil {
+		var restricted bool
+		restrictedRoot, restricted = t.reachesRestrictedRootOnlyByScratch(resolved, rel, !read)
+		if !restricted {
+			return resolved, nil
+		}
+	}
+	// The path is outside every root the session holds, or it is inside the
+	// session's scratch space but reaches a root the session holds
+	// deliberately narrow through it.
+	escape := err
+	if escape == nil {
+		escape = fmt.Errorf("%w: path %q is inside the session's scratch space but under %q, which is never scratch space",
+			ErrPathEscapes, rel, restrictedRoot)
+	}
+	// Read-side only: Marshal-owned paths under $HOME are readable
+	// without a workspace override. Writes never take this branch.
+	// The target is resolved BEFORE the allowlist decision and the
+	// resolved path is what gets returned, so a symlink planted
+	// inside an allowlisted directory cannot pivot the read
+	// elsewhere on disk.
+	if read && filepath.IsAbs(rel) {
+		if target, rerr := resolveSystemPath(filepath.Clean(rel)); rerr == nil &&
+			IsReadAllowedOutsideWorkspace(target) {
+			return target, nil
+		}
+	}
+	if !read {
+		// A write the roots refuse is not a malformed path: it is a
+		// request for a capability the session does not hold. Say so,
+		// or the agent cannot tell a typo from a missing grant and
+		// retries the same call.
+		return "", fmt.Errorf("%w; a write there needs System access: request it with mode.request (system=true) and retry",
+			escape)
+	}
+	return "", fmt.Errorf("%w; Marshal-owned paths readable outside the workspace: %s",
+		escape, strings.Join(readAllowedUnderHome, ", "))
+}
+
+// reachesRestrictedRootOnlyByScratch reports whether a resolved path is
+// permitted only because a scratch root granted it, and names the root the
+// session holds deliberately narrow that makes the grant unacceptable.
+//
+// The home directory is where credentials, keys and shell profiles live; a
+// root the caller declared read-only — the project checkout of an active
+// worktree, or an operation-specific permit that grants reading alone — holds
+// the user's files. None of them is scratch space, wherever it happens to
+// live: a temporary directory that contains one of them — as it does in a
+// container or a sandboxed test environment — must not become a way to read a
+// private key, to rewrite a shell profile, or to write the user's checkout. A
+// path the explicit roots permit anyway — the workspace itself, a registered
+// additional root, Marshal's own worktree area — is unaffected.
+func (t *toolSet) reachesRestrictedRootOnlyByScratch(resolved, rel string, write bool) (string, bool) {
+	restricted := t.matchingRoot(resolved, t.restrictedRoots(write))
+	if restricted == "" {
+		return "", false
+	}
+	// The primary root is the session's own working tree and stays readable
+	// and writable whatever else surrounds it. A path there was not reached
+	// through scratch space at all — and this is the common case, a checkout
+	// under the home directory — so it settles without a second resolution.
+	if root := t.activeRoot(); root != "" {
+		if resolvedRoot, err := resolveSystemPath(filepath.Clean(root)); err == nil && containsPath(resolvedRoot, resolved) {
+			return "", false
+		}
+	}
+	if _, err := resolveGrants(t.activeRoot(), t.explicitRoots(), rel, write); err == nil {
+		return "", false
+	}
+	return restricted, true
+}
+
+// restrictedRoots returns the roots a scratch grant must not reach.
+//
+// The home directory is never scratch space, for reads or for writes. A root
+// the caller declared read-only stays as narrow as the caller said: the
+// project checkout of an active worktree, and every operation-specific permit
+// that grants reading alone. A scratch grant widens the reach only where
+// nothing else has said otherwise.
+func (t *toolSet) restrictedRoots(write bool) []string {
+	roots := make([]string, 0, 4)
+	if home, ok := pathutil.HomeDir(); ok {
+		roots = append(roots, home)
+	}
+	if !write {
+		return roots
+	}
+	for _, g := range t.pathGrants {
+		if g.Read && !g.Write && g.Path != "" {
+			roots = append(roots, g.Path)
+		}
+	}
+	if ws := t.wsState(); ws != nil {
+		w := ws.Workspace()
+		if w.ActiveRoot != "" && w.ProjectRoot != "" && w.ActiveRoot != w.ProjectRoot {
+			roots = append(roots, w.ProjectRoot)
+		}
+	}
+	return roots
+}
+
+// matchingRoot returns the first of the given roots that contains an absolute,
+// already-resolved path, or "" when none does. A root that cannot be resolved
+// is skipped rather than treated as a match: an unjudgeable pair must not
+// refuse a path.
+func (t *toolSet) matchingRoot(abs string, roots []string) string {
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		resolvedRoot, err := resolveSystemPath(filepath.Clean(root))
+		if err != nil {
+			continue
+		}
+		if containsPath(resolvedRoot, abs) {
+			return resolvedRoot
+		}
+	}
+	return ""
 }
 
 // resolvePathFunc is the registry.Tool.ResolvePath hook for this toolset. It
@@ -279,17 +383,34 @@ func workspaceRel(root string, abs string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
-// grantedRoots returns the roots this toolset resolves against. The primary
-// root is implicit (it is passed separately and stays readable and writable);
-// here the explicit additional roots and named aliases are read/write grants,
-// the project root of an active worktree is a read-only reference, and the
-// registration's own PathGrants narrow any of those for the same root or
-// alias.
+// grantedRoots returns the roots this toolset resolves against: the explicit
+// grants plus the session's scratch roots. The primary root is implicit (it is
+// passed separately and stays readable and writable).
 //
 // additionalRoots and namedRoots are set once at construction and never
 // updated, so the worktree's project root is injected dynamically at
 // resolution time.
 func (t *toolSet) grantedRoots() []pathutil.RootGrant {
+	grants := t.explicitRoots()
+	// The session's scratch roots are ordinary working space: readable and
+	// writable without a System grant. They are added before the
+	// registration's own PathGrants so an operation-specific permit still
+	// narrows them.
+	for _, root := range t.effectiveScratchRoots() {
+		grants = appendGrant(grants, pathutil.RootGrant{Path: root, Read: true, Write: true}, false)
+	}
+	return grants
+}
+
+// explicitRoots returns the roots the caller granted on purpose: the
+// additional roots, the named aliases, the project checkout of an active
+// worktree (a read-only reference) and the registration's own PathGrants.
+//
+// A scratch root is deliberately not here. A scratch grant widens the surface
+// the file tools may reach, and the home-directory carve-out in
+// resolveToolPath distinguishes "permitted because the caller granted it"
+// from "permitted because it is scratch space".
+func (t *toolSet) explicitRoots() []pathutil.RootGrant {
 	grants := legacyGrants(t.namedRoots, t.additionalRoots)
 	if ws := t.wsState(); ws != nil {
 		w := ws.Workspace()
@@ -297,12 +418,60 @@ func (t *toolSet) grantedRoots() []pathutil.RootGrant {
 			// A project checkout a worktree session may consult is a
 			// reference: readable, never an implicit write target.
 			grants = appendGrant(grants, pathutil.RootGrant{Path: w.ProjectRoot, Read: true}, false)
+			// Marshal's own worktree area is the one part of that checkout
+			// the session may write: it is where worktrees live, and it is
+			// scratch space the session owns rather than the user's files.
+			//
+			// A child agent is not granted it. Its binding is its own root,
+			// and a grant over the whole area would reach back into the
+			// parent's checkout and every sibling worktree — the opposite of
+			// the binding the child was given.
+			if !t.isSubagent() {
+				grants = appendGrant(grants, pathutil.RootGrant{Path: worktree.AgentDirPath(w.ProjectRoot), Read: true, Write: true}, false)
+			}
 		}
 	}
 	for _, g := range t.pathGrants {
 		grants = appendGrant(grants, g, true)
 	}
 	return grants
+}
+
+// effectiveScratchRoots returns the roots this session may read and write as
+// ordinary working space, without a System grant.
+//
+// The operating system's temporary directory is where a session stages build
+// output, test fixtures and throwaway scripts; treating it as privileged
+// space made every such file need a System grant, while the shell surface
+// could already read and write it without one — an inconsistency between two
+// surfaces rather than a boundary worth keeping.
+//
+// The registration's own list replaces that default entirely; an empty list
+// grants no scratch root at all, which is how a registration keeps the strict
+// "outside the workspace is outside" boundary.
+func (t *toolSet) effectiveScratchRoots() []string {
+	// A child agent's binding is the whole scope it holds, so it inherits no
+	// scratch reach from its parent: it asks for more instead.
+	if t.isSubagent() {
+		return nil
+	}
+	// The home-directory carve-out is what keeps a scratch grant from
+	// reaching credentials. With no home directory to name — a process
+	// started without HOME and with no passwd entry — there is no carve-out
+	// to build, so the session gets no scratch reach rather than an
+	// unbounded one.
+	if _, ok := pathutil.HomeDir(); !ok {
+		return nil
+	}
+	if t.scratchRoots != nil {
+		return append([]string(nil), t.scratchRoots...)
+	}
+	return pathutil.TempRoots()
+}
+
+// isSubagent reports whether this registration belongs to a child agent.
+func (t *toolSet) isSubagent() bool {
+	return t.sessionState != nil && t.sessionState.SubagentDepth() > 0
 }
 
 // resolveNamedRoot resolves paths that may use a named alias prefix (e.g.

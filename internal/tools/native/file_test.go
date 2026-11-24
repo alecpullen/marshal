@@ -162,7 +162,9 @@ func TestFileReadRejectsAbsolutePathOutsideAllRoots(t *testing.T) {
 	writeFile(t, outsideFile, "secret\n")
 
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+	// No scratch roots: this test pins the strict boundary, where a path
+	// outside the workspace is outside every root the session holds.
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, ScratchRoots: []string{}}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -278,7 +280,9 @@ func TestFileRead_AllowlistSymlinkPivotRejected(t *testing.T) {
 	}
 
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
+	// No scratch roots: this test pins the strict boundary, where the
+	// allowlist is the only way out of the workspace.
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}, ScratchRoots: []string{}}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -358,6 +362,10 @@ func TestFileReadRejectsSymlinkTargetOutsideAllRoots(t *testing.T) {
 		WorkspaceRoot:   worktreePath,
 		AdditionalRoots: []string{projectRoot},
 		CommandRunner:   &fakeRunner{},
+		// No scratch roots: this test pins the strict boundary, where a
+		// path outside the workspace is outside every root the session
+		// holds.
+		ScratchRoots: []string{},
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
@@ -561,7 +569,9 @@ func TestFileReadRejectsSymlinkEscapingAbsolutePath(t *testing.T) {
 	writeFile(t, filepath.Join(outside, "secret.txt"), "secret\n")
 
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+	// No scratch roots: this test pins the strict boundary, where a path
+	// outside the workspace is outside every root the session holds.
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, ScratchRoots: []string{}}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -2308,7 +2318,9 @@ func TestFileWriteRejectsStaleRead(t *testing.T) {
 func TestFileWriteRejectsPathEscapingRoot(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+	// No scratch roots: this test pins the strict boundary, where a path
+	// outside the workspace is outside every root the session holds.
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, ScratchRoots: []string{}}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	_, err := invokeTool(t, reg, "file.write", `{"path":"../escape.txt","content":"x"}`)
@@ -2378,7 +2390,9 @@ func TestFileWriteRejectsAbsolutePathOutsideRoot(t *testing.T) {
 	root := t.TempDir()
 	other := t.TempDir()
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+	// No scratch roots: this test pins the strict boundary, where a path
+	// outside the workspace is outside every root the session holds.
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, ScratchRoots: []string{}}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/pathutil"
 	"marshal/internal/progress"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -246,11 +247,8 @@ func (t *toolSet) commandAttempt(ctx context.Context, toolName, invocationID, co
 	if workspace == "" {
 		workspace = t.root
 	}
-	home := ""
-	if h, err := os.UserHomeDir(); err == nil {
-		home = h
-	}
-	return policy.CommandAttempt{
+	home, homeKnown := pathutil.HomeDir()
+	attempt := policy.CommandAttempt{
 		InvocationID: invocationID,
 		ToolName:     toolName,
 		Input: policy.ShellInput{
@@ -262,6 +260,13 @@ func (t *toolSet) commandAttempt(ctx context.Context, toolName, invocationID, co
 			Env:           knownEnvironment(),
 		},
 	}
+	// A scratch grant only means anything together with the home-directory
+	// carve-out that bounds it. With no home directory to name, the session has
+	// no scratch reach to hand the classifier rather than an unbounded one.
+	if homeKnown {
+		attempt.Input.ScratchRoots = t.effectiveScratchRoots()
+	}
+	return attempt
 }
 
 // cloneShellInput deep-copies prepared facts so that admitting them cannot
@@ -272,6 +277,9 @@ func (t *toolSet) commandAttempt(ctx context.Context, toolName, invocationID, co
 func cloneShellInput(in policy.ShellInput) policy.ShellInput {
 	out := in
 	out.ReadRoots = append([]string(nil), in.ReadRoots...)
+	if in.ScratchRoots != nil {
+		out.ScratchRoots = append([]string{}, in.ScratchRoots...)
+	}
 	if in.Env != nil {
 		env := make(map[string]string, len(in.Env))
 		for key, value := range in.Env {

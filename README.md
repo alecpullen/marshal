@@ -153,8 +153,12 @@ people to disable the sandbox.
 Guardrails fail closed. `mkfs`, `shutdown`, `reboot` and recursive deletes of
 the filesystem root or home are denied outright. Destructive workspace
 operations require exact approval (or Auto), and a destructive operation
-outside the workspace additionally requires System. `git push` sits behind its
-own non-bypassable floor.
+outside the workspace and its scratch space additionally requires System. The
+scratch space is the session's own temporary directory — not the host's shared
+`/tmp` — and, from inside a worktree, Marshal's worktree area: ordinary staging
+space, not privileged space. The home directory, the checkout of an active
+worktree and any root declared read-only are never part of it, and a child
+agent inherits none of it. `git push` sits behind its own non-bypassable floor.
 
 ### Two modes, plus Auto
 

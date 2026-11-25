@@ -316,11 +316,15 @@ func (s *Session) RemoveSkill(ctx context.Context, scope, source string) error {
 // property of the repository, and writing it project-side would commit one
 // developer's always-on skills into a shared tree. SaveUserConfigValue writes
 // just this key, so the rest of the user config is left alone. A write error
-// is returned unchanged and nothing is installed.
+// is returned unchanged and nothing is installed. The read-modify-write of the
+// saved list holds skillsWriteMu, so an autoload toggle and a shared-copy
+// preference in flight cannot lose each other's key.
 func (s *Session) SetSkillAutoload(ctx context.Context, name string, on bool) error {
 	if s.closed.Load() {
 		return errSessionClosed
 	}
+	s.skillsWriteMu.Lock()
+	defer s.skillsWriteMu.Unlock()
 	current := s.state.ConfigSnapshot().Skills.Autoload
 	next := make([]string, 0, len(current)+1)
 	for _, n := range current {
@@ -377,8 +381,8 @@ func (s *Session) SetSkillPreferShared(ctx context.Context, name string, on bool
 		return fmt.Errorf("no skill named %q", name)
 	}
 
-	s.skillPrefMu.Lock()
-	defer s.skillPrefMu.Unlock()
+	s.skillsWriteMu.Lock()
+	defer s.skillsWriteMu.Unlock()
 	current := s.state.ConfigSnapshot().Skills.PreferShared
 	next := make([]string, 0, len(current)+1)
 	for _, n := range current {

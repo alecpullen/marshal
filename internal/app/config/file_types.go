@@ -124,7 +124,10 @@ type fileSkills struct {
 	MaxActive               *int     `toml:"max_active"`
 	BodyFullTurns           *int     `toml:"body_full_turns"`
 	LoadGateThresholdTokens *int     `toml:"load_gate_threshold_tokens"`
-	PreferShared            []string `toml:"prefer_shared,omitempty"`
+	// A bare slice is enough here: unset and an empty list both mean "no
+	// preference", so the key carries no presence a pointer would have to
+	// preserve (contrast sandbox.env_allowlist, where [] differs from absent).
+	PreferShared []string `toml:"prefer_shared,omitempty"`
 }
 
 // fileImages mirrors ImagesConfig with nullable fields, so a project

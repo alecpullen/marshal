@@ -182,10 +182,11 @@ func scanManagedStore(dir, source string) ([]Candidate, error) {
 
 // scanSharedStore discovers the shared root. Other agents install bundles by
 // linking them in, and a ReadDir entry for a symlink reports itself as a
-// symlink rather than a directory, so this scan (unlike the managed stores)
-// looks through each non-.md child for a SKILL.md. A missing or unreadable
-// root, and a dangling link inside it, are empty rather than fatal: the shared
-// root belongs to another tool, and Marshal has to keep working without it.
+// symlink rather than a directory, so this scan stats through each child
+// instead of trusting the entry type or the name: a linked bundle is a
+// directory here, whatever it is called. A missing or unreadable root, and a
+// dangling link inside it, are empty rather than fatal: the shared root
+// belongs to another tool, and Marshal has to keep working without it.
 func scanSharedStore(dir string) []Candidate {
 	if dir == "" {
 		return nil
@@ -201,15 +202,25 @@ func scanSharedStore(dir string) []Candidate {
 	var out []Candidate
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
-		if !strings.HasSuffix(entry.Name(), ".md") {
+		// Stat follows a link, which is how a bundle another agent linked in
+		// is recognised as a directory. Asking the name first instead (the
+		// managed stores' rule) hid a bundle directory called "x.md": it was
+		// then read as a skill file, failed to parse, and vanished.
+		info, err := os.Stat(path)
+		if err != nil {
+			slog.Default().Warn("skipping unreadable shared skill entry", "path", path, "error", err)
+			continue
+		}
+		if info.IsDir() {
 			bundlePath := filepath.Join(path, BundleFileName)
 			if _, err := os.Stat(bundlePath); err != nil {
-				if _, dirErr := os.Stat(path); dirErr != nil {
-					slog.Default().Warn("skipping unreadable shared skill entry", "path", path, "error", dirErr)
-				}
+				// A directory with no SKILL.md holds no skill; it says nothing
+				// worth warning about.
 				continue
 			}
 			path = bundlePath
+		} else if !strings.HasSuffix(entry.Name(), ".md") {
+			continue
 		}
 		if candidate, ok := candidateFromPath(dir, path, SourceShared, false); ok {
 			out = append(out, candidate)
@@ -242,6 +253,12 @@ func candidateFromPath(dir, path, source string, managed bool) (Candidate, bool)
 	}
 	info, err := os.Lstat(filepath.Join(dir, candidate.SourceName))
 	if err != nil {
+		// The expected race is an entry that vanished between the scan and
+		// this stat, but a permission or I/O error lands here too, and without
+		// the snapshot a removal cannot verify the entry. Say which copy was
+		// dropped: it is the only silent skip left in discovery.
+		slog.Default().Warn("skipping skill without a filesystem snapshot",
+			"path", filepath.Join(dir, candidate.SourceName), "error", err)
 		return Candidate{}, false
 	}
 	candidate.SourceInfo = info

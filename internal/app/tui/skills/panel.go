@@ -115,15 +115,19 @@ func NewPanel(svc Service, projectTrusted bool) *Panel {
 	return p
 }
 
-// reload replaces the listing with the session's. A failed read shows an empty
-// list, as an ignored directory read did.
+// reload replaces the listing with the session's. A failed read leaves the
+// list empty but says so on the error row: the agent side fails closed on a
+// store it cannot scan, and rendering that as "No skills installed" told the
+// user their store was empty when it was unreadable.
 func (p *Panel) reload() {
 	entries, err := p.svc.Skills(context.Background())
 	if err != nil {
 		p.entries = nil
+		p.ActiveList().ErrMsg = "skills unavailable: " + err.Error()
 		return
 	}
 	p.entries = entries
+	p.ActiveList().ErrMsg = ""
 }
 
 // ActiveList returns the FieldList for the current stack depth.

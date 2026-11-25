@@ -180,3 +180,98 @@ func TestSkillsPreferSharedSectionSaveRoundTrip(t *testing.T) {
 		t.Fatalf("PreferShared = %v, want %v", l.Merged.Skills.PreferShared, want)
 	}
 }
+
+// A save that cannot reach the disk returns its error: the caller has to be
+// able to report a failure rather than a preference that was never written.
+func TestSkillsPreferSharedWriteFailureIsReturned(t *testing.T) {
+	home := t.TempDir()
+	// A regular file where a directory would have to be, so neither the load
+	// nor the write can succeed — for any user, root included.
+	blocked := filepath.Join(home, "blocked")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	if err := SaveUserConfigValue(filepath.Join(blocked, "config.toml"), "skills.prefer_shared", []string{"brainstorming"}); err == nil {
+		t.Fatal("SaveUserConfigValue below a regular file returned nil")
+	}
+}
+
+// The ignored project value stays on disk: "ignored" is not "deleted", so the
+// diagnostic keeps describing a value its author can still see.
+func TestSkillsPreferSharedProjectValueStaysOnDisk(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	projectPath := filepath.Join(work, ".marshal", "config.toml")
+	writeFile(t, projectPath, "[skills]\nprefer_shared = ['postmortem']\n")
+
+	l, err := LoadLayers(LoadOptions{
+		HomeDir: home, WorkingDir: work,
+		TrustResolver: staticTrustResolver{decision: trust.DecisionTrustPermanent},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l.ProjectPreferSharedIgnored {
+		t.Fatal("ProjectPreferSharedIgnored = false")
+	}
+	if len(l.Merged.Skills.PreferShared) != 0 {
+		t.Fatalf("project preference applied: %v", l.Merged.Skills.PreferShared)
+	}
+	data, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "prefer_shared") {
+		t.Fatalf("the ignored project preference was erased from disk:\n%s", data)
+	}
+}
+
+// A [providers] hoist rewrites the project file from the file it read. The
+// preference that load merely ignores has to survive that rewrite rather than
+// disappearing with the sections that really did move.
+func TestSkillsPreferSharedSurvivesAProviderHoist(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	projectPath := filepath.Join(work, ".marshal", "config.toml")
+	writeFile(t, projectPath, `[providers.local]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+
+[skills]
+prefer_shared = ['postmortem']
+`)
+
+	if _, err := LoadLayers(LoadOptions{
+		HomeDir: home, WorkingDir: work,
+		TrustResolver: staticTrustResolver{decision: trust.DecisionTrustPermanent},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "[providers.local]") {
+		t.Fatalf("the hoistable provider stayed in the project file:\n%s", data)
+	}
+	if !strings.Contains(string(data), "prefer_shared") {
+		t.Fatalf("the hoist erased the ignored preference:\n%s", data)
+	}
+}
+
+// An untrusted project applies nothing at all: the whole layer is skipped, so
+// the preference is neither merged, stripped nor reported.
+func TestSkillsPreferSharedUntrustedProjectIgnored(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", "[skills]\nprefer_shared = ['postmortem']\n")
+
+	l, err := LoadLayers(LoadOptions{
+		HomeDir: home, WorkingDir: work,
+		TrustResolver: staticTrustResolver{decision: trust.DecisionDontTrust},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(l.Merged.Skills.PreferShared) != 0 {
+		t.Fatalf("untrusted project preference applied: %v", l.Merged.Skills.PreferShared)
+	}
+}

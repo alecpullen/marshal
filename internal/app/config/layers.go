@@ -5,6 +5,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 
 	"marshal/internal/trust"
 
@@ -174,13 +175,21 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 			projectFile.Snapshots.GlobalMaxBytes = nil
 		}
 		// [skills].prefer_shared is user-global only: which copy of a skill
-		// the user runs is the user's choice, not the repository's, so strip
-		// the list before merge rather than letting a project file pick it.
+		// the user runs is the user's choice, not the repository's, so the
+		// merge sees the list as unset rather than letting a project file pick
+		// it. Only the copy the merge reads is stripped: the hoist below
+		// rewrites the project file from this raw mirror, and a key that is
+		// merely ignored must stay on disk where its author put it — otherwise
+		// an unrelated [providers] hoist would erase it, and the diagnostic
+		// would describe a value that no longer exists.
+		mergeProject := projectFile
 		if projectFile.Skills != nil && projectFile.Skills.PreferShared != nil {
 			projectPreferSharedIgnored = true
-			projectFile.Skills.PreferShared = nil
+			withoutPreference := *projectFile.Skills
+			withoutPreference.PreferShared = nil
+			mergeProject.Skills = &withoutPreference
 		}
-		projectNorm, projectNotices, nerr := normalizeInteractionFile(projectFile, LayerProject.String())
+		projectNorm, projectNotices, nerr := normalizeInteractionFile(mergeProject, LayerProject.String())
 		if nerr != nil {
 			return Layers{}, fmt.Errorf("normalize config %s: %w", projectPath, nerr)
 		}
@@ -469,10 +478,21 @@ func fieldByTOMLTag(v reflect.Value, name string) (reflect.Value, bool) {
 	return reflect.Value{}, false
 }
 
+// saveUserConfigValueMu serializes SaveUserConfigValue's read-modify-write of
+// the user config. The write rebuilds the whole file from what it read, so two
+// concurrent single-key saves would each read before the other wrote and one
+// key would be lost — skills.autoload racing skills.prefer_shared, or either
+// racing another settings write. Package-level because every writer of that
+// file goes through this one helper.
+var saveUserConfigValueMu sync.Mutex
+
 // SaveUserConfigValue writes one value at a dotted TOML path into the user
 // config file, preserving everything else in it. Used for global-target
 // settings edits (person preferences, credentials).
 func SaveUserConfigValue(path, dottedPath string, value any) error {
+	saveUserConfigValueMu.Lock()
+	defer saveUserConfigValueMu.Unlock()
+
 	file, err := loadFile(path)
 	if err != nil {
 		return fmt.Errorf("load user config: %w", err)

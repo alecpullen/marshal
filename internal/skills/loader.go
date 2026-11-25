@@ -60,35 +60,26 @@ func scanSkillDir(dir string) ([]string, error) {
 }
 
 // ListScopes returns skills from both scopes without merging; the caller can
-// decide how to handle name collisions.
+// decide how to handle name collisions. It is the two-store form of the
+// resolver's own scan, so a listing and the resolution agree on what a store
+// holds and on what is skipped — including the warning for a copy that could
+// not be stat'ed.
 func ListScopes(globalDir, projectDir string) ([]ScopedSkill, error) {
 	var out []ScopedSkill
 	for _, pair := range []struct{ dir, scope string }{
 		{globalDir, scopeGlobal},
 		{projectDir, scopeProject},
 	} {
-		paths, err := scanSkillDir(pair.dir)
+		candidates, err := scanManagedStore(pair.dir, pair.scope)
 		if err != nil {
 			return nil, err
 		}
-		for _, p := range paths {
-			skill, err := parseSkillFile(p)
-			if err != nil {
-				continue
-			}
-			// Provenance comes from the filesystem, never from Skill.Name. An
-			// entry that vanished between scan and stat is skipped the same way
-			// an unreadable entry is: no identity is fabricated.
-			sourceName := removalSourceName(p)
-			info, err := os.Lstat(filepath.Join(pair.dir, sourceName))
-			if err != nil {
-				continue
-			}
+		for _, candidate := range candidates {
 			out = append(out, ScopedSkill{
-				Skill:      skill,
-				Scope:      pair.scope,
-				SourceName: sourceName,
-				SourceInfo: info,
+				Skill:      candidate.Skill,
+				Scope:      candidate.Source,
+				SourceName: candidate.SourceName,
+				SourceInfo: candidate.SourceInfo,
 			})
 		}
 	}

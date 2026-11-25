@@ -17,6 +17,11 @@
 - An active skill keeps its current instructions until unloaded and loaded again.
 - Resolve home on the machine running the agent. Keep project configuration out of user preference writes.
 
+> Each task landed as one commit holding both its tests and its code, so the
+> `confirm the new expectations fail` step cannot be reconstructed from this
+> history. It records the red-green check as it was run while authoring; the
+> tests it produced are named under each task, and they pass.
+
 ## Review focus
 
 - A missing shared root or broken bundle link leaves existing skills available.
@@ -37,7 +42,7 @@ Files include `internal/skills/loader.go`, `internal/app/runtime.go`, and the sk
 
 ## 2. Expose and persist preferences through ACP
 
-Files include `internal/acp/service/skills.go`, `internal/acp/skills.go`, `internal/acpwire`, and `internal/acpclient` and its RPC implementation.
+Files include `internal/acp/service/skills.go`, `internal/acp/browsers.go`, `internal/acpwire` (the browsers-calls surface the new method joins), and `internal/acpclient` with its RPC implementation.
 
 - [x] Add service and transport tests for source identity, winner, preference and action availability. Cover failed persistence, shared removal rejection, restart persistence, and future loads while a skill with the same name is already active.
 - [x] Run `scripts/test.sh quick ./internal/acp/... ./internal/acpclient/... ./internal/acpwire ./internal/app` and confirm the new expectations fail.
@@ -52,4 +57,4 @@ Files include `internal/app/tui/skills/panel.go`, its existing panel tests, and 
 - [x] Add a panel test for a built-in and shared pair. Assert action labels reflect the saved preference, success refreshes the winner, a project winner remains visible, and failures display without claiming success.
 - [x] Run `scripts/test.sh quick ./internal/app/tui/skills ./internal/app/tui` and confirm the new expectations fail.
 - [x] Add source and winner indicators and wire **Prefer shared copy** and **Use built-in copy** through ACP. Restrict install and remove actions to managed stores. Document automatic discovery, precedence, the TOML list and the panel action.
-- [x] Rerun the package tests, run `scripts/test.sh quick`, and verify preference changes through the normal `/skills` entry point in embedded and daemon modes. Commit the panel and documentation change.
+- [x] Rerun the package tests, run `scripts/test.sh quick`, and verify preference changes through the normal `/skills` entry point: `TestScriptedSkillPreference` drives the real binary to prefer a shared copy and reopens the panel after a restart, and the service tests cover the same session methods the daemon relays. Commit the panel and documentation change.

@@ -32,9 +32,11 @@ The **declared name in the frontmatter is content, not identity**. Identity is
 the copy's source plus its name inside that source (the file name, or the
 bundle directory's name). Two copies can declare the same name — that is what
 the precedence below resolves — and two entries in one store can even share
-one. A broken or unreadable file is skipped rather than failing the source, and
-the declared name a skill advertises is revalidated before anything acts on
-it.
+one. When they do, the store's own listing order decides, and a directory reads
+in name order, so within one source the first entry in that order wins and the
+same tree always resolves the same way. A broken or unreadable file is skipped
+rather than failing the source, and the declared name a skill advertises is
+revalidated before anything acts on it.
 
 The shared root is treated as another tool's directory: a missing root, an
 unreadable entry, or a dangling link is empty for discovery, so Marshal keeps
@@ -80,6 +82,10 @@ a person, not a property of the repository, so a project
 was (`skills.prefer_shared is user-global only; the project config's value is
 ignored`). `/skills` writes this key for you and leaves the rest of the file
 alone.
+
+Unlike `[providers]` and `[models.presets]`, which are migrated into your user
+config, this key is never hoisted: a project file's value is ignored where it
+stands and stays there, so a repository never gets to pick which copy you run.
 
 A name whose preferred shared copy is invalid, broken or missing simply falls
 back to the built-in copy — the preference is a preference, not a requirement,

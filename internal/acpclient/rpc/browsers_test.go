@@ -558,7 +558,10 @@ func TestTheBrowserCallsSendTheirMethods(t *testing.T) {
 
 // TestTheSkillPreferenceCallSendsItsMethod pins session/skills_prefer_shared's
 // frame — the declared skill name with the flag, never a source name — and
-// that the server's refusal reaches the caller.
+// that an error the connection reports reaches the caller. The frame here is
+// coded on purpose: this covers transport, not the refusal's shape. A settings
+// refusal itself is uncoded (settingsFailure in internal/acp/settings.go) and
+// its message is pinned by the service's own tests.
 func TestTheSkillPreferenceCallSendsItsMethod(t *testing.T) {
 	host, a := dialScripted(t, DialOptions{})
 	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})

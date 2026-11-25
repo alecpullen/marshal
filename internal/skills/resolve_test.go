@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 )
 
@@ -113,6 +114,28 @@ func TestResolveNoPreferenceMatchesLoadSkills(t *testing.T) {
 	}
 	if got, _ := resolved.Index.Load(sharedBuiltInName); got.Description == "Shared version" {
 		t.Fatal("the shared copy entered the index without a preference")
+	}
+
+	// The name promises equivalence with the two-store loader the rest of the
+	// runtime still calls, so check it: a global copy of the same name must
+	// win in both.
+	globalDir := t.TempDir()
+	writeSkillFile(t, globalDir, "brainstorming.md", skillContent(sharedBuiltInName, "Global version"))
+	viaResolve := mustResolve(t, Stores{GlobalDir: globalDir}, nil)
+	viaLoad, err := LoadSkills(globalDir, "")
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	fromResolve, ok := viaResolve.Index.Load(sharedBuiltInName)
+	if !ok {
+		t.Fatal("Resolve dropped a global copy of a built-in name")
+	}
+	fromLoad, ok := viaLoad.Load(sharedBuiltInName)
+	if !ok {
+		t.Fatal("LoadSkills dropped a global copy of a built-in name")
+	}
+	if fromResolve.Description != fromLoad.Description {
+		t.Fatalf("Resolve chose %q, LoadSkills chose %q", fromResolve.Description, fromLoad.Description)
 	}
 }
 
@@ -269,6 +292,15 @@ func TestResolveBrokenSharedSymlinkSkipped(t *testing.T) {
 	if _, ok := resolved.Index.Load("fine"); !ok {
 		t.Fatal("a broken link cost the other shared skills")
 	}
+	// The link must leave nothing behind either: a copy fabricated from the
+	// dangling name would be invisible to the assertion above.
+	for _, res := range resolved.ByName {
+		for _, candidate := range res.Candidates {
+			if candidate.SourceName == "gone" {
+				t.Fatalf("%s was fabricated from the dangling link", res.Name)
+			}
+		}
+	}
 }
 
 // TestResolveDuplicateSourceFilenames: identity is (source, source name), so
@@ -386,6 +418,103 @@ func TestListSourcesFourSources(t *testing.T) {
 	for _, want := range []string{SourceBuiltin, SourceGlobal, SourceProject, SourceShared} {
 		if !seen[want] {
 			t.Errorf("ListSources missed the %s source", want)
+		}
+	}
+}
+
+// TestResolveSharedBundleNamedLikeAFile: a bundle directory whose name ends in
+// ".md" is a bundle, not a skill file. Deciding by the name before the entry
+// type handed the directory to the parser as a file, so it vanished from every
+// listing without saying why.
+func TestResolveSharedBundleNamedLikeAFile(t *testing.T) {
+	sharedDir := t.TempDir()
+	writeBundleSkill(t, sharedDir, "oddly.md", skillContent("oddly-named", "A bundle named like a file"))
+
+	resolved := mustResolve(t, Stores{SharedDir: sharedDir}, nil)
+	res, ok := resolved.ByName["oddly-named"]
+	if !ok {
+		t.Fatal("a bundle directory named *.md was not discovered")
+	}
+	if res.Winner.Source != SourceShared {
+		t.Fatalf("source = %q, want shared", res.Winner.Source)
+	}
+	if res.Winner.SourceName != "oddly.md" {
+		t.Fatalf("source name = %q, want oddly.md", res.Winner.SourceName)
+	}
+}
+
+// TestResolveSharedRootIsAFile: a shared path that names a regular file is an
+// empty source, not an error — the same rule as a missing root.
+func TestResolveSharedRootIsAFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	if err := os.WriteFile(root, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write shared root: %v", err)
+	}
+	projectDir := t.TempDir()
+	writeSkillFile(t, projectDir, "mine.md", skillContent("mine", "Project skill"))
+
+	resolved := mustResolve(t, Stores{ProjectDir: projectDir, SharedDir: root}, nil)
+	if _, ok := resolved.Index.Load("mine"); !ok {
+		t.Fatal("a shared root that is not a directory cost the other sources")
+	}
+	if _, ok := resolved.Index.Load(sharedBuiltInName); !ok {
+		t.Fatal("built-ins lost when the shared root is not a directory")
+	}
+}
+
+// TestResolvePreferredSharedCopyMissing: a preference naming a skill with no
+// shared copy is inert rather than an error, and the built-in still wins.
+func TestResolvePreferredSharedCopyMissing(t *testing.T) {
+	resolved := mustResolve(t, Stores{}, []string{sharedBuiltInName})
+	res := resolved.ByName[sharedBuiltInName]
+	if !res.PreferShared {
+		t.Error("the preference was dropped for a name with no shared copy")
+	}
+	if res.Winner.Source != SourceBuiltin {
+		t.Fatalf("winner = %q, want the built-in copy", res.Winner.Source)
+	}
+	if len(res.Candidates) != 1 {
+		t.Fatalf("candidates = %d, want the built-in alone", len(res.Candidates))
+	}
+}
+
+// TestResolveGlobalOutranksBuiltIn: a user install beats a built-in of the same
+// name at the resolver level too, not only through LoadSkills.
+func TestResolveGlobalOutranksBuiltIn(t *testing.T) {
+	globalDir := t.TempDir()
+	writeSkillFile(t, globalDir, "brainstorming.md", skillContent(sharedBuiltInName, "Global version"))
+
+	resolved := mustResolve(t, Stores{GlobalDir: globalDir}, nil)
+	res := resolved.ByName[sharedBuiltInName]
+	if want := []string{SourceGlobal, SourceBuiltin}; !sameStrings(sources(res), want) {
+		t.Fatalf("precedence = %v, want %v", sources(res), want)
+	}
+	if res.Winner.Skill.Description != "Global version" {
+		t.Fatalf("winner = %q, want the global copy", res.Winner.Skill.Description)
+	}
+}
+
+// TestResolveNamesMatchTheIndex: Names is sorted and names exactly what ByName
+// and the index hold — the order the panel lists them in.
+func TestResolveNamesMatchTheIndex(t *testing.T) {
+	projectDir := t.TempDir()
+	for _, name := range []string{"zebra", "alpha", "middle"} {
+		writeSkillFile(t, projectDir, name+".md", skillContent(name, "A skill"))
+	}
+
+	resolved := mustResolve(t, Stores{ProjectDir: projectDir}, nil)
+	if !sort.StringsAreSorted(resolved.Names) {
+		t.Fatalf("Names is not sorted: %v", resolved.Names)
+	}
+	if len(resolved.Names) != len(resolved.ByName) {
+		t.Fatalf("Names has %d entries, ByName has %d", len(resolved.Names), len(resolved.ByName))
+	}
+	for _, name := range resolved.Names {
+		if _, ok := resolved.ByName[name]; !ok {
+			t.Errorf("Names holds %q, which ByName does not", name)
+		}
+		if _, ok := resolved.Index.Load(name); !ok {
+			t.Errorf("Names holds %q, which the index does not", name)
 		}
 	}
 }

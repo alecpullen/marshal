@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+**Shared skills**
+
+- Marshal discovers the skills other agents install into `~/.agents/skills`, so
+  a shared skill is available without copying it into your own store.
+  Precedence is project, global, built-in, shared: another tool's copy never
+  silently replaces a built-in, and a broken, invalid or missing shared copy
+  costs nothing.
+- `/skills` lists every copy of a name with its source and which copy the
+  session loads, and offers **Prefer shared copy** / **Use built-in copy** for
+  a name that has both. The choice is saved to `skills.prefer_shared` in the
+  user config — never a project config — and applies from the next session.
+
 **The framed console**
 
 - The tray, any docked panel, the input area and the status line are drawn as

@@ -63,10 +63,10 @@ func builtInSources() map[string][]byte {
 	}
 }
 
-// loadBuiltIns registers the skills embedded in the binary. They load before
-// the global and project skill directories (see LoadSkills), and the index is
-// keyed by name — so a user-installed skill of the same name overrides the
-// built-in. That precedence is deliberate: an explicit install wins.
+// loadBuiltIns registers the skills embedded in the binary. The index is keyed
+// by name, and resolution ranks the sources (see sourceRank in resolve.go), so
+// a user-installed skill of the same name overrides the built-in. That
+// precedence is deliberate: an explicit install wins.
 func loadBuiltIns(idx *Index) error {
 	candidates, err := builtInCandidates()
 	if err != nil {

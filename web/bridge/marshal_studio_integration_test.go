@@ -762,6 +762,11 @@ func (fx *handoffFlowFixture) registerProject(t *testing.T, name string) (string
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("create %s: %v", name, err)
 	}
+	// A project is the top of a git checkout, so the fixture's project is one:
+	// the daemon offers nothing else.
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("make %s a checkout: %v", name, err)
+	}
 	if err := fx.ws.AddProject(root); err != nil {
 		t.Fatalf("register %s: %v", name, err)
 	}

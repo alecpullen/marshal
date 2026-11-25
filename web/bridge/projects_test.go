@@ -18,7 +18,7 @@ import (
 func projectEnv(t *testing.T) (*wsSpawnEnv, *Server, string) {
 	t.Helper()
 	e := newWSSpawnEnv(t)
-	root := t.TempDir()
+	root := gitCheckout(t)
 	if err := e.f.ws.AddProject(root); err != nil {
 		t.Fatal(err)
 	}
@@ -28,6 +28,37 @@ func projectEnv(t *testing.T) (*wsSpawnEnv, *Server, string) {
 func putSettings(t *testing.T, s *Server, root string, body any) int {
 	t.Helper()
 	return doReq(t, s, http.MethodPut, "/api/projects/settings?root="+root, body, nil).Code
+}
+
+// A project added through the Studio must be the top of a git checkout: a
+// plain directory is refused there, and never appears in the list the composer
+// spawns from, so it cannot be selected and fail at its first spawn.
+func TestAddProjectRequiresAGitCheckout(t *testing.T) {
+	_, s, _ := projectEnv(t)
+
+	plain := t.TempDir()
+	rec := doReq(t, s, http.MethodPost, "/api/projects", map[string]any{"root": plain}, nil)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "not a git repository") {
+		t.Fatalf("add plain directory = %d %s", rec.Code, rec.Body.String())
+	}
+
+	checkout := gitCheckout(t)
+	if rec := doReq(t, s, http.MethodPost, "/api/projects", map[string]any{"root": checkout}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("add checkout = %d %s", rec.Code, rec.Body.String())
+	}
+
+	var listed []map[string]any
+	decodeBody(t, doReq(t, s, http.MethodGet, "/api/projects", nil, nil), &listed)
+	roots := make(map[string]bool, len(listed))
+	for _, project := range listed {
+		roots[project["root"].(string)] = true
+	}
+	if !roots[checkout] {
+		t.Errorf("the added checkout is not offered: %v", roots)
+	}
+	if roots[plain] {
+		t.Errorf("a plain directory is offered as a project: %v", roots)
+	}
 }
 
 func TestProjectSettingsRoundTripAndValidation(t *testing.T) {

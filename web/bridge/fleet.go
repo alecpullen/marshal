@@ -2073,7 +2073,12 @@ func (f *Fleet) ProjectStatus() []ProjectStatus {
 	seen := make(map[string]bool)
 	out := make([]ProjectStatus, 0, len(roots)+len(f.runtimes))
 	add := func(root string) {
-		if seen[root] {
+		// A root that is not a git checkout is not a project Marshal can run,
+		// so it is never offered — the composer must not list a target every
+		// spawn refuses. Older workspaces still carry such roots (a TUI
+		// session attached from a plain directory registered one), and they
+		// drop out of the list here rather than earning an unusable entry.
+		if seen[root] || !isGitProjectRoot(root) {
 			return
 		}
 		seen[root] = true
@@ -2096,6 +2101,16 @@ func (f *Fleet) ProjectStatus() []ProjectStatus {
 	return out
 }
 
+// isGitProjectRoot reports whether root is the top of a git checkout: a
+// repository (a .git directory) or a linked worktree (a .git file pointing
+// into one). Pure file I/O — the bridge performs no git operations, and a
+// project is only ever a checkout's top-level directory, never a
+// subdirectory of one.
+func isGitProjectRoot(root string) bool {
+	_, err := os.Stat(filepath.Join(root, ".git"))
+	return err == nil
+}
+
 // isolationSupport reports whether a project can host isolated agents, or
 // why not. Deliberately cheap: a .git entry plus git on PATH. It does not
 // shell out to git — the bridge performs no git operations.
@@ -2103,7 +2118,7 @@ func isolationSupport(root string) string {
 	if _, err := exec.LookPath("git"); err != nil {
 		return "git is not installed on the bridge host"
 	}
-	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
+	if !isGitProjectRoot(root) {
 		return "not a git repository"
 	}
 	return "available"

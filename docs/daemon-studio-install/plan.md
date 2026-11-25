@@ -2,7 +2,8 @@
 
 Spec: [design.md](design.md) (approved).
 Base commit: `7e44d9d7` (2026-11-25), branch `main`.
-Executed inline, one commit per task, in order.
+Executed inline, one commit per task; Task 4 (documentation only) landed first
+under the parallel-safe allowance below, then Tasks 1–3 in order.
 
 Coordination: Tasks 1–3 are strictly sequential — they share
 `cmd/marshal/daemon.go` and `cmd/marshal/daemon_test.go`, and each consumes what
@@ -407,7 +408,7 @@ CGO_ENABLED=1 go test ./cmd/marshal/ -run 'TestDaemonInstallStudio' -count=1
 CGO_ENABLED=1 go build ./cmd/marshal
 ```
 
-All six tests pass. `daemonStudioLines` is declared but not yet called, which
+All seven tests pass. `daemonStudioLines` is declared but not yet called, which
 Go accepts: an unused function is not an error.
 
 **Commit:** `studio install: task 1 — the flags, validated before they are written`
@@ -779,8 +780,9 @@ The first prints a non-zero count for each file; the second prints one line.
 **Commit:** `studio install: task 4 — document the one-command path`
 
 Note: `AGENTS.md` says specs are committed with the work they describe, so
-`docs/daemon-studio-install/design.md` and this plan are staged in Task 1's
-commit and amended there if they change during the work.
+`docs/daemon-studio-install/design.md` and this plan were committed ahead of
+Task 1 (`4b29fd45`): an isolated task starts from committed HEAD, so a spec left
+uncommitted would not exist in its worktree.
 
 ---
 

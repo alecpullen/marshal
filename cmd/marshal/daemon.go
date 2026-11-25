@@ -270,6 +270,7 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 type daemonStudioConfig struct {
 	passed    bool          // --studio or --studio-url was passed
 	cfg       config.Config // the merged user config carrying the intended values
+	baseline  config.Config // the same config as loaded, for the global-section merge
 	listen    string        // daemon.web_listen after this run
 	listenWas string        // daemon.web_listen before it
 	url       string        // daemon.web_url after this run
@@ -293,6 +294,7 @@ func daemonPlanStudio(home string, studio bool, studioURL string) (daemonStudioC
 	if err != nil {
 		return out, fmt.Errorf("read the user config: %w", err)
 	}
+	out.baseline = cfg
 	out.listenWas = strings.TrimSpace(cfg.Daemon.WebListen)
 	out.listen = out.listenWas
 	out.urlWas = strings.TrimSpace(cfg.Daemon.WebURL)
@@ -328,7 +330,10 @@ func daemonWriteStudio(home string, s daemonStudioConfig) error {
 		return nil
 	}
 	path := config.UserConfigPath(home)
-	if err := config.SaveUserConfigSection(path, s.cfg); err != nil {
+	// The baseline is what makes this a merge rather than a replace: a
+	// [providers] or [models.presets] entry another marshal process saved
+	// between this run's load and this write survives it.
+	if err := config.SaveUserConfigSection(path, s.cfg, s.baseline); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
@@ -388,9 +393,12 @@ func daemonStudioLines(home string, s daemonStudioConfig, stdout io.Writer) {
 }
 
 // daemonWebSocketPath is where daemon.web_listen = "unix" puts the web socket:
-// web.sock beside the daemon's own socket.
+// beside the daemon's own socket. web/bridge names that socket and resolves the
+// path, so this asks it rather than joining a second copy of the name — the
+// printed proxy line is the only thing a user configures Caddy against (D10).
 func daemonWebSocketPath(home string) string {
-	return filepath.Join(daemon.PathsFor(home).Dir, "web.sock")
+	listen, _ := bridge.ParseWebListen("unix", "", daemon.PathsFor(home).Socket)
+	return listen.Address
 }
 
 // daemonProxyTarget is what a proxy in front of the daemon dials for the

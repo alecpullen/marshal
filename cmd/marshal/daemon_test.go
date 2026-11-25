@@ -1791,6 +1791,24 @@ func daemonInstallRunWebbridge(t *testing.T, webbridge string, args ...string) (
 	return out.String(), errOut.String(), err
 }
 
+// daemonInstallRunCounting is daemonInstallRun, and answers how many times the
+// run reached the service manager: a refused install must reach it never.
+func daemonInstallRunCounting(t *testing.T, args ...string) (int, error) {
+	t.Helper()
+	calls := 0
+	t.Setenv("PATH", "/usr/bin:/bin")
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls++
+		return nil, nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{err: errors.New("dial unix: no such file or directory")})
+	var out, errOut bytes.Buffer
+	err := runDaemon(context.Background(),
+		append([]string{"install", "--webbridge", daemonTestWebbridge(t)}, args...),
+		strings.NewReader(""), &out, &errOut)
+	return calls, err
+}
+
 // daemonReadUserConfig is the user config as the next load reads it.
 func daemonReadUserConfig(t *testing.T, home string) config.Config {
 	t.Helper()
@@ -1981,6 +1999,94 @@ func TestDaemonInstallStudioKeepsUnrelatedSections(t *testing.T) {
 	}
 }
 
+// TestDaemonInstallStudioRefusalLeavesTheConfigFileUntouched: "validate before
+// writing anything" is a byte guarantee, so a refused run must not normalise
+// the file it read — which any write would do, comments included.
+func TestDaemonInstallStudioRefusalLeavesTheConfigFileUntouched(t *testing.T) {
+	home := daemonTestEnv(t)
+	// A group with "unix" is the refusal that needs no flag argument.
+	daemonWriteUserConfig(t, home, "# the proxy dials this socket\n[daemon]\nweb_group = \"marshal\"\n")
+	before, err := os.ReadFile(config.UserConfigPath(home))
+	if err != nil {
+		t.Fatalf("read the user config: %v", err)
+	}
+	if _, _, err := daemonInstallRun(t, "--studio"); err == nil {
+		t.Fatal("install --studio with web_group set succeeded, want a refusal")
+	}
+	after, err := os.ReadFile(config.UserConfigPath(home))
+	if err != nil {
+		t.Fatalf("read the user config again: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("a refused install rewrote the user config:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestDaemonInstallStudioNoOpRunLeavesTheConfigFileUntouched: a --studio run
+// that changes nothing writes nothing, so a comment survives it even though a
+// genuine edit normalises the file (design.md decision 4).
+func TestDaemonInstallStudioNoOpRunLeavesTheConfigFileUntouched(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "# the proxy dials this socket\n[daemon]\nweb_listen = \"unix\"\n")
+	before, err := os.ReadFile(config.UserConfigPath(home))
+	if err != nil {
+		t.Fatalf("read the user config: %v", err)
+	}
+	stdout, stderr, err := daemonInstallRun(t, "--studio")
+	if err != nil {
+		t.Fatalf("install --studio: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, " (unchanged)") {
+		t.Errorf("install did not report the listener unchanged:\n%s", stdout)
+	}
+	after, err := os.ReadFile(config.UserConfigPath(home))
+	if err != nil {
+		t.Fatalf("read the user config again: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("a --studio run that changed nothing rewrote the user config:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestDaemonInstallStudioRefusalNeverReachesTheManager: the order of operations
+// is load-bearing, so a refused pair stops before the unit is rendered or the
+// service restarted.
+func TestDaemonInstallStudioRefusalNeverReachesTheManager(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		seed string
+		args []string
+	}{
+		{
+			name: "an address with no listener",
+			args: []string{"--studio-url", "https://marshal.example.com"},
+		},
+		{
+			name: "a group with unix",
+			seed: "[daemon]\nweb_group = \"marshal\"\n",
+			args: []string{"--studio"},
+		},
+		{
+			name: "an address that is not an origin",
+			args: []string{"--studio", "--studio-url", "ftp://marshal.example.com"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := daemonTestEnv(t)
+			if tt.seed != "" {
+				daemonWriteUserConfig(t, home, tt.seed)
+			}
+			calls, err := daemonInstallRunCounting(t, tt.args...)
+			if err == nil {
+				t.Fatalf("install %v succeeded, want a refusal", tt.args)
+			}
+			if calls != 0 {
+				t.Errorf("a refused install reached the service manager %d times, want none", calls)
+			}
+		})
+	}
+}
+
 // TestDaemonInstallWithoutStudioFlagsSaysNothingAboutIt: a plain install keeps
 // its output, even on a daemon someone configured by hand, so the promise in
 // the usage text holds.
@@ -2040,6 +2146,11 @@ func TestDaemonInstallStudioPrintsTheProxySnippetForTheListenerItWrote(t *testin
 		if !strings.Contains(stdout, want) {
 			t.Errorf("install printed no %q:\n%s", want, stdout)
 		}
+	}
+	// The socket form is primary: the port-shaped example follows it.
+	sockAt, portAt := strings.Index(stdout, "reverse_proxy unix/"), strings.Index(stdout, "tailscale serve --bg 7700")
+	if sockAt < 0 || portAt < 0 || sockAt > portAt {
+		t.Errorf("the socket snippet should print before the port alternative (socket at %d, port at %d):\n%s", sockAt, portAt, stdout)
 	}
 }
 

@@ -13,7 +13,7 @@ the web Studio on: hand-edit `[daemon] web_listen` and `web_url` in
 `~/.config/marshal/config.toml`, then arrange a proxy that authenticates the
 browser (D13). Neither key has a default (`internal/app/config/defaults.go`), so
 a stock daemon serves no listener, and `marshal studio` answers with an error
-that names both keys and the two flags to pass (`cmd/marshal/studio.go`,
+that names both keys and the command to run (`cmd/marshal/studio.go`,
 `runStudio`). Everything else about the deployment already works: `marshal
 daemon install` reads the user config, renders a unit whose `UnitSpec.PublicURL`
 becomes webbridge's `--public-url` (`internal/daemon/daemon.go`), writes the
@@ -84,13 +84,21 @@ half-configured daemon.
    - `web_group` set with `"unix"` — `daemonWebListen`'s existing D3 message;
    - a non-http(s) or hostless `--studio-url` — `daemonPublicURL`'s message;
    - `--studio-url` with no listener, and no `--studio` — this command's own.
-5. Write through `config.SaveUserConfigSection(config.UserConfigPath(home), cfg)`
-   — the path every other `[daemon]` write uses — and only when a value
-   actually changed. A write failure aborts the install before the unit is
+5. Write through `config.SaveUserConfigSection(config.UserConfigPath(home), cfg,
+   baseline)` — the path every other `[daemon]` write uses, with the load-time
+   snapshot as the baseline so a `[providers]` or `[models.presets]` entry
+   another marshal process saved in between survives the write — and only when a
+   value actually changed. A write failure aborts the install before the unit is
    rendered, leaving the unit and the running daemon as they were.
 6. Run the existing install unchanged. `daemonUnitSpec` re-reads the config, so
    the unit carries the new `--web-listen` and `--public-url`, and
    `m.Install` writes and restarts as it does today.
+
+A failure *after* the write — a config the existing renderer refuses on a key
+this command does not settle, such as a hand-broken `preview_listen`, or a
+failed `m.Install` — leaves the written pair on disk with the old unit still
+running. Nothing is lost: the pair is itself already validated, and a re-run
+once the cause is fixed completes the install.
 
 ### Printed output
 
@@ -132,6 +140,8 @@ web_url: https://box.example.ts.net (was https://old.example.com)
 proxy: Caddy:  reverse_proxy 127.0.0.1:7700
        Tailscale Serve:  tailscale serve --bg 7700
        (docs/DEPLOYMENT.md)
+/hooks/, /status/ and /mcp pass through without the proxy's login: each carries
+its own credential
 ```
 
 `web_url` prints `(was <old>)` only when the run changed it, and no suffix when
@@ -141,8 +151,9 @@ front a socket.
 
 The whole block prints only when `--studio` or `--studio-url` was passed. A
 plain `marshal daemon install` on a daemon someone configured by hand keeps
-today's output exactly, so the promise in the flags section holds and the test
-for it stays a byte comparison.
+today's output exactly, so the promise in the flags section holds; the test pins
+that by banning `web_listen:`, `web_url:`, `proxy:` and `studio:` from a plain
+install's output.
 
 The snippets are quoted from `docs/DEPLOYMENT.md` rather than invented, and the
 printed snippet always matches the listener this run ends with: with `unix` the
@@ -172,7 +183,9 @@ says where it looked and runs on. When files are found, print
 `marshal studio`, `marshal daemon status`, `daemon.Paths`, the web listener's
 own behaviour, webbridge's flags, and the retired-key warnings all stay as they
 are. The config write is the only new mutation, and it goes through the existing
-user-config writer.
+user-config writer. The stale rationale in `daemonLoopbackAddr`'s comment — the
+daemon's retired bearer token — is corrected to D13's proxy authentication and
+D2's per-endpoint credentials; no behaviour changes with it.
 
 ## Decisions and trade-offs
 

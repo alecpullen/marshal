@@ -34,9 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--profile` is accepted and ignored. Run `marshal daemon install` after
   upgrading so your unit is rewritten.
 - `marshal daemon install --studio` turns the web Studio on: it writes
-  `daemon.web_listen = "unix"` when no listener is set, prints the proxy line
-  for that socket, and warns when the daemon has no Studio files.
-  `--studio-url` sets `daemon.web_url` once the proxy has an address.
+  `daemon.web_listen = "unix"` when no listener is set, prints the proxy line to
+  put in front of it, and warns when the daemon has no Studio files.
+  `--studio-url` sets `daemon.web_url` once the proxy has an address, and an
+  address with no listener is refused.
 - An agent with a workspace runs in a container, out of the host's own state
   directory, and every other agent is a host process. Linux needs a rootless
   Podman or Docker; install one before you use a workspace agent.

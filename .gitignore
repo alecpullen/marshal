@@ -1,4 +1,3 @@
-kimi-api
 # Local build outputs
 /marshal
 /webbridge
@@ -7,12 +6,24 @@ kimi-api
 /share/
 # GoReleaser build output
 /dist/
-/node_modules/
+
+# Node dependencies, wherever they appear: a `node_modules` is always vendored
+# code, never hand-written source, so the unanchored form is the right one.
+node_modules/
+
+# The retired Svelte Studio. The Flutter app in app/ replaced it (F8), and all
+# that is left here is the `node_modules` tree above; nothing under web/ui is
+# tracked.
+web/ui/
 
 # Go test/build artifacts
 *.test
 *.out
 coverage.txt
+coverage.html
+# Local multi-module overrides; this repo builds from go.mod alone.
+go.work
+go.work.sum
 
 # Editor and OS files
 .DS_Store
@@ -37,7 +48,6 @@ coverage.txt
 .marshal/*
 !.marshal/.gitignore
 !.marshal/skills/
-api.fish
 
 # Relocated Go home (module cache, build cache, telemetry)
 /.home/
@@ -47,6 +57,9 @@ api.fish
 docs/superpowers/
 docs/specs/
 skills-lock.json
+# Logo/mockup scratch: mockup HTML, PNG variants and the python checkers that
+# measure them. Local working material, not published docs.
+docs/logo/
 
 # Saved diffs / patch scratch from agent workflows
 *.diff
@@ -55,10 +68,19 @@ skills-lock.json
 # Generated session exports
 /marshal-session-*.html
 
-# Test/build binaries
-*.test
-tui.test
-
 # Python bytecode from the E2E harness
 __pycache__/
 *.pyc
+
+# The fvm SDK cache, and the pin beside it: `.fvmrc` records the SDK a machine
+# chose, which is per-machine state, not a repo decision. scripts/dev-daemon.sh
+# reads it when present and falls back to `fvm flutter` when it is absent.
+.fvm/
+.fvmrc
+
+# Local secrets, never committed. `kimi-api` holds API keys and `api.fish` is a
+# fish script that exports one as an environment variable. Both stay unanchored
+# on purpose: a key file is not safe to commit wherever it is dropped, so the
+# rule follows the name to any directory.
+kimi-api
+api.fish

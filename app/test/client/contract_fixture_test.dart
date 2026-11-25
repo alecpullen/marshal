@@ -97,8 +97,7 @@ final _codecs = <String, _Codec>{
   'NewProjectRequest': (json) =>
       NewProjectRequest.fromJson(_object(json)).toJson(),
   'CreationState': (json) => CreationState.fromWire(json! as String).wire,
-  'ProjectCreation': (json) =>
-      ProjectCreation.fromJson(_object(json)).toJson(),
+  'ProjectCreation': (json) => ProjectCreation.fromJson(_object(json)).toJson(),
   'NewProjectOptions': (json) =>
       NewProjectOptions.fromJson(_object(json)).toJson(),
   // issues.json

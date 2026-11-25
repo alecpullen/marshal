@@ -66,13 +66,12 @@ class BridgeClient {
   /// POST /api/projects/new: makes a project — blank, cloned, or a folder
   /// already on the host. A clone answers while git still runs, and
   /// [projectCreation] reads how it ends.
-  Future<ProjectCreation> createProject(NewProjectRequest request) =>
-      _objectOf(
-        '/api/projects/new',
-        ProjectCreation.fromJson,
-        method: 'POST',
-        body: request,
-      );
+  Future<ProjectCreation> createProject(NewProjectRequest request) => _objectOf(
+    '/api/projects/new',
+    ProjectCreation.fromJson,
+    method: 'POST',
+    body: request,
+  );
 
   /// GET /api/projects/new/{id}: one creation, as its clone goes.
   Future<ProjectCreation> projectCreation(String id) => _objectOf(

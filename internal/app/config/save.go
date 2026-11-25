@@ -46,6 +46,9 @@ func SaveProjectConfig(path string, cfg Config, layers Layers) error {
 	// layer diff so it is never emitted into the project file, regardless of
 	// whether a layer snapshot was supplied.
 	stripProjectSnapshotGlobal(&file, cfg)
+	// skills.prefer_shared is user-global only: strip it before the layer
+	// diff so it is never emitted into the project file.
+	stripProjectSkillsPreference(&file, cfg)
 	applyProjectLayer(&file, cfg, layers)
 
 	data, err := toml.Marshal(&file)
@@ -60,6 +63,28 @@ func SaveProjectConfig(path string, cfg Config, layers Layers) error {
 		return fmt.Errorf("write project config: %w", err)
 	}
 	return nil
+}
+
+// stripProjectSkillsPreference removes skills.prefer_shared from a
+// project-file mirror. Which copy of a skill the agent runs is the user's
+// choice, so a project file must never carry the preference and a project save
+// can neither set nor clear it. When the remaining project-relevant fields all
+// equal their built-in defaults — the section differed only by the stripped
+// preference — the whole section is dropped rather than written with
+// default-valued keys, matching stripProjectSnapshotGlobal. cfg is the merged
+// config, so a project setting that really is set keeps the section.
+func stripProjectSkillsPreference(file *configFile, cfg Config) {
+	if file.Skills == nil {
+		return
+	}
+	file.Skills.PreferShared = nil
+	// The rest of [skills] is project-relevant: the section is dropped only
+	// when nothing else in it differs from the defaults.
+	rest, def := cfg.Skills, Default().Skills
+	rest.PreferShared, def.PreferShared = nil, nil
+	if reflect.DeepEqual(rest, def) {
+		file.Skills = nil
+	}
 }
 
 // SaveVerifyCommands persists just the [sdd.verify] build/test fields to the

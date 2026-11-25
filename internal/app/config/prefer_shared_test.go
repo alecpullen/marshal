@@ -1,7 +1,10 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"marshal/internal/trust"
@@ -93,6 +96,70 @@ func TestSkillsPreferSharedSaveUserConfigValue(t *testing.T) {
 	}
 	if len(l.Merged.Skills.PreferShared) != 0 {
 		t.Fatalf("cleared preference came back as %v", l.Merged.Skills.PreferShared)
+	}
+}
+
+// A project save must never carry the preference: it is the user's install
+// choice, so writing the merged config (which holds it) leaves no trace in the
+// committed file and no "ignored" diagnostic on the next load.
+func TestSkillsPreferSharedProjectSaveOmitsPreference(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	if err := SaveUserConfigValue(UserConfigPath(home), "skills.prefer_shared", []string{"brainstorming"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	cfg.Skills.PreferShared = []string{"brainstorming"}
+	// A project-relevant delta, so writeSections emits [skills] at all and the
+	// omission comes from the strip rather than from an absent section.
+	cfg.Skills.MaxActive = 4
+
+	path := filepath.Join(work, ".marshal", "config.toml")
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "prefer_shared") {
+		t.Fatalf("project save wrote the user's preference:\n%s", data)
+	}
+	if !strings.Contains(string(data), "max_active") {
+		t.Fatalf("project-relevant skill setting was dropped:\n%s", data)
+	}
+
+	l, err := LoadLayers(LoadOptions{
+		HomeDir: home, WorkingDir: work,
+		TrustResolver: staticTrustResolver{decision: trust.DecisionTrustPermanent},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.ProjectPreferSharedIgnored {
+		t.Fatal("project save produced a file the loader reports as setting the preference")
+	}
+	if want := []string{"brainstorming"}; !reflect.DeepEqual(l.Merged.Skills.PreferShared, want) {
+		t.Fatalf("PreferShared = %v, want %v", l.Merged.Skills.PreferShared, want)
+	}
+}
+
+// When the preference is the only skill setting, the save drops [skills]
+// entirely rather than pinning today's defaults into the project file.
+func TestSkillsPreferSharedOnlyProjectSaveWritesNoSkillsSection(t *testing.T) {
+	work := t.TempDir()
+	cfg := Default()
+	cfg.Skills.PreferShared = []string{"brainstorming"}
+
+	path := filepath.Join(work, ".marshal", "config.toml")
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "[skills]") {
+		t.Fatalf("project save pinned a default-valued [skills] table:\n%s", data)
 	}
 }
 

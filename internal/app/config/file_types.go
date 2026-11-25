@@ -124,7 +124,7 @@ type fileSkills struct {
 	MaxActive               *int     `toml:"max_active"`
 	BodyFullTurns           *int     `toml:"body_full_turns"`
 	LoadGateThresholdTokens *int     `toml:"load_gate_threshold_tokens"`
-	PreferShared            []string `toml:"prefer_shared"`
+	PreferShared            []string `toml:"prefer_shared,omitempty"`
 }
 
 // fileImages mirrors ImagesConfig with nullable fields, so a project

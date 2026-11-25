@@ -621,11 +621,27 @@ func (s *Server) addProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if err := projectAddRefusal(body.Root); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	if err := s.fleet.ws.AddProject(body.Root); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, s.fleet.ProjectStatus())
+}
+
+// projectAddRefusal reports why root cannot become a project, or nil when it
+// can. Marshal runs a project from the top of a git checkout, so a plain
+// directory is refused when it is added rather than offered by the composer
+// and failing at its first spawn. Removal is deliberately not gated: a root
+// registered before this rule existed must still be removable.
+func projectAddRefusal(root string) error {
+	if isGitProjectRoot(root) {
+		return nil
+	}
+	return fmt.Errorf("project root %q is not a git repository: Marshal runs projects from the top of a git checkout", root)
 }
 
 func (s *Server) removeProject(w http.ResponseWriter, r *http.Request) {

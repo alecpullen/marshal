@@ -490,28 +490,41 @@ func TestSpawnNonIsolatedRecordsNoBranch(t *testing.T) {
 	}
 }
 
-func TestProjectStatusReportsIsolationUnavailableOutsideAGitRepo(t *testing.T) {
+// A project Marshal offers is the top of a git checkout. A plain directory —
+// which an older workspace can still carry, a TUI session attached from one
+// having registered it — is never offered, and a checkout is.
+func TestProjectStatusOffersOnlyGitCheckouts(t *testing.T) {
 	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
-	plain := t.TempDir() // a directory, not a git repo
-	if err := ws.AddProject(plain); err != nil {
+	checkout := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(checkout, ".git"), 0o755); err != nil {
 		t.Fatal(err)
+	}
+	plain := t.TempDir() // a directory, not a git repo
+	for _, root := range []string{checkout, plain} {
+		if err := ws.AddProject(root); err != nil {
+			t.Fatal(err)
+		}
 	}
 	f := NewFleet(ws, "unused", nil, "", Limits{}, "")
 	t.Cleanup(f.Close)
 
+	offered := false
 	for _, st := range f.ProjectStatus() {
-		if st.Root != plain {
-			continue
+		switch st.Root {
+		case plain:
+			t.Error("a plain directory must never be offered as a project")
+		case checkout:
+			offered = true
+			if st.Isolation != "available" {
+				t.Errorf("checkout isolation = %q, want available", st.Isolation)
+			}
 		}
-		if st.Isolation == "available" {
-			t.Error("isolation must not be available outside a git repo")
-		}
-		if st.Isolation == "" {
-			t.Error("Isolation must carry a reason the composer can display")
-		}
+	}
+	if !offered {
+		t.Fatalf("project status does not offer the checkout %q", checkout)
 	}
 }
 
@@ -520,7 +533,8 @@ func TestReconcileWorktreesRecordsOrphans(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 	// Bring a project up so it has a runtime to ask.
-	if _, err := f.Spawn(ctx, "/home/u/a", SpawnOptions{Name: "x"}); err != nil {
+	project := gitCheckout(t)
+	if _, err := f.Spawn(ctx, project, SpawnOptions{Name: "x"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -529,7 +543,7 @@ func TestReconcileWorktreesRecordsOrphans(t *testing.T) {
 	// The fake child answers session/worktree_prune with one unknown entry.
 	var found bool
 	for _, st := range f.ProjectStatus() {
-		if st.Root == "/home/u/a" && len(st.OrphanWorktrees) > 0 {
+		if st.Root == project && len(st.OrphanWorktrees) > 0 {
 			found = true
 		}
 	}
@@ -545,7 +559,7 @@ func TestFleetSpawnFailureIsReported(t *testing.T) {
 	}
 	f := NewFleet(ws, "not-a-real-marshal-binary", nil, "", Limits{}, "")
 	defer f.Close()
-	if _, err := f.Spawn(context.Background(), "/home/u/a", SpawnOptions{Name: "one"}); err == nil {
+	if _, err := f.Spawn(context.Background(), gitCheckout(t), SpawnOptions{Name: "one"}); err == nil {
 		t.Fatal("expected spawn failure")
 	}
 	statuses := f.ProjectStatus()

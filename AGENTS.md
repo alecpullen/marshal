@@ -111,6 +111,10 @@ resumes its session itself, and the next screen to attach sees the run.
 The Studio lists every session a daemon's projects hold, the TUI's included,
 and opens any of them on its project's child; the bridge follows each one, so a
 turn typed in the terminal shows in the Studio (P7).
+The Studio's plus beside *Projects* adds a project to a host — an empty
+repository, a clone made with the host's own git setup, or a folder already
+there — under `[daemon] projects_dir` (`~/projects` by default;
+`docs/studio-flutter/new-project.md`).
 `marshal fleet` opens an agent's or a daemon
 session's screen with `⏎`, and `/fleet` returns to the fleet from any daemon
 session. A

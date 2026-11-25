@@ -459,6 +459,9 @@ func merge(cfg *Config, file configFile) error {
 		if file.Daemon.PreviewURL != nil && *file.Daemon.PreviewURL != "" {
 			cfg.Daemon.PreviewURL = *file.Daemon.PreviewURL
 		}
+		if file.Daemon.ProjectsDir != nil && *file.Daemon.ProjectsDir != "" {
+			cfg.Daemon.ProjectsDir = *file.Daemon.ProjectsDir
+		}
 		// The four retired keys (one-daemon D10, D6) are no longer read:
 		// studio_addr, join_url, join_name and join_ca_file only name
 		// themselves in Retired, so the user can be told to drop them. Every

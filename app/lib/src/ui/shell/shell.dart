@@ -4,10 +4,10 @@ import 'package:flutter/services.dart' show SystemNavigator;
 
 import '../../model/age.dart';
 import '../../model/composer_model.dart';
-import '../../model/connect_repo_model.dart';
 import '../../model/factory_store.dart';
 import '../../model/handoff_model.dart';
 import '../../model/marshal_model.dart';
+import '../../model/new_project_model.dart';
 import '../../model/new_work_model.dart';
 import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
@@ -53,7 +53,7 @@ import '../thread/share_sheet.dart';
 import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
 import '../thread/transcript.dart' show Transcript;
-import 'connect_repo_sheet.dart';
+import 'new_project_sheet.dart';
 import 'host_switcher.dart';
 import 'keys.dart';
 import 'placeholder.dart';
@@ -141,7 +141,7 @@ class Shell extends StatefulWidget {
     this.libraryFor,
     this.settingsFor,
     this.signals,
-    this.onConnectRepo,
+    this.onAddProject,
     this.onNew,
     this.onOpenProject,
     this.onLeaveSettings,
@@ -198,10 +198,10 @@ class Shell extends StatefulWidget {
   /// test or an embedded host that supplies none still builds.
   final SignalsStore? signals;
 
-  /// Connects a repository (F9 B1): the plus beside *Projects*. Null leaves
+  /// Adds a project (new-project.md): the plus beside *Projects*. Null leaves
   /// the control out; the sheet is the Studio's, so the shell only offers the
   /// way into it.
-  final VoidCallback? onConnectRepo;
+  final VoidCallback? onAddProject;
 
   /// The place-level New (F9 B3): the narrow app bar's plus and the sidebar's
   /// plus both call it, so they start work the way the page headers do. Null
@@ -276,7 +276,7 @@ class _ShellState extends State<Shell> {
     host: _host,
     onHost: _setHost,
     onSelect: (place) => _leave(() => _select(place)),
-    onConnectRepo: widget.onConnectRepo,
+    onAddProject: widget.onAddProject,
     onNew: widget.onNew,
     // Settings' Back row is a way out of a place like any other, so it asks
     // the one guard through [_leave] as the rows do (design-system.md §9).
@@ -619,7 +619,7 @@ class Studio extends StatefulWidget {
     this.memory,
     this.shareFor,
     this.inspectorFor,
-    this.connectRepoFor,
+    this.newProjectFor,
     this.planningFor,
     this.handoffFor,
     this.sourceHandoffFor,
@@ -698,10 +698,10 @@ class Studio extends StatefulWidget {
   /// store want.
   final ProjectMemory? memory;
 
-  /// Builds the connect-repository sheet's model for one host (F9 B1). Null
-  /// leaves the sidebar's plus out: a host that wires no bridge cannot
-  /// register a repository.
-  final ConnectRepoModel Function(String host)? connectRepoFor;
+  /// Builds the Add a project sheet's model, starting on one host
+  /// (new-project.md). Null leaves the sidebar's plus out: a Studio that wires
+  /// no bridge cannot make a project.
+  final NewProjectModel Function(String host)? newProjectFor;
 
   /// Builds a thread's Share model, from the host's client (F7 decision 7).
   /// Null leaves the header's Share disabled: a control that cannot work is
@@ -972,9 +972,9 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
           libraryFor: widget.libraryFor,
           settingsFor: widget.settingsFor,
           signals: widget.signals,
-          onConnectRepo: widget.connectRepoFor == null
+          onAddProject: widget.newProjectFor == null
               ? null
-              : () => unawaited(_openConnectRepo(context)),
+              : () => unawaited(_openNewProject(context)),
           // The place-level New (F9 B3): the narrow app bar and the sidebar
           // start work the way the page headers do, through the same
           // resolution `⌘N` uses — but unguarded, because a tap does not take
@@ -1481,10 +1481,10 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
     return null;
   }
 
-  /// The host a repository connected from the sidebar is registered on: the
-  /// place's own, else the one that lists the first project, else the first
-  /// host there is. Null only when the fleet lists no host at all.
-  String? _hostForConnect() {
+  /// The host a project added from the sidebar starts on: the place's own,
+  /// else the one that lists the first project, else the first host there is.
+  /// Null only when the fleet lists no host at all.
+  String? _hostForNewProject() {
     final place = _place;
     if (place.kind == PlaceKind.thread) {
       final thread = _threadRef(place);
@@ -1500,16 +1500,29 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
     return hosts.isEmpty ? null : hosts.first.name;
   }
 
-  /// Opens the sheet that registers a repository for issue intake (F9 B1), on
-  /// the host the place belongs to.
-  Future<void> _openConnectRepo(BuildContext context) async {
-    final build = widget.connectRepoFor;
+  /// Opens the sheet that makes a project (new-project.md), on the host the
+  /// place belongs to; the sheet can move it to another. Once the host has
+  /// registered the project, its snapshot is read and the project's
+  /// conversation opens — the new project is where the next work goes.
+  Future<void> _openNewProject(BuildContext context) async {
+    final build = widget.newProjectFor;
     if (build == null) return;
-    final host = _hostForConnect();
+    final host = _hostForNewProject();
     if (host == null) return;
     final model = build(host);
-    await showConnectRepoSheet(context, model);
+    ({String host, String root})? made;
+    await showNewProjectSheet(
+      context,
+      model,
+      onCreated: (host, root) => made = (host: host, root: root),
+    );
     model.dispose();
+    final project = made;
+    if (project == null) return;
+    await widget.store.refresh(project.host);
+    if (!mounted) return;
+    _memory.rememberProject(project.host, project.root);
+    _go(Place.conversation(host: project.host, id: project.root));
   }
 
   /// Whether a text field has the keyboard, so that a key the shell would
@@ -1636,9 +1649,9 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
       candidates: candidates,
       onOpen: (host, root) =>
           navigation.go(Place.conversation(host: host, id: root)),
-      onConnectRepo: widget.connectRepoFor == null
+      onAddProject: widget.newProjectFor == null
           ? null
-          : () => unawaited(_openConnectRepo(context)),
+          : () => unawaited(_openNewProject(context)),
       onRetry: _reread,
     );
   }
@@ -1672,9 +1685,6 @@ class _StudioState extends State<Studio> with WidgetsBindingObserver {
         unawaited(_openNewWorkItem(navigation, host, root, prompt)),
     onOpenProject: (host, root) =>
         navigation.go(Place.conversation(host: host, id: root)),
-    onConnectRepo: widget.connectRepoFor == null
-        ? null
-        : () => unawaited(_openConnectRepo(context)),
   );
 
   /// Opens the handoff review with [prompt] as the plan's starting text, and
@@ -1752,7 +1762,6 @@ class _ComposerPlace extends StatefulWidget {
     this.onPlanned,
     this.onWorkItem,
     this.onOpenProject,
-    this.onConnectRepo,
   });
 
   final String host;
@@ -1766,7 +1775,6 @@ class _ComposerPlace extends StatefulWidget {
   onPlanned;
   final void Function(String host, String project, String prompt)? onWorkItem;
   final void Function(String host, String project)? onOpenProject;
-  final VoidCallback? onConnectRepo;
 
   @override
   State<_ComposerPlace> createState() => _ComposerPlaceState();
@@ -1800,8 +1808,8 @@ class _ComposerPlaceState extends State<_ComposerPlace> {
 }
 
 /// The conversation entry with no project to open (agent-first Studio, task
-/// 2): every project a host lists, so a person chooses one, and Connect
-/// repository when no host lists any.
+/// 2): every project a host lists, so a person chooses one, and Add a project
+/// when no host lists any.
 ///
 /// It is what the last project selected being gone leaves, and what New from a
 /// global screen opens when several projects could be meant.
@@ -1809,7 +1817,7 @@ class _ConversationEntry extends StatelessWidget {
   const _ConversationEntry({
     required this.candidates,
     required this.onOpen,
-    this.onConnectRepo,
+    this.onAddProject,
     this.onRetry,
   });
 
@@ -1818,18 +1826,18 @@ class _ConversationEntry extends StatelessWidget {
   final List<({String host, String root})> candidates;
 
   final void Function(String host, String root) onOpen;
-  final VoidCallback? onConnectRepo;
+  final VoidCallback? onAddProject;
   final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
     final retry = StateAction('Read the fleet again', onTap: onRetry ?? () {});
     if (candidates.isEmpty) {
-      final connect = onConnectRepo;
+      final add = onAddProject;
       return PageBody(
         title: 'Start a new agent',
         children: [
-          connect == null
+          add == null
               ? StateMessage.empty(
                   message:
                       'No project yet: a project appears here once a daemon '
@@ -1838,9 +1846,9 @@ class _ConversationEntry extends StatelessWidget {
                 )
               : StateMessage.empty(
                   message:
-                      'No project yet: connect a repository to start work in '
-                      'one.',
-                  action: StateAction('Connect repository', onTap: connect),
+                      'No project yet: add one — blank, cloned, or a folder '
+                      'already on a host — to start work in it.',
+                  action: StateAction('Add a project', onTap: add),
                 ),
         ],
       );

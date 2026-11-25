@@ -1,4 +1,36 @@
 {
+  "CreationState": "cloning",
+  "NewProjectKind": "clone",
+  "NewProjectOptions": {
+    "creations": [
+      {
+        "error": "git clone: exit status 128: repository not found",
+        "id": "np-2",
+        "kind": "clone",
+        "root": "/home/u/projects/gone",
+        "startedAt": 1764000000000,
+        "state": "failed",
+        "url": "https://github.com/acme/gone.git"
+      }
+    ],
+    "projectsDir": "/home/u/projects"
+  },
+  "NewProjectRequest": {
+    "branch": "main",
+    "credRef": "gh",
+    "kind": "clone",
+    "root": "/home/u/projects/marshal",
+    "url": "https://github.com/acme/marshal.git"
+  },
+  "ProjectCreation": {
+    "id": "np-1",
+    "kind": "clone",
+    "progress": "Receiving objects:  42% (420/1000)",
+    "root": "/home/u/projects/marshal",
+    "startedAt": 1764000000000,
+    "state": "cloning",
+    "url": "https://github.com/acme/marshal.git"
+  },
   "ProjectStatus": {
     "available": true,
     "isolation": "available",

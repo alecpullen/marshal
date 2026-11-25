@@ -133,10 +133,13 @@ issues, and so does a route the client issues that has no row.
 | POST | `/api/planners/X/snapshots` | createPlannerSnapshot |  |
 | GET | `/api/planners/X/snapshots/X` | plannerSnapshot |  |
 | POST | `/api/planners/X/snapshots/X/handoff` | handoffPlannerSnapshot |  |
-| DELETE | `/api/projects` | — | dropped: projects are discovered by the daemon, never created from the app |
+| DELETE | `/api/projects` | — | dropped: the Studio adds projects and never removes one |
 | GET | `/api/projects` | projects |  |
-| POST | `/api/projects` | — | dropped: projects are discovered by the daemon, never created from the app |
+| POST | `/api/projects` | — | dropped: the Studio adds a project through `POST /api/projects/new` ([new-project](new-project.md)) |
 | GET | `/api/projects/health` | projectHealth |  |
+| GET | `/api/projects/new` | newProjectOptions |  |
+| POST | `/api/projects/new` | createProject |  |
+| GET | `/api/projects/new/X` | projectCreation |  |
 | GET | `/api/projects/settings` | projectSettings |  |
 | PUT | `/api/projects/settings` | putProjectSettings |  |
 | GET | `/api/prompts/recent` | recentPrompts |  |

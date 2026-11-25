@@ -22,7 +22,6 @@ import 'src/model/fleet_store.dart';
 import 'src/model/general_model.dart';
 import 'src/model/handoff_model.dart';
 import 'src/model/composer_model.dart';
-import 'src/model/connect_repo_model.dart';
 import 'src/model/hosts_model.dart';
 import 'src/model/inbox_model.dart';
 import 'src/model/inspector_state.dart';
@@ -31,6 +30,7 @@ import 'src/model/marshal_model.dart';
 import 'src/model/models_model.dart';
 import 'src/model/network_model.dart';
 import 'src/model/notifications_model.dart';
+import 'src/model/new_project_model.dart';
 import 'src/model/new_work_model.dart';
 import 'src/model/per_host.dart';
 import 'src/model/place_host.dart' show placeHost;
@@ -230,10 +230,14 @@ Future<void> main() async {
               project: _newWorkProject(store, open, project),
             );
           },
-          // Registers a repository for issue intake from the sidebar's plus
-          // (F9 B1): the sheet is the Studio's, the client is the host's.
-          connectRepoFor: (host) => ConnectRepoModel(
-            hosts.hosts.firstWhere((owner) => owner.name == host).client,
+          // Makes a project from the sidebar's plus (new-project.md): it
+          // starts on one host and may move to any other, so the model holds
+          // every host's client.
+          newProjectFor: (host) => NewProjectModel(
+            clients: {
+              for (final owner in hosts.hosts) owner.name: owner.client,
+            },
+            host: host,
           ),
           // Marshal's destination (agent-first Studio, task 5): one model per
           // host, reading that host's coordinated tasks and attention over its

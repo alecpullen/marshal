@@ -25,6 +25,7 @@ func TestArgsWriteTheWebListener(t *testing.T) {
 		PublicURL:          "https://box.example.com",
 		PreviewListen:      "127.0.0.1:7790",
 		PreviewURL:         "https://preview.example.com",
+		ProjectsDir:        "~/code",
 	}
 
 	argv := spec.Args()
@@ -34,6 +35,7 @@ func TestArgsWriteTheWebListener(t *testing.T) {
 		{"--public-url", "https://box.example.com"},
 		{"--preview-addr", "127.0.0.1:7790"},
 		{"--preview-url", "https://preview.example.com"},
+		{"--projects-dir", "~/code"},
 	}
 	at := argvIndexOf(t, argv, "--egress")
 	for _, pair := range want {
@@ -71,7 +73,7 @@ func TestArgsWriteNoWebFlagsByDefault(t *testing.T) {
 		IdleSessionTimeout: time.Minute,
 	}
 
-	flags := []string{"--web-listen", "--web-group", "--public-url", "--preview-addr", "--preview-url"}
+	flags := []string{"--web-listen", "--web-group", "--public-url", "--preview-addr", "--preview-url", "--projects-dir"}
 	joined := strings.Join(spec.Args(), " ")
 	for _, flag := range flags {
 		if strings.Contains(joined, flag) {

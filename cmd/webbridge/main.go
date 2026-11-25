@@ -65,12 +65,14 @@ type config struct {
 	// previewURL is the public origin preview links name, for a proxy that
 	// publishes previews.
 	previewURL string
-	marshalBin string
-	cwdRoot    string
-	projects   []string
-	workspace  string
-	stateDir   string
-	agentEnv   stringList
+	// projectsDir is where a project the Studio makes is put by name.
+	projectsDir string
+	marshalBin  string
+	cwdRoot     string
+	projects    []string
+	workspace   string
+	stateDir    string
+	agentEnv    stringList
 	// maxConcurrent bounds concurrent agents (0 = default 4).
 	maxConcurrent int
 	// maxDiskMB bounds the state directory size in MB (0 = unlimited).
@@ -127,6 +129,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	webGroup := fs.String("web-group", envOr("WEBBRIDGE_WEB_GROUP", ""), "share a unix --web-listen with this group (0660)")
 	previewAddr := fs.String("preview-addr", envOr("WEBBRIDGE_PREVIEW_ADDR", ""), "loopback address for previews (default: a free port on 127.0.0.1; \"off\" disables)")
 	previewURL := fs.String("preview-url", envOr("WEBBRIDGE_PREVIEW_URL", ""), "the public origin preview links name, for a proxy that publishes previews")
+	projectsDir := fs.String("projects-dir", envOr("WEBBRIDGE_PROJECTS_DIR", ""), "the folder a project the Studio makes is put in by name (default: ~/projects)")
 	marshalBin := fs.String("marshal-bin", envOr("WEBBRIDGE_MARSHAL_BIN", "marshal"), "marshal binary to supervise")
 	cwdRoot := fs.String("cwd-root", envOr("WEBBRIDGE_CWD_ROOT", ""), "default cwd for session list/load (defaults to the working directory)")
 	var projects stringList
@@ -201,7 +204,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{socket: *socket, webListen: *webListen, webGroup: *webGroup, previewAddr: *previewAddr, previewURL: *previewURL, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
+	cfg := config{socket: *socket, webListen: *webListen, webGroup: *webGroup, previewAddr: *previewAddr, previewURL: *previewURL, projectsDir: *projectsDir, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, agentEnv: agentEnv, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
 		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL,
 		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh, tunnels: *tunnels, studioDir: *studioDir}
@@ -735,6 +738,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		studioDir, studioLooked = bridge.FindStudioDir(exe)
 	}
 	api.SetStudioDir(studioDir, studioLooked)
+	api.SetProjectsDir(cfg.projectsDir)
 	if studioDir != "" {
 		slog.Default().Info("webbridge: serving the Studio from " + studioDir)
 	} else if studioLooked != nil {

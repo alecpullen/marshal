@@ -458,6 +458,10 @@ type DaemonConfig struct {
 	// PreviewURL is the proxy's public origin for previews, when it publishes
 	// them on a hostname of their own.
 	PreviewURL string `toml:"preview_url"`
+	// ProjectsDir is the folder a project the Studio makes is put in by name:
+	// a leading ~ is the daemon user's home. Empty is ~/projects
+	// (docs/studio-flutter/new-project.md).
+	ProjectsDir string `toml:"projects_dir"`
 	// Retired lists the retired [daemon] keys a file still sets, sorted:
 	// studio_addr, join_url, join_name, join_ca_file. No code reads their
 	// values any more (one-daemon D10, D6); the list is what lets Diagnose

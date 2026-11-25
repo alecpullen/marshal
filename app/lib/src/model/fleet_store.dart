@@ -340,6 +340,12 @@ class FleetStore extends ChangeNotifier {
           unawaited(_refreshBudgets(host));
         case 'project_removed':
           _applyProjectRemoved(state, ProjectRemovedDelta.fromJson(decoded));
+        case 'project_added':
+          // The host registered a project — one the Studio made, say
+          // (new-project decision 7). The delta names only its root, and a
+          // project's row is the bridge's to describe, so the host's snapshot
+          // is read again rather than a row invented from the name.
+          unawaited(refresh(host));
         case 'coordinator':
           // A coordinated task's assignments and the result it reported back
           // (agent-first Studio, task 7). They are not agent rows: the newest
@@ -411,6 +417,7 @@ class FleetStore extends ChangeNotifier {
       case DeltaKind.deltaWatch:
       case DeltaKind.deltaBudget:
       case DeltaKind.deltaProjectRemoved:
+      case DeltaKind.deltaProjectAdded:
       case DeltaKind.deltaInbox:
       case DeltaKind.deltaSessions:
       case DeltaKind.deltaCoordinator:

@@ -12204,6 +12204,223 @@ class ProjectStatus {
   }
 }
 
+/// NewProjectKind is how POST /api/projects/new makes a project.
+enum NewProjectKind {
+  newProjectBlank('blank'),
+  newProjectClone('clone'),
+  newProjectExisting('existing'),
+  unknown('unknown');
+
+  const NewProjectKind(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static NewProjectKind fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// NewProjectRequest is the body of POST /api/projects/new.
+class NewProjectRequest {
+  const NewProjectRequest({
+    required this.kind,
+    required this.root,
+    this.url,
+    this.branch,
+    this.credRef,
+    this.rawEnums = const {},
+  });
+
+  final NewProjectKind kind;
+  /// Root is the project directory, an absolute path on the host.
+  final String root;
+  /// URL is what a clone gives git clone.
+  final String? url;
+  /// Branch is a clone's --branch, when one is named.
+  final String? branch;
+  /// CredRef names a stored credential a clone is made with. Empty clones
+  /// with the host's own git setup.
+  final String? credRef;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory NewProjectRequest.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final kindWire = json['kind'] as String;
+    final kind = NewProjectKind.fromWire(kindWire);
+    if (kind == NewProjectKind.unknown) {
+      rawEnums['kind'] = kindWire;
+    }
+    return NewProjectRequest(
+      kind: kind,
+      root: json['root'] as String,
+      url: json['url'] as String?,
+      branch: json['branch'] as String?,
+      credRef: json['credRef'] as String?,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = rawEnums['kind'] ?? kind.wire;
+    json['root'] = root;
+    if (url != null) {
+      json['url'] = url;
+    }
+    if (branch != null) {
+      json['branch'] = branch;
+    }
+    if (credRef != null) {
+      json['credRef'] = credRef;
+    }
+    return json;
+  }
+}
+
+/// CreationState is where a project creation has got to.
+enum CreationState {
+  creationCloning('cloning'),
+  creationReady('ready'),
+  creationFailed('failed'),
+  unknown('unknown');
+
+  const CreationState(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static CreationState fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// ProjectCreation is one project the Studio asked the host to make: what
+/// POST /api/projects/new answers, and what GET /api/projects/new/{id} reads
+/// while a clone runs.
+class ProjectCreation {
+  const ProjectCreation({
+    required this.id,
+    required this.kind,
+    required this.root,
+    this.url,
+    required this.state,
+    this.progress,
+    this.error,
+    required this.startedAt,
+    this.rawEnums = const {},
+  });
+
+  final String id;
+  final NewProjectKind kind;
+  final String root;
+  final String? url;
+  final CreationState state;
+  /// Progress is git's latest progress line while a clone runs.
+  final String? progress;
+  /// Error is why the creation failed, in git's or the bridge's words.
+  final String? error;
+  /// StartedAt is when it was asked for, in Unix milliseconds.
+  final int startedAt;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory ProjectCreation.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final kindWire = json['kind'] as String;
+    final kind = NewProjectKind.fromWire(kindWire);
+    if (kind == NewProjectKind.unknown) {
+      rawEnums['kind'] = kindWire;
+    }
+    final stateWire = json['state'] as String;
+    final state = CreationState.fromWire(stateWire);
+    if (state == CreationState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return ProjectCreation(
+      id: json['id'] as String,
+      kind: kind,
+      root: json['root'] as String,
+      url: json['url'] as String?,
+      state: state,
+      progress: json['progress'] as String?,
+      error: json['error'] as String?,
+      startedAt: (json['startedAt'] as num).toInt(),
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['kind'] = rawEnums['kind'] ?? kind.wire;
+    json['root'] = root;
+    if (url != null) {
+      json['url'] = url;
+    }
+    json['state'] = rawEnums['state'] ?? state.wire;
+    if (progress != null) {
+      json['progress'] = progress;
+    }
+    if (error != null) {
+      json['error'] = error;
+    }
+    json['startedAt'] = startedAt;
+    return json;
+  }
+}
+
+/// NewProjectOptions is GET /api/projects/new: where this host puts a new
+/// project, and the creations it remembers, newest first.
+class NewProjectOptions {
+  const NewProjectOptions({
+    required this.projectsDir,
+    required this.creations,
+  });
+
+  /// ProjectsDir is the host's projects folder, absolute.
+  final String projectsDir;
+  final List<ProjectCreation> creations;
+
+  factory NewProjectOptions.fromJson(Map<String, dynamic> json) {
+    return NewProjectOptions(
+      projectsDir: json['projectsDir'] as String,
+      creations: _list(
+        json['creations'],
+        (value) => _object(value, ProjectCreation.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projectsDir'] = projectsDir;
+    json['creations'] = [
+      for (final value in creations) value.toJson(),
+    ];
+    return json;
+  }
+}
+
 /// ProjectIntake is the project's default intake configuration.
 class ProjectIntake {
   const ProjectIntake({
@@ -16274,6 +16491,7 @@ enum DeltaKind {
   deltaHold('hold'),
   deltaBudget('budget'),
   deltaProjectRemoved('project_removed'),
+  deltaProjectAdded('project_added'),
   deltaInbox('inbox'),
   deltaPull('pull'),
   deltaSessions('sessions'),
@@ -16545,6 +16763,44 @@ class ProjectRemovedDelta {
       rawEnums['kind'] = kindWire;
     }
     return ProjectRemovedDelta(
+      kind: kind,
+      project: json['project'] as String,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = rawEnums['kind'] ?? kind.wire;
+    json['project'] = project;
+    return json;
+  }
+}
+
+/// ProjectAddedDelta is a "project_added" fleet delta: the host registered a
+/// project, so read its projects again.
+class ProjectAddedDelta {
+  const ProjectAddedDelta({
+    required this.kind,
+    required this.project,
+    this.rawEnums = const {},
+  });
+
+  final DeltaKind kind;
+  final String project;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory ProjectAddedDelta.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final kindWire = json['kind'] as String;
+    final kind = DeltaKind.fromWire(kindWire);
+    if (kind == DeltaKind.unknown) {
+      rawEnums['kind'] = kindWire;
+    }
+    return ProjectAddedDelta(
       kind: kind,
       project: json['project'] as String,
       rawEnums: rawEnums,

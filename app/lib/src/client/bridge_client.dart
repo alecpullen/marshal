@@ -58,6 +58,27 @@ class BridgeClient {
   Future<List<ProjectStatus>> projects() =>
       _listOf('/api/projects', ProjectStatus.fromJson);
 
+  /// GET /api/projects/new: where this host puts a new project, and the
+  /// creations it remembers (docs/studio-flutter/new-project.md).
+  Future<NewProjectOptions> newProjectOptions() =>
+      _objectOf('/api/projects/new', NewProjectOptions.fromJson);
+
+  /// POST /api/projects/new: makes a project — blank, cloned, or a folder
+  /// already on the host. A clone answers while git still runs, and
+  /// [projectCreation] reads how it ends.
+  Future<ProjectCreation> createProject(NewProjectRequest request) => _objectOf(
+    '/api/projects/new',
+    ProjectCreation.fromJson,
+    method: 'POST',
+    body: request,
+  );
+
+  /// GET /api/projects/new/{id}: one creation, as its clone goes.
+  Future<ProjectCreation> projectCreation(String id) => _objectOf(
+    '/api/projects/new/${Uri.encodeComponent(id)}',
+    ProjectCreation.fromJson,
+  );
+
   /// GET /api/inbox: the needs-you queue and the groups behind it.
   Future<Inbox> inbox() => _objectOf('/api/inbox', Inbox.fromJson);
 

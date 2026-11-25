@@ -101,7 +101,7 @@ class Place {
   /// own: the project's board stays `/project/<id>`, and the conversation is
   /// `/conversation/<root>` (or `/conversation/<host>/<root>`). An [id] names
   /// the project to talk to; null is the entry with no project chosen yet,
-  /// which offers the last project, a selector, or Connect repository.
+  /// which offers the last project, a selector, or Add a project.
   const Place.conversation({String? host, String? id})
     : this(PlaceKind.project, host: host, id: id, conversation: true);
 
@@ -336,7 +336,7 @@ Place _placeOf(List<String> parts) {
           : _unknown;
     case conversationSegment:
       // `/conversation` names no project yet: it offers the last one, a
-      // selector, or Connect repository. `/conversation/<root>` names one, and
+      // selector, or Add a project. `/conversation/<root>` names one, and
       // `/conversation/<host>/<root>` names the host that answers for it.
       if (parts.length == 1) return const Place.conversation();
       if (parts.length == 2) return Place.conversation(id: parts[1]);

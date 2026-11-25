@@ -48,7 +48,9 @@ schedules, watches and intake.
    lives and what it says.** Where the two disagree the bridge wins and this
    document records the difference. Two matter here: connecting a
    repository registers one for issue intake rather than creating a project
-   (`POST /api/projects` is dropped in [route-parity](route-parity.md)),
+   (`POST /api/projects` is dropped in [route-parity](route-parity.md);
+   [new-project](new-project.md) later gave the Studio its own way to make
+   one),
    and one Overview column cannot be filled at all (decision 3).
 2. **Stop ships; Hold does not.** `POST /api/sessions/X/cancel` exists and
    `ComposerModel.stop()` already calls it. No route, client method or model

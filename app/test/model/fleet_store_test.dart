@@ -460,6 +460,39 @@ void main() {
     expect([for (final a in fixture.store.agents()) a.id], ['b-1']);
   });
 
+  test('an added project is read from the host', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ]);
+    await fixture.refresh();
+    // The stream's first frame makes it live, and a stream that comes live
+    // reads the snapshot again: that read lands before the host changes, so
+    // the read that finds the new project is the delta's own.
+    fixture.delta('local', {'kind': 'a_frame_that_only_opens_the_stream'});
+    await settle();
+    expect(fixture.store.projects(), hasLength(1));
+
+    // The Studio made a project on this host (new-project decision 7): the
+    // delta names its root, and the row is the bridge's own.
+    fixture.serve('local', '/api/projects', [
+      project('/home/u/alpha').toJson(),
+      project('/home/u/projects/fresh').toJson(),
+    ]);
+    fixture.delta('local', {
+      'kind': 'project_added',
+      'project': '/home/u/projects/fresh',
+    });
+
+    await eventually(
+      () => fixture.store.projects().length == 2,
+      reason: 'a project_added delta reads the projects again',
+    );
+    expect(
+      [for (final p in fixture.store.projects()) p.root],
+      ['/home/u/alpha', '/home/u/projects/fresh'],
+    );
+  });
+
   test('unknown delta is ignored', () async {
     final fixture = await fixtureWith();
     await fixture.refresh();

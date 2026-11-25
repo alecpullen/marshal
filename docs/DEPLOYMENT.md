@@ -87,6 +87,12 @@ preview_listen = "127.0.0.1:7790"
 preview_url = "https://preview.example.com"
 ```
 
+A project added from the Studio — blank, cloned, or a folder already on the
+host — goes in `projects_dir` (default `~/projects`) under the name the Studio
+gives it; set it, and reinstall, to put them elsewhere. A clone runs as the
+daemon's user, with that user's git config, SSH keys and credential helpers
+([new-project](studio-flutter/new-project.md)).
+
 `web_listen` is `unix`, an absolute socket path, or a loopback address; any
 other address is refused at start. `web_group` makes a socket `0660` in that
 group for a proxy that runs as another user, and needs an absolute path, since

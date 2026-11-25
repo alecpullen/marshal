@@ -122,6 +122,72 @@ void main() {
     expect(facts.thinking.single, 'The fold test loads the other one.');
   });
 
+  group('a session the bridge no longer tracks', () {
+    // The Studio showed "bridge: unknown session" in Inspect beside a live
+    // transcript: the node route answers only for a session the bridge tracks,
+    // and the transcript had been read while it still did.
+    const node = NodeDetailResponse(
+      node: WireNode(
+        id: 'n1',
+        kind: 'step',
+        step: WireStep(headline: 'Run the bridge suite'),
+      ),
+      detail: NodeDetail(),
+    );
+    final unknown = _json({'error': 'bridge: unknown session'}, 404);
+
+    test('is opened, and the node is read again', () async {
+      bridge
+        ..replyOnce('GET', '/api/sessions/s-1/nodes/n1', unknown)
+        ..reply('GET', '/api/sessions/s-1/nodes/n1', _json(node.toJson()))
+        ..reply('POST', '/api/sessions/s-1/load', _json({'sessionId': 's-1'}));
+      final model = InspectModel(
+        client,
+        sessionId: 's-1',
+        opener: () => client.openSession('s-1'),
+      );
+
+      await model.select('n1');
+
+      expect(model.error, isNull);
+      expect(model.facts.title, 'Run the bridge suite');
+      expect(
+        [for (final r in bridge.requests) '${r.method} ${r.uri}'],
+        [
+          'GET /api/sessions/s-1/nodes/n1',
+          'POST /api/sessions/s-1/load',
+          'GET /api/sessions/s-1/nodes/n1',
+        ],
+      );
+    });
+
+    test('an agent has no opener, so the refusal is the answer', () async {
+      bridge.reply('GET', '/api/sessions/a-1/nodes/n1', unknown);
+      final model = InspectModel(client, sessionId: 'a-1');
+
+      await model.select('n1');
+
+      expect(model.error, 'bridge: unknown session');
+      expect(bridge.requests, hasLength(1));
+    });
+
+    test('a session that cannot be opened says why, once', () async {
+      bridge
+        ..reply('GET', '/api/sessions/s-1/nodes/n1', unknown)
+        ..reply('POST', '/api/sessions/s-1/load', unknown);
+      final model = InspectModel(
+        client,
+        sessionId: 's-1',
+        opener: () => client.openSession('s-1'),
+      );
+
+      await model.select('n1');
+
+      expect(model.error, 'bridge: unknown session');
+      expect(bridge.requests, hasLength(2), reason: 'no second read');
+    });
+  });
+
   test('inspect appends a call’s workspace lifecycle facts', () async {
     NodeDetailResponse answer(SubagentWorkspace? workspace) =>
         NodeDetailResponse(

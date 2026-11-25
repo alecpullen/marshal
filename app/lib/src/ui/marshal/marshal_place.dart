@@ -289,11 +289,17 @@ class MarshalPlace extends StatelessWidget {
     final retry = StateAction('Read again', onTap: onRetry ?? () {});
     return switch (state) {
       StateKind.loading => const StateMessage.loading(lines: 4),
+      // The empty page replaces the bar, and with it the menu's New task, so
+      // its one action is that New: a person told to start a task must be
+      // given the control that starts one.
       StateKind.empty => StateMessage.empty(
         message:
-            'No Marshal task on $host yet: New starts the first one, and the '
-            'asks this host holds show up here once it has.',
-        action: StateAction('Read again', onTap: onRetry ?? () {}),
+            'No Marshal task on $host yet. Start one, and the asks this host '
+            'holds show up here once it has.',
+        action: StateAction(
+          'New task',
+          onTap: () => onOpen?.call(Place.marshalDraft(model.newDraft())),
+        ),
       ),
       StateKind.error => StateMessage.error(
         message: model.failure ?? 'Marshal could not read this host.',

@@ -361,6 +361,33 @@ void main() {
     expect(find.textContaining('Ask Marshal what needs you'), findsOneWidget);
   });
 
+  testWidgets('a host with no task offers New task, which opens a draft', (
+    tester,
+  ) async {
+    // The empty page replaces the bar and its menu, so its own action is the
+    // only way to start the first task: a page that says "start one" must be
+    // able to.
+    final model = MarshalModel.seeded(host: 'local', now: () => now);
+    Place? opened;
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: MarshalPlace(
+          model: model,
+          host: 'local',
+          now: now,
+          state: StateKind.empty,
+          onOpen: (place) => opened = place,
+        ),
+      ),
+    );
+    expect(find.textContaining('No Marshal task on local yet'), findsOneWidget);
+    expect(find.text('Read again'), findsNothing);
+    await tester.tap(find.text('New task'));
+    expect(opened?.kind, PlaceKind.marshal);
+    expect(opened?.draft, isNotNull, reason: 'New opens a draft');
+  });
+
   // ── The handoff (task 7) ───────────────────────────────────────────────
   //
   // One task's assignments and the result it reported back, as the destination

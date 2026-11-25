@@ -543,11 +543,20 @@ class Overview extends StatelessWidget {
   }
 
   /// What the event says beyond its kind: the operator's reason first, then
-  /// the event's own detail, and nothing when it has neither.
-  static String _eventDetail(AuditEvent event) {
+  /// the event's own detail, then the agent it happened to — a spawn carries
+  /// nothing else, and a row that says only "Spawn" does not say what spawned
+  /// — and nothing when it names none of them.
+  String _eventDetail(AuditEvent event) {
     final reason = event.reason;
     if (reason != null && reason.isNotEmpty) return reason;
-    return event.detail ?? '';
+    final detail = event.detail;
+    if (detail != null && detail.isNotEmpty) return detail;
+    final agent = event.agentID;
+    if (agent == null || agent.isEmpty) return '';
+    // An agent the store no longer holds is named the way the sidebar names
+    // one with no title: by its short id.
+    return overview.agentNames[agent] ??
+        'Agent ${agent.length > 8 ? agent.substring(0, 8) : agent}';
   }
 
   /// How long ago the event happened, in the sidebar's words.

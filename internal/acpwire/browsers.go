@@ -23,16 +23,22 @@ type MemoryEntry struct {
 	CreatedAt  int64  `json:"createdAt,omitempty"`
 }
 
-// SkillEntry is one skill in the global or the project store. Scope and
-// Source identify it: Source is the store child discovery found, never the
-// frontmatter name. LoadBlocked says why Load now cannot run for it, "" when
-// it can.
+// SkillEntry is one copy of a skill, from any of the four sources: the
+// project's store, Marshal's global store, the built-ins, or the shared root
+// another agent installs into. Scope is the source that copy came from and
+// Source names it inside that source; neither is the frontmatter name.
+// LoadBlocked says why Load now cannot run for it, "" when it can. Effective
+// marks the one copy the session's resolution holds for the declared name, and
+// Preferred marks a copy whose declared name is in the saved
+// skills.prefer_shared list.
 type SkillEntry struct {
-	Scope       string `json:"scope"`
+	Scope       string `json:"scope"` // project | global | builtin | shared
 	Source      string `json:"source"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	LoadBlocked string `json:"loadBlocked,omitempty"`
+	Effective   bool   `json:"effective,omitempty"`
+	Preferred   bool   `json:"preferred,omitempty"`
 }
 
 // SkillGateState is the session's skill load gate: whether it is on, and its

@@ -473,6 +473,24 @@ func (m *BrowserManager) SkillsAutoload(ctx context.Context, params json.RawMess
 	return struct{}{}, nil
 }
 
+// SkillsPreferShared handles session/skills_prefer_shared: it adds the
+// declared skill name to the user config's prefer_shared list, or removes it,
+// so its shared copy wins over the built-in.
+func (m *BrowserManager) SkillsPreferShared(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.SkillPreferSharedParams
+	if err := decodeParams(params, &p, acpwire.MethodSkillsPreferShared); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := sess.SetSkillPreferShared(ctx, p.Name, p.On); err != nil {
+		return nil, err
+	}
+	return struct{}{}, nil
+}
+
 // SkillGateSet handles session/skill_gate_set: it turns the session's skill
 // load gate on or off.
 func (m *BrowserManager) SkillGateSet(ctx context.Context, params json.RawMessage) (any, error) {
@@ -524,6 +542,7 @@ func registerBrowsers(srv *Server, browsers *BrowserManager, others map[string]H
 	srv.Handle(acpwire.MethodSDDScaffold, settingsFailureOf(browsers.SDDScaffold))
 	srv.Handle(acpwire.MethodSkillsInstall, settingsFailureOf(browsers.SkillsInstall))
 	srv.Handle(acpwire.MethodSkillsAutoload, settingsFailureOf(browsers.SkillsAutoload))
+	srv.Handle(acpwire.MethodSkillsPreferShared, settingsFailureOf(browsers.SkillsPreferShared))
 	srv.Handle(acpwire.MethodSkillGateSet, settingsFailureOf(browsers.SkillGateSet))
 	srv.Handle(acpwire.MethodSkillGateClear, settingsFailureOf(browsers.SkillGateClear))
 

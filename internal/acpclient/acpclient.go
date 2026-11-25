@@ -716,7 +716,10 @@ type Session interface {
 	// by the session's service.
 	RemovePlugin(ctx context.Context, name, scope string) error
 
-	// Skills lists both skill stores, and remembers the listing for LoadSkill
+	// Skills lists every copy of every skill across the four sources — the
+	// project's store, Marshal's global store, the built-ins and the shared
+	// root — with the copy the session's resolution holds and the saved
+	// skills.prefer_shared preference, and remembers the listing for LoadSkill
 	// and RemoveSkill.
 	//
 	// ACP: session/skills_list (exists). A marshal client's call is served by
@@ -749,6 +752,14 @@ type Session interface {
 	//
 	// ACP: session/skills_autoload (exists).
 	SetSkillAutoload(ctx context.Context, name string, on bool) error
+
+	// SetSkillPreferShared adds the declared skill name to skills.prefer_shared
+	// in the user config, or removes it, so its shared copy wins over the
+	// built-in. name is the declared skill name, never a source name, and the
+	// write is user-global only.
+	//
+	// ACP: session/skills_prefer_shared (exists).
+	SetSkillPreferShared(ctx context.Context, name string, on bool) error
 
 	// SetSkillGate turns the session's skill load gate on or off. Turning it
 	// on clears its decisions.

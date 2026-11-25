@@ -95,6 +95,7 @@ var containerViewerRefusals = []string{
 	"session/skills_install",
 	"session/skills_remove",
 	"session/skills_autoload",
+	"session/skills_prefer_shared",
 	"session/skill_gate_set",
 	"session/skill_gate_clear",
 	"session/plugins_install_scan",

@@ -28,6 +28,7 @@ const (
 	MethodSkillsInstall         = "session/skills_install"
 	MethodSkillsRemove          = "session/skills_remove"
 	MethodSkillsAutoload        = "session/skills_autoload"
+	MethodSkillsPreferShared    = "session/skills_prefer_shared"
 	MethodSkillGateSet          = "session/skill_gate_set"
 	MethodSkillGateClear        = "session/skill_gate_clear"
 )
@@ -184,6 +185,15 @@ type SkillInstallParams struct {
 
 // SkillAutoloadParams is session/skills_autoload's params.
 type SkillAutoloadParams struct {
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name"`
+	On        bool   `json:"on"`
+}
+
+// SkillPreferSharedParams is session/skills_prefer_shared's params: a declared
+// skill name — never a source name — and whether its shared copy should win
+// over the built-in.
+type SkillPreferSharedParams struct {
 	SessionID string `json:"sessionId"`
 	Name      string `json:"name"`
 	On        bool   `json:"on"`

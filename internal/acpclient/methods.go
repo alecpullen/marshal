@@ -110,6 +110,7 @@ var Methods = []Method{
 	{Iface: "Session", Name: "InstallSkill", ACP: "session/skills_install", Exists: true},
 	{Iface: "Session", Name: "RemoveSkill", ACP: "session/skills_remove", Exists: true},
 	{Iface: "Session", Name: "SetSkillAutoload", ACP: "session/skills_autoload", Exists: true},
+	{Iface: "Session", Name: "SetSkillPreferShared", ACP: "session/skills_prefer_shared", Exists: true},
 	{Iface: "Session", Name: "SetSkillGate", ACP: "session/skill_gate_set", Exists: true},
 	{Iface: "Session", Name: "ClearSkillGateDecision", ACP: "session/skill_gate_clear", Exists: true},
 

@@ -331,8 +331,11 @@ mid-flight.
 
 1. **Prerequisites.** Go 1.26+ and a C toolchain (cgo). Flutter 3.50+ for the
    Studio's web build (`flutter build web` from `app/`; there is no Node step
-   any more). rootless podman or docker (Docker Desktop on macOS) for
-   containerized agents. systemd (Linux) or
+   any more). `--studio` looks for `flutter` on PATH, then for fvm — a
+   version-managed machine usually has no Flutter on PATH, and `fvm flutter`
+   runs the pinned SDK — and `FLUTTER` overrides both for anything else
+   (`asdf exec flutter`, an absolute path). rootless podman or docker (Docker
+   Desktop on macOS) for containerized agents. systemd (Linux) or
    launchd (macOS) for the daemon; `dev-daemon.sh`'s `--install` is Linux-only
    (it writes a systemd user unit — elsewhere run `webbridge` yourself).
 2. **Build and install the daemon.**
@@ -414,5 +417,5 @@ develop in.
 | `--install` refuses to write a unit | `MARSHAL_CONFIG_DIR`/`MARSHAL_DATA_DIR`/`XDG_*` point outside `$HOME`. The unit bakes those paths, so it would outlive a temp dir. Unset them, or pass `--force` deliberately. |
 | Version line unchanged after a rebuild | Two `+dirty` builds of one commit share a version; compare the start time. |
 | `--dev-image` says the build context is wrong | The script copies only `./marshal` into a temp context on purpose: the repo root would hand `app/build` and `.marshal/worktrees` to the runtime. |
-| `dev-daemon.sh` says flutter is missing | `--studio` needs `flutter build web` from `app/`, and Flutter 3.50+; the Node toolchain left with F8. Install Flutter, or drop `--studio` to rebuild the binaries only. |
+| `dev-daemon.sh` says it has no Flutter toolchain | `--studio` needs `flutter build web` from `app/`, and Flutter 3.50+; the Node toolchain left with F8. It looks for `flutter` on PATH, then for `fvm` (`fvm flutter`, which is how a version-managed machine has Flutter without it being on PATH). Install one of them, set `FLUTTER` to the command that runs Flutter, or drop `--studio` to rebuild the binaries only. |
 | The Studio's routes answer `503` | The daemon found no `share/marshal/studio`. The page it serves names every directory it looked in; build them with `dev-daemon.sh --studio`, or reinstall Marshal. No restart is needed once they are there. |

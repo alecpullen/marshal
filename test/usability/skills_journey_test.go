@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -64,9 +65,12 @@ func TestScriptedSkillRemoval(t *testing.T) {
 		return strings.Contains(scr.Content, "❯")
 	})
 
-	// Open the panel. Its footer counts the skill rows it discovered, which is
-	// how this proves both test-owned skills were read from disk: at 80x24 the
-	// list itself only shows a few rows before scrolling.
+	// Open the panel. Its footer counts every copy it discovered across the
+	// four sources — the binary's built-ins as well as the two test-owned
+	// global skills — so the count is read here and later compared against
+	// itself, never against a fixed number the shipped built-ins would
+	// invalidate. At 80x24 the list itself only shows a few rows before
+	// scrolling; the footer is always on screen.
 	if err := sess.Send("/skills"); err != nil {
 		t.Fatalf("Send(/skills): %v", err)
 	}
@@ -76,8 +80,12 @@ func TestScriptedSkillRemoval(t *testing.T) {
 	waitForViewport(t, sess, 60*time.Second, "skills panel", func(scr screen.Screen) bool {
 		return strings.Contains(scr.Content, skillPanelTitle) &&
 			strings.Contains(scr.Content, skillRootHeader) &&
-			strings.Contains(scr.Content, "2 skills")
+			skillCount(scr) >= 2
 	})
+	listed := skillCount(snapshotScreen(t, sess))
+	if listed < 2 {
+		t.Fatalf("the panel counted %d skills, want both test-owned skills among them", listed)
+	}
 
 	// First pass: arm the removal and then leave the frame. The armed removal
 	// must not carry out on its own, and must not survive the escape.
@@ -115,10 +123,10 @@ func TestScriptedSkillRemoval(t *testing.T) {
 	}
 
 	// The panel pops back to the refreshed root list once the removal lands, and
-	// its footer counts one skill fewer. The footer is always on screen, while
+	// its footer counts one copy fewer. The footer is always on screen, while
 	// the list itself may be scrolled.
 	waitForViewport(t, sess, 30*time.Second, "skills list after removal", func(scr screen.Screen) bool {
-		return strings.Contains(scr.Content, "1 skill")
+		return skillCount(scr) == listed-1
 	})
 	waitForGone(t, filepath.Join(globalSkillsDir, skillFixtureName), 15*time.Second)
 
@@ -181,6 +189,29 @@ func focusedRow(scr screen.Screen) string {
 		}
 	}
 	return ""
+}
+
+// skillCount is the number in the skills panel's footer ("N skills", or
+// "1 skill"), or 0 when the viewport shows no count. The footer counts every
+// copy across the four sources, so a test compares it against itself rather
+// than against a fixed number that the shipped built-ins would invalidate.
+func skillCount(scr screen.Screen) int {
+	for _, line := range scr.Lines {
+		if i := strings.Index(line, " skills"); i >= 0 {
+			j := i
+			for j > 0 && line[j-1] >= '0' && line[j-1] <= '9' {
+				j--
+			}
+			if n, err := strconv.Atoi(line[j:i]); err == nil {
+				return n
+			}
+			continue
+		}
+		if strings.Contains(line, "1 skill") {
+			return 1
+		}
+	}
+	return 0
 }
 
 // waitUntil reports whether pred held within timeout, failing the test on a

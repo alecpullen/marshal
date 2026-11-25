@@ -67,6 +67,14 @@ Then `marshal fleet --host box` opens that daemon's fleet.
 
 ## A browser
 
+`marshal daemon install --studio` sets `web_listen = "unix"` for you, when it is
+not already set, and prints the proxy line for the listener it ends with.
+`marshal daemon install --studio-url https://marshal.example.com` sets `web_url`
+once your proxy has an address, and running it again changes it; it refuses an
+address with no listener, so pass `--studio` in the same run or set `web_listen`
+first. A plain `marshal daemon install` says nothing about the Studio and leaves
+both keys alone, so hand-edited values stay in charge.
+
 The daemon serves the Studio and its API, and authenticates no browser: the
 proxy you put in front of it does (D10, D13). In
 `~/.config/marshal/config.toml`:

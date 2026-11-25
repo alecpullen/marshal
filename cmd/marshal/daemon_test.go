@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"marshal/internal/app"
+	"marshal/internal/app/config"
 	"marshal/internal/daemon"
 	"marshal/internal/fleetprofile"
 	"marshal/internal/tunnels"
@@ -1708,6 +1709,25 @@ func daemonTestWebbridge(t *testing.T) string {
 	return path
 }
 
+// daemonTestWebbridgeWithStudio is a webbridge with the Studio's files beside
+// it, as a release install has them.
+func daemonTestWebbridgeWithStudio(t *testing.T) (webbridge, studio string) {
+	t.Helper()
+	dir := t.TempDir()
+	webbridge = filepath.Join(dir, "webbridge")
+	if err := os.WriteFile(webbridge, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	studio = filepath.Join(dir, "share", "marshal", "studio")
+	if err := os.MkdirAll(studio, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(studio, "index.html"), []byte("<!doctype html>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return webbridge, studio
+}
+
 // daemonWriteUserConfig writes the user config daemonUnitSpec reads, for the
 // tests that state [daemon] settings.
 func daemonWriteUserConfig(t *testing.T, home, body string) {
@@ -1743,6 +1763,60 @@ func daemonInstallUnit(t *testing.T, home string) string {
 		t.Fatalf("read the installed unit: %v", err)
 	}
 	return string(body)
+}
+
+// daemonInstallRun runs `marshal daemon install` with args against the fake
+// service manager and answers what it printed, what it wrote to stderr, and its
+// error.
+func daemonInstallRun(t *testing.T, args ...string) (string, string, error) {
+	t.Helper()
+	return daemonInstallRunWebbridge(t, daemonTestWebbridge(t), args...)
+}
+
+// daemonInstallRunWebbridge is daemonInstallRun over a named webbridge, for the
+// tests that need the Studio's files beside it.
+func daemonInstallRunWebbridge(t *testing.T, webbridge string, args ...string) (string, string, error) {
+	t.Helper()
+	t.Setenv("PATH", "/usr/bin:/bin")
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return nil, nil
+	})
+	// install waits, briefly, for the daemon to answer; nothing is listening
+	// here, which is the "not answering yet" path.
+	fakeDaemonSocket(t, fakeDaemonClient{err: errors.New("dial unix: no such file or directory")})
+	var out, errOut bytes.Buffer
+	err := runDaemon(context.Background(),
+		append([]string{"install", "--webbridge", webbridge}, args...),
+		strings.NewReader(""), &out, &errOut)
+	return out.String(), errOut.String(), err
+}
+
+// daemonInstallRunCounting is daemonInstallRun, and answers how many times the
+// run reached the service manager: a refused install must reach it never.
+func daemonInstallRunCounting(t *testing.T, args ...string) (int, error) {
+	t.Helper()
+	calls := 0
+	t.Setenv("PATH", "/usr/bin:/bin")
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls++
+		return nil, nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{err: errors.New("dial unix: no such file or directory")})
+	var out, errOut bytes.Buffer
+	err := runDaemon(context.Background(),
+		append([]string{"install", "--webbridge", daemonTestWebbridge(t)}, args...),
+		strings.NewReader(""), &out, &errOut)
+	return calls, err
+}
+
+// daemonReadUserConfig is the user config as the next load reads it.
+func daemonReadUserConfig(t *testing.T, home string) config.Config {
+	t.Helper()
+	cfg, err := config.Load(config.LoadOptions{HomeDir: home, SkipProjectConfig: true})
+	if err != nil {
+		t.Fatalf("read the user config: %v", err)
+	}
+	return cfg
 }
 
 // TestDaemonInstallWritesTheWebListener: the five [daemon] settings reach the
@@ -1787,6 +1861,372 @@ func TestDaemonInstallWritesTheWebListener(t *testing.T) {
 			t.Errorf("unit does not carry %q after %q:\n%s", arg[1], arg[0], unit)
 		}
 	}
+}
+
+// TestDaemonInstallStudioSetsTheListener: --studio writes daemon.web_listen =
+// "unix" — the form that needs no D13 warning — and the unit the daemon runs
+// carries it (D3, D10).
+func TestDaemonInstallStudioSetsTheListener(t *testing.T) {
+	home := daemonTestEnv(t)
+	if _, stderr, err := daemonInstallRun(t, "--studio"); err != nil {
+		t.Fatalf("install --studio: %v\nstderr: %s", err, stderr)
+	}
+	cfg := daemonReadUserConfig(t, home)
+	if got := cfg.Daemon.WebListen; got != "unix" {
+		t.Errorf("daemon.web_listen = %q, want unix", got)
+	}
+	if got := cfg.Daemon.WebURL; got != "" {
+		t.Errorf("daemon.web_url = %q, want it left unset", got)
+	}
+	unit, err := os.ReadFile(filepath.Join(home, "Library", "LaunchAgents", "dev.marshal.daemon.plist"))
+	if err != nil {
+		t.Fatalf("read the installed unit: %v", err)
+	}
+	if !strings.Contains(string(unit), "<string>--web-listen</string>\n\t\t<string>unix</string>") {
+		t.Errorf("the unit does not carry --web-listen unix:\n%s", unit)
+	}
+}
+
+// TestDaemonInstallStudioKeepsAnExistingListener: an install restarts the unit,
+// so --studio must not move a listener the operator already points a proxy at.
+func TestDaemonInstallStudioKeepsAnExistingListener(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\nweb_listen = \"127.0.0.1:7700\"\n")
+	if _, stderr, err := daemonInstallRun(t, "--studio"); err != nil {
+		t.Fatalf("install --studio: %v\nstderr: %s", err, stderr)
+	}
+	if got := daemonReadUserConfig(t, home).Daemon.WebListen; got != "127.0.0.1:7700" {
+		t.Errorf("daemon.web_listen = %q, want the existing 127.0.0.1:7700", got)
+	}
+}
+
+// TestDaemonInstallStudioURLNeedsAListener: an address with nothing listening is
+// a meaningless pair, refused before anything is written.
+func TestDaemonInstallStudioURLNeedsAListener(t *testing.T) {
+	home := daemonTestEnv(t)
+	_, _, err := daemonInstallRun(t, "--studio-url", "https://marshal.example.com")
+	if err == nil {
+		t.Fatal("install --studio-url with no listener did not fail")
+	}
+	if !strings.Contains(err.Error(), "--studio-url needs a listener") {
+		t.Errorf("error = %v, want it to name the missing listener", err)
+	}
+	cfg := daemonReadUserConfig(t, home)
+	if cfg.Daemon.WebListen != "" || cfg.Daemon.WebURL != "" {
+		t.Errorf("a refused --studio-url wrote web_listen = %q, web_url = %q",
+			cfg.Daemon.WebListen, cfg.Daemon.WebURL)
+	}
+}
+
+// TestDaemonInstallStudioRefusesAGroupWithUnix: web_group needs a socket path of
+// its own (D3), so --studio names that rather than writing a pair the daemon
+// would refuse at start.
+func TestDaemonInstallStudioRefusesAGroupWithUnix(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\nweb_group = \"marshal\"\n")
+	_, _, err := daemonInstallRun(t, "--studio")
+	if err == nil {
+		t.Fatal("install --studio with daemon.web_group did not fail")
+	}
+	if !strings.Contains(err.Error(), "daemon.web_group") {
+		t.Errorf("error = %v, want it to name daemon.web_group", err)
+	}
+	if got := daemonReadUserConfig(t, home).Daemon.WebListen; got != "" {
+		t.Errorf("a refused --studio wrote web_listen = %q", got)
+	}
+}
+
+// TestDaemonInstallStudioURLRefusesANonHTTPAddress: daemonPublicURL's rule is
+// the only one this command applies, and a value it refuses is never written.
+func TestDaemonInstallStudioURLRefusesANonHTTPAddress(t *testing.T) {
+	home := daemonTestEnv(t)
+	_, _, err := daemonInstallRun(t, "--studio", "--studio-url", "ftp://marshal.example.com")
+	if err == nil {
+		t.Fatal("install --studio-url ftp:// did not fail")
+	}
+	if !strings.Contains(err.Error(), "daemon.web_url") {
+		t.Errorf("error = %v, want it to name daemon.web_url", err)
+	}
+	cfg := daemonReadUserConfig(t, home)
+	if cfg.Daemon.WebListen != "" || cfg.Daemon.WebURL != "" {
+		t.Errorf("a refused pair was written: web_listen = %q, web_url = %q",
+			cfg.Daemon.WebListen, cfg.Daemon.WebURL)
+	}
+}
+
+// TestDaemonInstallStudioURLWritesTheAddress: the address is a second run, which
+// is why --studio-url exists apart from --studio, and the unit carries it as
+// --public-url.
+func TestDaemonInstallStudioURLWritesTheAddress(t *testing.T) {
+	home := daemonTestEnv(t)
+	if _, stderr, err := daemonInstallRun(t, "--studio"); err != nil {
+		t.Fatalf("install --studio: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := daemonInstallRun(t, "--studio-url", "https://marshal.example.com"); err != nil {
+		t.Fatalf("install --studio-url: %v\nstderr: %s", err, stderr)
+	}
+	cfg := daemonReadUserConfig(t, home)
+	if got := cfg.Daemon.WebListen; got != "unix" {
+		t.Errorf("daemon.web_listen = %q, want unix", got)
+	}
+	if got := cfg.Daemon.WebURL; got != "https://marshal.example.com" {
+		t.Errorf("daemon.web_url = %q, want the address", got)
+	}
+	unit, err := os.ReadFile(filepath.Join(home, "Library", "LaunchAgents", "dev.marshal.daemon.plist"))
+	if err != nil {
+		t.Fatalf("read the installed unit: %v", err)
+	}
+	if !strings.Contains(string(unit), "<string>--public-url</string>\n\t\t<string>https://marshal.example.com</string>") {
+		t.Errorf("the unit does not carry --public-url:\n%s", unit)
+	}
+}
+
+// TestDaemonInstallStudioKeepsUnrelatedSections: the write goes through the
+// user-config writer, so a provider table set under it survives.
+func TestDaemonInstallStudioKeepsUnrelatedSections(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[providers.local]\nbase_url = \"http://127.0.0.1:11434/v1\"\n")
+	if _, stderr, err := daemonInstallRun(t, "--studio"); err != nil {
+		t.Fatalf("install --studio: %v\nstderr: %s", err, stderr)
+	}
+	cfg := daemonReadUserConfig(t, home)
+	p, ok := cfg.Providers["local"]
+	if !ok {
+		t.Fatalf("[providers.local] is gone: %+v", cfg.Providers)
+	}
+	if p.BaseURL != "http://127.0.0.1:11434/v1" {
+		t.Errorf("base_url = %q, want it kept", p.BaseURL)
+	}
+}
+
+// TestDaemonInstallStudioRefusalLeavesTheConfigFileUntouched: "validate before
+// writing anything" is a byte guarantee, so a refused run must not normalise
+// the file it read — which any write would do, comments included.
+func TestDaemonInstallStudioRefusalLeavesTheConfigFileUntouched(t *testing.T) {
+	home := daemonTestEnv(t)
+	// A group with "unix" is the refusal that needs no flag argument.
+	daemonWriteUserConfig(t, home, "# the proxy dials this socket\n[daemon]\nweb_group = \"marshal\"\n")
+	before, err := os.ReadFile(config.UserConfigPath(home))
+	if err != nil {
+		t.Fatalf("read the user config: %v", err)
+	}
+	if _, _, err := daemonInstallRun(t, "--studio"); err == nil {
+		t.Fatal("install --studio with web_group set succeeded, want a refusal")
+	}
+	after, err := os.ReadFile(config.UserConfigPath(home))
+	if err != nil {
+		t.Fatalf("read the user config again: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("a refused install rewrote the user config:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestDaemonInstallStudioNoOpRunLeavesTheConfigFileUntouched: a --studio run
+// that changes nothing writes nothing, so a comment survives it even though a
+// genuine edit normalises the file (design.md decision 4).
+func TestDaemonInstallStudioNoOpRunLeavesTheConfigFileUntouched(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "# the proxy dials this socket\n[daemon]\nweb_listen = \"unix\"\n")
+	before, err := os.ReadFile(config.UserConfigPath(home))
+	if err != nil {
+		t.Fatalf("read the user config: %v", err)
+	}
+	stdout, stderr, err := daemonInstallRun(t, "--studio")
+	if err != nil {
+		t.Fatalf("install --studio: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, " (unchanged)") {
+		t.Errorf("install did not report the listener unchanged:\n%s", stdout)
+	}
+	after, err := os.ReadFile(config.UserConfigPath(home))
+	if err != nil {
+		t.Fatalf("read the user config again: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("a --studio run that changed nothing rewrote the user config:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestDaemonInstallStudioRefusalNeverReachesTheManager: the order of operations
+// is load-bearing, so a refused pair stops before the unit is rendered or the
+// service restarted.
+func TestDaemonInstallStudioRefusalNeverReachesTheManager(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		seed string
+		args []string
+	}{
+		{
+			name: "an address with no listener",
+			args: []string{"--studio-url", "https://marshal.example.com"},
+		},
+		{
+			name: "a group with unix",
+			seed: "[daemon]\nweb_group = \"marshal\"\n",
+			args: []string{"--studio"},
+		},
+		{
+			name: "an address that is not an origin",
+			args: []string{"--studio", "--studio-url", "ftp://marshal.example.com"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := daemonTestEnv(t)
+			if tt.seed != "" {
+				daemonWriteUserConfig(t, home, tt.seed)
+			}
+			calls, err := daemonInstallRunCounting(t, tt.args...)
+			if err == nil {
+				t.Fatalf("install %v succeeded, want a refusal", tt.args)
+			}
+			if calls != 0 {
+				t.Errorf("a refused install reached the service manager %d times, want none", calls)
+			}
+		})
+	}
+}
+
+// TestDaemonInstallWithoutStudioFlagsSaysNothingAboutIt: a plain install keeps
+// its output, even on a daemon someone configured by hand, so the promise in
+// the usage text holds.
+func TestDaemonInstallWithoutStudioFlagsSaysNothingAboutIt(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\n"+
+		"web_listen = \"unix\"\n"+
+		"web_url = \"https://marshal.example.com\"\n")
+	stdout, stderr, err := daemonInstallRun(t)
+	if err != nil {
+		t.Fatalf("install: %v\nstderr: %s", err, stderr)
+	}
+	for _, banned := range []string{"web_listen:", "web_url:", "proxy:", "studio:"} {
+		if strings.Contains(stdout, banned) {
+			t.Errorf("a plain install printed %q:\n%s", banned, stdout)
+		}
+	}
+}
+
+// TestDaemonInstallStudioPrintsTheSocketAndTheNextStep: with no address yet the
+// block names the socket and the run that supplies one.
+func TestDaemonInstallStudioPrintsTheSocketAndTheNextStep(t *testing.T) {
+	home := daemonTestEnv(t)
+	stdout, stderr, err := daemonInstallRun(t, "--studio")
+	if err != nil {
+		t.Fatalf("install --studio: %v\nstderr: %s", err, stderr)
+	}
+	socket := filepath.Join(daemon.PathsFor(home).Dir, "web.sock")
+	for _, want := range []string{
+		"web_listen: unix (" + socket + ")",
+		"web_url: unset",
+		"point your proxy at " + socket,
+		"marshal daemon install --studio-url https://marshal.example.com",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("install --studio printed no %q:\n%s", want, stdout)
+		}
+	}
+}
+
+// TestDaemonInstallStudioPrintsTheProxySnippetForTheListenerItWrote: with unix
+// written, the socket form is the snippet and the document's port-shaped
+// Tailscale example appears only as the stated alternative (docs/DEPLOYMENT.md).
+func TestDaemonInstallStudioPrintsTheProxySnippetForTheListenerItWrote(t *testing.T) {
+	home := daemonTestEnv(t)
+	stdout, stderr, err := daemonInstallRun(t, "--studio", "--studio-url", "https://marshal.example.com")
+	if err != nil {
+		t.Fatalf("install --studio --studio-url: %v\nstderr: %s", err, stderr)
+	}
+	socket := filepath.Join(daemon.PathsFor(home).Dir, "web.sock")
+	for _, want := range []string{
+		"web_url: https://marshal.example.com",
+		"reverse_proxy unix/" + socket,
+		"tailscale serve --bg 7700",
+		"/hooks/, /status/ and /mcp pass through",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("install printed no %q:\n%s", want, stdout)
+		}
+	}
+	// The socket form is primary: the port-shaped example follows it.
+	sockAt, portAt := strings.Index(stdout, "reverse_proxy unix/"), strings.Index(stdout, "tailscale serve --bg 7700")
+	if sockAt < 0 || portAt < 0 || sockAt > portAt {
+		t.Errorf("the socket snippet should print before the port alternative (socket at %d, port at %d):\n%s", sockAt, portAt, stdout)
+	}
+}
+
+// TestDaemonInstallStudioPrintsAnExistingLoopbackListener: a loopback listener
+// keeps its port-shaped snippet and gets no socket block.
+func TestDaemonInstallStudioPrintsAnExistingLoopbackListener(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\nweb_listen = \"127.0.0.1:7700\"\n")
+	stdout, stderr, err := daemonInstallRun(t, "--studio", "--studio-url", "https://box.example.ts.net")
+	if err != nil {
+		t.Fatalf("install: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"web_listen: 127.0.0.1:7700 (unchanged)",
+		"web_url: https://box.example.ts.net",
+		"reverse_proxy 127.0.0.1:7700",
+		"tailscale serve --bg 7700",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("install printed no %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "reverse_proxy unix/") {
+		t.Errorf("a loopback listener printed the socket snippet:\n%s", stdout)
+	}
+}
+
+// TestDaemonInstallStudioURLReportsTheAddressItReplaced: changing the address
+// says what it was, so a wrong --studio-url is visible.
+func TestDaemonInstallStudioURLReportsTheAddressItReplaced(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\n"+
+		"web_listen = \"unix\"\n"+
+		"web_url = \"https://old.example.com\"\n")
+	stdout, stderr, err := daemonInstallRun(t, "--studio-url", "https://new.example.com")
+	if err != nil {
+		t.Fatalf("install --studio-url: %v\nstderr: %s", err, stderr)
+	}
+	if want := "web_url: https://new.example.com (was https://old.example.com)"; !strings.Contains(stdout, want) {
+		t.Errorf("install printed no %q:\n%s", want, stdout)
+	}
+}
+
+// TestDaemonInstallStudioNamesMissingStudioFiles: --studio on a box whose
+// webbridge has no Studio files says so, because the listener would serve the
+// no-files page (D12).
+func TestDaemonInstallStudioNamesMissingStudioFiles(t *testing.T) {
+	daemonTestEnv(t)
+	stdout, stderr, err := daemonInstallRun(t, "--studio")
+	if err != nil {
+		t.Fatalf("install --studio: %v\nstderr: %s", err, stderr)
+	}
+	if want := "studio: no files found"; !strings.Contains(stdout, want) {
+		t.Errorf("install printed no %q:\n%s", want, stdout)
+	}
+}
+
+// TestDaemonInstallStudioNamesTheStudioDir: with files beside the webbridge, the
+// block names a directory instead of reporting none.
+func TestDaemonInstallStudioNamesTheStudioDir(t *testing.T) {
+	daemonTestEnv(t)
+	webbridge, _ := daemonTestWebbridgeWithStudio(t)
+	stdout, stderr, err := daemonInstallRunWebbridge(t, webbridge, "--studio")
+	if err != nil {
+		t.Fatalf("install --studio: %v\nstderr: %s", err, stderr)
+	}
+	if strings.Contains(stdout, "no files found") {
+		t.Errorf("install found no Studio files beside a webbridge that has them:\n%s", stdout)
+	}
+	// The path is the resolved one, so compare the shape, not the temp path.
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(line, "studio: ") && strings.HasSuffix(line, filepath.Join("share", "marshal", "studio")) {
+			return
+		}
+	}
+	t.Errorf("install named no Studio directory:\n%s", stdout)
 }
 
 // TestDaemonInstallAcceptsAPreviewTemplate: daemon.preview_url may be a

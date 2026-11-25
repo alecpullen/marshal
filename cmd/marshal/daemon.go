@@ -204,12 +204,14 @@ func runDaemonTunnels(ctx context.Context, args []string, stderr io.Writer) erro
 
 // runDaemonInstall renders and loads the unit.
 //
-// Usage: marshal daemon install [--webbridge PATH] [--no-linger]
+// Usage: marshal daemon install [--webbridge PATH] [--no-linger] [--studio] [--studio-url URL]
 func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("daemon install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	webbridge := fs.String("webbridge", "", "the webbridge binary to run (default: beside marshal, else on PATH)")
 	noLinger := fs.Bool("no-linger", false, "do not enable systemd's linger for this user (Linux)")
+	studio := fs.Bool("studio", false, "set daemon.web_listen to \"unix\" when it is unset")
+	studioURL := fs.String("studio-url", "", "set daemon.web_url to the address your proxy publishes")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -219,6 +221,13 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 
 	home, err := daemonHome()
 	if err != nil {
+		return err
+	}
+	studioSettings, err := daemonPlanStudio(home, *studio, *studioURL)
+	if err != nil {
+		return err
+	}
+	if err := daemonWriteStudio(home, studioSettings); err != nil {
 		return err
 	}
 	m, err := daemonManagerFor(home)
@@ -239,6 +248,14 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	fmt.Fprintf(stdout, "unit: %s\n", m.UnitPath())
 	fmt.Fprintf(stdout, "socket: %s\n", spec.Paths.Socket)
+	daemonStudioLines(home, studioSettings, stdout)
+	// D12: a daemon with no Studio files serves a page that says so and runs
+	// on. That is worth naming here only because this run turned the listener
+	// on; daemonStudioLine supplies the wording status uses.
+	if studioSettings.passed {
+		dir, _ := bridge.FindStudioDir(spec.Webbridge)
+		fmt.Fprintln(stdout, daemonStudioLine(daemon.Info{StudioDir: dir}))
+	}
 	// The secrets the retired listeners read are gone with them: a stale
 	// 0600 credential under the daemon directory outlives the feature that
 	// used it, so the install that replaced the listener removes it.
@@ -246,6 +263,160 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 	daemonEnsureLinger(ctx, m, *noLinger, stdout)
 	daemonReadyNote(ctx, spec.Paths, stdout)
 	return nil
+}
+
+// daemonStudioConfig is what --studio and --studio-url ask the [daemon]
+// section to hold, and what it held before them.
+type daemonStudioConfig struct {
+	passed    bool          // --studio or --studio-url was passed
+	cfg       config.Config // the merged user config carrying the intended values
+	baseline  config.Config // the same config as loaded, for the global-section merge
+	listen    string        // daemon.web_listen after this run
+	listenWas string        // daemon.web_listen before it
+	url       string        // daemon.web_url after this run
+	urlWas    string        // daemon.web_url before it
+}
+
+// changed reports whether this run alters either value.
+func (s daemonStudioConfig) changed() bool {
+	return s.listen != s.listenWas || s.url != s.urlWas
+}
+
+// daemonPlanStudio computes the [daemon] pair the two Studio flags ask for and
+// validates it without writing anything (D3, D10, D13). Validation comes
+// first so a refused pair cannot leave half a configuration behind.
+func daemonPlanStudio(home string, studio bool, studioURL string) (daemonStudioConfig, error) {
+	out := daemonStudioConfig{passed: studio || strings.TrimSpace(studioURL) != ""}
+	if !out.passed {
+		return out, nil
+	}
+	cfg, err := config.Load(config.LoadOptions{HomeDir: home, SkipProjectConfig: true})
+	if err != nil {
+		return out, fmt.Errorf("read the user config: %w", err)
+	}
+	out.baseline = cfg
+	out.listenWas = strings.TrimSpace(cfg.Daemon.WebListen)
+	out.listen = out.listenWas
+	out.urlWas = strings.TrimSpace(cfg.Daemon.WebURL)
+	out.url = out.urlWas
+	if url := strings.TrimSpace(studioURL); url != "" {
+		out.url = url
+	}
+	if studio && out.listen == "" {
+		// D10: "unix" is the listener form that needs no D13 warning, since
+		// the daemon directory is private (D3).
+		out.listen = "unix"
+	}
+	if out.url != "" && out.listen == "" {
+		return out, errors.New("marshal daemon install: --studio-url needs a listener: pass --studio too, or set daemon.web_listen")
+	}
+	if _, err := daemonWebListen(out.listen, cfg.Daemon.WebGroup); err != nil {
+		return out, err
+	}
+	if _, err := daemonPublicURL("daemon.web_url", out.url); err != nil {
+		return out, err
+	}
+	cfg.Daemon.WebListen = out.listen
+	cfg.Daemon.WebURL = out.url
+	out.cfg = cfg
+	return out, nil
+}
+
+// daemonWriteStudio writes the pair daemonPlanStudio answered, when it differs
+// from what the file holds. It goes through the user-config writer every other
+// [daemon] edit uses, so unrelated sections survive the write (D10).
+func daemonWriteStudio(home string, s daemonStudioConfig) error {
+	if !s.changed() {
+		return nil
+	}
+	path := config.UserConfigPath(home)
+	// The baseline is what makes this a merge rather than a replace: a
+	// [providers] or [models.presets] entry another marshal process saved
+	// between this run's load and this write survives it.
+	if err := config.SaveUserConfigSection(path, s.cfg, s.baseline); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+// daemonStudioLines is what install prints when a Studio flag was passed: the
+// listener and address the run ends with, and a proxy snippet that matches that
+// listener (D10, D13). A plain install prints none of it.
+func daemonStudioLines(home string, s daemonStudioConfig, stdout io.Writer) {
+	if !s.passed {
+		return
+	}
+	listen := s.listen
+	if listen == "unix" {
+		listen = fmt.Sprintf("unix (%s)", daemonWebSocketPath(home))
+	}
+	suffix := ""
+	if s.listenWas != "" && s.listen == s.listenWas {
+		suffix = " (unchanged)"
+	}
+	fmt.Fprintf(stdout, "web_listen: %s%s\n", listen, suffix)
+
+	if s.url == "" {
+		fmt.Fprintln(stdout, "web_url: unset")
+		fmt.Fprintf(stdout, "proxy: point your proxy at %s, then run\n", daemonProxyTarget(home, s.listen))
+		fmt.Fprintln(stdout, "       marshal daemon install --studio-url https://marshal.example.com")
+		return
+	}
+	if s.urlWas != "" && s.url != s.urlWas {
+		fmt.Fprintf(stdout, "web_url: %s (was %s)\n", s.url, s.urlWas)
+	} else {
+		fmt.Fprintf(stdout, "web_url: %s\n", s.url)
+	}
+	switch {
+	case s.listen == "unix":
+		// D10/D13: the socket form is what this run wrote, so it is the
+		// snippet; the document's port-shaped example is the alternative for a
+		// proxy that cannot dial a socket.
+		fmt.Fprintln(stdout, "proxy: Caddy, with whatever auth module you pick:")
+		fmt.Fprintln(stdout)
+		fmt.Fprintf(stdout, "\tmarshal.example.com {\n\t\treverse_proxy unix/%s\n\t}\n", daemonWebSocketPath(home))
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "a proxy that cannot dial a unix socket uses the loopback pair instead:")
+		fmt.Fprintln(stdout, "set web_listen = \"127.0.0.1:7700\" and web_url = \"https://box.<tailnet>.ts.net\",")
+		fmt.Fprintln(stdout, "then `tailscale serve --bg 7700` (docs/DEPLOYMENT.md)")
+	case strings.HasPrefix(s.listen, "/"):
+		fmt.Fprintf(stdout, "proxy: Caddy:  reverse_proxy unix/%s\n", s.listen)
+	default:
+		fmt.Fprintf(stdout, "proxy: Caddy:  reverse_proxy %s\n", s.listen)
+		if port := daemonListenPort(s.listen); port != "" {
+			fmt.Fprintf(stdout, "       Tailscale Serve:  tailscale serve --bg %s\n", port)
+		}
+		fmt.Fprintln(stdout, "       (docs/DEPLOYMENT.md)")
+	}
+	fmt.Fprintln(stdout, "/hooks/, /status/ and /mcp pass through without the proxy's login: each carries")
+	fmt.Fprintln(stdout, "its own credential")
+}
+
+// daemonWebSocketPath is where daemon.web_listen = "unix" puts the web socket:
+// beside the daemon's own socket. web/bridge names that socket and resolves the
+// path, so this asks it rather than joining a second copy of the name — the
+// printed proxy line is the only thing a user configures Caddy against (D10).
+func daemonWebSocketPath(home string) string {
+	listen, _ := bridge.ParseWebListen("unix", "", daemon.PathsFor(home).Socket)
+	return listen.Address
+}
+
+// daemonProxyTarget is what a proxy in front of the daemon dials for the
+// listener this run ends with: the socket's path for "unix", else the address.
+func daemonProxyTarget(home, listen string) string {
+	if listen == "unix" {
+		return daemonWebSocketPath(home)
+	}
+	return listen
+}
+
+// daemonListenPort is the port of a loopback host:port, or "" when the address
+// names none.
+func daemonListenPort(addr string) string {
+	if i := strings.LastIndexByte(addr, ':'); i >= 0 {
+		return addr[i+1:]
+	}
+	return ""
 }
 
 // daemonEnsureLinger enables the user's linger bit on Linux and says what it
@@ -424,11 +595,15 @@ func daemonWebListen(listen, group string) (string, error) {
 // the address to serve on: "" answers "", as it does for a setting that is
 // unset.
 //
-// The daemon runs host processes with the user's full authority and has no
-// authentication but a bearer token in a 0600 file, so it listens on a unix
-// socket or a loopback address only; binding it anywhere else would publish
-// that authority (D3). A host name is not resolved here: only localhost and a
-// loopback address literal are provably local without asking a resolver.
+// The daemon runs host processes with the user's full authority, and a listener
+// carries no credential of its own: the operator's proxy authenticates the
+// browser (D13), and the socket's 0600 mode in a private directory plus the
+// bridge's peer-uid check protect a local transport rather than anything an
+// address inherits. The bearer credentials on /hooks/, /status/ and /mcp are
+// each that endpoint's own (D2). So this listens on a unix socket or a loopback
+// address only; binding it anywhere else would publish that authority (D3). A
+// host name is not resolved here: only localhost and a loopback address literal
+// are provably local without asking a resolver.
 func daemonLoopbackAddr(key, setting string) (string, error) {
 	addr := strings.TrimSpace(setting)
 	if addr == "" {

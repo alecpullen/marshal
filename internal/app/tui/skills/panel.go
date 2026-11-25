@@ -19,13 +19,19 @@ import (
 	"marshal/internal/app/tui/theme"
 )
 
+// The four sources a listed copy can come from. Only the global and project
+// stores are writable through Marshal: the built-ins are the binary's own, and
+// the shared root belongs to the other agents that install there.
 const scopeGlobal = "global"
 const scopeProject = "project"
+const scopeBuiltin = "builtin"
+const scopeShared = "shared"
 
 // Service is what the panel asks the session for. acpclient.Session satisfies
 // it. The panel keeps no store paths, no skill index and no session state of
-// its own: the agent side lists both stores, loads, installs, removes, writes
-// the autoload preference and drives the skill gate.
+// its own: the agent side lists every copy across the four sources, loads,
+// installs, removes, writes the autoload and shared-copy preferences and
+// drives the skill gate.
 type Service interface {
 	Config() config.Config
 	Status() acpwire.SessionStatus
@@ -34,6 +40,7 @@ type Service interface {
 	InstallSkill(ctx context.Context, source, scope string) (string, error)
 	RemoveSkill(ctx context.Context, scope, source string) error
 	SetSkillAutoload(ctx context.Context, name string, on bool) error
+	SetSkillPreferShared(ctx context.Context, name string, on bool) error
 	SetSkillGate(ctx context.Context, on bool) error
 	ClearSkillGateDecision(ctx context.Context, skill string) error
 }
@@ -140,6 +147,69 @@ func (p *Panel) isAutoloaded(name string) bool {
 	return false
 }
 
+// entry returns the listing's current copy for a scope and source, or false
+// when the listing no longer holds one — a store can change while a detail
+// frame is open.
+func (p *Panel) entry(scope, source string) (acpwire.SkillEntry, bool) {
+	for _, e := range p.entries {
+		if e.Scope == scope && e.Source == source {
+			return e, true
+		}
+	}
+	return acpwire.SkillEntry{}, false
+}
+
+// winner returns the copy the session's resolution holds for the declared
+// name, as the last listing reported it.
+func (p *Panel) winner(name string) (acpwire.SkillEntry, bool) {
+	for _, e := range p.entries {
+		if e.Name == name && e.Effective {
+			return e, true
+		}
+	}
+	return acpwire.SkillEntry{}, false
+}
+
+// isPreferred reports whether the saved skills.prefer_shared list names the
+// declared skill. The preference is a property of the name, so every copy
+// carries it.
+func (p *Panel) isPreferred(name string) bool {
+	for _, e := range p.entries {
+		if e.Name == name && e.Preferred {
+			return true
+		}
+	}
+	return false
+}
+
+// isEffective reports whether this copy is the one the session resolves for
+// its declared name. It reads the live listing, so a frame opened before the
+// resolution changed still shows the current winner.
+func (p *Panel) isEffective(s acpwire.SkillEntry) bool {
+	if e, ok := p.entry(s.Scope, s.Source); ok {
+		return e.Effective
+	}
+	return s.Effective
+}
+
+// sharedPair reports whether a declared name has both a built-in copy and a
+// shared one — the pair skills.prefer_shared swaps between. A name with only
+// one of the two has nothing to prefer.
+func (p *Panel) sharedPair(name string) (builtin, shared bool) {
+	for _, e := range p.entries {
+		if e.Name != name {
+			continue
+		}
+		switch e.Scope {
+		case scopeBuiltin:
+			builtin = true
+		case scopeShared:
+			shared = true
+		}
+	}
+	return builtin, shared
+}
+
 // setAutoload adds or removes name from skills.autoload and persists it.
 //
 // The write belongs to the session, not the panel: autoload always goes to the
@@ -175,6 +245,40 @@ func (p *Panel) detailFrame(s acpwire.SkillEntry) *settings.Frame {
 		settings.SetFieldGetStr(scope, func() string { return s.Scope })
 		fields = append(fields, scope)
 
+		// Which copy the session actually runs is otherwise only visible by
+		// comparing every copy of the name, so the winner is stated here.
+		effective := settings.NewField("detail.effective", "Effective", settings.KindScalar)
+		settings.SetFieldGetStr(effective, func() string {
+			if p.isEffective(s) {
+				return "yes — this copy is what the session loads"
+			}
+			if winner, ok := p.winner(s.Name); ok {
+				return fmt.Sprintf("no — the %s copy is what the session loads", winner.Scope)
+			}
+			return "no — another copy takes precedence"
+		})
+		fields = append(fields, effective)
+
+		// The saved preference is a choice about the declared name, so it
+		// reads the same on every copy — and says when a higher-priority copy
+		// masks it, rather than implying the shared copy is running.
+		preferred := settings.NewField("detail.preferred", "Preference", settings.KindScalar)
+		settings.SetFieldGetStr(preferred, func() string {
+			if !p.isPreferred(s.Name) {
+				return "built-in copy (default)"
+			}
+			winner, ok := p.winner(s.Name)
+			// A project or global copy outranks the preference, so name it
+			// rather than pretending the shared copy is running.
+			if ok && !p.isEffective(s) {
+				if winner.Scope == scopeProject || winner.Scope == scopeGlobal {
+					return fmt.Sprintf("shared copy preferred, but the %s copy takes precedence", winner.Scope)
+				}
+			}
+			return "shared copy preferred"
+		})
+		fields = append(fields, preferred)
+
 		auto := settings.NewField("detail.autoload", "Autoload", settings.KindToggle)
 		settings.SetFieldDesc(auto, "inject into every session at startup · saved to the global config")
 		settings.SetFieldGetBool(auto, func() bool { return p.isAutoloaded(s.Name) })
@@ -203,31 +307,82 @@ func (p *Panel) detailFrame(s acpwire.SkillEntry) *settings.Frame {
 		})
 		fields = append(fields, load)
 
-		remove := settings.NewField("action.remove", "Remove", settings.KindAction)
-		settings.SetFieldDesc(remove, "delete this skill from disk")
-		id := removalIdentity(s)
-		settings.SetFieldActLabel(remove, func() string {
-			if p.removeArmed[id] {
-				return "↵ confirm remove"
+		// The preference swaps only the built-in and shared copies, so it is
+		// offered only when a name has both — a name with one copy has
+		// nothing to prefer.
+		if builtin, shared := p.sharedPair(s.Name); builtin && shared {
+			prefer := settings.NewField("action.prefer", "Prefer shared copy", settings.KindAction)
+			if p.isPreferred(s.Name) {
+				settings.SetFieldTitle(prefer, "Use built-in copy")
+				settings.SetFieldDesc(prefer, "run the built-in copy again · saved to the global config")
+			} else {
+				settings.SetFieldDesc(prefer, "run the shared copy instead of the built-in · saved to the global config")
 			}
-			return "↵ remove"
-		})
-		// Leaving the row (arrow keys call the row's disarm) or the detail
-		// frame must drop the armed confirmation, so it can never be carried
-		// into a different selection or a later visit.
-		settings.SetFieldDisarm(remove, func() { delete(p.removeArmed, id) })
-		settings.SetFieldAct(remove, func() tea.Cmd {
-			if !p.removeArmed[id] {
-				p.removeArmed[id] = true
-				return nil
-			}
-			delete(p.removeArmed, id)
-			return p.runRemove(s)
-		})
-		fields = append(fields, remove)
+			settings.SetFieldActLabel(prefer, func() string {
+				if p.isPreferred(s.Name) {
+					return "↵ use built-in copy"
+				}
+				return "↵ prefer shared copy"
+			})
+			settings.SetFieldAct(prefer, func() tea.Cmd {
+				name := s.Name
+				on := !p.isPreferred(name)
+				return func() tea.Msg {
+					// The session revalidates the name against its stores and
+					// writes only the user config's skills.prefer_shared; the
+					// runtime index is not rebuilt, so an active skill keeps
+					// its loaded body.
+					err := p.svc.SetSkillPreferShared(context.Background(), name, on)
+					return preferResultMsg{Name: name, On: on, Err: err}
+				}
+			})
+			fields = append(fields, prefer)
+		}
+
+		// Only the two managed stores are Marshal's to delete from: a
+		// built-in has no file, and the shared root belongs to whichever
+		// other agent installed there.
+		switch s.Scope {
+		case scopeBuiltin:
+			fields = append(fields, readOnlyRow("built-in skills are part of Marshal"))
+		case scopeShared:
+			fields = append(fields, readOnlyRow("shared skills are managed where they were installed"))
+		case scopeGlobal, scopeProject:
+			remove := settings.NewField("action.remove", "Remove", settings.KindAction)
+			settings.SetFieldDesc(remove, "delete this skill from disk")
+			id := removalIdentity(s)
+			settings.SetFieldActLabel(remove, func() string {
+				if p.removeArmed[id] {
+					return "↵ confirm remove"
+				}
+				return "↵ remove"
+			})
+			// Leaving the row (arrow keys call the row's disarm) or the detail
+			// frame must drop the armed confirmation, so it can never be carried
+			// into a different selection or a later visit.
+			settings.SetFieldDisarm(remove, func() { delete(p.removeArmed, id) })
+			settings.SetFieldAct(remove, func() tea.Cmd {
+				if !p.removeArmed[id] {
+					p.removeArmed[id] = true
+					return nil
+				}
+				delete(p.removeArmed, id)
+				return p.runRemove(s)
+			})
+			fields = append(fields, remove)
+		}
 
 		return fields
 	})
+}
+
+// readOnlyRow is where an entry that Marshal cannot remove says why, in place
+// of the Remove action: the row explains the source instead of offering a
+// deletion the session would refuse.
+func readOnlyRow(text string) *settings.Field {
+	row := settings.NewField("detail.readonly", "Read-only", settings.KindScalar)
+	settings.SetFieldGetStr(row, func() string { return text })
+	return row
 }
 
 func (p *Panel) installFrame() *settings.Frame {
@@ -352,7 +507,7 @@ func (p *Panel) buildFields() []*settings.Field {
 		// not only after an action, and admit that precedence can still pick
 		// another value for a shadowed name.
 		settings.NewField("note.restart", "disk changes apply after a restart — the index loads at startup", settings.KindHeader),
-		settings.NewField("note.precedence", "project and plugin skills can shadow a global entry", settings.KindHeader),
+		settings.NewField("note.precedence", "precedence: project, global, built-in, shared — a preference swaps the last two; plugin skills can shadow them", settings.KindHeader),
 	}
 
 	// The gate is a session-scope control: flipping it here never edits the
@@ -384,13 +539,21 @@ func (p *Panel) buildFields() []*settings.Field {
 		// made them one row.
 		f := settings.NewField(skillRowID(s.Scope, s.Source), s.Name, settings.KindDrill)
 		settings.SetFieldDesc(f, fmt.Sprintf("%s · %s", s.Scope, s.Description))
-		// Which skills are always-on is otherwise invisible without opening
-		// the config file, so it belongs in the row summary.
+		// Which skills are always-on, which copy wins and whether the saved
+		// preference names the skill are otherwise invisible without opening
+		// each copy, so they belong in the row summary.
 		settings.SetFieldSummary(f, func() string {
+			parts := []string{s.Scope}
 			if p.isAutoloaded(s.Name) {
-				return s.Scope + " · autoload"
+				parts = append(parts, "autoload")
 			}
-			return s.Scope
+			if s.Effective {
+				parts = append(parts, "effective")
+			}
+			if s.Preferred {
+				parts = append(parts, "shared preferred")
+			}
+			return strings.Join(parts, " · ")
 		})
 		settings.SetFieldBuild(f, func() *settings.Frame { return p.detailFrame(s) })
 		fields = append(fields, f)
@@ -465,13 +628,21 @@ type removeResultMsg struct {
 	Err   error
 }
 
+// preferResultMsg is the outcome of saving (or clearing) a shared-copy
+// preference for one declared skill name.
+type preferResultMsg struct {
+	Name string
+	On   bool
+	Err  error
+}
+
 // OwnsMsg claims this panel's async result messages so the dock host
 // delivers them. Without it the model cannot name these unexported types
 // and drops them, so an install or remove completes on disk while the UI
 // shows nothing at all. See dock.MessageOwner.
 func (p *Panel) OwnsMsg(msg tea.Msg) bool {
 	switch msg.(type) {
-	case loadResultMsg, installResultMsg, removeResultMsg:
+	case loadResultMsg, installResultMsg, removeResultMsg, preferResultMsg:
 		return true
 	}
 	return false
@@ -522,6 +693,25 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		}
 		p.reload()
 		p.list.Refresh()
+		return nil
+	case preferResultMsg:
+		if msg.Err != nil {
+			// A failed save claims nothing: the error row, and no status
+			// line that would read as a saved preference.
+			p.ActiveList().ErrMsg = msg.Err.Error()
+			return nil
+		}
+		if msg.On {
+			p.status = fmt.Sprintf("%s now prefers its shared copy — restart Marshal to apply it", msg.Name)
+		} else {
+			p.status = fmt.Sprintf("%s now uses its built-in copy — restart Marshal to apply it", msg.Name)
+		}
+		p.ActiveList().ErrMsg = ""
+		p.reload()
+		p.list.Refresh()
+		// The user is comparing the pair, so stay in the detail frame and
+		// refresh it too: its winner and preference rows follow the change.
+		p.ActiveList().Refresh()
 		return nil
 	case tea.KeyPressMsg:
 		if msg.Code == tea.KeyEscape {

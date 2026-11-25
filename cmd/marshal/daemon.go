@@ -204,12 +204,14 @@ func runDaemonTunnels(ctx context.Context, args []string, stderr io.Writer) erro
 
 // runDaemonInstall renders and loads the unit.
 //
-// Usage: marshal daemon install [--webbridge PATH] [--no-linger]
+// Usage: marshal daemon install [--webbridge PATH] [--no-linger] [--studio] [--studio-url URL]
 func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("daemon install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	webbridge := fs.String("webbridge", "", "the webbridge binary to run (default: beside marshal, else on PATH)")
 	noLinger := fs.Bool("no-linger", false, "do not enable systemd's linger for this user (Linux)")
+	studio := fs.Bool("studio", false, "set daemon.web_listen to \"unix\" when it is unset")
+	studioURL := fs.String("studio-url", "", "set daemon.web_url to the address your proxy publishes")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -219,6 +221,13 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 
 	home, err := daemonHome()
 	if err != nil {
+		return err
+	}
+	studioSettings, err := daemonPlanStudio(home, *studio, *studioURL)
+	if err != nil {
+		return err
+	}
+	if err := daemonWriteStudio(home, studioSettings); err != nil {
 		return err
 	}
 	m, err := daemonManagerFor(home)
@@ -245,6 +254,75 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 	daemonRemoveOldTokenFiles(daemon.PathsFor(home).Dir, stderr)
 	daemonEnsureLinger(ctx, m, *noLinger, stdout)
 	daemonReadyNote(ctx, spec.Paths, stdout)
+	return nil
+}
+
+// daemonStudioConfig is what --studio and --studio-url ask the [daemon]
+// section to hold, and what it held before them.
+type daemonStudioConfig struct {
+	passed    bool          // --studio or --studio-url was passed
+	cfg       config.Config // the merged user config carrying the intended values
+	listen    string        // daemon.web_listen after this run
+	listenWas string        // daemon.web_listen before it
+	url       string        // daemon.web_url after this run
+	urlWas    string        // daemon.web_url before it
+}
+
+// changed reports whether this run alters either value.
+func (s daemonStudioConfig) changed() bool {
+	return s.listen != s.listenWas || s.url != s.urlWas
+}
+
+// daemonPlanStudio computes the [daemon] pair the two Studio flags ask for and
+// validates it without writing anything (D3, D10, D13). Validation comes
+// first so a refused pair cannot leave half a configuration behind.
+func daemonPlanStudio(home string, studio bool, studioURL string) (daemonStudioConfig, error) {
+	out := daemonStudioConfig{passed: studio || strings.TrimSpace(studioURL) != ""}
+	if !out.passed {
+		return out, nil
+	}
+	cfg, err := config.Load(config.LoadOptions{HomeDir: home, SkipProjectConfig: true})
+	if err != nil {
+		return out, fmt.Errorf("read the user config: %w", err)
+	}
+	out.listenWas = strings.TrimSpace(cfg.Daemon.WebListen)
+	out.listen = out.listenWas
+	out.urlWas = strings.TrimSpace(cfg.Daemon.WebURL)
+	out.url = out.urlWas
+	if url := strings.TrimSpace(studioURL); url != "" {
+		out.url = url
+	}
+	if studio && out.listen == "" {
+		// D10: "unix" is the listener form that needs no D13 warning, since
+		// the daemon directory is private (D3).
+		out.listen = "unix"
+	}
+	if out.url != "" && out.listen == "" {
+		return out, errors.New("marshal daemon install: --studio-url needs a listener: pass --studio too, or set daemon.web_listen")
+	}
+	if _, err := daemonWebListen(out.listen, cfg.Daemon.WebGroup); err != nil {
+		return out, err
+	}
+	if _, err := daemonPublicURL("daemon.web_url", out.url); err != nil {
+		return out, err
+	}
+	cfg.Daemon.WebListen = out.listen
+	cfg.Daemon.WebURL = out.url
+	out.cfg = cfg
+	return out, nil
+}
+
+// daemonWriteStudio writes the pair daemonPlanStudio answered, when it differs
+// from what the file holds. It goes through the user-config writer every other
+// [daemon] edit uses, so unrelated sections survive the write (D10).
+func daemonWriteStudio(home string, s daemonStudioConfig) error {
+	if !s.changed() {
+		return nil
+	}
+	path := config.UserConfigPath(home)
+	if err := config.SaveUserConfigSection(path, s.cfg); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
 	return nil
 }
 

@@ -93,6 +93,14 @@ final _codecs = <String, _Codec>{
   // projects.json
   'ProjectStatus': (json) => ProjectStatus.fromJson(_object(json)).toJson(),
   'TrustState': (json) => TrustState.fromWire(json! as String).wire,
+  'NewProjectKind': (json) => NewProjectKind.fromWire(json! as String).wire,
+  'NewProjectRequest': (json) =>
+      NewProjectRequest.fromJson(_object(json)).toJson(),
+  'CreationState': (json) => CreationState.fromWire(json! as String).wire,
+  'ProjectCreation': (json) =>
+      ProjectCreation.fromJson(_object(json)).toJson(),
+  'NewProjectOptions': (json) =>
+      NewProjectOptions.fromJson(_object(json)).toJson(),
   // issues.json
   'RepoIssue': (json) => RepoIssue.fromJson(_object(json)).toJson(),
   // recipes.json
@@ -324,6 +332,8 @@ final _codecs = <String, _Codec>{
   'FleetDelta': (json) => FleetDelta.fromJson(_object(json)).toJson(),
   'ProjectRemovedDelta': (json) =>
       ProjectRemovedDelta.fromJson(_object(json)).toJson(),
+  'ProjectAddedDelta': (json) =>
+      ProjectAddedDelta.fromJson(_object(json)).toJson(),
   'DeltaSessions': (json) => DeltaKind.fromWire(json! as String).wire,
   'SessionsDelta': (json) => SessionsDelta.fromJson(_object(json)).toJson(),
   // connections.json

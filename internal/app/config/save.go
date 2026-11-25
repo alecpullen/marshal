@@ -378,6 +378,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			WebURL:             strutil.Ptr(cfg.Daemon.WebURL),
 			PreviewListen:      strutil.Ptr(cfg.Daemon.PreviewListen),
 			PreviewURL:         strutil.Ptr(cfg.Daemon.PreviewURL),
+			ProjectsDir:        strutil.Ptr(cfg.Daemon.ProjectsDir),
 		}
 	}
 	if cfg.Web != def.Web {

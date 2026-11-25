@@ -151,7 +151,7 @@ void main() {
     Place place, {
     StateKind? state,
     VoidCallback? onNew,
-    VoidCallback? onConnectRepo,
+    VoidCallback? onAddProject,
     UnsavedGuard? unsaved,
     HostPlaceBuilder? settingsFor,
   }) {
@@ -167,7 +167,7 @@ void main() {
         onRetry: () {},
         onSelect: opened.add,
         onNew: onNew,
-        onConnectRepo: onConnectRepo,
+        onAddProject: onAddProject,
         onLeaveSettings: () {},
         unsaved: unsaved,
         settingsFor: settingsFor,
@@ -982,7 +982,7 @@ void main() {
     final (shell, _) = shellAt(
       const Place.overview(),
       onNew: () {},
-      onConnectRepo: () {},
+      onAddProject: () {},
     );
     await tester.pumpWidget(
       EmberApp(brightness: Brightness.light, home: shell),
@@ -1013,7 +1013,7 @@ void main() {
       of: find.byTooltip(tooltip),
       matching: find.byIcon(Glyphs.plus),
     );
-    expect(right(plus('New')), right(plus('Connect a repository')));
+    expect(right(plus('New')), right(plus('Add a project')));
   });
 
   testWidgets('New starts work in the first project', (tester) async {

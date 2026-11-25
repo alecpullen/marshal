@@ -25,7 +25,7 @@ class Sidebar extends StatefulWidget {
     required this.onSelect,
     this.host,
     this.onHost,
-    this.onConnectRepo,
+    this.onAddProject,
     this.onNew,
     this.onLeaveSettings,
     this.now,
@@ -44,9 +44,10 @@ class Sidebar extends StatefulWidget {
   final String? host;
   final void Function(String? host)? onHost;
 
-  /// Connects a repository (F9 B1): the plus beside *Projects*. Null leaves
-  /// the control out, so a host that wires no bridge offers no sheet.
-  final VoidCallback? onConnectRepo;
+  /// Adds a project — blank, cloned or a folder already on a host
+  /// (new-project.md): the plus beside *Projects*. Null leaves the control
+  /// out, so a Studio that wires no bridge offers no sheet.
+  final VoidCallback? onAddProject;
 
   /// The place-level New (F9 B3): the plus beside the search field. Null leaves
   /// it out — there is no project to start work in.
@@ -188,11 +189,11 @@ class _SidebarState extends State<Sidebar> {
                   child: Row(
                     children: [
                       const Expanded(child: Label('Projects')),
-                      if (widget.onConnectRepo != null)
+                      if (widget.onAddProject != null)
                         IconBtn(
                           Glyphs.plus,
-                          tooltip: 'Connect a repository',
-                          onTap: widget.onConnectRepo,
+                          tooltip: 'Add a project',
+                          onTap: widget.onAddProject,
                         ),
                     ],
                   ),

@@ -182,6 +182,7 @@ type fileDaemon struct {
 	WebURL        *string `toml:"web_url"`
 	PreviewListen *string `toml:"preview_listen"`
 	PreviewURL    *string `toml:"preview_url"`
+	ProjectsDir   *string `toml:"projects_dir"`
 	JoinURL       *string `toml:"join_url"`
 	JoinName      *string `toml:"join_name"`
 	JoinCAFile    *string `toml:"join_ca_file"`

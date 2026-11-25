@@ -112,6 +112,11 @@ type Server struct {
 	// the attention read over them (coordinator.go). It is nil on a server with
 	// no fleet state directory, and its routes then answer unavailable.
 	coordinator *coordinatorService
+	// projectsDir is [daemon] projects_dir, where a project the Studio makes
+	// is put by name; empty is ~/projects (newproject.go).
+	projectsDir string
+	// creations is the projects the Studio asked this host to make.
+	creations *projectCreations
 }
 
 // NewServer builds a server over a *Fleet or a *Registry. For a fleet, the
@@ -147,6 +152,7 @@ func NewServer(target any, args ...any) *Server {
 	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux(),
 		factoryAuth:   newFactoryMCPAuthorizer(ws),
 		marshalEnroll: newMarshalEnrollments(),
+		creations:     newProjectCreations(),
 		relaysByToken: make(map[string]previewRelay),
 		relaysByAgent: make(map[string]previewRelay)}
 	s.routes()
@@ -314,6 +320,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/projects/images", s.uploadImage)
 	s.mux.HandleFunc("POST /api/projects", s.addProject)
 	s.mux.HandleFunc("DELETE /api/projects", s.removeProject)
+	// Making a project from the Studio: blank, cloned or a folder already on
+	// the host (docs/studio-flutter/new-project.md).
+	s.newProjectRoutes()
 	s.mux.HandleFunc("GET /api/agents", s.listAgents)
 	s.mux.HandleFunc("GET /api/inbox", s.inbox)
 	s.mux.HandleFunc("POST /api/agents", s.spawnAgent)

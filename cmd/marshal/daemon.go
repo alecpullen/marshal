@@ -530,6 +530,7 @@ func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, []string, 
 		PublicURL:          publicURL,
 		PreviewListen:      previewListen,
 		PreviewURL:         previewURL,
+		ProjectsDir:        strings.TrimSpace(cfg.Daemon.ProjectsDir),
 	}, cfg.Daemon.Retired, nil
 }
 

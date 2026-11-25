@@ -52,6 +52,8 @@ type UnitSpec struct {
 	PublicURL     string // written as --public-url
 	PreviewListen string // written as --preview-addr
 	PreviewURL    string // written as --preview-url
+	// ProjectsDir is where a project the Studio makes is put by name.
+	ProjectsDir string // written as --projects-dir
 }
 
 // Args are the daemon's arguments, in the order decision 10 gives.
@@ -81,6 +83,7 @@ func (u UnitSpec) Args() []string {
 		{"--public-url", u.PublicURL},
 		{"--preview-addr", u.PreviewListen},
 		{"--preview-url", u.PreviewURL},
+		{"--projects-dir", u.ProjectsDir},
 	} {
 		if flag.value != "" {
 			args = append(args, flag.name, flag.value)

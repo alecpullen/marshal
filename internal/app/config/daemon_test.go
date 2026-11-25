@@ -109,7 +109,8 @@ func TestDaemonWebSettingsAreReadFromTheUserConfig(t *testing.T) {
 			"web_group = \"marshal\"\n"+
 			"web_url = \"https://marshal.example\"\n"+
 			"preview_listen = \"127.0.0.1:7790\"\n"+
-			"preview_url = \"https://preview.example\"\n")
+			"preview_url = \"https://preview.example\"\n"+
+			"projects_dir = \"~/code\"\n")
 
 	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
 	if err != nil {
@@ -125,6 +126,7 @@ func TestDaemonWebSettingsAreReadFromTheUserConfig(t *testing.T) {
 		{name: "web_url", got: cfg.Daemon.WebURL, want: "https://marshal.example"},
 		{name: "preview_listen", got: cfg.Daemon.PreviewListen, want: "127.0.0.1:7790"},
 		{name: "preview_url", got: cfg.Daemon.PreviewURL, want: "https://preview.example"},
+		{name: "projects_dir", got: cfg.Daemon.ProjectsDir, want: "~/code"},
 	} {
 		if tc.got != tc.want {
 			t.Fatalf("Daemon.%s = %q, want %q", tc.name, tc.got, tc.want)

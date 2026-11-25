@@ -17,6 +17,7 @@ const (
 	DeltaHold           DeltaKind = "hold"
 	DeltaBudget         DeltaKind = "budget"
 	DeltaProjectRemoved DeltaKind = "project_removed"
+	DeltaProjectAdded   DeltaKind = "project_added"
 	DeltaInbox          DeltaKind = "inbox"
 	// DeltaPull announces a pull request record added or changed, or one
 	// removed. Its payload is PullDelta.
@@ -71,6 +72,13 @@ type BudgetDelta struct {
 
 // ProjectRemovedDelta is a "project_removed" fleet delta.
 type ProjectRemovedDelta struct {
+	Kind    DeltaKind `json:"kind"`
+	Project string    `json:"project"`
+}
+
+// ProjectAddedDelta is a "project_added" fleet delta: the host registered a
+// project, so read its projects again.
+type ProjectAddedDelta struct {
 	Kind    DeltaKind `json:"kind"`
 	Project string    `json:"project"`
 }

@@ -1,6 +1,6 @@
 # `marshal daemon install --studio` — design
 
-Status: approved design, awaiting plan.
+Status: implemented.
 
 Implements the documented path of one-daemon D10/D13 as one command. It changes
 no decision: the daemon still authenticates no browser, and the operator's proxy

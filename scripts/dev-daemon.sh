@@ -35,10 +35,13 @@
 # request, and `marshal studio` opens it. There is no second service and no
 # second unit — this script only ever touches marshal-daemon.
 #
-# The Studio is a Flutter build, so --studio needs `flutter` on PATH, and its
+# The Studio is a Flutter build, so --studio needs a Flutter toolchain, and its
 # files are a second artifact beside the two binaries. It is built into
 # share/marshal/studio, which is where the daemon looks for it: beside the
-# binaries, and under the prefix for an installed one.
+# binaries, and under the prefix for an installed one. --studio finds the
+# toolchain as `flutter` on PATH, or through fvm — `fvm flutter`, which is how
+# a version-managed machine installs Flutter without putting it on PATH — and
+# FLUTTER names the command outright for anything else.
 #
 # The agent image is a third: an agent inside a container runs the marshal
 # baked into the image, not this checkout's, so a host rebuild does not reach
@@ -90,6 +93,10 @@ status=0
 timeout=20
 agent_image=0
 dev_image=0
+
+# flutter_cmd is the command --studio runs, filled by flutter_ready: `flutter`,
+# `fvm flutter`, or whatever FLUTTER names.
+flutter_cmd=()
 
 # agent_image_ref is the tag the daemon resolves for a source build: a dev
 # version has no published tag to pin to, so defaultAgentImageFor answers
@@ -247,19 +254,51 @@ wait_ready() {
 
 # ---------------------------------------------------------------- build ----
 
-# flutter_ready names the toolchain the Studio build needs. There is no npm
-# step and no web/ui to install into: the Studio is the Flutter app in app/,
-# built with `flutter build web` run from there.
+# flutter_ready names the toolchain the Studio build needs, in flutter_cmd.
+# There is no npm step and no web/ui to install into: the Studio is the Flutter
+# app in app/, built with `flutter build web` run from there.
+#
+# `flutter` on PATH is the plain case and fvm is the other: a version-manager
+# machine has no flutter on PATH at all, so the test is the toolchain, not the
+# binary name. An fvm pin gets `fvm flutter`, which runs the pinned SDK: fvm
+# takes it from the project, so the pin may sit in app/ or at the checkout's
+# root, the directory it walks up to (`.fvm/fvm_config.json` is the older
+# form). Without a pin, fvm is the fallback only when nothing answers to
+# `flutter`, so an ordinary install keeps its PATH's Flutter. FLUTTER overrides
+# the whole search, taking its words as the command, which covers asdf and an
+# absolute path.
 flutter_ready() {
-	if ! command -v flutter >/dev/null 2>&1; then
-		echo "dev-daemon.sh: flutter is missing, so the Studio cannot be built" >&2
-		echo "dev-daemon.sh: install Flutter 3.50+, or drop --studio to rebuild the binaries only" >&2
-		exit 1
-	fi
 	if [ ! -f app/pubspec.yaml ]; then
 		echo "dev-daemon.sh: app/pubspec.yaml is missing, so this checkout has no Studio to build" >&2
 		exit 1
 	fi
+	if [ -n "${FLUTTER:-}" ]; then
+		read -r -a flutter_cmd <<<"$FLUTTER"
+		return 0
+	fi
+	# The script has cd'd to the checkout's root, so these are the two
+	# directories an fvm pin can be in.
+	local pinned=0 pin
+	for pin in .fvmrc .fvm/fvm_config.json app/.fvmrc app/.fvm/fvm_config.json; do
+		if [ -f "$pin" ]; then
+			pinned=1
+			break
+		fi
+	done
+	if command -v fvm >/dev/null 2>&1 &&
+		{ [ "$pinned" -eq 1 ] || ! command -v flutter >/dev/null 2>&1; }; then
+		flutter_cmd=(fvm flutter)
+		return 0
+	fi
+	if command -v flutter >/dev/null 2>&1; then
+		flutter_cmd=(flutter)
+		return 0
+	fi
+	echo "dev-daemon.sh: no Flutter toolchain, so the Studio cannot be built" >&2
+	echo "dev-daemon.sh: put flutter on PATH, install fvm (this script runs 'fvm flutter')," >&2
+	echo "dev-daemon.sh: or set FLUTTER to the command that runs it" >&2
+	echo "dev-daemon.sh: install Flutter 3.50+, or drop --studio to rebuild the binaries only" >&2
+	exit 1
 }
 
 if [ "$studio" -eq 1 ]; then
@@ -270,8 +309,8 @@ if [ "$studio" -eq 1 ]; then
 	# that CDN never starts the Studio. --output is relative to app/, which is
 	# where the command runs, and share/marshal/studio is one of the two places
 	# the daemon looks — beside the binaries, which is what this checkout is.
-	echo "building the Studio into share/marshal/studio"
-	(cd app && flutter build web --base-href / --no-web-resources-cdn --output ../share/marshal/studio)
+	echo "building the Studio into share/marshal/studio with ${flutter_cmd[*]}"
+	(cd app && "${flutter_cmd[@]}" build web --base-href / --no-web-resources-cdn --output ../share/marshal/studio)
 fi
 
 if [ "$build" -eq 1 ]; then

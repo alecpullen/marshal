@@ -5,6 +5,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 
 	"marshal/internal/trust"
 
@@ -45,6 +46,11 @@ type Layers struct {
 	// stripped before merge so the user-global value always wins, and the
 	// project's value is never able to raise or lower the ceiling.
 	ProjectSnapshotGlobalIgnored bool
+	// ProjectPreferSharedIgnored reports that the project file carried
+	// [skills].prefer_shared, which is user-global only. The list is stripped
+	// before merge so a repository cannot choose which copy of a skill the
+	// user runs.
+	ProjectPreferSharedIgnored bool
 	// BudgetFixes lists the dotted paths of [budgets] values that were
 	// invalid and replaced by their defaults.
 	BudgetFixes    []string
@@ -149,6 +155,7 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	var projectFile configFile
 	projectBudgetsIgnored := false
 	projectSnapshotGlobalIgnored := false
+	projectPreferSharedIgnored := false
 	if applyProject {
 		var err error
 		projectFile, err = loadFile(projectPath)
@@ -167,7 +174,22 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 			projectSnapshotGlobalIgnored = true
 			projectFile.Snapshots.GlobalMaxBytes = nil
 		}
-		projectNorm, projectNotices, nerr := normalizeInteractionFile(projectFile, LayerProject.String())
+		// [skills].prefer_shared is user-global only: which copy of a skill
+		// the user runs is the user's choice, not the repository's, so the
+		// merge sees the list as unset rather than letting a project file pick
+		// it. Only the copy the merge reads is stripped: the hoist below
+		// rewrites the project file from this raw mirror, and a key that is
+		// merely ignored must stay on disk where its author put it — otherwise
+		// an unrelated [providers] hoist would erase it, and the diagnostic
+		// would describe a value that no longer exists.
+		mergeProject := projectFile
+		if projectFile.Skills != nil && projectFile.Skills.PreferShared != nil {
+			projectPreferSharedIgnored = true
+			withoutPreference := *projectFile.Skills
+			withoutPreference.PreferShared = nil
+			mergeProject.Skills = &withoutPreference
+		}
+		projectNorm, projectNotices, nerr := normalizeInteractionFile(mergeProject, LayerProject.String())
 		if nerr != nil {
 			return Layers{}, fmt.Errorf("normalize config %s: %w", projectPath, nerr)
 		}
@@ -224,6 +246,7 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	return Layers{
 		ProjectBudgetsIgnored:        projectBudgetsIgnored,
 		ProjectSnapshotGlobalIgnored: projectSnapshotGlobalIgnored,
+		ProjectPreferSharedIgnored:   projectPreferSharedIgnored,
 		BudgetFixes:                  budgetFixes,
 		Default:                      def, User: user, Merged: cfg, Migrated: migrated,
 		SubtaskIterationsSet:      subtaskSet,
@@ -455,10 +478,21 @@ func fieldByTOMLTag(v reflect.Value, name string) (reflect.Value, bool) {
 	return reflect.Value{}, false
 }
 
+// saveUserConfigValueMu serializes SaveUserConfigValue's read-modify-write of
+// the user config. The write rebuilds the whole file from what it read, so two
+// concurrent single-key saves would each read before the other wrote and one
+// key would be lost — skills.autoload racing skills.prefer_shared, or either
+// racing another settings write. Package-level because every writer of that
+// file goes through this one helper.
+var saveUserConfigValueMu sync.Mutex
+
 // SaveUserConfigValue writes one value at a dotted TOML path into the user
 // config file, preserving everything else in it. Used for global-target
 // settings edits (person preferences, credentials).
 func SaveUserConfigValue(path, dottedPath string, value any) error {
+	saveUserConfigValueMu.Lock()
+	defer saveUserConfigValueMu.Unlock()
+
 	file, err := loadFile(path)
 	if err != nil {
 		return fmt.Errorf("load user config: %w", err)

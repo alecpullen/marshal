@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,6 +114,266 @@ func fieldByID(t *testing.T, fields []*settings.Field, id string) *settings.Fiel
 	return nil
 }
 
+// --- the built-in/shared preference ---------------------------------------
+//
+// A skill name can be declared by a copy embedded in the binary and by a copy
+// another agent installed in the shared root. The panel lets the user say
+// which of the two Marshal runs, saves it in the user config, and shows which
+// copy actually wins — including when a project copy still takes precedence.
+
+// sharedBuiltIn is a skill name the binary ships, so a shared copy of the same
+// name forms a real pair rather than a fixture-only shape.
+const sharedBuiltIn = "brainstorming"
+
+// writeSharedEntry writes a skill into the shared root other agents install
+// into, <home>/.agents/skills, and returns its path.
+func writeSharedEntry(t *testing.T, home, file, name, description string) string {
+	t.Helper()
+	dir := filepath.Join(home, ".agents", "skills")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create shared skill root %s: %v", dir, err)
+	}
+	return writeSkillEntry(t, dir, file, name, description)
+}
+
+// hasField reports whether fields carries id.
+func hasField(fields []*settings.Field, id string) bool {
+	for _, f := range fields {
+		if settings.FieldID(f) == id {
+			return true
+		}
+	}
+	return false
+}
+
+// detailFields is the detail frame's rows for one listed entry.
+func detailFields(t *testing.T, p *Panel, s acpwire.SkillEntry) []*settings.Field {
+	t.Helper()
+	return settings.FieldListRows(settings.FrameList(p.detailFrame(s)))
+}
+
+// hasName reports whether names holds name.
+func hasName(names []string, name string) bool {
+	for _, n := range names {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// A built-in and a shared copy of one name are two listed copies, one of them
+// the winner, and the built-in's detail offers the preference.
+func TestPanelListsBuiltInAndSharedPair(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	skillStores(t, home, work)
+	writeSharedEntry(t, home, "brainstorming.md", sharedBuiltIn, "shared copy")
+	p, _, _ := testPanel(t, home, work, true, nil)
+
+	builtin := discovered(t, p, scopeBuiltin, sharedBuiltIn)
+	shared := discovered(t, p, scopeShared, "brainstorming.md")
+	if builtin.Name != shared.Name {
+		t.Fatalf("pair names differ: %q vs %q", builtin.Name, shared.Name)
+	}
+	if builtin.Effective == shared.Effective {
+		t.Fatalf("exactly one copy should win: builtin=%v shared=%v", builtin.Effective, shared.Effective)
+	}
+	// Without a saved preference the built-in wins by default.
+	if !builtin.Effective || shared.Effective {
+		t.Fatalf("default winner is not the built-in: builtin=%v shared=%v", builtin.Effective, shared.Effective)
+	}
+
+	fields := detailFields(t, p, builtin)
+	prefer := fieldByID(t, fields, "action.prefer")
+	if got := settings.FieldTitle(prefer); got != "Prefer shared copy" {
+		t.Fatalf("action title = %q, want %q", got, "Prefer shared copy")
+	}
+	if got := prefer.ActLabel(); got != "↵ prefer shared copy" {
+		t.Fatalf("action label = %q, want %q", got, "↵ prefer shared copy")
+	}
+}
+
+// Taking the action saves the preference, says so, and the re-listing marks
+// the other copy the winner.
+func TestPreferSharedActionFlipsTheWinner(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	skillStores(t, home, work)
+	writeSharedEntry(t, home, "brainstorming.md", sharedBuiltIn, "shared copy")
+	p, state, _ := testPanel(t, home, work, true, nil)
+
+	builtin := discovered(t, p, scopeBuiltin, sharedBuiltIn)
+	p.stack = append(p.stack, p.detailFrame(builtin))
+	focusRow(t, p, "action.prefer")
+	press(t, p, keyEnter)
+
+	if got := p.ActiveList().ErrMsg; got != "" {
+		t.Fatalf("preference surfaced an error: %q", got)
+	}
+	want := sharedBuiltIn + " now prefers its shared copy — restart Marshal to apply it"
+	if got := p.status; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+
+	cfg, err := config.Load(config.LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("load user config: %v", err)
+	}
+	if !hasName(cfg.Skills.PreferShared, sharedBuiltIn) {
+		t.Fatalf("on-disk prefer_shared = %v, want it to name %q", cfg.Skills.PreferShared, sharedBuiltIn)
+	}
+	if live := state.ConfigSnapshot().Skills.PreferShared; !hasName(live, sharedBuiltIn) {
+		t.Fatalf("live prefer_shared = %v, want it to name %q", live, sharedBuiltIn)
+	}
+
+	// The listing now resolves the shared copy, and the open frame is what
+	// the user is comparing — it offers the way back.
+	shared := discovered(t, p, scopeShared, "brainstorming.md")
+	if !shared.Effective {
+		t.Fatalf("shared copy did not become the winner: %+v", shared)
+	}
+	if !shared.Preferred {
+		t.Fatalf("shared copy is not marked preferred: %+v", shared)
+	}
+	prefer := fieldByID(t, settings.FieldListRows(p.ActiveList()), "action.prefer")
+	if got := settings.FieldTitle(prefer); got != "Use built-in copy" {
+		t.Fatalf("action title = %q after preferring shared, want %q", got, "Use built-in copy")
+	}
+	if got := prefer.ActLabel(); got != "↵ use built-in copy" {
+		t.Fatalf("action label = %q, want %q", got, "↵ use built-in copy")
+	}
+}
+
+// The preference swaps only the last two sources: a project copy still wins,
+// and the panel names it instead of claiming the preference took effect.
+func TestPreferredSharedCopyStaysBehindAProjectWinner(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	_, project := skillStores(t, home, work)
+	writeSharedEntry(t, home, "brainstorming.md", sharedBuiltIn, "shared copy")
+	writeSkillEntry(t, project, "brainstorming.md", sharedBuiltIn, "project copy")
+	p, _, _ := testPanel(t, home, work, true, nil)
+
+	if err := p.svc.SetSkillPreferShared(context.Background(), sharedBuiltIn, true); err != nil {
+		t.Fatalf("save the preference: %v", err)
+	}
+
+	shared := discovered(t, p, scopeShared, "brainstorming.md")
+	if !shared.Preferred {
+		t.Fatalf("shared copy is not marked preferred: %+v", shared)
+	}
+	if shared.Effective {
+		t.Fatalf("shared copy won over a project copy: %+v", shared)
+	}
+	projectEntry := discovered(t, p, scopeProject, "brainstorming.md")
+	if !projectEntry.Effective {
+		t.Fatalf("the project copy is not the winner: %+v", projectEntry)
+	}
+
+	preference := fieldByID(t, detailFields(t, p, shared), "detail.preferred")
+	want := "shared copy preferred, but the project copy takes precedence"
+	if got := settings.FieldGetStr(preference); got != want {
+		t.Fatalf("preference row = %q, want %q", got, want)
+	}
+	effective := fieldByID(t, detailFields(t, p, shared), "detail.effective")
+	if got, want := settings.FieldGetStr(effective), "no — the project copy is what the session loads"; got != want {
+		t.Fatalf("effective row = %q, want %q", got, want)
+	}
+}
+
+// A save that fails shows the error, does not claim success, and leaves the
+// listing's winner alone.
+func TestPreferSharedWriteFailureIsVisibleAndChangesNothing(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	skillStores(t, home, work)
+	writeSharedEntry(t, home, "brainstorming.md", sharedBuiltIn, "shared copy")
+	p, _, _ := testPanel(t, home, work, true, nil)
+
+	// A directory where the user config file would be written makes the save
+	// fail the way an unwritable config does.
+	if err := os.Mkdir(config.UserConfigPath(home), 0o755); err != nil {
+		t.Fatalf("make the user config unwritable: %v", err)
+	}
+
+	builtin := discovered(t, p, scopeBuiltin, sharedBuiltIn)
+	p.stack = append(p.stack, p.detailFrame(builtin))
+	focusRow(t, p, "action.prefer")
+	press(t, p, keyEnter)
+
+	if got := p.ActiveList().ErrMsg; got == "" {
+		t.Fatal("a failed save surfaced no error — it looks like it worked")
+	}
+	if p.status != "" {
+		t.Fatalf("status = %q, want no success line after a failed save", p.status)
+	}
+	if !discovered(t, p, scopeBuiltin, sharedBuiltIn).Effective {
+		t.Fatal("the listing's winner changed although the save failed")
+	}
+}
+
+// Removal belongs to the two stores Marshal manages: a built-in has no file to
+// delete and the shared root belongs to another tool.
+func TestRemoveOnlyOfferedForManagedStores(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	global, project := skillStores(t, home, work)
+	writeSkillEntry(t, global, "debug.md", "debug", "fixture")
+	writeSkillEntry(t, project, "project-note.md", "project-note", "fixture")
+	writeSharedEntry(t, home, "brainstorming.md", sharedBuiltIn, "shared copy")
+	p, _, _ := testPanel(t, home, work, true, nil)
+
+	cases := []struct {
+		scope, source string
+		readonly      string
+	}{
+		{scope: scopeGlobal, source: "debug.md"},
+		{scope: scopeProject, source: "project-note.md"},
+		{scope: scopeBuiltin, source: sharedBuiltIn, readonly: "built-in skills are part of Marshal"},
+		{scope: scopeShared, source: "brainstorming.md", readonly: "shared skills are managed where they were installed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.scope, func(t *testing.T) {
+			fields := detailFields(t, p, discovered(t, p, tc.scope, tc.source))
+			managed := tc.readonly == ""
+			if got := hasField(fields, "action.remove"); got != managed {
+				t.Fatalf("action.remove present = %v, want %v", got, managed)
+			}
+			if managed {
+				return
+			}
+			if got, want := settings.FieldTitle(fieldByID(t, fields, "detail.readonly")), "Read-only"; got != want {
+				t.Fatalf("read-only row title = %q, want %q", got, want)
+			}
+			if got := settings.FieldGetStr(fieldByID(t, fields, "detail.readonly")); got != tc.readonly {
+				t.Fatalf("read-only row = %q, want %q", got, tc.readonly)
+			}
+		})
+	}
+}
+
+// The row summary carries the winner and the preference, so a name with four
+// copies says which one the session runs without opening each.
+func TestSkillRowSummaryShowsWinnerAndPreference(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	global, _ := skillStores(t, home, work)
+	writeSkillEntry(t, global, "debug.md", "debug", "fixture")
+	writeSharedEntry(t, home, "brainstorming.md", sharedBuiltIn, "shared copy")
+	p, state, _ := testPanel(t, home, work, true, nil)
+	state.Config.Skills.Autoload = []string{"debug"}
+	refresh(p)
+
+	row := fieldByID(t, settings.FieldListRows(p.list), skillRowID(scopeGlobal, "debug.md"))
+	if got, want := row.Summary(), "global · autoload · effective"; got != want {
+		t.Fatalf("global row summary = %q, want %q", got, want)
+	}
+
+	if err := p.svc.SetSkillPreferShared(context.Background(), sharedBuiltIn, true); err != nil {
+		t.Fatalf("save the preference: %v", err)
+	}
+	refresh(p)
+	row = fieldByID(t, settings.FieldListRows(p.list), skillRowID(scopeShared, "brainstorming.md"))
+	if got, want := row.Summary(), "shared · effective · shared preferred"; got != want {
+		t.Fatalf("shared row summary = %q, want %q", got, want)
+	}
+}
+
 func TestLoadResultRoutesErrorToActiveListAndSetsStatusOnSuccess(t *testing.T) {
 	p, _, _ := testPanel(t, t.TempDir(), t.TempDir(), true, nil)
 	p.stack = append(p.stack, p.detailFrame(acpwire.SkillEntry{
@@ -180,9 +441,10 @@ func TestPanelRootList(t *testing.T) {
 func TestPanelViewRendersPushedInstallFrame(t *testing.T) {
 	p, _, _ := testPanel(t, t.TempDir(), t.TempDir(), true, nil)
 
-	// With no skills installed, the selectable rows are the gate toggle and
-	// "＋ Install skill"; move down to the install row before pressing Enter.
-	p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	// The listing carries every copy across the four sources — the binary's
+	// built-ins included — so park on the Install row by its ID rather than by
+	// a fixed offset from the gate.
+	focusRow(t, p, "action.install")
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if len(p.stack) == 0 {
 		t.Fatalf("expected install frame pushed onto stack")
@@ -412,29 +674,50 @@ func TestAutoloadShowsInRowSummary(t *testing.T) {
 func TestFooterCountsSkillsNotRows(t *testing.T) {
 	p, _, _ := newAutoloadPanel(t)
 
-	if got := p.countLabel(); got != "1 skill" {
-		t.Fatalf("root count = %q, want %q", got, "1 skill")
+	// The listing carries every copy across the four sources, so the expected
+	// count is the listing's own length — not the three rows one skill would
+	// contribute to the root list, and not the detail frame's fields.
+	want := fmt.Sprintf("%d skills", len(p.entries))
+	if got := p.countLabel(); got != want {
+		t.Fatalf("root count = %q, want %q", got, want)
 	}
 
 	p.stack = append(p.stack, p.detailFrame(discovered(t, p, scopeGlobal, "debug.md")))
-	if got := p.countLabel(); got != "1 skill" {
-		t.Fatalf("detail count = %q, want %q", got, "1 skill")
+	if got := p.countLabel(); got != want {
+		t.Fatalf("detail count = %q, want %q", got, want)
 	}
 }
 
 func TestFooterCountTracksFilter(t *testing.T) {
 	p, _, _ := newAutoloadPanel(t)
-	p.filter.SetValue("nomatch")
+
+	// The filter matches substrings and subsequences, and the built-ins carry
+	// long descriptions, so "no match" needs a query no row can spell: no
+	// skill file contains a tilde.
+	p.filter.SetValue("~")
 	p.list.Refresh()
 
 	if got := p.countLabel(); got != "0 skills" {
 		t.Fatalf("filtered count = %q, want %q", got, "0 skills")
 	}
 
-	p.filter.SetValue("debug")
+	// A row ID carries the copy's source, so filtering on it keeps exactly the
+	// built-in copies — the expected count follows the listing, not a fixed
+	// number of shipped skills.
+	builtins := 0
+	for _, e := range p.entries {
+		if e.Scope == scopeBuiltin {
+			builtins++
+		}
+	}
+	want := fmt.Sprintf("%d skills", builtins)
+	if builtins == 1 {
+		want = "1 skill"
+	}
+	p.filter.SetValue(scopeBuiltin)
 	p.list.Refresh()
-	if got := p.countLabel(); got != "1 skill" {
-		t.Fatalf("filtered count = %q, want %q", got, "1 skill")
+	if got := p.countLabel(); got != want {
+		t.Fatalf("filtered count = %q, want %q", got, want)
 	}
 }
 

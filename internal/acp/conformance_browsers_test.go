@@ -186,6 +186,18 @@ func browserSkillEntry(t *testing.T, entries []acpwire.SkillEntry, scope, source
 	return acpwire.SkillEntry{}
 }
 
+// browserManagedSkillCount counts the listed entries from the two stores
+// Marshal writes, so a case can ignore the built-ins and the shared root.
+func browserManagedSkillCount(entries []acpwire.SkillEntry) int {
+	n := 0
+	for _, entry := range entries {
+		if entry.Scope == "global" || entry.Scope == "project" {
+			n++
+		}
+	}
+	return n
+}
+
 // browserPluginRepo returns a local plugin repository with one command,
 // committed.
 func browserPluginRepo(t *testing.T) (src, commit string) {
@@ -1131,7 +1143,7 @@ func theSkillsListBothStoresWithReasons(t *testing.T, open func(t *testing.T, d 
 	if err != nil {
 		t.Fatalf("Skills: %v", err)
 	}
-	if len(entries) != 2 {
+	if n := browserManagedSkillCount(entries); n != 2 {
 		t.Fatalf("Skills = %+v, want the global and the project entry", entries)
 	}
 	if blocked := browserSkillEntry(t, entries, "global", "alpha.md").LoadBlocked; blocked != "" {
@@ -1148,7 +1160,7 @@ func theSkillsListBothStoresWithReasons(t *testing.T, open func(t *testing.T, d 
 	if err != nil {
 		t.Fatalf("Skills without an index: %v", err)
 	}
-	if len(entries) != 2 {
+	if n := browserManagedSkillCount(entries); n != 2 {
 		t.Fatalf("Skills without an index = %+v, want both entries", entries)
 	}
 	wantNoIndex := "this session has no skill index — restart Marshal to build one"
@@ -1221,7 +1233,7 @@ func aRemovalUsesTheListedSource(t *testing.T, open func(t *testing.T, d service
 	if err != nil {
 		t.Fatalf("Skills: %v", err)
 	}
-	if len(entries) != 2 {
+	if n := browserManagedSkillCount(entries); n != 2 {
 		t.Fatalf("Skills = %+v, want both entries sharing a name", entries)
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -64,9 +65,12 @@ func TestScriptedSkillRemoval(t *testing.T) {
 		return strings.Contains(scr.Content, "❯")
 	})
 
-	// Open the panel. Its footer counts the skill rows it discovered, which is
-	// how this proves both test-owned skills were read from disk: at 80x24 the
-	// list itself only shows a few rows before scrolling.
+	// Open the panel. Its footer counts every copy it discovered across the
+	// four sources — the binary's built-ins as well as the two test-owned
+	// global skills — so the count is read here and later compared against
+	// itself, never against a fixed number the shipped built-ins would
+	// invalidate. At 80x24 the list itself only shows a few rows before
+	// scrolling; the footer is always on screen.
 	if err := sess.Send("/skills"); err != nil {
 		t.Fatalf("Send(/skills): %v", err)
 	}
@@ -76,8 +80,12 @@ func TestScriptedSkillRemoval(t *testing.T) {
 	waitForViewport(t, sess, 60*time.Second, "skills panel", func(scr screen.Screen) bool {
 		return strings.Contains(scr.Content, skillPanelTitle) &&
 			strings.Contains(scr.Content, skillRootHeader) &&
-			strings.Contains(scr.Content, "2 skills")
+			skillCount(scr) >= 2
 	})
+	listed := skillCount(snapshotScreen(t, sess))
+	if listed < 2 {
+		t.Fatalf("the panel counted %d skills, want both test-owned skills among them", listed)
+	}
 
 	// First pass: arm the removal and then leave the frame. The armed removal
 	// must not carry out on its own, and must not survive the escape.
@@ -115,10 +123,10 @@ func TestScriptedSkillRemoval(t *testing.T) {
 	}
 
 	// The panel pops back to the refreshed root list once the removal lands, and
-	// its footer counts one skill fewer. The footer is always on screen, while
+	// its footer counts one copy fewer. The footer is always on screen, while
 	// the list itself may be scrolled.
 	waitForViewport(t, sess, 30*time.Second, "skills list after removal", func(scr screen.Screen) bool {
-		return strings.Contains(scr.Content, "1 skill")
+		return skillCount(scr) == listed-1
 	})
 	waitForGone(t, filepath.Join(globalSkillsDir, skillFixtureName), 15*time.Second)
 
@@ -181,6 +189,32 @@ func focusedRow(scr screen.Screen) string {
 		}
 	}
 	return ""
+}
+
+// skillCount is the number in the skills panel's footer ("N skills", or
+// "1 skill"), or 0 when the viewport shows no count. The footer counts every
+// copy across the four sources, so a test compares it against itself rather
+// than against a fixed number that the shipped built-ins would invalidate.
+//
+// The count has to be the row's leading text: a skill description is free to
+// mention "3 skills", and reading the first line that merely contains the
+// phrase would take that for the count.
+func skillCount(scr screen.Screen) int {
+	for _, line := range scr.Lines {
+		text := strings.Trim(strings.TrimSpace(line), "│─╭╮╰╯ ")
+		fields := strings.Fields(text)
+		if len(fields) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		if fields[1] == "skill" || fields[1] == "skills" {
+			return n
+		}
+	}
+	return 0
 }
 
 // waitUntil reports whether pred held within timeout, failing the test on a
@@ -251,6 +285,150 @@ func waitForGone(t *testing.T, path string, timeout time.Duration) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("%s still exists after %s: the confirmed removal did not reach the filesystem", path, timeout)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// sharedBuiltInSkill is the built-in the preference journey pairs with a shared
+// copy: a name the binary ships, so a shared copy of it is exactly the pair the
+// panel offers the action for.
+const sharedBuiltInSkill = "brainstorming"
+
+// TestScriptedSkillPreference drives the shared-copy preference the way a user
+// meets it at 80x24: a shared copy of a built-in skill, preferred from the
+// built-in's detail frame, saved to the user config, and still preferred after
+// Marshal restarts.
+//
+// The evidence is the config file the session wrote and the panel's own action
+// label flipping to "Use built-in copy" — not the status line, which only
+// reports what the panel believes it did. No model call is needed, and any
+// request to the test-owned provider fails the test.
+func TestScriptedSkillPreference(t *testing.T) {
+	bin := requireBinary(t)
+	env := isolatedHomeEnv(t)
+
+	// The shared root another agent installs into, holding a copy of a name the
+	// binary already ships as a built-in.
+	writeTestSkill(t, filepath.Join(env.HomeDir, ".agents", "skills"), sharedBuiltInSkill,
+		"the shared copy of a built-in")
+	userConfig := filepath.Join(env.HomeDir, ".config", "marshal", "config.toml")
+
+	openSkills := func() *harness.Session {
+		t.Helper()
+		sess, err := harness.New(harness.Config{
+			BinaryPath: bin,
+			Width:      80,
+			Height:     24,
+			WorkDir:    t.TempDir(),
+			Env:        env.Env,
+		})
+		if err != nil {
+			t.Fatalf("harness.New: %v", err)
+		}
+		t.Cleanup(func() { _ = sess.Close() })
+		waitForViewport(t, sess, 60*time.Second, "idle composer", func(scr screen.Screen) bool {
+			return strings.Contains(scr.Content, "❯")
+		})
+		if err := sess.Send("/skills"); err != nil {
+			t.Fatalf("Send(/skills): %v", err)
+		}
+		if err := sess.SendKey("enter"); err != nil {
+			t.Fatalf("SendKey(enter): %v", err)
+		}
+		waitForViewport(t, sess, 60*time.Second, "skills panel", func(scr screen.Screen) bool {
+			return strings.Contains(scr.Content, skillPanelTitle) &&
+				strings.Contains(scr.Content, skillRootHeader) &&
+				skillCount(scr) >= 1
+		})
+		return sess
+	}
+
+	// Both rows carry the declared name, so the journey has to open the
+	// built-in one: the shared copy is read-only and offers no preference.
+	sess := openSkills()
+	focusRowMatching(t, sess, "skills list", func(row string) bool {
+		return strings.Contains(row, sharedBuiltInSkill) && strings.Contains(row, "builtin")
+	})
+	if err := sess.SendKey("enter"); err != nil {
+		t.Fatalf("SendKey(enter) open the built-in copy: %v", err)
+	}
+	waitForViewport(t, sess, 30*time.Second, "skill detail frame", func(scr screen.Screen) bool {
+		return strings.Contains(focusedRow(scr), "Name")
+	})
+
+	focusRow(t, sess, "Prefer shared copy", "skill detail frame")
+	if err := sess.SendKey("enter"); err != nil {
+		t.Fatalf("SendKey(enter) prefer the shared copy: %v", err)
+	}
+	// The row's own label is the panel's confirmation that the save landed: it
+	// then offers the reverse action.
+	waitForViewport(t, sess, 30*time.Second, "preference saved", func(scr screen.Screen) bool {
+		return strings.Contains(focusedRow(scr), "Use built-in copy")
+	})
+	waitForFileContains(t, userConfig, "prefer_shared", 15*time.Second)
+	data, err := os.ReadFile(userConfig)
+	if err != nil {
+		t.Fatalf("read %s: %v", userConfig, err)
+	}
+	if !strings.Contains(string(data), sharedBuiltInSkill) {
+		t.Fatalf("the saved preference does not name %s:\n%s", sharedBuiltInSkill, data)
+	}
+
+	// A restart is what separates a saved preference from one the panel is
+	// merely holding: a fresh process resolves the name from the user config.
+	sess = openSkills()
+	focusRowMatching(t, sess, "skills list after restart", func(row string) bool {
+		return strings.Contains(row, sharedBuiltInSkill) && strings.Contains(row, "builtin")
+	})
+	if err := sess.SendKey("enter"); err != nil {
+		t.Fatalf("SendKey(enter) open the built-in copy after restart: %v", err)
+	}
+	waitForViewport(t, sess, 30*time.Second, "skill detail frame after restart", func(scr screen.Screen) bool {
+		return strings.Contains(focusedRow(scr), "Name")
+	})
+	focusRow(t, sess, "shared copy preferred", "preference row after restart")
+
+	if n := env.Requests(); n != 0 {
+		t.Fatalf("fixture provider received %d requests, want 0: a preference must not call a model", n)
+	}
+}
+
+// focusRowMatching moves the list cursor onto the first row the predicate
+// accepts, reading the viewport before and after every press so the test never
+// acts on a stale screen or a guessed number of entries.
+func focusRowMatching(t *testing.T, sess *harness.Session, where string, match func(row string) bool) {
+	t.Helper()
+	const maxMoves = 20
+	for moves := 0; moves <= maxMoves; moves++ {
+		before := focusedRow(snapshotScreen(t, sess))
+		if match(before) {
+			return
+		}
+		if err := sess.SendKey("down"); err != nil {
+			t.Fatalf("%s: SendKey(down): %v", where, err)
+		}
+		if !waitUntil(t, sess, 5*time.Second, func(scr screen.Screen) bool {
+			return focusedRow(scr) != before
+		}) {
+			t.Fatalf("%s: the cursor did not move while looking for a matching row (focused row: %q)", where, before)
+		}
+	}
+	t.Fatalf("%s: no matching row within %d cursor moves", where, maxMoves)
+}
+
+// waitForFileContains polls path until its content contains want, so an
+// asynchronous save is asserted from the file that was written.
+func waitForFileContains(t *testing.T, path, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil && strings.Contains(string(data), want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not contain %q within %s (read error: %v, content: %q)", path, want, timeout, err, data)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

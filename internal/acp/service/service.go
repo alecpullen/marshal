@@ -214,12 +214,16 @@ type Session struct {
 	tools func() ([]string, bool)
 
 	// skillIndex is Deps.SkillIndex. skillListing is the last Skills listing,
-	// by scope and source; pluginScans holds the staged plugin scans by token,
-	// and pluginSeq numbers them. All three of the last are guarded by mu.
-	skillIndex   func() *skills.Index
-	skillListing map[string]skills.ScopedSkill
-	pluginScans  map[string]*pluginScan
-	pluginSeq    uint64
+	// by source and source name; pluginScans holds the staged plugin scans by
+	// token, and pluginSeq numbers them. All three of the last are guarded by
+	// mu. skillsWriteMu serializes the read-modify-write of the saved skill
+	// preferences — skills.autoload and skills.prefer_shared — so two writes in
+	// flight cannot lose one another's key.
+	skillIndex    func() *skills.Index
+	skillListing  map[string]skills.ScopedSkill
+	pluginScans   map[string]*pluginScan
+	pluginSeq     uint64
+	skillsWriteMu sync.Mutex
 
 	// marshalAccess, saveMarshalAccess and selectMarshalInstance are
 	// Deps.MarshalAccess and its writes. Without them the session reports the

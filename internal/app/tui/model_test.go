@@ -26,6 +26,7 @@ import (
 	"marshal/internal/app/tui/activeworkpanel"
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
@@ -12533,6 +12534,28 @@ func dockPanelView(t *testing.T, m Model, width, height int) string {
 	return ansi.Strip(p.View(width, height))
 }
 
+// walkPanelTo presses down until the docked panel's selected row carries
+// label, so a test reaches an action without counting the rows above it — a
+// list that grows (the skills panel now lists every copy across its four
+// sources) would otherwise silently shift the cursor onto a different row.
+func walkPanelTo(t *testing.T, m *Model, width, height int, label string) {
+	t.Helper()
+	down := tea.KeyPressMsg{Code: tea.KeyDown}
+	for i := 0; i < 100; i++ {
+		selected := false
+		for _, line := range strings.Split(dockPanelView(t, *m, width, height), "\n") {
+			if strings.Contains(line, chrome.SelectionMarker) && strings.Contains(line, label) {
+				selected = true
+			}
+		}
+		if selected {
+			return
+		}
+		sendHost(t, m, down)
+	}
+	t.Fatalf("the panel never selected a row carrying %q:\n%s", label, dockPanelView(t, *m, width, height))
+}
+
 // sendHost delivers one message through Model.Update the way the program loop
 // does, returning the command undrained so a test can follow it explicitly.
 func sendHost(t *testing.T, m *Model, msg tea.Msg) tea.Cmd {
@@ -12605,8 +12628,10 @@ func TestManagementPanelPasteAndEscapeThroughModel(t *testing.T) {
 						return m
 					},
 					drill: func(t *testing.T, m *Model) {
-						// The gate action is the first row; Install skill is next.
-						sendHost(t, m, down)
+						// The root list carries every copy across the four
+						// sources, so walk to the Install action rather than
+						// counting rows from the gate.
+						walkPanelTo(t, m, geo.width, geo.height, "Install skill")
 						sendHost(t, m, enter)
 					},
 					frame:  "Source",

@@ -13,11 +13,10 @@ import (
 	"marshal/internal/skills"
 )
 
-// The two scopes a skill store has, and the two an install and a removal take.
-const (
-	skillScopeGlobal  = "global"
-	skillScopeProject = "project"
-)
+// A skill copy comes from one of skills' four sources — the project's store,
+// Marshal's global store, the built-ins, or the shared root — and a listing,
+// a load and a removal all name a copy by its source and its name inside that
+// source. Only the global and project stores are writable through Marshal.
 
 // skillListingKey is the skillListing key of one listed entry. The scope and
 // the discovered source are joined by a NUL, which neither can hold, so no two
@@ -59,6 +58,21 @@ func (s *Session) projectSkillsDir() string {
 	return filepath.Join(s.state.WorkingDir, ".marshal", "skills")
 }
 
+// sharedSkillsDir is the shared skill store under the session's home: the
+// root other agents install into, and the one Marshal only reads.
+func (s *Session) sharedSkillsDir() string {
+	return filepath.Join(s.homeDir, ".agents", "skills")
+}
+
+// stores is the four sources a listing, a load and a preference read from.
+func (s *Session) stores() skills.Stores {
+	return skills.Stores{
+		GlobalDir:  s.globalSkillsDir(),
+		ProjectDir: s.projectSkillsDir(),
+		SharedDir:  s.sharedSkillsDir(),
+	}
+}
+
 // index is the runtime's skill index, or nil when it has none. It is the one
 // LoadSkill checks against: loading from a freshly built index would silently
 // disagree with the session.
@@ -98,56 +112,92 @@ func (s *Session) loadBlocked(index *skills.Index, scoped skills.ScopedSkill) st
 	return ""
 }
 
-// Skills lists both skill stores, and remembers the listing for LoadSkill and
-// RemoveSkill. A directory read error is returned unchanged: it is not an
-// empty valid store, so it fails closed.
+// Skills lists every copy of every skill across the four sources, with the
+// copy the resolution holds for each declared name and the user's saved
+// skills.prefer_shared preference, and remembers the listing for LoadSkill and
+// RemoveSkill. The preference is read from the live config rather than
+// captured, so a listing after the preference changed resolves the same winner
+// the runtime's next index will. A directory read error is returned unchanged:
+// it is not an empty valid store, so it fails closed.
 func (s *Session) Skills(ctx context.Context) ([]acpwire.SkillEntry, error) {
 	if s.closed.Load() {
 		return nil, errSessionClosed
 	}
-	list, err := skills.ListScopes(s.globalSkillsDir(), s.projectSkillsDir())
+	prefer := s.state.ConfigSnapshot().Skills.PreferShared
+	resolved, err := skills.Resolve(s.stores(), prefer)
 	if err != nil {
 		return nil, err
 	}
+	preferred := make(map[string]bool, len(prefer))
+	for _, name := range prefer {
+		if name = strings.TrimSpace(name); name != "" {
+			preferred[name] = true
+		}
+	}
+
+	total := 0
+	for _, name := range resolved.Names {
+		total += len(resolved.ByName[name].Candidates)
+	}
 	s.mu.Lock()
-	s.skillListing = make(map[string]skills.ScopedSkill, len(list))
-	for _, scoped := range list {
-		s.skillListing[skillListingKey(scoped.Scope, scoped.SourceName)] = scoped
+	s.skillListing = make(map[string]skills.ScopedSkill, total)
+	for _, name := range resolved.Names {
+		for _, candidate := range resolved.ByName[name].Candidates {
+			s.skillListing[skillListingKey(candidate.Source, candidate.SourceName)] = scopedSkillOf(candidate)
+		}
 	}
 	s.mu.Unlock()
 
 	index := s.index()
-	out := make([]acpwire.SkillEntry, 0, len(list))
-	for _, scoped := range list {
-		out = append(out, acpwire.SkillEntry{
-			Scope:       scoped.Scope,
-			Source:      scoped.SourceName,
-			Name:        scoped.Skill.Name,
-			Description: scoped.Skill.Description,
-			LoadBlocked: s.loadBlocked(index, scoped),
-		})
+	out := make([]acpwire.SkillEntry, 0, total)
+	for _, name := range resolved.Names {
+		resolution := resolved.ByName[name]
+		for _, candidate := range resolution.Candidates {
+			out = append(out, acpwire.SkillEntry{
+				Scope:       candidate.Source,
+				Source:      candidate.SourceName,
+				Name:        candidate.Skill.Name,
+				Description: candidate.Skill.Description,
+				LoadBlocked: s.loadBlocked(index, scopedSkillOf(candidate)),
+				Effective:   candidate.Source == resolution.Winner.Source && candidate.SourceName == resolution.Winner.SourceName,
+				Preferred:   preferred[candidate.Skill.Name],
+			})
+		}
 	}
 	return out, nil
+}
+
+// scopedSkillOf is one discovered copy in the shape the listing records and
+// the load checks: the copy's source is its scope, and only the managed stores
+// carry the lstat snapshot a removal verifies.
+func scopedSkillOf(candidate skills.Candidate) skills.ScopedSkill {
+	return skills.ScopedSkill{
+		Skill:      candidate.Skill,
+		Scope:      candidate.Source,
+		SourceName: candidate.SourceName,
+		SourceInfo: candidate.SourceInfo,
+	}
 }
 
 // loadableSelection re-reads the stores and returns the exact current-session
 // value to load, or the reason the listed entry cannot be loaded now. It is
 // the panel's check, moved agent side: the file and the shared index can both
-// change while a listing is in flight, so the stores are re-read here rather
+// change while a listing is in flight, so the sources are re-read here rather
 // than trusting the snapshot the listing took.
 func (s *Session) loadableSelection(listed skills.ScopedSkill) (skills.Skill, string) {
 	index := s.index()
 	if index == nil {
 		return skills.Skill{}, "this session has no skill index — restart Marshal to build one"
 	}
-	list, err := skills.ListScopes(s.globalSkillsDir(), s.projectSkillsDir())
+	list, err := skills.ListSources(s.stores())
 	if err != nil {
 		return skills.Skill{}, fmt.Sprintf("cannot read the skills directories: %v", err)
 	}
 	var found *skills.ScopedSkill
 	for i := range list {
-		if list[i].Scope == listed.Scope && list[i].SourceName == listed.SourceName {
-			found = &list[i]
+		if list[i].Source == listed.Scope && list[i].SourceName == listed.SourceName {
+			scoped := scopedSkillOf(list[i])
+			found = &scoped
 			break
 		}
 	}
@@ -199,10 +249,10 @@ func (s *Session) LoadSkill(ctx context.Context, scope, source string) (string, 
 }
 
 // InstallSkill installs a skill from source into scope's store and returns its
-// name. The three refusals are the panel's, in the panel's words: a blank
-// source, a project scope on an untrusted session, and an unknown scope. A
-// project-scope write on an untrusted session is refused rather than
-// redirected to global.
+// name. Only the two managed stores are writable, and the refusals are the
+// panel's, in the panel's words: a blank source, a project scope on an
+// untrusted session, a read-only source, and an unknown scope. A project-scope
+// write on an untrusted session is refused rather than redirected to global.
 func (s *Session) InstallSkill(ctx context.Context, source, scope string) (string, error) {
 	if s.closed.Load() {
 		return "", errSessionClosed
@@ -212,13 +262,15 @@ func (s *Session) InstallSkill(ctx context.Context, source, scope string) (strin
 	}
 	var targetDir string
 	switch scope {
-	case skillScopeGlobal:
+	case skills.SourceGlobal:
 		targetDir = s.globalSkillsDir()
-	case skillScopeProject:
+	case skills.SourceProject:
 		if !s.state.Trusted() {
 			return "", fmt.Errorf("project scope needs a trusted folder")
 		}
 		targetDir = s.projectSkillsDir()
+	case skills.SourceBuiltin, skills.SourceShared:
+		return "", fmt.Errorf("cannot install into the %s source — only the global and project stores are writable", scope)
 	default:
 		return "", fmt.Errorf("unknown skill scope %q", scope)
 	}
@@ -226,12 +278,19 @@ func (s *Session) InstallSkill(ctx context.Context, source, scope string) (strin
 }
 
 // RemoveSkill deletes the listed entry's source from its own store. The root
-// is chosen from the scope alone and the removal is confined to that store by
+// is chosen from the source alone and the removal is confined to that store by
 // skills.RemoveScopedSkill: the target is never rebuilt from the frontmatter
-// name, which is untrusted content.
+// name, which is untrusted content. A built-in has no file to remove, and the
+// shared store belongs to another tool, so both are refused.
 func (s *Session) RemoveSkill(ctx context.Context, scope, source string) error {
 	if s.closed.Load() {
 		return errSessionClosed
+	}
+	switch scope {
+	case skills.SourceBuiltin:
+		return fmt.Errorf("built-in skills cannot be removed")
+	case skills.SourceShared:
+		return fmt.Errorf("shared skills are read-only through Marshal — remove them where they were installed")
 	}
 	listed, ok := s.listed(scope, source)
 	if !ok {
@@ -239,9 +298,9 @@ func (s *Session) RemoveSkill(ctx context.Context, scope, source string) error {
 	}
 	var root string
 	switch scope {
-	case skillScopeGlobal:
+	case skills.SourceGlobal:
 		root = s.globalSkillsDir()
-	case skillScopeProject:
+	case skills.SourceProject:
 		root = s.projectSkillsDir()
 	default:
 		return fmt.Errorf("cannot remove skill: unknown scope %q", scope)
@@ -257,11 +316,15 @@ func (s *Session) RemoveSkill(ctx context.Context, scope, source string) error {
 // property of the repository, and writing it project-side would commit one
 // developer's always-on skills into a shared tree. SaveUserConfigValue writes
 // just this key, so the rest of the user config is left alone. A write error
-// is returned unchanged and nothing is installed.
+// is returned unchanged and nothing is installed. The read-modify-write of the
+// saved list holds skillsWriteMu, so an autoload toggle and a shared-copy
+// preference in flight cannot lose each other's key.
 func (s *Session) SetSkillAutoload(ctx context.Context, name string, on bool) error {
 	if s.closed.Load() {
 		return errSessionClosed
 	}
+	s.skillsWriteMu.Lock()
+	defer s.skillsWriteMu.Unlock()
 	current := s.state.ConfigSnapshot().Skills.Autoload
 	next := make([]string, 0, len(current)+1)
 	for _, n := range current {
@@ -283,6 +346,64 @@ func (s *Session) SetSkillAutoload(ctx context.Context, name string, on bool) er
 	refreshLayers(s.state, s.reloadLayers)
 	cfg := s.state.ConfigSnapshot()
 	cfg.Skills.Autoload = next
+	_, err = s.state.RebaseInteractionConfig(cfg)
+	return err
+}
+
+// SetSkillPreferShared adds the declared skill name to skills.prefer_shared in
+// the user config, or removes it, then publishes the new resolution. The name
+// is a declared skill name, never a source name, and it is revalidated against
+// the stores first: a name nothing declares is not a preference worth saving.
+//
+// Like autoload this always writes the user config, never the project one:
+// which copy of a skill Marshal runs is a choice about the agent, not a
+// property of the repository. SaveUserConfigValue writes just this key, so the
+// rest of the user config is left alone. The read-modify-write is serialized,
+// so two preferences in flight cannot lose one another, and a write error is
+// returned unchanged with the live config untouched.
+//
+// The runtime's index is not rebuilt: an active skill keeps the body it was
+// loaded with, and the next listing resolves the new winner — a skill that
+// changes hands still asks for a restart before it can load.
+func (s *Session) SetSkillPreferShared(ctx context.Context, name string, on bool) error {
+	if s.closed.Load() {
+		return errSessionClosed
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("name a skill first")
+	}
+	resolved, err := skills.Resolve(s.stores(), s.state.ConfigSnapshot().Skills.PreferShared)
+	if err != nil {
+		return err
+	}
+	if _, ok := resolved.ByName[name]; !ok {
+		return fmt.Errorf("no skill named %q", name)
+	}
+
+	s.skillsWriteMu.Lock()
+	defer s.skillsWriteMu.Unlock()
+	current := s.state.ConfigSnapshot().Skills.PreferShared
+	next := make([]string, 0, len(current)+1)
+	for _, n := range current {
+		if n != name {
+			next = append(next, n)
+		}
+	}
+	if on {
+		next = append(next, name)
+	}
+	path, err := userConfigPath(Deps{HomeDir: s.homeDir, UserConfigPath: s.userConfigFile})
+	if err != nil {
+		return err
+	}
+	if err := config.SaveUserConfigValue(path, "skills.prefer_shared", next); err != nil {
+		return err
+	}
+	s.reportConfigWrite(path)
+	refreshLayers(s.state, s.reloadLayers)
+	cfg := s.state.ConfigSnapshot()
+	cfg.Skills.PreferShared = next
 	_, err = s.state.RebaseInteractionConfig(cfg)
 	return err
 }

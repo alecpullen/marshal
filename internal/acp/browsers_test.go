@@ -799,11 +799,19 @@ func TestAMarshalSkillIsKeyedByItsSource(t *testing.T) {
 	if err := conn.Call(ctx, acpwire.MethodSkillsList, acpwire.ControlParams{SessionID: browserSession}, &list); err != nil {
 		t.Fatalf("session/skills_list: %v", err)
 	}
-	if len(list.Skills) != 1 {
-		t.Fatalf("skills = %+v, want the one global entry", list.Skills)
+	// The listing carries every copy across the four sources, so the entry is
+	// found by its source rather than by position.
+	var entry acpwire.SkillEntry
+	found := false
+	for _, listed := range list.Skills {
+		if listed.Scope == "global" && listed.Source == "alpha.md" {
+			entry, found = listed, true
+		}
 	}
-	entry := list.Skills[0]
-	if entry.Scope != "global" || entry.Source != "alpha.md" || entry.Name != "alpha" {
+	if !found {
+		t.Fatalf("skills = %+v, want the global alpha.md entry", list.Skills)
+	}
+	if entry.Name != "alpha" {
 		t.Errorf("entry = %+v, want the global alpha.md keyed by its source", entry)
 	}
 

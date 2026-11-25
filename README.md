@@ -336,6 +336,8 @@ image it needs.
 Architecture, the package map, and the data flow of a single turn live in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+How skills are discovered, ranked and preferred: [docs/skills.md](docs/skills.md).
+
 ## Requirements
 
 - Go 1.26+ (building from source)

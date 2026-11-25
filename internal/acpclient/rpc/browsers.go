@@ -267,6 +267,13 @@ func (s *Session) SetSkillAutoload(ctx context.Context, name string, on bool) er
 	return s.conn.Call(ctx, acpwire.MethodSkillsAutoload, params, nil)
 }
 
+// SetSkillPreferShared turns the declared skill called name's preference for
+// its shared copy on or off.
+func (s *Session) SetSkillPreferShared(ctx context.Context, name string, on bool) error {
+	params := acpwire.SkillPreferSharedParams{SessionID: s.id, Name: name, On: on}
+	return s.conn.Call(ctx, acpwire.MethodSkillsPreferShared, params, nil)
+}
+
 // SetSkillGate turns the session's skill load gate on or off.
 func (s *Session) SetSkillGate(ctx context.Context, on bool) error {
 	params := acpwire.SkillGateParams{SessionID: s.id, On: on}

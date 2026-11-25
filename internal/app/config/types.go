@@ -706,6 +706,13 @@ type SkillsConfig struct {
 	// their window loading skills they do not need; raise it or set 0 to
 	// opt out.
 	LoadGateThresholdTokens int `toml:"load_gate_threshold_tokens"`
+	// PreferShared names the declared skills whose shared copy
+	// (~/.agents/skills, installed by other agents) wins over Marshal's
+	// built-in one. The default order is project, Marshal global, built-in,
+	// shared; a name here swaps only the last two. It is user-global only —
+	// a project file never sets it — because a shared copy is the user's
+	// install choice, not the repository's.
+	PreferShared []string `toml:"prefer_shared"`
 }
 
 // ImagesConfig bounds what the image store accepts and keeps. It mirrors

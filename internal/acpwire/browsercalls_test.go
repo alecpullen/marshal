@@ -133,9 +133,12 @@ func TestTheBrowserResultsRoundTrip(t *testing.T) {
 			into:  &PluginsResult{},
 		},
 		{
-			name:  "skills",
-			value: SkillsResult{Skills: []SkillEntry{{Scope: "global", Source: "s", Name: "n"}}},
-			into:  &SkillsResult{},
+			name: "skills",
+			value: SkillsResult{Skills: []SkillEntry{
+				{Scope: "project", Source: "p.md", Name: "n"},
+				{Scope: "shared", Source: "n.md", Name: "n", Effective: true, Preferred: true},
+			}},
+			into: &SkillsResult{},
 		},
 		{
 			name:  "skill name",
@@ -166,5 +169,83 @@ func TestTheBrowserResultsRoundTrip(t *testing.T) {
 	}
 	if string(empty) != `{}` {
 		t.Errorf("empty prompt history JSON: got %s, want {}", empty)
+	}
+}
+
+// TestSkillEntryCarriesTheWinnerAndThePreference pins the listing's two new
+// fields: the effective copy and the saved preference ride as explicit keys
+// when they are set, and a plain entry omits both.
+func TestSkillEntryCarriesTheWinnerAndThePreference(t *testing.T) {
+	winner := SkillEntry{
+		Scope:       "shared",
+		Source:      "brainstorming.md",
+		Name:        "brainstorming",
+		Description: "a shared copy",
+		Effective:   true,
+		Preferred:   true,
+	}
+	raw, err := json.Marshal(winner)
+	if err != nil {
+		t.Fatalf("marshal the winning entry: %v", err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatalf("unmarshal the winning entry: %v", err)
+	}
+	got := make([]string, 0, len(keys))
+	for key := range keys {
+		got = append(got, key)
+	}
+	sort.Strings(got)
+	want := []string{"description", "effective", "name", "preferred", "scope", "source"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the winning entry's keys:\n got: %v\nwant: %v\nJSON: %s", got, want, raw)
+	}
+
+	var back SkillEntry
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("unmarshal the winning entry: %v", err)
+	}
+	if !reflect.DeepEqual(back, winner) {
+		t.Errorf("the winning entry round trip:\n got: %+v\nwant: %+v", back, winner)
+	}
+
+	plain, err := json.Marshal(SkillEntry{Scope: "builtin", Source: "review", Name: "review"})
+	if err != nil {
+		t.Fatalf("marshal the plain entry: %v", err)
+	}
+	if want := `{"scope":"builtin","source":"review","name":"review"}`; string(plain) != want {
+		t.Errorf("the plain entry JSON: got %s, want %s", plain, want)
+	}
+}
+
+// TestSkillPreferSharedParamsRoundTrip pins session/skills_prefer_shared's
+// params: the declared skill name and the flag, beside the session's ID.
+func TestSkillPreferSharedParamsRoundTrip(t *testing.T) {
+	params := SkillPreferSharedParams{SessionID: "s1", Name: "brainstorming", On: true}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal the preference params: %v", err)
+	}
+	want := `{"sessionId":"s1","name":"brainstorming","on":true}`
+	if string(raw) != want {
+		t.Errorf("preference params JSON:\n got: %s\nwant: %s", raw, want)
+	}
+
+	var back SkillPreferSharedParams
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("unmarshal the preference params: %v", err)
+	}
+	if !reflect.DeepEqual(back, params) {
+		t.Errorf("preference params round trip:\n got: %+v\nwant: %+v", back, params)
+	}
+
+	// Off is a value, not an absence: a decoder must see the flag.
+	off, err := json.Marshal(SkillPreferSharedParams{SessionID: "s1", Name: "brainstorming"})
+	if err != nil {
+		t.Fatalf("marshal the off params: %v", err)
+	}
+	if want := `{"sessionId":"s1","name":"brainstorming","on":false}`; string(off) != want {
+		t.Errorf("off params JSON:\n got: %s\nwant: %s", off, want)
 	}
 }

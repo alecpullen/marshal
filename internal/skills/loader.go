@@ -1,8 +1,6 @@
 package skills
 
 import (
-	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,35 +60,26 @@ func scanSkillDir(dir string) ([]string, error) {
 }
 
 // ListScopes returns skills from both scopes without merging; the caller can
-// decide how to handle name collisions.
+// decide how to handle name collisions. It is the two-store form of the
+// resolver's own scan, so a listing and the resolution agree on what a store
+// holds and on what is skipped — including the warning for a copy that could
+// not be stat'ed.
 func ListScopes(globalDir, projectDir string) ([]ScopedSkill, error) {
 	var out []ScopedSkill
 	for _, pair := range []struct{ dir, scope string }{
 		{globalDir, scopeGlobal},
 		{projectDir, scopeProject},
 	} {
-		paths, err := scanSkillDir(pair.dir)
+		candidates, err := scanManagedStore(pair.dir, pair.scope)
 		if err != nil {
 			return nil, err
 		}
-		for _, p := range paths {
-			skill, err := parseSkillFile(p)
-			if err != nil {
-				continue
-			}
-			// Provenance comes from the filesystem, never from Skill.Name. An
-			// entry that vanished between scan and stat is skipped the same way
-			// an unreadable entry is: no identity is fabricated.
-			sourceName := removalSourceName(p)
-			info, err := os.Lstat(filepath.Join(pair.dir, sourceName))
-			if err != nil {
-				continue
-			}
+		for _, candidate := range candidates {
 			out = append(out, ScopedSkill{
-				Skill:      skill,
-				Scope:      pair.scope,
-				SourceName: sourceName,
-				SourceInfo: info,
+				Skill:      candidate.Skill,
+				Scope:      candidate.Source,
+				SourceName: candidate.SourceName,
+				SourceInfo: candidate.SourceInfo,
 			})
 		}
 	}
@@ -105,46 +94,13 @@ func parseSkillFile(path string) (Skill, error) {
 	return Parse(string(raw))
 }
 
+// LoadSkills resolves the built-in, Marshal global and project stores. It is
+// the two-store form of Resolve, kept for callers that know nothing about the
+// shared root; the winner per name is the same as Resolve's default order.
 func LoadSkills(globalDir, projectDir string) (*Index, error) {
-	idx := NewIndex()
-
-	if err := loadBuiltIns(idx); err != nil {
+	resolved, err := Resolve(Stores{GlobalDir: globalDir, ProjectDir: projectDir}, nil)
+	if err != nil {
 		return nil, err
 	}
-
-	if err := loadFromDir(idx, globalDir, slog.Default()); err != nil {
-		return nil, fmt.Errorf("load global skills from %s: %w", globalDir, err)
-	}
-	if err := loadFromDir(idx, projectDir, slog.Default()); err != nil {
-		return nil, fmt.Errorf("load project skills from %s: %w", projectDir, err)
-	}
-
-	return idx, nil
-}
-
-func loadFromDir(idx *Index, dir string, logger *slog.Logger) error {
-	paths, err := scanSkillDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, p := range paths {
-		loadSkillFile(idx, p, logger)
-	}
-	return nil
-}
-
-func loadSkillFile(idx *Index, path string, logger *slog.Logger) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		logger.Warn("failed to read skill file", "path", path, "error", err)
-		return
-	}
-
-	skill, err := parseFrontmatter(string(raw))
-	if err != nil {
-		logger.Warn("skipping invalid skill file", "path", path, "error", err)
-		return
-	}
-
-	idx.skills[skill.Name] = skill
+	return resolved.Index, nil
 }

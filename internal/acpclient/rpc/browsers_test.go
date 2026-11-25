@@ -556,6 +556,48 @@ func TestTheBrowserCallsSendTheirMethods(t *testing.T) {
 	}
 }
 
+// TestTheSkillPreferenceCallSendsItsMethod pins session/skills_prefer_shared's
+// frame — the declared skill name with the flag, never a source name — and
+// that an error the connection reports reaches the caller. The frame here is
+// coded on purpose: this covers transport, not the refusal's shape. A settings
+// refusal itself is uncoded (settingsFailure in internal/acp/settings.go) and
+// its message is pinned by the service's own tests.
+func TestTheSkillPreferenceCallSendsItsMethod(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+	ctx := context.Background()
+
+	preferred := make(chan error, 1)
+	go func() { preferred <- session.SetSkillPreferShared(ctx, "brainstorming", true) }()
+	req := nextMethod(t, a, acpwire.MethodSkillsPreferShared)
+	var params acpwire.SkillPreferSharedParams
+	decodeParams(t, req, &params)
+	if params.SessionID != "s1" || params.Name != "brainstorming" || !params.On {
+		t.Fatalf("skills_prefer_shared params = %+v, want session s1, brainstorming and on", params)
+	}
+	a.answer(t, req, nil)
+	if err := awaitCall(t, preferred); err != nil {
+		t.Fatalf("SetSkillPreferShared: %v", err)
+	}
+
+	refused := make(chan error, 1)
+	go func() { refused <- session.SetSkillPreferShared(ctx, "nowhere", false) }()
+	req = nextMethod(t, a, acpwire.MethodSkillsPreferShared)
+	var refusedParams acpwire.SkillPreferSharedParams
+	decodeParams(t, req, &refusedParams)
+	if refusedParams.SessionID != "s1" || refusedParams.Name != "nowhere" || refusedParams.On {
+		t.Fatalf("skills_prefer_shared params = %+v, want session s1, nowhere and off", refusedParams)
+	}
+	a.send(t, codedErrorFrame(t, string(req.ID), acpwire.Error{
+		Code:    acpwire.CodeSessionClosed,
+		Message: `no skill named "nowhere"`,
+	}))
+	err := awaitCall(t, refused)
+	if !acpclient.IsCode(err, acpwire.CodeSessionClosed) {
+		t.Fatalf("SetSkillPreferShared error = %v, want an error with code %q", err, acpwire.CodeSessionClosed)
+	}
+}
+
 // TestABrowserCallsErrorComesBack pins that a coded refusal reaches the
 // caller as the connection's coded error.
 func TestABrowserCallsErrorComesBack(t *testing.T) {

@@ -736,19 +736,36 @@ class NewWorkModel extends ChangeNotifier {
     // where no change happens without an approval. The explicit Plan first and
     // Work item routes above keep their own handoffs.
     final sendMode = !_modeChosen && asksToPlan(prompt) ? 'ask' : mode;
-    final request = SpawnRequest(
-      project: project,
-      requestID: _requestIdFor(project, prompt, sendMode, baseBranch, isolated),
-      // An agent started with nothing to do carries no first turn at all: the
-      // route spawns it idle and its thread takes the first prompt, rather
-      // than the bridge being sent an empty one to run.
-      prompt: prompt.isEmpty ? null : prompt,
-      mode: sendMode,
-      baseRef: baseBranch == NewWorkDefaults.projectDefaultBranch
-          ? null
-          : baseBranch,
-      isolated: isolated,
-    );
+    final SpawnRequest request;
+    try {
+      request = SpawnRequest(
+        project: project,
+        requestID: _requestIdFor(
+          project,
+          prompt,
+          sendMode,
+          baseBranch,
+          isolated,
+        ),
+        // An agent started with nothing to do carries no first turn at all:
+        // the route spawns it idle and its thread takes the first prompt,
+        // rather than the bridge being sent an empty one to run.
+        prompt: prompt.isEmpty ? null : prompt,
+        mode: sendMode,
+        baseRef: baseBranch == NewWorkDefaults.projectDefaultBranch
+            ? null
+            : baseBranch,
+        isolated: isolated,
+      );
+    } catch (error) {
+      // Building the request can fail by itself — a range the platform refuses
+      // is enough — and nothing has been sent when it does. Say so: an error
+      // that escaped the press instead left the screen unchanged, which reads
+      // as a button that does nothing rather than a start that failed.
+      _failure = _words(error);
+      notifyListeners();
+      return;
+    }
     _starting = true;
     _started = null;
     notifyListeners();
@@ -803,11 +820,20 @@ class NewWorkModel extends ChangeNotifier {
   static bool _definiteRejection(Object error) =>
       error is BridgeFailure && error.status >= 400 && error.status < 500;
 
+  /// The exclusive upper bound of the ID's random salt: the largest range
+  /// `Random.nextInt` accepts.
+  ///
+  /// A literal, never `1 << 32`: a browser's arithmetic is 32-bit, so that
+  /// shift is 0 there and `nextInt` refuses a range of 0. The request was
+  /// then never built, and Send in the Studio did nothing at all while every
+  /// VM test passed.
+  static const _saltMax = 0x100000000;
+
   /// Mints one client-generated request ID: opaque, unique, and made without
   /// any clock or randomness the bridge could have supplied.
   static String _newRequestId() {
     _requestSeq++;
-    final salt = _random.nextInt(1 << 32).toRadixString(16).padLeft(8, '0');
+    final salt = _random.nextInt(_saltMax).toRadixString(16).padLeft(8, '0');
     return 'studio-${DateTime.now().microsecondsSinceEpoch}-'
         '${_requestSeq.toString()}-$salt';
   }

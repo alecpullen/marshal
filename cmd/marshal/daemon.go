@@ -424,11 +424,15 @@ func daemonWebListen(listen, group string) (string, error) {
 // the address to serve on: "" answers "", as it does for a setting that is
 // unset.
 //
-// The daemon runs host processes with the user's full authority and has no
-// authentication but a bearer token in a 0600 file, so it listens on a unix
-// socket or a loopback address only; binding it anywhere else would publish
-// that authority (D3). A host name is not resolved here: only localhost and a
-// loopback address literal are provably local without asking a resolver.
+// The daemon runs host processes with the user's full authority, and a listener
+// carries no credential of its own: the operator's proxy authenticates the
+// browser (D13), and the socket's 0600 mode in a private directory plus the
+// bridge's peer-uid check protect a local transport rather than anything an
+// address inherits. The bearer credentials on /hooks/, /status/ and /mcp are
+// each that endpoint's own (D2). So this listens on a unix socket or a loopback
+// address only; binding it anywhere else would publish that authority (D3). A
+// host name is not resolved here: only localhost and a loopback address literal
+// are provably local without asking a resolver.
 func daemonLoopbackAddr(key, setting string) (string, error) {
 	addr := strings.TrimSpace(setting)
 	if addr == "" {

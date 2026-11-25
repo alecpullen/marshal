@@ -259,7 +259,7 @@ func daemonReadUserConfig(t *testing.T, home string) config.Config {
 }
 ```
 
-7. Add these six tests to `cmd/marshal/daemon_test.go`, after
+7. Add these seven tests to `cmd/marshal/daemon_test.go`, after
    `TestDaemonInstallWritesTheWebListener`:
 
 ```go
@@ -512,7 +512,7 @@ func daemonListenPort(addr string) string {
 }
 ```
 
-3. Add these four tests to `cmd/marshal/daemon_test.go`, after the Task 1 tests:
+3. Add these five tests to `cmd/marshal/daemon_test.go`, after the Task 1 tests:
 
 ```go
 // TestDaemonInstallWithoutStudioFlagsSaysNothingAboutIt: a plain install keeps
@@ -624,7 +624,7 @@ func TestDaemonInstallStudioURLReportsTheAddressItReplaced(t *testing.T) {
 CGO_ENABLED=1 go test ./cmd/marshal/ -run 'TestDaemonInstall(Studio|Without)' -count=1
 ```
 
-All eleven install tests pass (six from Task 1, five from Task 2 — the Task 1
+All twelve install tests pass (seven from Task 1, five from Task 2 — the Task 1
 tests still pass because the added block only appends lines).
 
 **Commit:** `studio install: task 2 — the block install prints, matching the listener it wrote`

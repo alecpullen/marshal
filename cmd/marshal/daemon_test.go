@@ -1962,6 +1962,108 @@ func TestDaemonInstallStudioKeepsUnrelatedSections(t *testing.T) {
 	}
 }
 
+// TestDaemonInstallWithoutStudioFlagsSaysNothingAboutIt: a plain install keeps
+// its output, even on a daemon someone configured by hand, so the promise in
+// the usage text holds.
+func TestDaemonInstallWithoutStudioFlagsSaysNothingAboutIt(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\n"+
+		"web_listen = \"unix\"\n"+
+		"web_url = \"https://marshal.example.com\"\n")
+	stdout, stderr, err := daemonInstallRun(t)
+	if err != nil {
+		t.Fatalf("install: %v\nstderr: %s", err, stderr)
+	}
+	for _, banned := range []string{"web_listen:", "web_url:", "proxy:", "studio:"} {
+		if strings.Contains(stdout, banned) {
+			t.Errorf("a plain install printed %q:\n%s", banned, stdout)
+		}
+	}
+}
+
+// TestDaemonInstallStudioPrintsTheSocketAndTheNextStep: with no address yet the
+// block names the socket and the run that supplies one.
+func TestDaemonInstallStudioPrintsTheSocketAndTheNextStep(t *testing.T) {
+	home := daemonTestEnv(t)
+	stdout, stderr, err := daemonInstallRun(t, "--studio")
+	if err != nil {
+		t.Fatalf("install --studio: %v\nstderr: %s", err, stderr)
+	}
+	socket := filepath.Join(daemon.PathsFor(home).Dir, "web.sock")
+	for _, want := range []string{
+		"web_listen: unix (" + socket + ")",
+		"web_url: unset",
+		"point your proxy at " + socket,
+		"marshal daemon install --studio-url https://marshal.example.com",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("install --studio printed no %q:\n%s", want, stdout)
+		}
+	}
+}
+
+// TestDaemonInstallStudioPrintsTheProxySnippetForTheListenerItWrote: with unix
+// written, the socket form is the snippet and the document's port-shaped
+// Tailscale example appears only as the stated alternative (docs/DEPLOYMENT.md).
+func TestDaemonInstallStudioPrintsTheProxySnippetForTheListenerItWrote(t *testing.T) {
+	home := daemonTestEnv(t)
+	stdout, stderr, err := daemonInstallRun(t, "--studio", "--studio-url", "https://marshal.example.com")
+	if err != nil {
+		t.Fatalf("install --studio --studio-url: %v\nstderr: %s", err, stderr)
+	}
+	socket := filepath.Join(daemon.PathsFor(home).Dir, "web.sock")
+	for _, want := range []string{
+		"web_url: https://marshal.example.com",
+		"reverse_proxy unix/" + socket,
+		"tailscale serve --bg 7700",
+		"/hooks/, /status/ and /mcp pass through",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("install printed no %q:\n%s", want, stdout)
+		}
+	}
+}
+
+// TestDaemonInstallStudioPrintsAnExistingLoopbackListener: a loopback listener
+// keeps its port-shaped snippet and gets no socket block.
+func TestDaemonInstallStudioPrintsAnExistingLoopbackListener(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\nweb_listen = \"127.0.0.1:7700\"\n")
+	stdout, stderr, err := daemonInstallRun(t, "--studio", "--studio-url", "https://box.example.ts.net")
+	if err != nil {
+		t.Fatalf("install: %v\nstderr: %s", err, stderr)
+	}
+	for _, want := range []string{
+		"web_listen: 127.0.0.1:7700 (unchanged)",
+		"web_url: https://box.example.ts.net",
+		"reverse_proxy 127.0.0.1:7700",
+		"tailscale serve --bg 7700",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("install printed no %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "reverse_proxy unix/") {
+		t.Errorf("a loopback listener printed the socket snippet:\n%s", stdout)
+	}
+}
+
+// TestDaemonInstallStudioURLReportsTheAddressItReplaced: changing the address
+// says what it was, so a wrong --studio-url is visible.
+func TestDaemonInstallStudioURLReportsTheAddressItReplaced(t *testing.T) {
+	home := daemonTestEnv(t)
+	daemonWriteUserConfig(t, home, "[daemon]\n"+
+		"web_listen = \"unix\"\n"+
+		"web_url = \"https://old.example.com\"\n")
+	stdout, stderr, err := daemonInstallRun(t, "--studio-url", "https://new.example.com")
+	if err != nil {
+		t.Fatalf("install --studio-url: %v\nstderr: %s", err, stderr)
+	}
+	if want := "web_url: https://new.example.com (was https://old.example.com)"; !strings.Contains(stdout, want) {
+		t.Errorf("install printed no %q:\n%s", want, stdout)
+	}
+}
+
 // TestDaemonInstallAcceptsAPreviewTemplate: daemon.preview_url may be a
 // template for a proxy with wildcard hostnames, and the unit writes it as it
 // stands — the daemon fills the token in per preview.

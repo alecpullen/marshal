@@ -248,6 +248,7 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	fmt.Fprintf(stdout, "unit: %s\n", m.UnitPath())
 	fmt.Fprintf(stdout, "socket: %s\n", spec.Paths.Socket)
+	daemonStudioLines(home, studioSettings, stdout)
 	// The secrets the retired listeners read are gone with them: a stale
 	// 0600 credential under the daemon directory outlives the feature that
 	// used it, so the install that replaced the listener removes it.
@@ -324,6 +325,83 @@ func daemonWriteStudio(home string, s daemonStudioConfig) error {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
+}
+
+// daemonStudioLines is what install prints when a Studio flag was passed: the
+// listener and address the run ends with, and a proxy snippet that matches that
+// listener (D10, D13). A plain install prints none of it.
+func daemonStudioLines(home string, s daemonStudioConfig, stdout io.Writer) {
+	if !s.passed {
+		return
+	}
+	listen := s.listen
+	if listen == "unix" {
+		listen = fmt.Sprintf("unix (%s)", daemonWebSocketPath(home))
+	}
+	suffix := ""
+	if s.listenWas != "" && s.listen == s.listenWas {
+		suffix = " (unchanged)"
+	}
+	fmt.Fprintf(stdout, "web_listen: %s%s\n", listen, suffix)
+
+	if s.url == "" {
+		fmt.Fprintln(stdout, "web_url: unset")
+		fmt.Fprintf(stdout, "proxy: point your proxy at %s, then run\n", daemonProxyTarget(home, s.listen))
+		fmt.Fprintln(stdout, "       marshal daemon install --studio-url https://marshal.example.com")
+		return
+	}
+	if s.urlWas != "" && s.url != s.urlWas {
+		fmt.Fprintf(stdout, "web_url: %s (was %s)\n", s.url, s.urlWas)
+	} else {
+		fmt.Fprintf(stdout, "web_url: %s\n", s.url)
+	}
+	switch {
+	case s.listen == "unix":
+		// D10/D13: the socket form is what this run wrote, so it is the
+		// snippet; the document's port-shaped example is the alternative for a
+		// proxy that cannot dial a socket.
+		fmt.Fprintln(stdout, "proxy: Caddy, with whatever auth module you pick:")
+		fmt.Fprintln(stdout)
+		fmt.Fprintf(stdout, "\tmarshal.example.com {\n\t\treverse_proxy unix/%s\n\t}\n", daemonWebSocketPath(home))
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "a proxy that cannot dial a unix socket uses the loopback pair instead:")
+		fmt.Fprintln(stdout, "set web_listen = \"127.0.0.1:7700\" and web_url = \"https://box.<tailnet>.ts.net\",")
+		fmt.Fprintln(stdout, "then `tailscale serve --bg 7700` (docs/DEPLOYMENT.md)")
+	case strings.HasPrefix(s.listen, "/"):
+		fmt.Fprintf(stdout, "proxy: Caddy:  reverse_proxy unix/%s\n", s.listen)
+	default:
+		fmt.Fprintf(stdout, "proxy: Caddy:  reverse_proxy %s\n", s.listen)
+		if port := daemonListenPort(s.listen); port != "" {
+			fmt.Fprintf(stdout, "       Tailscale Serve:  tailscale serve --bg %s\n", port)
+		}
+		fmt.Fprintln(stdout, "       (docs/DEPLOYMENT.md)")
+	}
+	fmt.Fprintln(stdout, "/hooks/, /status/ and /mcp pass through without the proxy's login: each carries")
+	fmt.Fprintln(stdout, "its own credential")
+}
+
+// daemonWebSocketPath is where daemon.web_listen = "unix" puts the web socket:
+// web.sock beside the daemon's own socket.
+func daemonWebSocketPath(home string) string {
+	return filepath.Join(daemon.PathsFor(home).Dir, "web.sock")
+}
+
+// daemonProxyTarget is what a proxy in front of the daemon dials for the
+// listener this run ends with: the socket's path for "unix", else the address.
+func daemonProxyTarget(home, listen string) string {
+	if listen == "unix" {
+		return daemonWebSocketPath(home)
+	}
+	return listen
+}
+
+// daemonListenPort is the port of a loopback host:port, or "" when the address
+// names none.
+func daemonListenPort(addr string) string {
+	if i := strings.LastIndexByte(addr, ':'); i >= 0 {
+		return addr[i+1:]
+	}
+	return ""
 }
 
 // daemonEnsureLinger enables the user's linger bit on Linux and says what it

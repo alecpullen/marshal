@@ -280,12 +280,22 @@ Future<void> main() async {
           // client that reaches its host (F9 decision 4). A thread's id is
           // both its agent id and its session id, and the root is the project
           // its files are read under.
+          //
+          // A session's Inspect reopens it before reading again, as its
+          // transcript does: the bridge answers a node only for a session it
+          // tracks (P7 decision 5).
           inspectorFor: (host, thread) {
+            final client = hosts.hosts
+                .firstWhere((owner) => owner.name == host)
+                .client;
             final models = ThreadInspectorModels(
-              hosts.hosts.firstWhere((owner) => owner.name == host).client,
+              client,
               agentId: thread.id,
               sessionId: thread.id,
               root: thread.project,
+              opener: thread.kind == threads.ThreadKind.session
+                  ? () => client.openSession(thread.id)
+                  : null,
             );
             return ThreadInspector(
               state: InspectorState(),

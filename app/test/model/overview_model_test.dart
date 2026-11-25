@@ -142,6 +142,70 @@ void main() {
     expect([for (final waiting in overview.needsYou) waiting.id], ['tc-1']);
   });
 
+  test('open sessions and threadless projects are counted', () async {
+    // The case the sidebar showed and the Overview did not: three registered
+    // projects, one fleet agent, and the rest of the work in sessions — one a
+    // terminal is running a turn in. The Overview must agree with the tree.
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [
+          project('/home/u/alpha'),
+          project('/home/u/beta'),
+          project('/home/u/gamma'),
+        ],
+        agents: [agent(id: 'a-idle', project: '/home/u/alpha', name: 'Fix')],
+      ),
+    ], now: now);
+    SessionRow row(String id, {bool open = true, bool busy = false}) =>
+        SessionRow(
+          sessionID: id,
+          title: 'Session $id',
+          updatedAt: now
+              .subtract(const Duration(minutes: 2))
+              .millisecondsSinceEpoch,
+          open: open,
+          viewers: open ? 1 : 0,
+          busy: busy,
+        );
+    fixture.serve('local', '/api/sessions/all', {
+      'projects': [
+        ProjectSessions(
+          root: '/home/u/alpha',
+          sessions: [
+            row('sess_run', busy: true),
+            row('sess_open'),
+            // Closed: earlier work the sidebar folds away, not a thread the
+            // host runs now.
+            row('sess_old', open: false),
+          ],
+        ).toJson(),
+        ProjectSessions(
+          root: '/home/u/beta',
+          sessions: [row('sess_beta_old', open: false)],
+        ).toJson(),
+      ],
+    });
+    await fixture.refresh();
+    final inbox = InboxModel(fixture.store, client: fixture.clientFor);
+    addTearDown(inbox.dispose);
+
+    final overview = buildOverview(fixture.store, inbox);
+
+    expect([for (final thread in overview.running) thread.id], ['sess_run']);
+    expect(
+      [for (final row in overview.projects) row.name],
+      ['alpha', 'beta', 'gamma'],
+      reason: 'every registered project has a row, threads or not',
+    );
+    final alpha = overview.projects.first;
+    expect([alpha.threads, alpha.running, alpha.idle], [3, 1, 2]);
+    expect(overview.projects[1].threads, 0);
+    expect(overview.projects[2].threads, 0);
+    expect(overview.capacity.single.threads, 3);
+    expect(overview.agentNames, {'a-idle': 'Fix'});
+  });
+
   test('needs you is at most three asks', () async {
     final fixture = await ModelFixture.start([
       FixtureHost(

@@ -129,6 +129,7 @@ class OverviewModel {
     this.spendDays = const [],
     this.spendByRole = const [],
     this.moreInProgress = 0,
+    this.agentNames = const {},
   });
 
   /// The oldest asks, at most [overviewAsks] of them.
@@ -164,6 +165,11 @@ class OverviewModel {
 
   /// Pull requests in progress beyond the ready and failing ones on screen.
   final int moreInProgress;
+
+  /// What each agent the store holds is called, by id: an audit event such
+  /// as a spawn names only its agent, and the feed says which one by the name
+  /// the sidebar gives it.
+  final Map<String, String> agentNames;
 }
 
 /// The Overview for what [store] holds and what [inbox] counts as waiting.
@@ -182,14 +188,32 @@ OverviewModel buildOverview(
   final running = <ThreadRef>[];
   final projects = <String, List<ThreadRef>>{};
   final capacity = <HostCapacity>[];
+  final agentNames = <String, String>{};
 
   for (final host in store.hosts) {
     final threads = [
       for (final agent in store.agents(host: host.name))
         threadFor(host.name, agent),
+      // A session — a terminal's, or one the Studio opened — is a thread as
+      // much as an agent is (P7), and the sidebar lists the open ones beside
+      // the agents, so the Overview counts them too: a turn typed in a
+      // terminal is a turn running on this host. A closed session is earlier
+      // work, which the sidebar folds away, not something the host runs now.
+      for (final hosted in store.sessions(host: host.name))
+        if (hosted.row.open)
+          threadOfSession(hosted.host, hosted.root, hosted.row),
     ];
+    // Every project the host has registered gets a row, threads or not: the
+    // sidebar lists it, and a table that drops it says the project is not
+    // there.
+    for (final project in store.projects(host: host.name)) {
+      projects.putIfAbsent(project.root, () => []);
+    }
     for (final thread in threads) {
       projects.putIfAbsent(thread.project, () => []).add(thread);
+      if (thread.kind != ThreadKind.session) {
+        agentNames.putIfAbsent(thread.id, () => thread.title);
+      }
     }
     running.addAll(
       threads.where((thread) => thread.status == ThreadStatus.running),
@@ -255,10 +279,12 @@ OverviewModel buildOverview(
               pull.group != PullGroup.ready && pull.group != PullGroup.failing,
         )
         .length,
+    agentNames: Map.unmodifiable(agentNames),
   );
 }
 
 /// The projects in name order, so the table reads like the sidebar's tree.
+/// A project with no thread is in [grouped] already, with an empty list.
 Map<String, List<ThreadRef>> _byName(
   FleetStore store,
   Map<String, List<ThreadRef>> grouped,

@@ -16,6 +16,7 @@ class ThreadInspectorModels {
     required String sessionId,
     String root = '',
     int subagentId = 0,
+    Future<void> Function()? opener,
   }) : changes = ChangesModel(client, agentId: agentId, sessionId: sessionId),
        files = FilesModel(client, agentId: agentId, root: root),
        terminal = TerminalSession(client, agentId: agentId),
@@ -24,6 +25,7 @@ class ThreadInspectorModels {
          client,
          sessionId: sessionId,
          subagentId: subagentId,
+         opener: opener,
        );
 
   final ChangesModel changes;

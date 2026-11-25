@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
+import '../client/transport.dart' show BridgeFailure;
 import 'fleet_store.dart' show describeFailure;
 
 /// What the Inspect tab draws for one node (f4-inspector.md decision 11):
@@ -44,18 +45,36 @@ class InspectFacts {
 
 /// One node's detail, and the newest model request behind it.
 class InspectModel extends ChangeNotifier {
-  InspectModel(this._client, {required this.sessionId, this.subagentId = 0});
+  InspectModel(
+    this._client, {
+    required this.sessionId,
+    this.subagentId = 0,
+    this.opener,
+  });
 
   /// A model holding what a caller gives it, for a test or the gallery.
   InspectModel.seeded({InspectFacts? facts, this.modelRequest})
     : _client = null,
       sessionId = '',
       subagentId = 0,
+      opener = null,
       _facts = facts ?? const InspectFacts();
 
   final BridgeClient? _client;
   final String sessionId;
   final int subagentId;
+
+  /// Asks the bridge to open the session, when this model reads a session's
+  /// detail rather than an agent's: the same opener the thread's transcript
+  /// runs before it reads (P7 decision 5).
+  ///
+  /// The bridge answers a node or a request only for a session it tracks, and
+  /// a session can stop being tracked while its transcript stays on screen —
+  /// its project child stopped or was replaced. A read the bridge refuses as
+  /// an unknown session is therefore asked once more after the session is
+  /// opened, rather than leaving "unknown session" on a thread a person can
+  /// see. Null for an agent, whose session the bridge owns.
+  final Future<void> Function()? opener;
 
   InspectFacts _facts = const InspectFacts();
 
@@ -97,7 +116,9 @@ class InspectModel extends ChangeNotifier {
     _error = null;
     _notify();
     try {
-      final answer = await client.node(sessionId, nodeId, subagentId);
+      final answer = await _reopening(
+        () => client.node(sessionId, nodeId, subagentId),
+      );
       _facts = _factsOf(answer);
     } catch (error) {
       _error = describeFailure(error);
@@ -114,7 +135,7 @@ class InspectModel extends ChangeNotifier {
     _loadingRequest = true;
     _notify();
     try {
-      final request = await client.lastRequest(sessionId);
+      final request = await _reopening(() => client.lastRequest(sessionId));
       final model = request?.request;
       modelRequest = model == null
           ? 'This session has made no request.'
@@ -128,6 +149,20 @@ class InspectModel extends ChangeNotifier {
     } finally {
       _loadingRequest = false;
       _notify();
+    }
+  }
+
+  /// Runs [read], and when the bridge says it does not know the session, opens
+  /// the session and runs it once more. Any other failure, and a second
+  /// refusal, is the read's answer.
+  Future<T> _reopening<T>(Future<T> Function() read) async {
+    try {
+      return await read();
+    } on BridgeFailure catch (error) {
+      final open = opener;
+      if (open == null || error.status != 404) rethrow;
+      await open();
+      return read();
     }
   }
 

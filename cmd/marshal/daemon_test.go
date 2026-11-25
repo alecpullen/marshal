@@ -1709,6 +1709,25 @@ func daemonTestWebbridge(t *testing.T) string {
 	return path
 }
 
+// daemonTestWebbridgeWithStudio is a webbridge with the Studio's files beside
+// it, as a release install has them.
+func daemonTestWebbridgeWithStudio(t *testing.T) (webbridge, studio string) {
+	t.Helper()
+	dir := t.TempDir()
+	webbridge = filepath.Join(dir, "webbridge")
+	if err := os.WriteFile(webbridge, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	studio = filepath.Join(dir, "share", "marshal", "studio")
+	if err := os.MkdirAll(studio, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(studio, "index.html"), []byte("<!doctype html>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return webbridge, studio
+}
+
 // daemonWriteUserConfig writes the user config daemonUnitSpec reads, for the
 // tests that state [daemon] settings.
 func daemonWriteUserConfig(t *testing.T, home, body string) {
@@ -2062,6 +2081,41 @@ func TestDaemonInstallStudioURLReportsTheAddressItReplaced(t *testing.T) {
 	if want := "web_url: https://new.example.com (was https://old.example.com)"; !strings.Contains(stdout, want) {
 		t.Errorf("install printed no %q:\n%s", want, stdout)
 	}
+}
+
+// TestDaemonInstallStudioNamesMissingStudioFiles: --studio on a box whose
+// webbridge has no Studio files says so, because the listener would serve the
+// no-files page (D12).
+func TestDaemonInstallStudioNamesMissingStudioFiles(t *testing.T) {
+	daemonTestEnv(t)
+	stdout, stderr, err := daemonInstallRun(t, "--studio")
+	if err != nil {
+		t.Fatalf("install --studio: %v\nstderr: %s", err, stderr)
+	}
+	if want := "studio: no files found"; !strings.Contains(stdout, want) {
+		t.Errorf("install printed no %q:\n%s", want, stdout)
+	}
+}
+
+// TestDaemonInstallStudioNamesTheStudioDir: with files beside the webbridge, the
+// block names a directory instead of reporting none.
+func TestDaemonInstallStudioNamesTheStudioDir(t *testing.T) {
+	daemonTestEnv(t)
+	webbridge, _ := daemonTestWebbridgeWithStudio(t)
+	stdout, stderr, err := daemonInstallRunWebbridge(t, webbridge, "--studio")
+	if err != nil {
+		t.Fatalf("install --studio: %v\nstderr: %s", err, stderr)
+	}
+	if strings.Contains(stdout, "no files found") {
+		t.Errorf("install found no Studio files beside a webbridge that has them:\n%s", stdout)
+	}
+	// The path is the resolved one, so compare the shape, not the temp path.
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(line, "studio: ") && strings.HasSuffix(line, filepath.Join("share", "marshal", "studio")) {
+			return
+		}
+	}
+	t.Errorf("install named no Studio directory:\n%s", stdout)
 }
 
 // TestDaemonInstallAcceptsAPreviewTemplate: daemon.preview_url may be a

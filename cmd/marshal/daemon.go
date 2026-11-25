@@ -249,6 +249,13 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 	fmt.Fprintf(stdout, "unit: %s\n", m.UnitPath())
 	fmt.Fprintf(stdout, "socket: %s\n", spec.Paths.Socket)
 	daemonStudioLines(home, studioSettings, stdout)
+	// D12: a daemon with no Studio files serves a page that says so and runs
+	// on. That is worth naming here only because this run turned the listener
+	// on; daemonStudioLine supplies the wording status uses.
+	if studioSettings.passed {
+		dir, _ := bridge.FindStudioDir(spec.Webbridge)
+		fmt.Fprintln(stdout, daemonStudioLine(daemon.Info{StudioDir: dir}))
+	}
 	// The secrets the retired listeners read are gone with them: a stale
 	// 0600 credential under the daemon directory outlives the feature that
 	// used it, so the install that replaced the listener removes it.
